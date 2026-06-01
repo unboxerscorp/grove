@@ -1,0 +1,35 @@
+# base-voca fleet — grove instance #1.
+# 8 codex workers already running in the "voca" tmux session; `grove up` adopts them.
+
+session: voca
+cwd: /Users/smk/Documents/dev-space/base-voca
+
+defaults:
+  agent: codex
+  model: gpt-5.5
+
+nodes:
+  maker-1:
+    resume: 019e6941-2147-7e33-aa85-edfa3e5e04b4
+    role: "Feature & bug implementation."
+  maker-2:
+    resume: 019e6e30-3889-7251-bb95-f50c2237a57e
+    role: "Feature & bug implementation."
+  maker-3:
+    resume: 019e6f51-0b97-78a2-b850-17bebaef6181
+    role: "Feature & bug implementation."
+  reviewer:
+    resume: 019e6e51-705f-7a23-8bbb-f0cb8b304144
+    role: "Codebase review."
+  publisher:
+    resume: 019e6eec-5fb0-7fc2-91c5-8c130422c112
+    role: "Deployment."
+  harness:
+    resume: 019e6f5f-e9b5-7ce1-98ac-f067da5bd3da
+    role: "Agent conventions & harness."
+  devops:
+    resume: 019e6e7d-6226-75b3-bc94-c340c4628e0c
+    role: "DevOps & infra."
+  docs:
+    resume: 019e6fef-117e-72e2-8d28-4b82fe67f25e
+    role: "Docs upkeep."

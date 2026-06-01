@@ -1,0 +1,15 @@
+# Throwaway smoke test for the claude adapter. Spawns one fresh Claude Code
+# node in a trusted dir (no trust prompt), in its own tmux session.
+#   grove up   --config examples/claude-smoke.grove.yaml
+#   grove ask  probe "Reply with exactly: grove-claude-ok" --config examples/claude-smoke.grove.yaml
+#   grove down --config examples/claude-smoke.grove.yaml
+
+session: grove-smoke
+cwd: /Users/smk/Documents/dev-space/base-voca
+
+defaults:
+  agent: claude
+
+nodes:
+  probe:
+    role: "You are a grove smoke-test node. Answer in one short sentence. Do not edit files."

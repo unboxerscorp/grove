@@ -1,0 +1,54 @@
+{
+  "name": "grove",
+  "version": "0.1.0",
+  "description": "Grow a tree of AI agents (Claude Code + Codex) in your terminal. Declare an org-chart, bring the whole tree up in tmux, and let any node delegate work to its children.",
+  "type": "module",
+  "bin": {
+    "grove": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "pnpm build"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "orchestration",
+    "claude",
+    "claude-code",
+    "codex",
+    "tmux",
+    "multi-agent",
+    "cli"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "yaml": "^2.6.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
