@@ -140,6 +140,18 @@ async function main() {
     };
     const settle = () => new Promise((r) => setTimeout(r, 520));
 
+    // node info drawer — run on the clean initial layout, before drag mutations.
+    // Native DOM click (still fires React onClick) — robust against the action
+    // overlay's negative offset / canvas clipping that can foil mouse targeting.
+    await page.$eval('[data-name="root"] .org-act--info', (el) => el.click());
+    await page.waitForSelector(".node-drawer", { timeout: 8000 });
+    const nodeDrawer = await page.evaluate(() => ({
+      facts: document.querySelectorAll(".node-drawer .dr-fact").length,
+      assignForm: !!document.querySelector(".node-drawer__assign"),
+    }));
+    await page.click(".node-drawer .dr-drawer__close");
+    await page.waitForFunction(() => !document.querySelector(".node-drawer"), { timeout: 8000 });
+
     // Drag-intent labels: a read-only probe (snaps back, no PATCH) that checks
     // the floating badge flips between reparent and group modes.
     const badge = () =>
@@ -230,17 +242,6 @@ async function main() {
     const plusCreated = await page.evaluate(() => window.__MOCK__?.createdNode ?? "");
     await settle();
 
-    // hover action -> node info drawer (role/group/pane facts).
-    await page.hover('[data-name="root"]');
-    await page.click('[data-name="root"] .org-act--info');
-    await page.waitForSelector(".node-drawer", { timeout: 5000 });
-    const nodeDrawer = await page.evaluate(() => ({
-      facts: document.querySelectorAll(".node-drawer .dr-fact").length,
-      assignForm: !!document.querySelector(".node-drawer__assign"),
-    }));
-    await page.click(".node-drawer .dr-drawer__close");
-    await page.waitForFunction(() => !document.querySelector(".node-drawer"), { timeout: 5000 });
-
     // hover action -> open this node's terminal ("터미널 열기").
     await page.hover('[data-name="root"]');
     await page.click('[data-name="root"] .org-act--term');
@@ -263,9 +264,128 @@ async function main() {
       { timeout: 8000 },
       firstSeq,
     );
-    const term = await page.evaluate(() => ({
-      markerCount: ((document.querySelector(".dr-term .xterm-rows")?.textContent ?? "").match(/#\d+/g) ?? []).length,
+    const term = await page.evaluate(() => {
+      const rows = document.querySelector(".dr-term .xterm-rows")?.textContent ?? "";
+      return {
+        markerCount: (rows.match(/#\d+/g) ?? []).length,
+        termChars: rows.trim().length,
+        conn: (document.querySelector(".dr-conn")?.textContent ?? "").trim(),
+      };
+    });
+
+    // Slack integration panel.
+    await page.click('.dr-tab[data-view="integrations"]');
+    await page.waitForSelector(".slack", { timeout: 8000 });
+    const slackStatus0 = await page.$eval(".slack-status__label", (el) => (el.textContent ?? "").trim());
+
+    // manifest download -> GET /api/slack/manifest
+    await page.click(".slack-manifest__btn");
+    await page.waitForFunction(() => window.__MOCK__?.manifestFetched === true, { timeout: 6000 });
+    const manifestFetched = await page.evaluate(() => window.__MOCK__?.manifestFetched === true);
+
+    // token validation: invalid prefix -> inline error, no POST.
+    const appInput = await page.$('.slack input[name="appToken"]');
+    await appInput.type("nope-invalid");
+    await page.click(".slack-save");
+    await page.waitForSelector(".slack-field__err", { timeout: 4000 });
+    const validationErr = await page.evaluate(() => !!document.querySelector(".slack-field__err"));
+
+    // fix + fill valid tokens + channel/node mapping, then save -> POST /api/slack/config
+    await appInput.click({ clickCount: 3 });
+    await appInput.type("xapp-test-0001-abcd1234");
+    const botInput = await page.$('.slack input[name="botToken"]');
+    await botInput.type("xoxb-test-0002-wxyz5678");
+    await page.type('.slack input[name="channel"]', "#dev");
+    const nodeOptions = await page.$$eval('.slack select[name="node"] option', (els) => els.length);
+    await page.select('.slack select[name="node"]', "root");
+    await page.click(".slack-save");
+    await page.waitForFunction(() => !!window.__MOCK__?.slackConfig, { timeout: 6000 });
+    const slackCfg = await page.evaluate(() => window.__MOCK__?.slackConfig ?? {});
+    await page.waitForSelector(".slack-masked", { timeout: 5000 });
+    const maskedText = await page.$$eval(".slack-masked code", (els) => els.map((e) => e.textContent ?? "").join(" "));
+    const statusAfterSave = await page.$eval(".slack-status__label", (el) => (el.textContent ?? "").trim());
+
+    // test connection -> POST /api/slack/test -> socket_connected
+    await page.click(".slack-test");
+    await page.waitForFunction(() => window.__MOCK__?.slackTested === true, { timeout: 6000 });
+    await page.waitForFunction(() => !!document.querySelector(".slack-status.is-live"), { timeout: 5000 });
+    const liveAfterTest = await page.evaluate(() => !!document.querySelector(".slack-status.is-live"));
+
+    const slackOk =
+      manifestFetched &&
+      validationErr === true &&
+      typeof slackCfg.app_token === "string" &&
+      slackCfg.app_token.startsWith("xapp-") &&
+      typeof slackCfg.bot_token === "string" &&
+      slackCfg.bot_token.startsWith("xoxb-") &&
+      slackCfg.default_channel === "#dev" &&
+      !!slackCfg.default_node &&
+      /1234/.test(maskedText) &&
+      /5678/.test(maskedText) &&
+      liveAfterTest === true &&
+      nodeOptions >= 2;
+
+    // Project switcher: list, switch, new project, load project (integrity).
+    const projName = () => page.$eval(".proj-switcher__name", (el) => (el.textContent ?? "").trim());
+    await page.click(".proj-switcher__btn");
+    await page.waitForSelector(".proj-menu", { timeout: 6000 });
+    const projItems = await page.$$eval(".proj-item", (els) => els.length);
+    const projInitial = await projName();
+    await page.click('.proj-item[data-project="infra-ops"]');
+    await page.waitForFunction(
+      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "infra-ops",
+      { timeout: 5000 },
+    );
+    const projAfterSwitch = await projName();
+
+    await page.click(".proj-switcher__btn");
+    await page.waitForSelector(".proj-menu__new", { timeout: 5000 });
+    await page.click(".proj-menu__new");
+    await page.waitForSelector(".proj-modal.is-new", { timeout: 5000 });
+    await page.type('.proj-modal input[name="projName"]', "demo-proj");
+    await page.click(".proj-new__submit");
+    await page.waitForFunction(() => !!window.__MOCK__?.createdProject, { timeout: 6000 });
+    await page.waitForFunction(
+      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "demo-proj",
+      { timeout: 5000 },
+    );
+    const newCfg = await page.evaluate(() => window.__MOCK__?.createdProject ?? {});
+    const projAfterNew = await projName();
+
+    await page.click(".proj-switcher__btn");
+    await page.waitForSelector(".proj-menu__load", { timeout: 5000 });
+    await page.click(".proj-menu__load");
+    await page.waitForSelector(".proj-modal.is-load", { timeout: 5000 });
+    await page.type('.proj-modal input[name="loadPath"]', "/Users/dev/loaded-proj");
+    await page.click(".proj-load__submit");
+    await page.waitForSelector(".proj-result", { timeout: 6000 });
+    const loadResult = await page.evaluate(() => ({
+      buckets: document.querySelectorAll(".proj-result__bucket").length,
+      ok: !!document.querySelector(".proj-result__ok.is-ok"),
     }));
+    await page.click(".proj-load__switch");
+    await page.waitForFunction(
+      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "loaded-proj",
+      { timeout: 5000 },
+    );
+    const loadedPath = await page.evaluate(() => window.__MOCK__?.loadedPath ?? "");
+    const projAfterLoad = await projName();
+
+    // confirm the active project reaches the backend (X-Grove-Project) on reload
+    await page.click('.dr-tab[data-view="team"]');
+    await page.waitForSelector(".org-node", { timeout: 8000 });
+    await page.waitForFunction(() => (window.__MOCK__?.projectHeader ?? "") === "loaded-proj", { timeout: 6000 });
+
+    const projectOk =
+      projItems >= 2 &&
+      projInitial === "dev10" &&
+      projAfterSwitch === "infra-ops" &&
+      newCfg.name === "demo-proj" &&
+      projAfterNew === "demo-proj" &&
+      loadResult.buckets >= 3 &&
+      loadResult.ok === true &&
+      loadedPath.includes("loaded-proj") &&
+      projAfterLoad === "loaded-proj";
 
     const diag = await page.evaluate(() => {
       const mock = window.__MOCK__ ?? {};
@@ -277,6 +397,10 @@ async function main() {
         ticketHeader: mock.ticketHeader ?? "",
         terminalWsUrl: mock.terminalWsUrl ?? "",
         boardWsConnected: mock.boardWsConnected ?? false,
+        boardWsTicket: mock.boardWsTicket ?? "",
+        boardWsConnects: mock.boardWsConnects ?? 0,
+        wsTicketProject: mock.wsTicketProject ?? "",
+        projectHeader: mock.projectHeader ?? "",
       };
     });
 
@@ -289,6 +413,13 @@ async function main() {
       /[?&]ticket=/.test(diag.terminalWsUrl) &&
       /[?&]pane_id=/.test(diag.terminalWsUrl) &&
       diag.boardWsConnected === true;
+
+    // ws-ticket carries the project; board WS connects via that ticket and
+    // reconnects on project switch with the new project bound.
+    const wsBindOk =
+      diag.boardWsTicket !== "" &&
+      diag.wsTicketProject === "loaded-proj" &&
+      diag.boardWsConnects >= 2;
 
     const i18nOk = i18n.ko === "개발실" && i18n.en === "Dev Room";
     const addOk = addTask.created === NEW_TITLE;
@@ -313,12 +444,16 @@ async function main() {
       board.cards >= 1 &&
       drawer.runs >= 1 &&
       drawer.comments >= 1 &&
-      diag.termChars > 20 &&
+      term.termChars > 20 &&
       wsOk &&
       i18nOk &&
       addOk &&
       mirrorOk &&
       teamOk &&
+      slackOk &&
+      projectOk &&
+      wsBindOk &&
+      diag.projectHeader === projAfterLoad &&
       errors.length === 0;
 
     const summary = {
@@ -345,6 +480,19 @@ async function main() {
       addOk,
       mirrorOk,
       teamOk,
+      slackOk,
+      wsBindOk,
+      slackStatus0,
+      slackCfg,
+      statusAfterSave,
+      nodeOptions,
+      projectOk,
+      projItems,
+      projInitial,
+      projAfterSwitch,
+      projAfterNew,
+      projAfterLoad,
+      loadResult,
     };
     if (!ok) {
       if (errors.length) console.error(errors.join("\n"));

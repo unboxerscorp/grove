@@ -29,13 +29,56 @@ export interface NodePatch {
   group?: string | null;
 }
 
+export interface SlackConfig {
+  app_token?: string;
+  bot_token?: string;
+  default_channel?: string;
+  default_node?: string;
+}
+
+export interface SlackStatus {
+  status: string; // not_configured | tokens_saved | bot_auth_ok | socket_connected
+  last_event_at?: string | number | null;
+  last_error?: string | null;
+}
+
+export interface Project {
+  name: string; // = session
+  workspace: string;
+  node_count: number;
+  status: string;
+}
+
+export interface NewProject {
+  name: string;
+  template?: string;
+  clone?: string;
+}
+
+export interface LoadResult {
+  restored: string[];
+  stale: string[];
+  fresh: string[];
+  ok: boolean;
+  name?: string;
+}
+
 const TOKEN = window.__GROVE_SESSION_TOKEN__ ?? "";
 export const AUTH_REQUIRED = window.__GROVE_AUTH_REQUIRED__ ?? false;
 const SESSION_HEADER = "X-Grove-Session-Token";
+const PROJECT_HEADER = "X-Grove-Project";
+
+// The active project (= grove session). All REST calls carry it as a header so
+// the backend scopes org/boards/nodes to the selected project.
+let currentProject = "";
+export function setProject(name: string): void {
+  currentProject = name;
+}
 
 function headers(extra?: Record<string, string>): Record<string, string> {
   const base: Record<string, string> = {};
   if (TOKEN) base[SESSION_HEADER] = TOKEN;
+  if (currentProject) base[PROJECT_HEADER] = currentProject;
   return { ...base, ...(extra ?? {}) };
 }
 
@@ -117,6 +160,59 @@ export const api = {
       throw new Error(detail);
     }
     return (await res.json()) as OrgNode;
+  },
+
+  // Projects (= sessions).
+  listProjects: () => getJSON<Project[]>("/api/projects"),
+
+  async createProject(body: NewProject): Promise<Project> {
+    const res = await fetch("/api/projects", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`/api/projects: HTTP ${res.status}`);
+    return (await res.json()) as Project;
+  },
+
+  async loadProject(path: string): Promise<LoadResult> {
+    const res = await fetch("/api/projects/load", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ path }),
+    });
+    if (!res.ok) throw new Error(`/api/projects/load: HTTP ${res.status}`);
+    return (await res.json()) as LoadResult;
+  },
+
+  // Slack integration. The manifest is a file download, so this returns the raw
+  // Response (the caller turns it into a blob + download).
+  slackManifest: () =>
+    fetch("/api/slack/manifest", { headers: headers(), credentials: "same-origin" }),
+
+  getSlackStatus: () => getJSON<SlackStatus>("/api/slack/config/status"),
+
+  async saveSlackConfig(cfg: SlackConfig): Promise<SlackStatus> {
+    const res = await fetch("/api/slack/config", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(cfg),
+    });
+    if (!res.ok) throw new Error(`/api/slack/config: HTTP ${res.status}`);
+    return (await res.json()) as SlackStatus;
+  },
+
+  async testSlack(): Promise<SlackStatus> {
+    const res = await fetch("/api/slack/test", {
+      method: "POST",
+      headers: headers(),
+      credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error(`/api/slack/test: HTTP ${res.status}`);
+    return (await res.json()) as SlackStatus;
   },
 
   async wsTicket(): Promise<WsTicket> {

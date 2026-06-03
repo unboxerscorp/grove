@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { api, AUTH_REQUIRED, wsUrl } from "./api";
+import { api, AUTH_REQUIRED, setProject, wsUrl } from "./api";
+import type { Project } from "./api";
 import { BoardView } from "./components/BoardView";
 import { NodeList } from "./components/NodeList";
 import { OrgChart } from "./components/OrgChart";
+import { ProjectSwitcher } from "./components/ProjectSwitcher";
+import { SlackPanel } from "./components/SlackPanel";
 import { TaskDrawer } from "./components/TaskDrawer";
 import { TerminalPane } from "./components/TerminalPane";
 import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
-type View = "board" | "team" | "terminal";
+type View = "board" | "team" | "terminal" | "integrations";
 
 function GroveMark() {
   return (
@@ -39,8 +42,47 @@ export function App() {
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [liveTick, setLiveTick] = useState(0);
   const [boardLive, setBoardLive] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [project, setActiveProject] = useState<string | null>(null);
+  // Bumped on project switch to re-scope boards + nodes to the new project.
+  const [projectTick, setProjectTick] = useState(0);
 
-  // Boards (pick the first by default).
+  const loadProjects = useCallback(
+    () =>
+      api
+        .listProjects()
+        .then((list) => {
+          const ps = Array.isArray(list) ? list : [];
+          setProjects(ps);
+          // Adopt the first project as the default context on first load.
+          setActiveProject((prev) => {
+            if (prev) return prev;
+            const first = ps[0]?.name ?? null;
+            if (first) {
+              setProject(first);
+              setProjectTick((x) => x + 1);
+            }
+            return first;
+          });
+        })
+        .catch(() => setProjects([])),
+    [],
+  );
+
+  useEffect(() => {
+    void loadProjects();
+  }, [loadProjects]);
+
+  const switchProject = useCallback((name: string) => {
+    setProject(name); // api header
+    setActiveProject(name);
+    setBoardId(null);
+    setSelectedPane(null);
+    setProjectTick((x) => x + 1);
+    setLiveTick((x) => x + 1);
+  }, []);
+
+  // Boards (re-scoped per project; pick the first by default).
   useEffect(() => {
     api
       .listBoards()
@@ -50,9 +92,9 @@ export function App() {
         setBoardId((prev) => prev ?? list[0]?.id ?? null);
       })
       .catch(() => setBoards([]));
-  }, []);
+  }, [projectTick]);
 
-  // Nodes (poll).
+  // Nodes (re-scoped per project; poll).
   useEffect(() => {
     let alive = true;
     const load = () =>
@@ -70,10 +112,13 @@ export function App() {
       alive = false;
       clearInterval(t);
     };
-  }, []);
+  }, [projectTick]);
 
-  // Board event-tail: snapshot is read by BoardView; this socket nudges it to
-  // reload on each event (cursor-based tail handled server-side).
+  // Board event-tail: a single-use ws-ticket (carrying the current project via
+  // the X-Grove-Token/X-Grove-Project headers) is minted, then the socket
+  // connects with ?ticket= so the backend can bind it to the active project.
+  // Re-runs on projectTick too, so switching project (and initial adoption,
+  // where boardId is unchanged) reconnects with a fresh project-bound ticket.
   useEffect(() => {
     if (!boardId) return;
     let disposed = false;
@@ -119,7 +164,7 @@ export function App() {
         /* noop */
       }
     };
-  }, [boardId]);
+  }, [boardId, projectTick]);
 
   const selected = useMemo(
     () => nodes.find((n) => n.tmux_pane === selectedPane) ?? null,
@@ -135,12 +180,20 @@ export function App() {
   return (
     <div className="devroom">
       <header className="dr-top">
-        <div className="dr-brand">
-          <GroveMark />
-          <div className="dr-brand__text">
-            <span className="dr-brand__title">{t("brand.title")}</span>
-            <span className="dr-brand__sub">{t("brand.sub")}</span>
+        <div className="dr-left">
+          <div className="dr-brand">
+            <GroveMark />
+            <div className="dr-brand__text">
+              <span className="dr-brand__title">{t("brand.title")}</span>
+              <span className="dr-brand__sub">{t("brand.sub")}</span>
+            </div>
           </div>
+          <ProjectSwitcher
+            projects={projects}
+            current={project}
+            onSwitch={switchProject}
+            onProjectsChanged={() => void loadProjects()}
+          />
         </div>
 
         <div className="dr-top__center">
@@ -183,6 +236,14 @@ export function App() {
             >
               {t("tab.terminal")}
             </button>
+            <button
+              type="button"
+              data-view="integrations"
+              className={cx("dr-tab", view === "integrations" && "is-active")}
+              onClick={() => setView("integrations")}
+            >
+              {t("tab.integrations")}
+            </button>
           </div>
         </div>
 
@@ -224,6 +285,8 @@ export function App() {
             <div className="dr-stage__empty">{t("stage.noBoards")}</div>
           ) : view === "team" ? (
             <OrgChart boardId={boardId} liveTick={liveTick} onOpenTerminal={pickNode} />
+          ) : view === "integrations" ? (
+            <SlackPanel />
           ) : (
             <TerminalPane node={selected} />
           )}

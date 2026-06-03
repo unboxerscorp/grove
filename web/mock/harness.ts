@@ -135,6 +135,22 @@ const diag: Record<string, unknown> = {};
 
 let ticketSeq = 0;
 let taskSeq = 0;
+let slack: { status: string; last_event_at: string | null; last_error: string | null } = {
+  status: "not_configured",
+  last_event_at: null,
+  last_error: null,
+};
+
+interface ProjectMock {
+  name: string;
+  workspace: string;
+  node_count: number;
+  status: string;
+}
+const PROJECTS: ProjectMock[] = [
+  { name: "dev10", workspace: "~/dev/grove", node_count: 5, status: "running" },
+  { name: "infra-ops", workspace: "~/dev/infra", node_count: 2, status: "idle" },
+];
 
 function json(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -193,7 +209,36 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     );
   }
 
-  if (p === "/api/org") return Promise.resolve(json(buildOrg()));
+  if (p === "/api/projects") {
+    if (method === "POST") {
+      const body = (init?.body ? JSON.parse(init.body as string) : {}) as Record<string, string>;
+      diag.createdProject = body;
+      const created: ProjectMock = {
+        name: String(body.name ?? "untitled"),
+        workspace: body.clone ? `~/dev/${body.name}` : `~/dev/${body.name}`,
+        node_count: 1,
+        status: "running",
+      };
+      PROJECTS.push(created);
+      return Promise.resolve(json(created));
+    }
+    return Promise.resolve(json(PROJECTS));
+  }
+  if (p === "/api/projects/load" && method === "POST") {
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as { path?: string };
+    const path = String(body.path ?? "");
+    diag.loadedPath = path;
+    const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+    return Promise.resolve(
+      json({ restored: ["root", "backend"], stale: ["docs"], fresh: ["frontend"], ok: true, name }),
+    );
+  }
+
+  if (p === "/api/org") {
+    const hdrs = init?.headers as Record<string, string> | undefined;
+    diag.projectHeader = hdrs?.["X-Grove-Project"] ?? "";
+    return Promise.resolve(json(buildOrg()));
+  }
 
   if (p === "/api/nodes") {
     if (method === "POST") {
@@ -262,8 +307,40 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     diag.ticketMethod = method;
     const hdrs = init?.headers as Record<string, string> | undefined;
     diag.ticketHeader = hdrs?.["X-Grove-Session-Token"] ?? "";
+    diag.wsTicketProject = hdrs?.["X-Grove-Project"] ?? ""; // project bound into the ticket
     return Promise.resolve(json({ ticket: `mock-ticket-${++ticketSeq}`, ttl_seconds: 30 }));
   }
+
+  // --- Slack integration ----------------------------------------------------
+  if (p === "/api/slack/manifest") {
+    diag.manifestFetched = true;
+    const manifest = {
+      display_information: { name: "grove" },
+      settings: { socket_mode_enabled: true },
+    };
+    return Promise.resolve(
+      new Response(JSON.stringify(manifest, null, 2), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Disposition": "attachment; filename=grove-slack-manifest.json",
+        },
+      }),
+    );
+  }
+  if (p === "/api/slack/config/status") return Promise.resolve(json(slack));
+  if (p === "/api/slack/config" && method === "POST") {
+    const cfg = (init?.body ? JSON.parse(init.body as string) : {}) as Record<string, string>;
+    diag.slackConfig = cfg;
+    slack = { status: "tokens_saved", last_event_at: null, last_error: null };
+    return Promise.resolve(json(slack));
+  }
+  if (p === "/api/slack/test" && method === "POST") {
+    diag.slackTested = true;
+    slack = { status: "socket_connected", last_event_at: "2026-06-03T12:00:00Z", last_error: null };
+    return Promise.resolve(json(slack));
+  }
+  if (p === "/api/slack/threads") return Promise.resolve(json([]));
 
   return realFetch(input, init);
 }) as typeof fetch;
@@ -318,7 +395,11 @@ class MockWS {
         ? "board"
         : "other";
     if (this.kind === "term") diag.terminalWsUrl = url;
-    if (this.kind === "board") diag.boardWsConnected = true;
+    if (this.kind === "board") {
+      diag.boardWsConnected = true;
+      diag.boardWsTicket = new URLSearchParams(queryPart).get("ticket") ?? "";
+      diag.boardWsConnects = ((diag.boardWsConnects as number) ?? 0) + 1;
+    }
     setTimeout(() => this.open(), 120);
   }
 
