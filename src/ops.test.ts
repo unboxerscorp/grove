@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -130,5 +130,107 @@ describe("waitForCompletion", () => {
     });
 
     expect(result).toBe("durable result");
+  });
+
+  test("wakes on transcript append without waiting for the safety interval", async () => {
+    const dir = tempDir();
+    const transcript = join(dir, "current.jsonl");
+    writeFileSync(transcript, "");
+    const adapter = {
+      name: "codex",
+      label: "Codex",
+      submit: "enter",
+      readyPattern: /ready/,
+      launchCommand: () => "codex",
+      transcriptForSession: () => transcript,
+      snapshot: () => new Map<string, number>(),
+      detectNew: () => null,
+      sessionIdFromPath: () => "session-current",
+      size: (file: string) => (existsSync(file) ? statSync(file).size : 0),
+      readCompletionSince: (file: string, offset: number) => {
+        const size = existsSync(file) ? statSync(file).size : 0;
+        return size > offset
+          ? { done: true, offset: size, text: "append result" }
+          : { done: false, offset };
+      },
+      readLast: () => null,
+    } satisfies AgentAdapter;
+    const nc: NodeCtx = {
+      adapter,
+      addr: "grove:worker",
+      node: {
+        agent: "codex",
+        children: [],
+        cwd: dir,
+        name: "worker",
+      },
+    };
+    const ctx: Context = {
+      byName: new Map([["worker", nc]]),
+      config: {
+        cwd: dir,
+        defaults: { agent: "codex" },
+        nodes: { worker: { agent: "codex", children: [] } },
+        session: "grove-test",
+      },
+      configPath: join(dir, "grove.yaml"),
+      nodes: [nc.node],
+      registry: {
+        cwd: dir,
+        nodes: { worker: { agent: "codex", name: "worker", transcript } },
+        session: "grove-test",
+        updatedAt: "2026-06-03T00:00:00.000Z",
+      },
+    };
+    const started = Date.now();
+    setTimeout(() => {
+      appendFileSync(transcript, "done\n");
+    }, 10);
+
+    const result = await waitForCompletion(ctx, nc, {
+      intervalMs: 2000,
+      timeoutMs: 5000,
+    });
+
+    expect(result).toBe("append result");
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  test("fails fast with a repair hint when a bound session transcript is missing", async () => {
+    const dir = tempDir();
+    const missingTranscript = join(dir, "missing.jsonl");
+    const { ctx, nc } = makeNodeCtx(missingTranscript);
+    nc.adapter.size = () => 0;
+    ctx.registry.nodes.worker = {
+      agent: "codex",
+      name: "worker",
+      sessionId: "session-current",
+      transcript: missingTranscript,
+    };
+
+    await expect(waitForCompletion(ctx, nc, { timeoutMs: 100 })).rejects.toThrow(
+      "session transcript missing",
+    );
+  });
+
+  test("fails fast with a repair hint when a bound session transcript is empty", async () => {
+    const dir = tempDir();
+    const emptyTranscript = join(dir, "empty.jsonl");
+    writeFileSync(emptyTranscript, "");
+    const { ctx, nc } = makeNodeCtx(emptyTranscript);
+    nc.adapter.size = () => 0;
+    ctx.registry.nodes.worker = {
+      agent: "codex",
+      name: "worker",
+      sessionId: "session-current",
+      transcript: emptyTranscript,
+    };
+
+    await expect(
+      waitForCompletion(ctx, nc, {
+        intervalMs: 1000,
+        timeoutMs: 10_000,
+      }),
+    ).rejects.toThrow("session transcript missing");
   });
 });

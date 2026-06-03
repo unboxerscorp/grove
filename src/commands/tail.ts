@@ -1,7 +1,7 @@
 import { loadContext, nodeOf } from "../context.js";
 import { resolveTranscript } from "../ops.js";
 import { color, err, info } from "../util/log.js";
-import { waitForChangeOrTimeout } from "../util/time.js";
+import { waitForChangeOrTimeout } from "../util/watch.js";
 
 /** Stream a node's completed turns as they land. Runs until interrupted. */
 export async function cmdTail(name: string, opts: { config?: string }): Promise<void> {

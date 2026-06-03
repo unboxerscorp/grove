@@ -4,7 +4,7 @@ import { eventLogPath, eventLogSize, readTurnEventsSince } from "./events.js";
 import { resolveTranscript } from "./ops.js";
 import { saveRegistry } from "./registry.js";
 import { eventsDir } from "./util/paths.js";
-import { waitForChangeOrTimeout } from "./util/time.js";
+import { waitForChangeOrTimeout } from "./util/watch.js";
 
 export type FanInMode = "any" | "all";
 

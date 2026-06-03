@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 import type { Context, NodeCtx } from "./context.js";
 import { eventLogSize, readTurnEventsSince } from "./events.js";
 import { type NodeRuntime, saveRegistry } from "./registry.js";
@@ -17,7 +19,8 @@ import {
 import { color, info, step, warn } from "./util/log.js";
 import { eventsDir } from "./util/paths.js";
 import { shellQuote } from "./util/shell.js";
-import { poll, sleep, waitForChangeOrTimeout } from "./util/time.js";
+import { poll, sleep } from "./util/time.js";
+import { waitForChangeOrTimeout } from "./util/watch.js";
 
 const READY_TIMEOUT_MS = 30_000;
 const DETECT_TIMEOUT_MS = 20_000;
@@ -25,16 +28,22 @@ const SHELLS = new Set(["zsh", "-zsh", "bash", "-bash", "sh", "fish", "tmux"]);
 const BP_START = "\x1b[200~";
 const BP_END = "\x1b[201~";
 
+function transcriptHasContent(nc: NodeCtx, transcript: string): boolean {
+  return nc.adapter.size(transcript) > 0;
+}
+
 /** Best-effort transcript path for a node: registry → known session id. */
 export function resolveTranscript(ctx: Context, nc: NodeCtx): string {
   const rt = ctx.registry.nodes[nc.node.name];
-  if (rt?.transcript && nc.adapter.size(rt.transcript) > 0) return rt.transcript;
+  const hasBoundSession = Boolean(nc.node.resume ?? rt?.sessionId);
+  if (rt?.transcript && transcriptHasContent(nc, rt.transcript)) return rt.transcript;
+  if (rt?.transcript && !hasBoundSession && existsSync(rt.transcript)) return rt.transcript;
   const sid = nc.node.resume ?? rt?.sessionId;
   if (sid) {
     const p = nc.adapter.transcriptForSession(nc.node.cwd, sid);
-    if (p) return p;
+    if (p && transcriptHasContent(nc, p)) return p;
   }
-  return rt?.transcript ?? "";
+  return "";
 }
 
 /** Record the in-flight turn baseline so a later `grove wait` scans from before
@@ -105,6 +114,17 @@ function transcriptIdOf(ctx: Context, nc: NodeCtx, transcript: string): string {
   );
 }
 
+function hasSessionBinding(ctx: Context, nc: NodeCtx): boolean {
+  const rt = ctx.registry.nodes[nc.node.name];
+  return Boolean(nc.node.resume ?? rt?.sessionId);
+}
+
+function transcriptRepairError(name: string): Error {
+  return new Error(
+    `"${name}": session transcript missing — run \`grove rebind\` (or \`fleet repair\`) first`,
+  );
+}
+
 function completionFromEvents(
   ctx: Context,
   nc: NodeCtx,
@@ -140,9 +160,13 @@ export async function waitForCompletion(
   }
   const transcript = opts.transcript ?? resolvedTranscript;
   if (!transcript) {
+    if (hasSessionBinding(ctx, nc)) throw transcriptRepairError(nc.node.name);
     throw new Error(
       `"${nc.node.name}": no session transcript resolved — run \`grove up\` (or \`fleet repair\`) first`,
     );
+  }
+  if (!transcriptHasContent(nc, transcript) && hasSessionBinding(ctx, nc)) {
+    throw transcriptRepairError(nc.node.name);
   }
 
   let offset = opts.fromOffset ?? nc.adapter.size(transcript);
@@ -165,9 +189,10 @@ export async function waitForCompletion(
     const comp = nc.adapter.readCompletionSince(transcript, offset);
     if (comp.done) return comp.text ?? "";
     offset = comp.offset;
-    if (Date.now() >= deadline) return null;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return null;
     // Wake on the next transcript append, or after `interval` as a safety net.
-    await waitForChangeOrTimeout(transcript, interval);
+    await waitForChangeOrTimeout(transcript, Math.min(interval, remainingMs));
   }
 }
 

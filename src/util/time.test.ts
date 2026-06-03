@@ -1,24 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { describe, expect, test } from "vitest";
 
-import { afterEach, describe, expect, test } from "vitest";
-
-import { parseDuration, poll, waitForChangeOrTimeout } from "./time.js";
-
-const tempRoots: string[] = [];
-
-afterEach(() => {
-  while (tempRoots.length > 0) {
-    rmSync(tempRoots.pop()!, { force: true, recursive: true });
-  }
-});
-
-function tempRoot(): string {
-  const root = mkdtempSync(path.join(os.tmpdir(), "grove-time-"));
-  tempRoots.push(root);
-  return root;
-}
+import { parseDuration, poll } from "./time.js";
 
 describe("parseDuration", () => {
   test("parses supported units and keeps defaults for invalid input", () => {
@@ -55,23 +37,5 @@ describe("poll", () => {
         until: () => false,
       }),
     ).resolves.toEqual({ timedOut: true, value: "still waiting" });
-  });
-});
-
-describe("waitForChangeOrTimeout", () => {
-  test("resolves on file changes and falls back to timeout for missing paths", async () => {
-    const root = tempRoot();
-    const file = path.join(root, "transcript.jsonl");
-    writeFileSync(file, "");
-
-    const changed = waitForChangeOrTimeout(file, 100);
-    setTimeout(() => {
-      writeFileSync(file, "{}\n");
-    }, 0);
-    await expect(changed).resolves.toBeUndefined();
-
-    await expect(
-      waitForChangeOrTimeout(path.join(root, "missing.jsonl"), 0),
-    ).resolves.toBeUndefined();
   });
 });

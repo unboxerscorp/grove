@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { Context, NodeCtx } from "../context.js";
 import { loadContext, nodeOf } from "../context.js";
 import { resolveTranscript } from "../ops.js";
-import { waitForChangeOrTimeout } from "../util/time.js";
+import { waitForChangeOrTimeout } from "../util/watch.js";
 import { cmdTail } from "./tail.js";
 
 vi.mock("../context.js", () => ({
@@ -15,7 +15,7 @@ vi.mock("../ops.js", () => ({
   resolveTranscript: vi.fn(),
 }));
 
-vi.mock("../util/time.js", () => ({
+vi.mock("../util/watch.js", () => ({
   waitForChangeOrTimeout: vi.fn(),
 }));
 

@@ -1,44 +1,7 @@
-import { type FSWatcher, watch } from "node:fs";
-import { dirname } from "node:path";
+export { waitForChangeOrTimeout } from "./watch.js";
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Resolve on the next `fs.watch` event for `path`, or after `ms`, whichever is
- * first; the watcher is always closed. Used to wake a check loop on file append
- * instead of sleeping a fixed interval. This is only a wake-up *hint* — callers
- * must still re-check authoritative state, since fs.watch events can coalesce,
- * drop, or arrive before the watcher is installed.
- */
-export function waitForChangeOrTimeout(path: string, ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    let watcher: FSWatcher | undefined;
-    let done = false;
-    const finish = (): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      try {
-        watcher?.close();
-      } catch {
-        /* already closed */
-      }
-      resolve();
-    };
-    try {
-      watcher = watch(path, finish);
-    } catch {
-      try {
-        watcher = watch(dirname(path), finish);
-      } catch {
-        /* no watcher available — rely on the timeout */
-      }
-    }
-    watcher?.on("error", finish);
-    const timer = setTimeout(finish, ms);
-  });
 }
 
 /** Parse "30s" | "20m" | "1h" | "500ms" | "45" (seconds) into ms. */
