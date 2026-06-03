@@ -44,7 +44,7 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
         .then((s) => {
           if (!alive) return;
           setSummary(s.nodes ?? null);
-          if (openRef.current) setDetail(s.detail ?? []);
+          if (openRef.current) setDetail(s.node_details ?? []);
         })
         .catch(() => {
           /* keep last */
@@ -64,7 +64,7 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
     api
       .getStatus(true)
       .then((s) => {
-        if (alive) setDetail(s.detail ?? []);
+        if (alive) setDetail(s.node_details ?? []);
       })
       .catch(() => {
         /* keep last */
@@ -118,10 +118,9 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
               <span className={cx("nodestat__led", detailClass(d.status))} />
               <span className="nodestat-row__name">{d.name}</span>
               <span className={cx("nodestat-row__status", detailClass(d.status))}>{statusLabel(t, d.status)}</span>
-              {d.source === "inferred" && (
+              {d.confidence === "inferred" && (
                 <span className="nodestat-row__inferred" title={d.status_reason ?? ""}>
                   {t("status.inferred")}
-                  {typeof d.confidence === "number" ? ` ${Math.round(d.confidence * 100)}%` : ""}
                 </span>
               )}
               <span className="nodestat-row__seen">

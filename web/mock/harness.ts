@@ -161,26 +161,38 @@ let ticketSeq = 0;
 const ticketBindings: Record<string, { kind: string; pane: string; project: string }> = {};
 let taskSeq = 0;
 
-// Audit log seed. Mix of scalar-target events (spawn/claim/...) and structured
-// assign/delegate events whose `target.node` is the delegated-to org node — the
-// source for the OrgChart delegation overlay (V4-W2). root->backend appears
-// twice so the derived edge carries count=2. Fixed ts for determinism.
-type MockAuditTarget = string | { node?: string; task?: string };
-const AUDIT_EVENTS: { actor: string; action: string; target: MockAuditTarget; ts: string }[] = [
-  { actor: "root", action: "spawn", target: "backend", ts: "2026-06-04T03:00:05Z" },
-  { actor: "root", action: "delegate", target: { node: "backend", task: "G-4" }, ts: "2026-06-04T03:00:30Z" },
-  { actor: "backend", action: "claim", target: "G-4", ts: "2026-06-04T03:01:10Z" },
-  { actor: "root", action: "assign", target: { node: "frontend", task: "G-5" }, ts: "2026-06-04T03:01:40Z" },
-  { actor: "backend", action: "complete", target: "G-4", ts: "2026-06-04T03:02:00Z" },
-  { actor: "backend", action: "delegate", target: { node: "researcher", task: "G-6" }, ts: "2026-06-04T03:02:30Z" },
-  { actor: "frontend", action: "reparent", target: "docs", ts: "2026-06-04T03:03:00Z" },
-  { actor: "root", action: "delegate", target: { node: "backend", task: "G-8" }, ts: "2026-06-04T03:03:30Z" },
-  { actor: "root", action: "block", target: "G-7", ts: "2026-06-04T03:04:00Z" },
-  { actor: "root", action: "spawn", target: "frontend", ts: "2026-06-04T03:05:00Z" },
+// Audit log seed — MIRRORS web_app.py _audit_event_payload exactly: object
+// `actor` ({kind,id,login,role}) and object `target` ({type,id,node}), a numeric
+// `cursor` (rowid), epoch-seconds `ts`, and top-level task_id/from_node/to_node.
+// assign/delegate events feed the OrgChart delegation overlay (root->backend
+// twice => edge count 2). The /api/audit handler paginates by cursor (rowid>).
+type MockAuditActor = { kind: string; id: string; login: string; role: string };
+type MockAuditTarget = { type: string; id?: string; node?: string };
+type MockAuditEvent = {
+  cursor: number;
+  id: string;
+  actor: MockAuditActor;
+  action: string;
+  target: MockAuditTarget;
+  ts: number;
+  task_id: string | null;
+  from_node?: string | null;
+  to_node?: string | null;
+};
+const nodeActor = (id: string): MockAuditActor => ({ kind: "node", id, login: id, role: "none" });
+const AUDIT_TS0 = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
+const AUDIT_EVENTS: MockAuditEvent[] = [
+  { cursor: 1, id: "e1", actor: nodeActor("root"), action: "spawn", target: { type: "node", id: "backend", node: "backend" }, ts: AUDIT_TS0 + 5, task_id: null },
+  { cursor: 2, id: "e2", actor: nodeActor("root"), action: "delegate", target: { type: "task", id: "G-4", node: "backend" }, ts: AUDIT_TS0 + 30, task_id: "G-4" },
+  { cursor: 3, id: "e3", actor: nodeActor("backend"), action: "claim", target: { type: "task", id: "G-4", node: "backend" }, ts: AUDIT_TS0 + 70, task_id: "G-4" },
+  { cursor: 4, id: "e4", actor: nodeActor("root"), action: "assign", target: { type: "task", id: "G-5", node: "frontend" }, ts: AUDIT_TS0 + 100, task_id: "G-5" },
+  { cursor: 5, id: "e5", actor: nodeActor("backend"), action: "complete", target: { type: "task", id: "G-4", node: "backend" }, ts: AUDIT_TS0 + 120, task_id: "G-4" },
+  { cursor: 6, id: "e6", actor: nodeActor("backend"), action: "delegate", target: { type: "task", id: "G-6", node: "researcher" }, ts: AUDIT_TS0 + 150, task_id: "G-6" },
+  { cursor: 7, id: "e7", actor: nodeActor("frontend"), action: "reparent", target: { type: "node", id: "docs", node: "docs" }, ts: AUDIT_TS0 + 180, task_id: null, from_node: "frontend", to_node: "docs" },
+  { cursor: 8, id: "e8", actor: nodeActor("root"), action: "delegate", target: { type: "task", id: "G-8", node: "backend" }, ts: AUDIT_TS0 + 210, task_id: "G-8" },
+  { cursor: 9, id: "e9", actor: nodeActor("root"), action: "block", target: { type: "task", id: "G-7", node: "frontend" }, ts: AUDIT_TS0 + 240, task_id: "G-7" },
+  { cursor: 10, id: "e10", actor: nodeActor("root"), action: "spawn", target: { type: "node", id: "frontend", node: "frontend" }, ts: AUDIT_TS0 + 300, task_id: null },
 ];
-
-const auditTargetNode = (t: MockAuditTarget): string | null =>
-  typeof t === "string" ? null : (t.node ?? null);
 let slack: { status: string; last_event_at: string | null; last_error: string | null } = {
   status: "not_configured",
   last_event_at: null,
@@ -229,18 +241,21 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       nodes: { running, total: ORG_NODES.length, stale },
     };
     if (u.searchParams.get("detail")) {
+      // Mirrors web_app.py _node_status_details: field is `node_details`; source
+      // is always "registry"; the estimate signal is `confidence` ("explicit" |
+      // "inferred") as a STRING; last_seen is epoch seconds (int).
       diag.statusDetailFetched = true;
-      body.detail = ORG_NODES.map((n) => {
-        // done -> "dead" (no heartbeat); error -> inferred. Others heartbeat.
+      body.node_details = ORG_NODES.map((n) => {
+        // explicit registry status -> "explicit"; derived (error/done) -> "inferred".
         const status = n.status === "done" ? "dead" : n.status;
         const inferred = n.status === "error" || n.status === "done";
         return {
           name: n.name,
           status,
-          last_seen: inferred ? "2026-06-04T02:55:00Z" : "2026-06-04T03:05:30Z",
-          status_reason: inferred ? "no recent heartbeat" : "heartbeat ok",
-          source: inferred ? "inferred" : "heartbeat",
-          confidence: n.status === "error" ? 0.5 : n.status === "done" ? 0.4 : 1.0,
+          last_seen: inferred ? AUDIT_TS0 - 300 : AUDIT_TS0 + 330,
+          status_reason: inferred ? "no recent heartbeat" : `registry status: ${n.status}`,
+          source: "registry",
+          confidence: inferred ? "inferred" : "explicit",
         };
       });
     }
@@ -248,70 +263,92 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   }
 
   if (p === "/api/audit") {
+    // Mirrors web_app.py audit_endpoint + store.list_audit_events: rowid>cursor,
+    // ORDER BY rowid ASC LIMIT; exact action match; node matches actor.id /
+    // target.node / from_node / to_node; returns {items, next_cursor} where
+    // next_cursor is the last item's cursor (or the request cursor if empty).
     diag.auditFetches = ((diag.auditFetches as number) ?? 0) + 1;
     const sp = u.searchParams;
     diag.auditFilter = `action=${sp.get("action") ?? ""}&node=${sp.get("node") ?? ""}&task=${sp.get("task_id") ?? ""}`;
     if (sp.get("cursor")) diag.auditCursorUsed = true;
-    const limit = Number(sp.get("limit") ?? "4") || 4;
+    const limit = Number(sp.get("limit") ?? "100") || 100;
     const start = Number(sp.get("cursor") ?? "0") || 0;
     const action = sp.get("action");
     const node = sp.get("node");
     const taskId = sp.get("task_id");
-    let events = [...AUDIT_EVENTS];
-    if (action) events = events.filter((e) => e.action.includes(action));
+    let events = AUDIT_EVENTS.filter((e) => e.cursor > start);
+    if (action) events = events.filter((e) => e.action === action);
     if (node)
       events = events.filter(
-        (e) => e.actor === node || e.target === node || auditTargetNode(e.target) === node,
+        (e) =>
+          e.actor.id === node ||
+          e.target.node === node ||
+          e.from_node === node ||
+          e.to_node === node,
       );
-    if (taskId)
-      events = events.filter(
-        (e) => e.target === taskId || (typeof e.target !== "string" && e.target.task === taskId),
-      );
-    const slice = events.slice(start, start + limit);
-    const nextIdx = start + limit;
-    return Promise.resolve(
-      json({ events: slice, next_cursor: nextIdx < events.length ? String(nextIdx) : null }),
-    );
+    if (taskId) events = events.filter((e) => e.task_id === taskId || e.target.id === taskId);
+    const items = events.slice(0, limit);
+    const nextCursor = items.length ? items[items.length - 1]!.cursor : start;
+    return Promise.resolve(json({ items, next_cursor: nextCursor }));
   }
 
   if (p === "/api/cost") {
+    // Mirrors web_app.py _cost_payload/_cost_by_agent: `by_agent` is an OBJECT
+    // keyed by COST_AGENTS order; tokens live in `total_tokens`, money in
+    // `cost_usd_estimate`; agy adds credit_remaining (value null / unknown) +
+    // credit_status + warnings[]. codex = explicit (not flagged); claude/agy =
+    // partial + estimate source (flagged).
     diag.costFetched = true;
     const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
-    // codex = authoritative (registry/explicit); claude = inferred from
-    // transcript with an estimated cost; agy = inferred usage + UNKNOWN credit
-    // (backend can't determine remaining balance -> never estimate it).
+    const m = (value: number | null, source: string, confidence: string, status?: string) =>
+      status ? { value, source, confidence, status } : { value, source, confidence };
     return Promise.resolve(
       json({
         project: proj,
-        currency: "USD",
-        agents: [
-          {
-            agent: "codex",
-            tokens: { value: 1234567, source: "registry", confidence: "explicit" },
-            cost: { value: 12.34, source: "registry", confidence: "explicit" },
-          },
-          {
-            agent: "claude",
-            tokens: { value: 890123, source: "transcript", confidence: "inferred" },
-            cost: { value: 8.9, source: "estimate", confidence: "inferred" },
-          },
-          {
-            agent: "agy",
-            tokens: { value: 45000, source: "transcript", confidence: "inferred" },
-            cost: { value: 2.1, source: "estimate", confidence: "inferred" },
-            credit: {
-              value: null,
-              source: "registry",
-              confidence: "explicit",
-              status: "unknown",
-              warning: "크레딧 API 미연동 — 잔여 크레딧 확인 불가",
-            },
-          },
-        ],
+        generated_at: m(AUDIT_TS0 + 300, "server", "explicit"),
+        window: { name: "24h" },
         totals: {
-          tokens: { value: 2169690, source: "transcript", confidence: "inferred" },
-          cost: { value: 23.34, source: "estimate", confidence: "inferred" },
+          turns: m(16, "run_metadata", "explicit"),
+          input_tokens: m(1_730_000, "mixed", "partial"),
+          output_tokens: m(439_690, "mixed", "partial"),
+          total_tokens: m(2_169_690, "mixed", "partial"),
+          cost_usd_estimate: m(23.34, "estimate", "partial"),
+          confidence: "partial",
         },
+        by_agent: {
+          codex: {
+            nodes: m(2, "registry", "explicit"),
+            turns: m(8, "run_metadata", "explicit"),
+            input_tokens: m(1_000_000, "run_metadata", "explicit"),
+            output_tokens: m(234_567, "run_metadata", "explicit"),
+            total_tokens: m(1_234_567, "run_metadata", "explicit"),
+            cost_usd_estimate: m(12.34, "run_metadata", "explicit"),
+            confidence: "explicit",
+          },
+          claude: {
+            nodes: m(2, "registry", "explicit"),
+            turns: m(5, "run_metadata", "explicit"),
+            input_tokens: m(700_000, "transcript", "partial"),
+            output_tokens: m(190_123, "transcript", "partial"),
+            total_tokens: m(890_123, "transcript", "partial"),
+            cost_usd_estimate: m(8.9, "estimate", "partial"),
+            confidence: "partial",
+          },
+          agy: {
+            nodes: m(1, "registry", "explicit"),
+            turns: m(3, "run_metadata", "explicit"),
+            input_tokens: m(30_000, "transcript", "partial"),
+            output_tokens: m(15_000, "transcript", "partial"),
+            total_tokens: m(45_000, "transcript", "partial"),
+            cost_usd_estimate: m(2.1, "estimate", "partial"),
+            confidence: "partial",
+            credit_remaining: m(null, "none", "unknown", "unknown"),
+            credit_status: "unknown",
+            warnings: ["agy credit is unknown because no reliable local credit source is configured"],
+          },
+        },
+        nodes: [],
+        limitations: ["token usage is best-effort from transcripts where available"],
       }),
     );
   }

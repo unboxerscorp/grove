@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { api, targetLabel } from "../api";
+import { actorLabel, api, targetLabel } from "../api";
 import type { AuditEvent } from "../api";
 import { fmtAgo } from "../constants";
 import { useI18n } from "../i18n";
@@ -19,7 +19,10 @@ export function AuditDrawer(props: { open: boolean; projectTick: number; onClose
   useFocusTrap(open, panelRef);
 
   const [events, setEvents] = useState<AuditEvent[]>([]);
-  const [cursor, setCursor] = useState<string | number | null>(null);
+  const [cursor, setCursor] = useState(0);
+  // next_cursor is always returned, so end-of-list = a short page, not a null
+  // cursor (mirrors web_app.py audit_endpoint).
+  const [hasMore, setHasMore] = useState(false);
   const [action, setAction] = useState("");
   const [node, setNode] = useState("");
   const [loading, setLoading] = useState(false);
@@ -35,8 +38,10 @@ export function AuditDrawer(props: { open: boolean; projectTick: number; onClose
       .getAudit({ limit: PAGE, action: action || undefined, node: node || undefined })
       .then((page) => {
         if (!alive) return;
-        setEvents(Array.isArray(page.events) ? page.events : []);
-        setCursor(page.next_cursor ?? null);
+        const items = Array.isArray(page.items) ? page.items : [];
+        setEvents(items);
+        setCursor(page.next_cursor ?? 0);
+        setHasMore(items.length === PAGE);
       })
       .catch((e: unknown) => {
         if (alive) setError(e instanceof Error ? e.message : t("audit.loadError"));
@@ -60,13 +65,15 @@ export function AuditDrawer(props: { open: boolean; projectTick: number; onClose
   }, [open, onClose]);
 
   const loadMore = () => {
-    if (cursor === null || loading) return;
+    if (!hasMore || loading) return;
     setLoading(true);
     api
       .getAudit({ cursor, limit: PAGE, action: action || undefined, node: node || undefined })
       .then((page) => {
-        setEvents((prev) => [...prev, ...(Array.isArray(page.events) ? page.events : [])]);
-        setCursor(page.next_cursor ?? null);
+        const items = Array.isArray(page.items) ? page.items : [];
+        setEvents((prev) => [...prev, ...items]);
+        setCursor(page.next_cursor ?? cursor);
+        setHasMore(items.length === PAGE);
       })
       .catch(() => {
         /* keep what we have */
@@ -121,14 +128,14 @@ export function AuditDrawer(props: { open: boolean; projectTick: number; onClose
           {error && <div className="audit-msg is-error">{error}</div>}
           {!error && events.length === 0 && !loading && <div className="audit-msg">{t("audit.empty")}</div>}
           {events.map((ev, i) => (
-            <div key={`${ev.ts}-${i}`} className="audit-event">
-              <span className="audit-event__actor">{ev.actor}</span>
+            <div key={ev.cursor ?? `${ev.ts}-${i}`} className="audit-event">
+              <span className="audit-event__actor">{actorLabel(ev.actor)}</span>
               <span className="audit-event__action">{ev.action}</span>
               <span className="audit-event__target">{targetLabel(ev.target)}</span>
               <span className="audit-event__ts">{fmtAgo(ev.ts)}</span>
             </div>
           ))}
-          {cursor !== null && (
+          {hasMore && (
             <button type="button" className="dr-btn dr-btn--ghost audit-more" onClick={loadMore} disabled={loading}>
               {loading ? t("audit.loading") : t("audit.more")}
             </button>

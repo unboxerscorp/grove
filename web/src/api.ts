@@ -39,37 +39,62 @@ export interface NodeSummary {
   stale: number;
 }
 
+// Mirrors web_app.py _node_status_details: source is always "registry"; the
+// estimate signal lives in `confidence` ("explicit" | "inferred"), NOT source.
 export interface NodeDetail {
   name: string;
   status: string; // running | idle | error | blocked | dead
-  last_seen?: string | number | null;
+  last_seen?: number | null; // epoch seconds
   status_reason?: string;
-  source?: string; // heartbeat | inferred | ...
-  confidence?: number;
+  source?: string; // "registry"
+  confidence?: string; // "explicit" | "inferred"
 }
 
 export interface StatusSummary {
   project?: string;
   nodes?: NodeSummary;
-  detail?: NodeDetail[];
+  node_details?: NodeDetail[]; // present when ?detail=1
 }
 
-// An audit target is either a scalar (task id / node name) or a structured
-// reference. assign/delegate events carry the delegated-to node in `.node`.
-export type AuditTarget = string | { node?: string; task?: string; label?: string };
+// web_app.py _audit_event_payload returns `actor` and `target` as objects
+// (store.py _node_actor / target dicts). Both may also be a bare string in
+// other event sources, so the FE accepts the union and labels defensively.
+export type AuditActor = string | { kind?: string; id?: string; login?: string; role?: string };
+export type AuditTarget =
+  | string
+  | { type?: string; id?: string; node?: string; task?: string; label?: string };
 
 export interface AuditEvent {
-  actor: string;
+  cursor?: number;
+  id?: string;
+  actor: AuditActor;
   action: string;
   target: AuditTarget;
-  ts: string | number;
+  ts: string | number; // created_at (epoch seconds)
+  task_id?: string | null;
+  from_node?: string | null;
+  to_node?: string | null;
+}
+
+/** Display label for an audit actor ({kind,id,login} → login/id) or a string. */
+export function actorLabel(actor: AuditActor): string {
+  if (typeof actor === "string") return actor;
+  if (!actor) return "";
+  return actor.login ?? actor.id ?? actor.kind ?? "";
+}
+
+/** The node identity of an actor (delegation edge source); null if not a node. */
+export function actorId(actor: AuditActor): string | null {
+  if (typeof actor === "string") return actor;
+  if (!actor) return null;
+  return actor.id ?? actor.login ?? null;
 }
 
 /** Human-readable label for an audit target (drawer display). */
 export function targetLabel(target: AuditTarget): string {
   if (typeof target === "string") return target;
   if (!target) return "";
-  return target.label ?? target.task ?? target.node ?? "";
+  return target.label ?? target.task ?? target.id ?? target.node ?? "";
 }
 
 /** The node an event delegates/assigns to, if any (delegation edge endpoint). */
@@ -78,9 +103,12 @@ export function targetNode(target: AuditTarget): string | null {
   return target.node ?? null;
 }
 
+// web_app.py audit_endpoint returns `items` + a numeric `next_cursor` that is
+// always present (= last item's cursor). End-of-list is therefore detected by a
+// short page (items.length < limit), NOT by a null cursor.
 export interface AuditPage {
-  events: AuditEvent[];
-  next_cursor?: string | number | null;
+  items: AuditEvent[];
+  next_cursor?: number;
 }
 
 export interface Health {
@@ -106,29 +134,41 @@ export interface SlackStatus {
   last_error?: string | null;
 }
 
-// Every cost/usage number carries provenance so estimates are never shown as
-// hard facts. `value` is null when the backend can't determine it (e.g. agy
-// credit) — the FE renders that as "unknown" and never back-fills an estimate.
+// Mirrors web_app.py _cost_metric: every number carries provenance so estimates
+// are never shown as hard facts. `value` is null when the backend can't
+// determine it (e.g. agy credit_remaining) — rendered "unknown", never
+// back-filled. `source` ∈ registry|run_metadata|transcript|estimate|none|mixed,
+// `confidence` ∈ explicit|partial|unknown.
 export interface CostMetric {
   value: number | null;
-  source: string; // registry | transcript | estimate
-  confidence: string; // explicit | inferred
-  status?: string; // e.g. "unknown" (agy credit)
-  warning?: string; // surfaced prominently when present
+  source: string;
+  confidence: string;
+  status?: string; // "unknown"
 }
 
-export interface CostAgent {
-  agent: string; // codex | claude | agy
-  tokens: CostMetric;
-  cost: CostMetric;
-  credit?: CostMetric; // mainly agy; may be unknown
+// web_app.py _cost_by_agent item. Tokens live in `total_tokens`, money in
+// `cost_usd_estimate`. agy adds credit_remaining + credit_status + warnings.
+export interface CostAgentMetrics {
+  nodes?: CostMetric;
+  turns?: CostMetric;
+  input_tokens?: CostMetric;
+  output_tokens?: CostMetric;
+  total_tokens: CostMetric;
+  cost_usd_estimate: CostMetric;
+  confidence?: string;
+  credit_remaining?: CostMetric;
+  credit_status?: string;
+  warnings?: string[];
 }
 
 export interface CostSummary {
   project?: string;
-  currency?: string; // e.g. "USD"
-  agents: CostAgent[];
-  totals?: { tokens: CostMetric; cost: CostMetric };
+  totals?: {
+    total_tokens: CostMetric;
+    cost_usd_estimate: CostMetric;
+    [k: string]: unknown;
+  };
+  by_agent: Record<string, CostAgentMetrics>;
 }
 
 export interface Project {

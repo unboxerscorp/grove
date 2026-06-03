@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api, targetNode } from "../api";
+import { actorId, api, targetNode } from "../api";
 import type { AuditEvent } from "../api";
 import { AGENTS, agentGlyph, COLUMNS, cx, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
@@ -503,7 +503,7 @@ export function OrgChart(props: {
     api
       .getAudit({ limit: 50 })
       .then((page) => {
-        if (alive) setDelegEvents(Array.isArray(page.events) ? page.events : []);
+        if (alive) setDelegEvents(Array.isArray(page.items) ? page.items : []);
       })
       .catch(() => {
         if (alive) setDelegEvents([]);
@@ -710,9 +710,9 @@ export function OrgChart(props: {
     const m = new Map<string, { from: string; to: string; count: number; lastTs: string | number }>();
     for (const ev of delegEvents) {
       if (ev.action !== "assign" && ev.action !== "delegate") continue;
-      const from = ev.actor;
+      const from = actorId(ev.actor);
       const to = targetNode(ev.target);
-      if (!to || from === to || !byName[from] || !byName[to]) continue;
+      if (!from || !to || from === to || !byName[from] || !byName[to]) continue;
       const key = `${from}>${to}`;
       const prev = m.get(key);
       if (prev) {

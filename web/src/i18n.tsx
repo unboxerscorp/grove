@@ -249,10 +249,16 @@ const KO: Dict = {
   "cost.creditUnknown": "알 수 없음 (추정하지 않음)",
   "cost.legendEstimate": "= 추정/유추값 (실측 아님)",
   "cost.source.registry": "레지스트리",
-  "cost.source.transcript": "기록",
+  "cost.source.run_metadata": "실행 기록",
+  "cost.source.transcript": "트랜스크립트",
   "cost.source.estimate": "추정",
+  "cost.source.none": "없음",
+  "cost.source.mixed": "혼합",
+  "cost.source.server": "서버",
   "cost.conf.explicit": "확정",
+  "cost.conf.partial": "부분",
   "cost.conf.inferred": "유추",
+  "cost.conf.unknown": "알 수 없음",
 };
 
 const EN: Dict = {
@@ -494,10 +500,16 @@ const EN: Dict = {
   "cost.creditUnknown": "unknown (not estimated)",
   "cost.legendEstimate": "= estimated/inferred (not measured)",
   "cost.source.registry": "registry",
+  "cost.source.run_metadata": "run metadata",
   "cost.source.transcript": "transcript",
   "cost.source.estimate": "estimate",
+  "cost.source.none": "none",
+  "cost.source.mixed": "mixed",
+  "cost.source.server": "server",
   "cost.conf.explicit": "explicit",
+  "cost.conf.partial": "partial",
   "cost.conf.inferred": "inferred",
+  "cost.conf.unknown": "unknown",
 };
 
 const STRINGS: Record<Lang, Dict> = { ko: KO, en: EN };

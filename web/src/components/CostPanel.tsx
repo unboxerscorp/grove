@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
-import type { CostAgent, CostMetric, CostSummary } from "../api";
+import type { CostAgentMetrics, CostMetric, CostSummary } from "../api";
 import { agentGlyph, cx } from "../constants";
 import { useI18n } from "../i18n";
 import type { TFn } from "../i18n";
@@ -23,31 +23,35 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
-function fmtCost(n: number, cur: string): string {
-  return cur === "USD" ? `$${n.toFixed(2)}` : `${n.toFixed(2)} ${cur}`;
+function fmtCost(n: number): string {
+  return `$${n.toFixed(2)}`;
 }
 
-/** A value is estimated (must not read as a hard fact) when it comes from an
- *  estimate source or was inferred rather than explicitly reported. */
+/** Translate a provenance token, falling back to the raw value if unmapped so an
+ *  unexpected backend source/confidence never renders an i18n key. */
+function provLabel(t: TFn, kind: "source" | "conf", value: string): string {
+  const key = `cost.${kind}.${value}`;
+  const s = t(key);
+  return s === key ? value : s;
+}
+
+/** Estimated values must never read as hard facts: an estimate source or a
+ *  non-explicit confidence (partial/inferred) flags the number. */
 function isEstimated(m: CostMetric): boolean {
-  return m.source === "estimate" || m.confidence === "inferred";
+  return m.source === "estimate" || m.confidence === "partial" || m.confidence === "inferred";
 }
 
 function isUnknown(m: CostMetric): boolean {
-  return m.value === null || m.value === undefined || m.status === "unknown";
+  return m.value === null || m.value === undefined || m.status === "unknown" || m.confidence === "unknown";
 }
 
-function MetricView({ m, kind, currency, t }: { m: CostMetric; kind: "tokens" | "cost"; currency: string; t: TFn }) {
+function MetricView({ m, kind, t }: { m: CostMetric; kind: "tokens" | "cost"; t: TFn }) {
   const unknown = isUnknown(m);
   const est = isEstimated(m);
   return (
     <div className={cx("cost-metric", est && "is-est", unknown && "is-unknown")} data-est={est ? "1" : "0"}>
       <span className="cost-metric__value">
-        {unknown
-          ? t("cost.unknown")
-          : kind === "cost"
-            ? fmtCost(m.value as number, currency)
-            : fmtTokens(m.value as number)}
+        {unknown ? t("cost.unknown") : kind === "cost" ? fmtCost(m.value as number) : fmtTokens(m.value as number)}
       </span>
       {est && !unknown && (
         <span className="cost-metric__badge" title={t("cost.estimateHint")}>
@@ -55,47 +59,52 @@ function MetricView({ m, kind, currency, t }: { m: CostMetric; kind: "tokens" | 
         </span>
       )}
       <span className="cost-metric__prov">
-        {t(`cost.source.${m.source}`)} · {t(`cost.conf.${m.confidence}`)}
+        {provLabel(t, "source", m.source)} · {provLabel(t, "conf", m.confidence)}
       </span>
     </div>
   );
 }
 
-function CreditView({ credit, currency, t }: { credit: CostMetric; currency: string; t: TFn }) {
+function CreditView({ credit, warnings, t }: { credit?: CostMetric; warnings?: string[]; t: TFn }) {
   // Backend authority is final: if credit is unknown we say so and never
   // back-fill an estimated remaining balance.
-  const unknown = isUnknown(credit);
+  const unknown = !credit || isUnknown(credit);
   return (
     <div className={cx("cost-credit", unknown && "is-unknown")}>
       <span className="cost-credit__k">{t("cost.credit")}</span>
       {unknown ? (
         <span className="cost-credit__unknown">⚠ {t("cost.creditUnknown")}</span>
       ) : (
-        <MetricView m={credit} kind="cost" currency={currency} t={t} />
+        <MetricView m={credit} kind="cost" t={t} />
       )}
-      {credit.warning && <div className="cost-credit__warn">⚠ {credit.warning}</div>}
+      {(warnings ?? []).map((w, i) => (
+        <div key={i} className="cost-credit__warn">
+          ⚠ {w}
+        </div>
+      ))}
     </div>
   );
 }
 
-function AgentCard({ a, currency, t }: { a: CostAgent; currency: string; t: TFn }) {
+function AgentCard({ agent, item, t }: { agent: string; item: CostAgentMetrics; t: TFn }) {
+  const hasCredit = item.credit_remaining !== undefined || (item.warnings?.length ?? 0) > 0;
   return (
-    <div className="cost-card" data-agent={a.agent}>
+    <div className="cost-card" data-agent={agent}>
       <div className="cost-card__head">
-        <span className="cost-card__glyph">{agentGlyph(a.agent)}</span>
-        <span className="cost-card__name">{a.agent}</span>
+        <span className="cost-card__glyph">{agentGlyph(agent)}</span>
+        <span className="cost-card__name">{agent}</span>
       </div>
       <div className="cost-card__grid">
         <div className="cost-cell">
           <span className="cost-cell__k">{t("cost.tokens")}</span>
-          <MetricView m={a.tokens} kind="tokens" currency={currency} t={t} />
+          <MetricView m={item.total_tokens} kind="tokens" t={t} />
         </div>
         <div className="cost-cell">
           <span className="cost-cell__k">{t("cost.cost")}</span>
-          <MetricView m={a.cost} kind="cost" currency={currency} t={t} />
+          <MetricView m={item.cost_usd_estimate} kind="cost" t={t} />
         </div>
       </div>
-      {a.credit && <CreditView credit={a.credit} currency={currency} t={t} />}
+      {hasCredit && <CreditView credit={item.credit_remaining} warnings={item.warnings} t={t} />}
     </div>
   );
 }
@@ -132,8 +141,8 @@ export function CostPanel({ projectTick = 0 }: { projectTick?: number }) {
     load();
   }, [load, projectTick]);
 
-  const currency = data?.currency ?? "USD";
-  const agents = data?.agents ?? [];
+  const byAgent = data?.by_agent ?? {};
+  const agentKeys = Object.keys(byAgent);
 
   return (
     <section className="cost">
@@ -152,9 +161,9 @@ export function CostPanel({ projectTick = 0 }: { projectTick?: number }) {
 
         {errCode === "forbidden" && <div className="cost__msg is-warn">{t("cost.forbidden")}</div>}
         {errCode === "error" && <div className="cost__msg is-error">{t("cost.loadError")}</div>}
-        {!errCode && !loading && agents.length === 0 && <div className="cost__msg">{t("cost.empty")}</div>}
+        {!errCode && !loading && agentKeys.length === 0 && <div className="cost__msg">{t("cost.empty")}</div>}
 
-        {!errCode && agents.length > 0 && (
+        {!errCode && agentKeys.length > 0 && (
           <>
             {data?.totals && (
               <div className="cost-card cost-card--total" data-agent="__total">
@@ -164,19 +173,19 @@ export function CostPanel({ projectTick = 0 }: { projectTick?: number }) {
                 <div className="cost-card__grid">
                   <div className="cost-cell">
                     <span className="cost-cell__k">{t("cost.tokens")}</span>
-                    <MetricView m={data.totals.tokens} kind="tokens" currency={currency} t={t} />
+                    <MetricView m={data.totals.total_tokens} kind="tokens" t={t} />
                   </div>
                   <div className="cost-cell">
                     <span className="cost-cell__k">{t("cost.cost")}</span>
-                    <MetricView m={data.totals.cost} kind="cost" currency={currency} t={t} />
+                    <MetricView m={data.totals.cost_usd_estimate} kind="cost" t={t} />
                   </div>
                 </div>
               </div>
             )}
 
             <div className="cost-grid">
-              {agents.map((a) => (
-                <AgentCard key={a.agent} a={a} currency={currency} t={t} />
+              {agentKeys.map((key) => (
+                <AgentCard key={key} agent={key} item={byAgent[key]!} t={t} />
               ))}
             </div>
 
