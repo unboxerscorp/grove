@@ -5,7 +5,7 @@
 // header on upgrade, so every WS connect first POSTs /api/ws-ticket for a
 // short-lived single-use ticket and connects with ?ticket=.
 
-import type { Board, Comment, GroveNode, Run, Task, WsTicket } from "./types";
+import type { Board, Comment, GroveNode, Org, OrgNode, Run, Task, WsTicket } from "./types";
 
 export interface NewTask {
   title: string;
@@ -13,6 +13,20 @@ export interface NewTask {
   assignee?: string;
   status?: string;
   priority?: string;
+}
+
+export interface NewNode {
+  name: string;
+  agent: string;
+  role?: string;
+  parent?: string;
+  group?: string;
+  window?: number;
+}
+
+export interface NodePatch {
+  parent?: string | null;
+  group?: string | null;
 }
 
 const TOKEN = window.__GROVE_SESSION_TOKEN__ ?? "";
@@ -62,6 +76,48 @@ export const api = {
   getRuns: (id: string) => getJSON<Run[]>(`/api/tasks/${enc(id)}/runs`),
 
   listNodes: () => getJSON<GroveNode[]>("/api/nodes"),
+
+  getOrg: () => getJSON<Org>("/api/org"),
+
+  async createNode(payload: NewNode): Promise<OrgNode> {
+    const res = await fetch("/api/nodes", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j.detail) detail = j.detail;
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as OrgNode;
+  },
+
+  async patchNode(name: string, patch: NodePatch): Promise<OrgNode> {
+    const res = await fetch(`/api/nodes/${enc(name)}`, {
+      method: "PATCH",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j.detail) detail = j.detail;
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as OrgNode;
+  },
 
   async wsTicket(): Promise<WsTicket> {
     const res = await fetch("/api/ws-ticket", {

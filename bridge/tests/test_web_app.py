@@ -148,6 +148,353 @@ def test_nodes_parse_fake_registry_with_explicit_panes_only(tmp_path: Path) -> N
     ]
 
 
+def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "codex",
+                "role": "lead",
+                "group": "core",
+                "tmux_pane": "dev10:1.0",
+                "sessionId": "sess-lead",
+            },
+            "worker": {
+                "name": "worker",
+                "agent": "claude",
+                "role": "builder",
+                "parent": "lead",
+                "group": "core",
+                "tmux_pane": "dev10:1.1",
+                "status": "running",
+            },
+            "qa": {
+                "name": "qa",
+                "agent": "antigravity",
+                "role": "qa",
+                "parent": "lead",
+                "group": "verify",
+                "tmux_pane": "dev10:2.0",
+            },
+            "hidden": {
+                "name": "hidden",
+                "agent": "codex",
+                "role": "hidden",
+            },
+            "lead-pane": {
+                "name": "lead-pane",
+                "agent": "codex",
+                "tmux_pane": "dev10:0.0",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/org", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "session": "dev10",
+        "roots": ["lead"],
+        "groups": [
+            {"name": "core", "nodes": ["lead", "worker"]},
+            {"name": "verify", "nodes": ["qa"]},
+        ],
+        "nodes": [
+            {
+                "name": "lead",
+                "agent": "codex",
+                "role": "lead",
+                "parent": "",
+                "children": ["qa", "worker"],
+                "group": "core",
+                "tmux_pane": "dev10:1.0",
+                "session_id": "sess-lead",
+                "status": "idle",
+            },
+            {
+                "name": "qa",
+                "agent": "antigravity",
+                "role": "qa",
+                "parent": "lead",
+                "children": [],
+                "group": "verify",
+                "tmux_pane": "dev10:2.0",
+                "session_id": "",
+                "status": "idle",
+            },
+            {
+                "name": "worker",
+                "agent": "claude",
+                "role": "builder",
+                "parent": "lead",
+                "children": [],
+                "group": "core",
+                "tmux_pane": "dev10:1.1",
+                "session_id": "",
+                "status": "running",
+            },
+        ],
+    }
+
+
+def test_create_node_invokes_spawn_with_literal_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(
+            {
+                "args": args,
+                "capture_output": capture_output,
+                "text": text,
+                "timeout": timeout,
+                "check": check,
+            }
+        )
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps({"name": "worker-1", "agent": "codex"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post(
+        "/api/nodes",
+        headers=auth_headers(client),
+        json={
+            "name": "worker-1",
+            "agent": "codex",
+            "role": "builder",
+            "parent": "lead_1",
+            "group": "core",
+            "window": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"name": "worker-1", "agent": "codex"}
+    assert calls == [
+        {
+            "args": [
+                "grove",
+                "spawn",
+                "--name",
+                "worker-1",
+                "--agent",
+                "codex",
+                "--role",
+                "builder",
+                "--parent",
+                "lead_1",
+                "--group",
+                "core",
+                "--window",
+                "2",
+                "--session",
+                "dev10",
+                "--json",
+            ],
+            "capture_output": True,
+            "text": True,
+            "timeout": web_app.GROVE_SPAWN_TIMEOUT_SECONDS,
+            "check": False,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"name": "bad;name", "agent": "codex"},
+        {"name": "worker", "agent": "python"},
+    ],
+)
+def test_create_node_rejects_invalid_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, str],
+) -> None:
+    monkeypatch.setattr(
+        "grove_bridge.web_app.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("spawn should not run for invalid input"),
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post("/api/nodes", headers=auth_headers(client), json=payload)
+
+    assert response.status_code == 400
+
+
+def test_update_node_reparents_and_preserves_runtime_fields(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "codex",
+                "children": ["worker"],
+                "tmux_pane": "dev10:1.0",
+                "sessionId": "lead-session",
+            },
+            "worker": {
+                "name": "worker",
+                "agent": "claude",
+                "parent": "lead",
+                "children": [],
+                "group": "core",
+                "tmux_pane": "dev10:1.1",
+                "sessionId": "worker-session",
+                "transcript_path": "/tmp/transcript.log",
+            },
+            "qa": {
+                "name": "qa",
+                "agent": "antigravity",
+                "children": [],
+                "tmux_pane": "dev10:1.2",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.patch(
+        "/api/nodes/worker",
+        headers=auth_headers(client),
+        json={"parent": "qa", "group": "verify"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["roots"] == ["lead", "qa"]
+    registry = read_registry(tmp_path, "dev10")
+    nodes = cast(dict[str, dict[str, object]], registry["nodes"])
+    assert nodes["lead"]["children"] == []
+    assert nodes["qa"]["children"] == ["worker"]
+    assert nodes["worker"]["parent"] == "qa"
+    assert nodes["worker"]["group"] == "verify"
+    assert nodes["worker"]["tmux_pane"] == "dev10:1.1"
+    assert nodes["worker"]["sessionId"] == "worker-session"
+    assert nodes["worker"]["transcript_path"] == "/tmp/transcript.log"
+
+
+def test_update_node_can_clear_parent_and_group(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "codex",
+                "children": ["worker"],
+                "tmux_pane": "dev10:1.0",
+            },
+            "worker": {
+                "name": "worker",
+                "agent": "claude",
+                "parent": "lead",
+                "group": "core",
+                "tmux_pane": "dev10:1.1",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.patch(
+        "/api/nodes/worker",
+        headers=auth_headers(client),
+        json={"parent": None, "group": None},
+    )
+
+    assert response.status_code == 200
+    registry = read_registry(tmp_path, "dev10")
+    nodes = cast(dict[str, dict[str, object]], registry["nodes"])
+    assert nodes["lead"]["children"] == []
+    assert "parent" not in nodes["worker"]
+    assert "group" not in nodes["worker"]
+
+
+@pytest.mark.parametrize("parent", ["worker", "child"])
+def test_update_node_rejects_cycles(tmp_path: Path, parent: str) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "codex",
+                "children": ["worker"],
+                "tmux_pane": "dev10:1.0",
+            },
+            "worker": {
+                "name": "worker",
+                "agent": "claude",
+                "parent": "lead",
+                "children": ["child"],
+                "tmux_pane": "dev10:1.1",
+            },
+            "child": {
+                "name": "child",
+                "agent": "codex",
+                "parent": "worker",
+                "tmux_pane": "dev10:1.2",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.patch(
+        "/api/nodes/worker",
+        headers=auth_headers(client),
+        json={"parent": parent},
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/nodes/missing", {"parent": None}),
+        ("/api/nodes/worker", {"parent": "missing"}),
+    ],
+)
+def test_update_node_returns_404_for_missing_node_or_parent(
+    tmp_path: Path,
+    path: str,
+    payload: dict[str, str | None],
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "worker": {
+                "name": "worker",
+                "agent": "claude",
+                "tmux_pane": "dev10:1.1",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.patch(path, headers=auth_headers(client), json=payload)
+
+    assert response.status_code == 404
+
+
 def test_ws_ticket_is_single_use_and_expires(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -390,3 +737,9 @@ def write_registry(tmp_path: Path, session: str, nodes: dict[str, dict[str, obje
     path = tmp_path / ".grove" / session / "registry.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(registry), encoding="utf-8")
+
+
+def read_registry(tmp_path: Path, session: str) -> dict[str, object]:
+    path = tmp_path / ".grove" / session / "registry.json"
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    return cast(dict[str, object], loaded)

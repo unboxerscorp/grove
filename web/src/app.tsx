@@ -3,13 +3,14 @@ import { useEffect, useMemo, useState } from "react";
 import { api, AUTH_REQUIRED, wsUrl } from "./api";
 import { BoardView } from "./components/BoardView";
 import { NodeList } from "./components/NodeList";
+import { OrgChart } from "./components/OrgChart";
 import { TaskDrawer } from "./components/TaskDrawer";
 import { TerminalPane } from "./components/TerminalPane";
 import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
-type View = "board" | "terminal";
+type View = "board" | "team" | "terminal";
 
 function GroveMark() {
   return (
@@ -160,6 +161,7 @@ export function App() {
           <div className="dr-tabs" role="tablist">
             <button
               type="button"
+              data-view="board"
               className={cx("dr-tab", view === "board" && "is-active")}
               onClick={() => setView("board")}
             >
@@ -167,6 +169,15 @@ export function App() {
             </button>
             <button
               type="button"
+              data-view="team"
+              className={cx("dr-tab", view === "team" && "is-active")}
+              onClick={() => setView("team")}
+            >
+              {t("tab.team")}
+            </button>
+            <button
+              type="button"
+              data-view="terminal"
               className={cx("dr-tab", view === "terminal" && "is-active")}
               onClick={() => setView("terminal")}
             >
@@ -211,6 +222,8 @@ export function App() {
             <BoardView boardId={boardId} liveTick={liveTick} boardLive={boardLive} onOpenTask={setOpenTaskId} />
           ) : view === "board" ? (
             <div className="dr-stage__empty">{t("stage.noBoards")}</div>
+          ) : view === "team" ? (
+            <OrgChart boardId={boardId} liveTick={liveTick} onOpenTerminal={pickNode} />
           ) : (
             <TerminalPane node={selected} />
           )}

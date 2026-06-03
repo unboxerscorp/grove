@@ -29,7 +29,10 @@ DEFAULT_SESSION = "dev10"
 TICKET_TTL_SECONDS = 30
 POLL_INTERVAL_SECONDS = 1.0
 TMUX_TIMEOUT_SECONDS = 5.0
+GROVE_SPAWN_TIMEOUT_SECONDS = 30.0
 TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?P<pane>[0-9]+)$")
+NODE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+NODE_AGENTS = frozenset({"codex", "claude", "antigravity"})
 STATIC_SUFFIXES = {
     ".css",
     ".gif",
@@ -80,6 +83,20 @@ class TaskCreatePayload(BaseModel):
     assignee: str | None = Field(default=None, max_length=500)
     status: str = Field(default="ready", min_length=1, max_length=100)
     priority: int = 0
+
+
+class NodeCreatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    agent: str = Field(min_length=1, max_length=50)
+    role: str | None = Field(default=None, max_length=200)
+    parent: str | None = Field(default=None, max_length=100)
+    group: str | None = Field(default=None, max_length=100)
+    window: int | None = Field(default=None, ge=0)
+
+
+class NodeUpdatePayload(BaseModel):
+    parent: str | None = Field(default=None, max_length=100)
+    group: str | None = Field(default=None, max_length=100)
 
 
 class TicketStore:
@@ -200,6 +217,28 @@ def create_app(
     def nodes_endpoint(request: Request) -> list[dict[str, str]]:
         _require_token(request)
         return [_node_payload(node) for node in _registry_nodes(_config(request))]
+
+    @app.post("/api/nodes")
+    def create_node_endpoint(
+        request: Request,
+        payload: NodeCreatePayload,
+    ) -> dict[str, object]:
+        _require_token(request)
+        return _spawn_node(payload, config=_config(request))
+
+    @app.patch("/api/nodes/{name}")
+    def update_node_endpoint(
+        request: Request,
+        name: str,
+        payload: NodeUpdatePayload,
+    ) -> dict[str, object]:
+        _require_token(request)
+        return _update_node_relationships(name, payload, config=_config(request))
+
+    @app.get("/api/org")
+    def org_endpoint(request: Request) -> dict[str, object]:
+        _require_token(request)
+        return _org_payload(_config(request))
 
     @app.post("/api/ws-ticket")
     def ws_ticket_endpoint(request: Request) -> dict[str, object]:
@@ -352,6 +391,19 @@ def _load_registry(config: WebAppConfig) -> dict[str, object]:
 
 
 def _registry_nodes(config: WebAppConfig) -> list[dict[str, str]]:
+    return [
+        {
+            "name": node["name"],
+            "agent": node["agent"],
+            "tmux_pane": node["tmux_pane"],
+            "session_id": node["session_id"],
+            "status": node["status"],
+        }
+        for node in _registry_node_records(config)
+    ]
+
+
+def _registry_node_records(config: WebAppConfig) -> list[dict[str, str]]:
     raw_nodes = _load_registry(config).get("nodes")
     if not isinstance(raw_nodes, dict):
         return []
@@ -373,9 +425,55 @@ def _registry_nodes(config: WebAppConfig) -> list[dict[str, str]]:
                 or _mapping_string(node, "sessionId")
                 or "",
                 "status": _node_status(node),
+                "role": _mapping_string(node, "role") or "",
+                "parent": _mapping_string(node, "parent") or "",
+                "group": _mapping_string(node, "group") or "",
             }
         )
     return sorted(nodes, key=lambda node: node["name"])
+
+
+def _org_payload(config: WebAppConfig) -> dict[str, object]:
+    nodes = _registry_node_records(config)
+    names = {node["name"] for node in nodes}
+    children_by_parent: dict[str, list[str]] = {name: [] for name in names}
+    groups: dict[str, list[str]] = {}
+    for node in nodes:
+        parent = node["parent"]
+        if parent in names:
+            children_by_parent[parent].append(node["name"])
+        group = node["group"]
+        if group:
+            groups.setdefault(group, []).append(node["name"])
+
+    graph_nodes: list[dict[str, object]] = []
+    for node in nodes:
+        parent = node["parent"] if node["parent"] in names else ""
+        graph_nodes.append(
+            {
+                "name": node["name"],
+                "agent": node["agent"],
+                "role": node["role"],
+                "parent": parent,
+                "children": sorted(children_by_parent[node["name"]]),
+                "group": node["group"],
+                "tmux_pane": node["tmux_pane"],
+                "session_id": node["session_id"],
+                "status": node["status"],
+            }
+        )
+
+    return {
+        "session": config.registry_session,
+        "roots": sorted(
+            node["name"] for node in nodes if not node["parent"] or node["parent"] not in names
+        ),
+        "groups": [
+            {"name": group, "nodes": sorted(group_nodes)}
+            for group, group_nodes in sorted(groups.items())
+        ],
+        "nodes": graph_nodes,
+    }
 
 
 def _node_status(node: Mapping[str, object]) -> str:
@@ -419,6 +517,207 @@ def _tmux_capture(pane: str) -> bytes:
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.decode("utf-8", errors="replace").strip())
     return proc.stdout
+
+
+def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str, object]:
+    name = _validated_node_ref(payload.name, field_name="name")
+    agent = payload.agent.strip()
+    if agent not in NODE_AGENTS:
+        raise HTTPException(status_code=400, detail="agent must be codex, claude, or antigravity")
+    role = _optional_text(payload.role, field_name="role", max_length=200)
+    parent = _optional_node_ref(payload.parent, field_name="parent")
+    group = _optional_node_ref(payload.group, field_name="group")
+    args = ["grove", "spawn", "--name", name, "--agent", agent]
+    if role is not None:
+        args.extend(["--role", role])
+    if parent is not None:
+        args.extend(["--parent", parent])
+    if group is not None:
+        args.extend(["--group", group])
+    if payload.window is not None:
+        args.extend(["--window", str(payload.window)])
+    args.extend(["--session", config.registry_session, "--json"])
+    try:
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=GROVE_SPAWN_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail="grove CLI not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=400, detail="grove spawn timed out") from exc
+    if proc.returncode != 0:
+        detail = _summary_text(proc.stderr) or "grove spawn failed"
+        raise HTTPException(status_code=400, detail=detail)
+    try:
+        loaded: object = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="grove spawn returned invalid json") from exc
+    if not isinstance(loaded, dict):
+        raise HTTPException(status_code=400, detail="grove spawn returned invalid json")
+    return {str(key): value for key, value in loaded.items()}
+
+
+def _update_node_relationships(
+    name: str,
+    payload: NodeUpdatePayload,
+    *,
+    config: WebAppConfig,
+) -> dict[str, object]:
+    target_name = _validated_node_ref(name, field_name="name")
+    registry_path, registry, raw_nodes = _load_mutable_registry(config)
+    nodes_by_name = _nodes_by_name(raw_nodes)
+    target = nodes_by_name.get(target_name)
+    if target is None:
+        raise HTTPException(status_code=404, detail="node not found")
+
+    if "parent" in payload.model_fields_set:
+        new_parent = _optional_node_ref(payload.parent, field_name="parent")
+        if new_parent is not None and new_parent not in nodes_by_name:
+            raise HTTPException(status_code=404, detail="parent not found")
+        if new_parent is not None and (
+            new_parent == target_name or new_parent in _descendant_names(target_name, nodes_by_name)
+        ):
+            raise HTTPException(status_code=400, detail="parent would create a cycle")
+        _set_node_parent(target_name, target, new_parent, nodes_by_name)
+
+    if "group" in payload.model_fields_set:
+        new_group = _optional_node_ref(payload.group, field_name="group")
+        if new_group is None:
+            target.pop("group", None)
+        else:
+            target["group"] = new_group
+
+    _write_registry_atomic(registry_path, registry)
+    return _org_payload(config)
+
+
+def _load_mutable_registry(
+    config: WebAppConfig,
+) -> tuple[Path, dict[str, object], dict[str, object]]:
+    path = _registry_path(config)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="registry not found")
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise HTTPException(status_code=500, detail="invalid grove registry")
+    registry = cast(dict[str, object], loaded)
+    raw_nodes = registry.get("nodes")
+    if not isinstance(raw_nodes, dict):
+        raise HTTPException(status_code=500, detail="invalid grove registry")
+    return path, registry, cast(dict[str, object], raw_nodes)
+
+
+def _nodes_by_name(raw_nodes: Mapping[str, object]) -> dict[str, dict[str, object]]:
+    nodes: dict[str, dict[str, object]] = {}
+    for key, raw_node in raw_nodes.items():
+        if not isinstance(raw_node, dict):
+            continue
+        node = cast(dict[str, object], raw_node)
+        name = _mapping_string(node, "name") or key
+        nodes[name] = node
+    return nodes
+
+
+def _set_node_parent(
+    target_name: str,
+    target: dict[str, object],
+    new_parent: str | None,
+    nodes_by_name: Mapping[str, dict[str, object]],
+) -> None:
+    for node in nodes_by_name.values():
+        _set_node_children(node, [child for child in _node_children(node) if child != target_name])
+    if new_parent is None:
+        target.pop("parent", None)
+        return
+    target["parent"] = new_parent
+    parent_node = nodes_by_name[new_parent]
+    children = _node_children(parent_node)
+    if target_name not in children:
+        children.append(target_name)
+    _set_node_children(parent_node, children)
+
+
+def _descendant_names(
+    name: str,
+    nodes_by_name: Mapping[str, dict[str, object]],
+) -> set[str]:
+    descendants: set[str] = set()
+    pending = list(_direct_children(name, nodes_by_name))
+    while pending:
+        child = pending.pop()
+        if child in descendants:
+            continue
+        descendants.add(child)
+        pending.extend(_direct_children(child, nodes_by_name))
+    return descendants
+
+
+def _direct_children(
+    name: str,
+    nodes_by_name: Mapping[str, dict[str, object]],
+) -> set[str]:
+    children = set(_node_children(nodes_by_name.get(name, {})))
+    for node_name, node in nodes_by_name.items():
+        if _mapping_string(node, "parent") == name:
+            children.add(node_name)
+    return children
+
+
+def _node_children(node: Mapping[str, object]) -> list[str]:
+    raw_children = node.get("children")
+    if not isinstance(raw_children, list):
+        return []
+    return [child for child in raw_children if isinstance(child, str)]
+
+
+def _set_node_children(node: dict[str, object], children: list[str]) -> None:
+    unique_children = list(dict.fromkeys(children))
+    node["children"] = unique_children
+
+
+def _write_registry_atomic(path: Path, registry: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    temp_path.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp_path, path)
+
+
+def _validated_node_ref(value: str, *, field_name: str) -> str:
+    stripped = value.strip()
+    if NODE_NAME_RE.fullmatch(stripped) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must contain only letters, digits, hyphen, or underscore",
+        )
+    return stripped
+
+
+def _optional_node_ref(value: str | None, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    return _validated_node_ref(stripped, field_name=field_name)
+
+
+def _optional_text(value: str | None, *, field_name: str, max_length: int) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if len(stripped) > max_length:
+        raise HTTPException(status_code=400, detail=f"{field_name} is too long")
+    return stripped
+
+
+def _summary_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()[:500]
 
 
 def _string_mapping(value: Mapping[object, object]) -> Mapping[str, object]:

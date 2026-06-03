@@ -41,6 +41,20 @@ export interface GroveNode {
   status: string;
 }
 
+export interface OrgNode extends GroveNode {
+  role?: string;
+  parent?: string | null;
+  children?: string[];
+  group?: string;
+}
+
+export interface Org {
+  nodes: OrgNode[];
+  roots: string[];
+  groups?: Record<string, string[]> | string[];
+  children?: Record<string, string[]>;
+}
+
 export interface WsTicket {
   ticket: string;
   ttl_seconds: number;

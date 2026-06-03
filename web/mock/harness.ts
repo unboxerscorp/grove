@@ -42,13 +42,66 @@ const TASKS: Record<string, MockTask[]> = {
   ],
 };
 
-const NODES = [
-  { name: "root", agent: "claude", tmux_pane: "grove:0.0", session_id: "sess-root", status: "running" },
-  { name: "backend", agent: "codex", tmux_pane: "grove:0.1", session_id: "sess-be", status: "running" },
-  { name: "frontend", agent: "claude", tmux_pane: "grove:0.2", session_id: "sess-fe", status: "idle" },
-  { name: "researcher", agent: "claude", tmux_pane: "grove:0.3", session_id: "sess-re", status: "error" },
-  { name: "docs", agent: "codex", tmux_pane: "grove:1.0", session_id: "sess-docs", status: "done" },
+interface OrgNodeMock {
+  name: string;
+  agent: string;
+  role?: string;
+  parent?: string | null;
+  group?: string;
+  tmux_pane: string;
+  session_id: string;
+  status: string;
+}
+
+const ORG_NODES: OrgNodeMock[] = [
+  { name: "root", agent: "claude", role: "오케스트레이터", parent: null, group: "core", tmux_pane: "grove:0.0", session_id: "sess-root", status: "running" },
+  { name: "backend", agent: "codex", role: "백엔드", parent: "root", group: "build", tmux_pane: "grove:0.1", session_id: "sess-be", status: "running" },
+  { name: "frontend", agent: "claude", role: "프런트엔드", parent: "root", group: "build", tmux_pane: "grove:0.2", session_id: "sess-fe", status: "idle" },
+  { name: "researcher", agent: "claude", role: "리서치", parent: "root", group: "research", tmux_pane: "grove:0.3", session_id: "sess-re", status: "error" },
+  { name: "docs", agent: "codex", role: "문서", parent: "backend", group: "build", tmux_pane: "grove:1.0", session_id: "sess-docs", status: "done" },
 ];
+
+function basicNode(n: OrgNodeMock) {
+  return {
+    name: n.name,
+    agent: n.agent,
+    tmux_pane: n.tmux_pane,
+    session_id: n.session_id,
+    status: n.status,
+  };
+}
+
+function childMap(): Record<string, string[]> {
+  const c: Record<string, string[]> = {};
+  for (const n of ORG_NODES) if (n.parent) (c[n.parent] ??= []).push(n.name);
+  return c;
+}
+
+function isDescendant(ancestor: string, candidate: string): boolean {
+  const c = childMap();
+  const stack = [...(c[ancestor] ?? [])];
+  const seen = new Set<string>();
+  while (stack.length) {
+    const x = stack.pop()!;
+    if (x === candidate) return true;
+    if (seen.has(x)) continue;
+    seen.add(x);
+    for (const k of c[x] ?? []) stack.push(k);
+  }
+  return false;
+}
+
+function buildOrg() {
+  const children = childMap();
+  const groups: Record<string, string[]> = {};
+  for (const n of ORG_NODES) if (n.group) (groups[n.group] ??= []).push(n.name);
+  return {
+    nodes: ORG_NODES.map((n) => ({ ...n, children: children[n.name] ?? [] })),
+    roots: ORG_NODES.filter((n) => !n.parent).map((n) => n.name),
+    groups,
+    children,
+  };
+}
 
 function findTask(id: string): MockTask | undefined {
   for (const list of Object.values(TASKS)) {
@@ -114,6 +167,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       };
       (TASKS[board] ??= []).unshift(created);
       diag.createdTask = created.title;
+      diag.assignedAssignee = created.assignee ?? "";
       return Promise.resolve(json(created));
     }
     let list = TASKS[board] ?? [];
@@ -139,7 +193,70 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     );
   }
 
-  if (p === "/api/nodes") return Promise.resolve(json(NODES));
+  if (p === "/api/org") return Promise.resolve(json(buildOrg()));
+
+  if (p === "/api/nodes") {
+    if (method === "POST") {
+      const body = (init?.body ? JSON.parse(init.body as string) : {}) as Partial<OrgNodeMock>;
+      const name = String(body.name ?? "").trim();
+      const agent = String(body.agent ?? "");
+      if (!/^[A-Za-z0-9_.-]+$/.test(name) || !["codex", "claude", "antigravity"].includes(agent)) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: "invalid name or agent" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      const node: OrgNodeMock = {
+        name,
+        agent,
+        role: body.role ?? "",
+        parent: body.parent || null,
+        group: body.group ?? "",
+        tmux_pane: `grove:2.${ORG_NODES.length}`,
+        session_id: `sess-${name}`,
+        status: "running",
+      };
+      ORG_NODES.push(node);
+      diag.createdNode = name;
+      return Promise.resolve(json({ ...node, children: [] }));
+    }
+    return Promise.resolve(json(ORG_NODES.map(basicNode)));
+  }
+
+  m = p.match(/^\/api\/nodes\/([^/]+)$/);
+  if (m && method === "PATCH") {
+    const name = decodeURIComponent(m[1]!);
+    const node = ORG_NODES.find((n) => n.name === name);
+    if (!node) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ detail: "unknown node" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as { parent?: string | null; group?: string | null };
+    if ("parent" in body) {
+      const target = body.parent ?? null;
+      if (target && (target === name || isDescendant(name, target) || !ORG_NODES.some((n) => n.name === target))) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: "invalid parent (cycle or unknown)" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      node.parent = target;
+      diag.patchedParent = `${name}->${target ?? "null"}`;
+    }
+    if ("group" in body) {
+      node.group = body.group ?? "";
+      diag.patchedGroup = `${name}:${body.group ?? "null"}`;
+    }
+    return Promise.resolve(json({ ...node, children: childMap()[name] ?? [] }));
+  }
 
   if (p === "/api/ws-ticket") {
     diag.ticketMethod = method;

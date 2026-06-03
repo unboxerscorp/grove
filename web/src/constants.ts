@@ -29,10 +29,13 @@ export function statusColor(status: string): string {
 
 export function agentGlyph(agent: string): string {
   const a = (agent || "").toLowerCase();
+  if (a.includes("antigravity")) return "▲";
   if (a.includes("claude")) return "◇";
   if (a.includes("codex")) return "▸";
   return "•";
 }
+
+export const AGENTS = ["claude", "codex", "antigravity"] as const;
 
 export function initials(name: string): string {
   const parts = (name || "?").split(/[\s_./:-]+/).filter(Boolean);
