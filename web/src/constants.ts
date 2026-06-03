@@ -29,7 +29,7 @@ export function statusColor(status: string): string {
 
 export function agentGlyph(agent: string): string {
   const a = (agent || "").toLowerCase();
-  if (a.includes("antigravity")) return "▲";
+  if (a.includes("antigravity") || a === "agy") return "▲";
   if (a.includes("claude")) return "◇";
   if (a.includes("codex")) return "▸";
   return "•";

@@ -274,6 +274,48 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     );
   }
 
+  if (p === "/api/cost") {
+    diag.costFetched = true;
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    // codex = authoritative (registry/explicit); claude = inferred from
+    // transcript with an estimated cost; agy = inferred usage + UNKNOWN credit
+    // (backend can't determine remaining balance -> never estimate it).
+    return Promise.resolve(
+      json({
+        project: proj,
+        currency: "USD",
+        agents: [
+          {
+            agent: "codex",
+            tokens: { value: 1234567, source: "registry", confidence: "explicit" },
+            cost: { value: 12.34, source: "registry", confidence: "explicit" },
+          },
+          {
+            agent: "claude",
+            tokens: { value: 890123, source: "transcript", confidence: "inferred" },
+            cost: { value: 8.9, source: "estimate", confidence: "inferred" },
+          },
+          {
+            agent: "agy",
+            tokens: { value: 45000, source: "transcript", confidence: "inferred" },
+            cost: { value: 2.1, source: "estimate", confidence: "inferred" },
+            credit: {
+              value: null,
+              source: "registry",
+              confidence: "explicit",
+              status: "unknown",
+              warning: "크레딧 API 미연동 — 잔여 크레딧 확인 불가",
+            },
+          },
+        ],
+        totals: {
+          tokens: { value: 2169690, source: "transcript", confidence: "inferred" },
+          cost: { value: 23.34, source: "estimate", confidence: "inferred" },
+        },
+      }),
+    );
+  }
+
   if (p === "/api/boards") {
     const scoped = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"];
     if (scoped === SOLO_PROJECT) {

@@ -106,6 +106,31 @@ export interface SlackStatus {
   last_error?: string | null;
 }
 
+// Every cost/usage number carries provenance so estimates are never shown as
+// hard facts. `value` is null when the backend can't determine it (e.g. agy
+// credit) — the FE renders that as "unknown" and never back-fills an estimate.
+export interface CostMetric {
+  value: number | null;
+  source: string; // registry | transcript | estimate
+  confidence: string; // explicit | inferred
+  status?: string; // e.g. "unknown" (agy credit)
+  warning?: string; // surfaced prominently when present
+}
+
+export interface CostAgent {
+  agent: string; // codex | claude | agy
+  tokens: CostMetric;
+  cost: CostMetric;
+  credit?: CostMetric; // mainly agy; may be unknown
+}
+
+export interface CostSummary {
+  project?: string;
+  currency?: string; // e.g. "USD"
+  agents: CostAgent[];
+  totals?: { tokens: CostMetric; cost: CostMetric };
+}
+
 export interface Project {
   name: string; // = session
   workspace: string;
@@ -246,6 +271,10 @@ export const api = {
 
   // Dev-tool auth status.
   getAuthStatus: () => getJSON<AuthTool[]>("/api/auth-status"),
+
+  // Cost/credit usage (project-scoped; 403 for team viewers). Per-agent token +
+  // cost metrics carry source/confidence; agy credit may be unknown.
+  getCost: () => getJSON<CostSummary>("/api/cost"),
 
   // Projects (= sessions).
   listProjects: () => getJSON<Project[]>("/api/projects"),

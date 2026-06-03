@@ -3042,3 +3042,231 @@ button {
     display: none;
   }
 }
+
+/* ── cost / credit panel (V4-W3) ─────────────────────────────────────────── */
+.cost {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+}
+
+.cost__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 4px 2px 24px;
+}
+
+.cost__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cost__title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cost__mark {
+  color: var(--teal);
+}
+
+.cost__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.cost__note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.cost__msg {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--faint);
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel);
+}
+
+.cost__msg.is-error {
+  color: var(--coral);
+  border-color: rgba(229, 115, 99, 0.4);
+}
+
+.cost__msg.is-warn {
+  color: var(--amber);
+  border-color: rgba(240, 184, 96, 0.4);
+  background: rgba(240, 184, 96, 0.06);
+}
+
+.cost-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.cost-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  animation: dr-rise 0.3s ease both;
+}
+
+.cost-card--total {
+  border-color: rgba(84, 199, 184, 0.35);
+  background: linear-gradient(180deg, rgba(84, 199, 184, 0.06), transparent);
+}
+
+.cost-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cost-card__glyph {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--teal);
+}
+
+.cost-card__name {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.cost-card__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.cost-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cost-cell__k {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.cost-metric {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.cost-metric__value {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cost-metric.is-est .cost-metric__value {
+  color: var(--amber); /* estimated values never read as hard facts */
+}
+
+.cost-metric.is-unknown .cost-metric__value {
+  color: var(--faint);
+  font-style: italic;
+  font-size: 13px;
+}
+
+.cost-metric__badge {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--amber);
+  border: 1px dashed rgba(240, 184, 96, 0.55);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.cost-metric__prov {
+  flex-basis: 100%;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--faint);
+}
+
+.cost-credit {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 11px;
+  border-top: 1px dashed var(--line);
+}
+
+.cost-credit__k {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.cost-credit.is-unknown {
+  border-radius: 9px;
+  border: 1px solid rgba(240, 184, 96, 0.45);
+  background: rgba(240, 184, 96, 0.07);
+}
+
+.cost-credit__unknown {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--amber);
+}
+
+.cost-credit__warn {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--amber);
+}
+
+.cost-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 9px 12px;
+  font-size: 11.5px;
+  color: var(--dim);
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(15, 18, 25, 0.5);
+}
+
+.cost-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}

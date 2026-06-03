@@ -578,6 +578,40 @@ async function main() {
       cfHref.startsWith("http") &&
       authFetches >= 2;
 
+    // V4-W3 cost/credit panel: 3 agent cards; estimate/inferred values flagged
+    // (codex registry=exact, no badge; claude/agy inferred=badge); agy credit
+    // reported UNKNOWN with a warning (never an estimated remaining balance);
+    // no backend path/status leaks into the UI.
+    await page.click('.dr-tab[data-view="cost"]');
+    await page.waitForSelector('.cost-card[data-agent="codex"]', { timeout: 8000 });
+    const cost = await page.evaluate(() => ({
+      cards: document.querySelectorAll(".cost-grid .cost-card").length,
+      estBadges: document.querySelectorAll(".cost-card .cost-metric__badge").length,
+      codexEst: document.querySelectorAll('[data-agent="codex"] .cost-metric.is-est').length,
+      codexTokens: (
+        document.querySelector('[data-agent="codex"] .cost-cell .cost-metric__value')?.textContent ?? ""
+      ).trim(),
+      claudeEst: document.querySelectorAll('[data-agent="claude"] .cost-metric.is-est').length,
+      agyUnknown: !!document.querySelector('[data-agent="agy"] .cost-credit.is-unknown'),
+      agyUnknownText: (
+        document.querySelector('[data-agent="agy"] .cost-credit__unknown')?.textContent ?? ""
+      ).trim(),
+      agyWarn: !!document.querySelector('[data-agent="agy"] .cost-credit__warn'),
+      fetched: window.__MOCK__?.costFetched === true,
+      leak: /\/api\/cost|HTTP \d/.test(document.querySelector(".cost")?.textContent ?? ""),
+    }));
+    const costOk =
+      cost.cards === 3 &&
+      cost.estBadges >= 1 &&
+      cost.codexEst === 0 &&
+      cost.codexTokens === "1.23M" &&
+      cost.claudeEst >= 1 &&
+      cost.agyUnknown &&
+      cost.agyUnknownText.length > 0 &&
+      cost.agyWarn &&
+      cost.fetched &&
+      !cost.leak;
+
     // #N1 project switch re-scope + no residue (여정1/5): switching to an
     // isolated project swaps org/board/nodes wholesale — none of the default
     // project's nodes/cards may bleed through — and switching back restores it.
@@ -807,6 +841,7 @@ async function main() {
       teamOk &&
       slackOk &&
       authOk &&
+      costOk &&
       projectOk &&
       wsBindOk &&
       wsKindOk &&
@@ -878,6 +913,8 @@ async function main() {
       detail,
       auditOk,
       audit: { ...audit1, after: auditAfterMore, filter: auditFilter },
+      costOk,
+      cost,
       delegationEdgesOk,
       deleg: { offBefore: delegOffBefore, ...delegOn, offAfter: delegOffAfter },
       terminalTicketKind: diag.terminalTicketKind,

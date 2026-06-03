@@ -6,6 +6,7 @@ import { BoardView } from "./components/BoardView";
 import { NodeList } from "./components/NodeList";
 import { AuditDrawer } from "./components/AuditDrawer";
 import { AuthPanel } from "./components/AuthPanel";
+import { CostPanel } from "./components/CostPanel";
 import { HealthDot } from "./components/HealthDot";
 import { NodeStatusBar } from "./components/NodeStatusBar";
 import { OrgChart } from "./components/OrgChart";
@@ -17,7 +18,7 @@ import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
-type View = "board" | "team" | "terminal" | "integrations" | "auth";
+type View = "board" | "team" | "terminal" | "integrations" | "cost" | "auth";
 
 function GroveMark() {
   return (
@@ -273,6 +274,14 @@ export function App() {
             </button>
             <button
               type="button"
+              data-view="cost"
+              className={cx("dr-tab", view === "cost" && "is-active")}
+              onClick={() => setView("cost")}
+            >
+              {t("tab.cost")}
+            </button>
+            <button
+              type="button"
               data-view="auth"
               className={cx("dr-tab", view === "auth" && "is-active")}
               onClick={() => setView("auth")}
@@ -328,6 +337,8 @@ export function App() {
             <OrgChart boardId={boardId} liveTick={liveTick} projectTick={projectTick} onOpenTerminal={pickNode} />
           ) : view === "integrations" ? (
             <SlackPanel projectTick={projectTick} />
+          ) : view === "cost" ? (
+            <CostPanel projectTick={projectTick} />
           ) : view === "auth" ? (
             <AuthPanel />
           ) : (
