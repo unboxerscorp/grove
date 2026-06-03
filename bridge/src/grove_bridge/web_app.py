@@ -5,13 +5,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import importlib.metadata
 import json
+import logging
 import os
 import re
 import secrets
 import subprocess
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Annotated, cast
@@ -21,7 +23,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, sta
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 
-from grove_bridge.auth_status import collect_auth_status
+from grove_bridge.auth_status import collect_auth_status, redact_secret_text
 from grove_bridge.config import default_board_db_path
 from grove_bridge.slack import SlackConfig, SlackConfigStore, config_status, slack_manifest
 from grove_bridge.store import Board, BoardEvent, Comment, Run, SlackThread, SQLiteBoardStore, Task
@@ -29,6 +31,11 @@ from grove_bridge.store import Board, BoardEvent, Comment, Run, SlackThread, SQL
 SESSION_HEADER = "X-Grove-Session-Token"
 PROJECT_HEADER = "X-Grove-Project"
 DEFAULT_SESSION = "dev10"
+LOGGER = logging.getLogger(__name__)
+try:
+    APP_VERSION = importlib.metadata.version("grove-bridge")
+except importlib.metadata.PackageNotFoundError:
+    APP_VERSION = "0.0.0"
 TICKET_TTL_SECONDS = 30
 POLL_INTERVAL_SECONDS = 1.0
 TMUX_TIMEOUT_SECONDS = 5.0
@@ -65,7 +72,7 @@ class WebAppConfig:
     grove_home: Path = field(default_factory=lambda: Path("~/.grove").expanduser())
     registry_session: str = DEFAULT_SESSION
     board_db_path: Path = field(default_factory=default_board_db_path)
-    token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
+    token: str = ""
     auth_required: bool = True
     host: str = "127.0.0.1"
     port: int = 8765
@@ -78,8 +85,10 @@ class WebAppConfig:
         object.__setattr__(self, "board_db_path", self.board_db_path.expanduser())
         session = self.registry_session.strip() or DEFAULT_SESSION
         object.__setattr__(self, "registry_session", session)
-        if not self.token:
-            raise ValueError("session token is required")
+        token = self.token.strip()
+        if not token:
+            token = _load_or_create_dashboard_token(self.grove_home, session)
+        object.__setattr__(self, "token", token)
         if self.port <= 0:
             raise ValueError("port must be positive")
         object.__setattr__(
@@ -201,16 +210,40 @@ def create_app(
     app.state.config = app_config
     app.state.store = board_store
     app.state.ticket_store = TicketStore()
+    app.state.started_at = int(time.time())
+
+    @app.middleware("http")
+    async def request_log_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        started = time.monotonic()
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            _log_web_request(
+                request=request,
+                status_code=500,
+                started=started,
+                error=exc,
+            )
+            raise
+        _log_web_request(request=request, status_code=response.status_code, started=started)
+        return response
 
     @app.get("/api/health")
     def health_endpoint() -> dict[str, object]:
-        return {"ok": True}
+        return _health_payload(app)
 
     @app.get("/api/status")
     def status_endpoint(request: Request) -> dict[str, object]:
         _require_token(request)
         project = resolve_project(request)
-        return {"ok": True, "project": project.name}
+        return {
+            "ok": True,
+            "project": project.name,
+            "nodes": _node_liveness_summary(project.config),
+        }
 
     @app.get("/api/auth-status")
     def auth_status_endpoint(request: Request) -> list[dict[str, object]]:
@@ -526,6 +559,120 @@ def create_app(
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def _load_or_create_dashboard_token(grove_home: Path, session: str) -> str:
+    path = _dashboard_token_path(grove_home, session)
+    token = secrets.token_urlsafe(32)
+    try:
+        _create_secret_file_exclusive(path, token + "\n")
+    except FileExistsError:
+        return _read_dashboard_token(path)
+    return _read_dashboard_token(path)
+
+
+def _dashboard_token_path(grove_home: Path, session: str) -> Path:
+    return grove_home / session / "dashboard-token"
+
+
+def _read_dashboard_token(path: Path) -> str:
+    token = path.read_text(encoding="utf-8").strip()
+    if not token:
+        raise ValueError("dashboard token file is empty")
+    path.chmod(0o600)
+    return token
+
+
+def _create_secret_file_exclusive(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(value)
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        raise
+
+
+def _health_payload(app: FastAPI) -> dict[str, object]:
+    started_at = cast(int, app.state.started_at)
+    board_ok = _board_store_ok(cast(SQLiteBoardStore, app.state.store))
+    return {
+        "ok": board_ok,
+        "version": APP_VERSION,
+        "board_ok": board_ok,
+        "started_at": started_at,
+        "uptime": max(0, int(time.time()) - started_at),
+    }
+
+
+def _board_store_ok(store: SQLiteBoardStore) -> bool:
+    try:
+        store.list_boards()
+    except Exception:
+        return False
+    return True
+
+
+def _node_liveness_summary(config: WebAppConfig) -> dict[str, int]:
+    nodes = _registry_node_records(config)
+    counts = {"total": len(nodes), "running": 0, "stale": 0, "idle": 0, "error": 0}
+    for node in nodes:
+        status_value = node["status"]
+        if status_value == "running":
+            counts["running"] += 1
+        elif status_value == "stale":
+            counts["stale"] += 1
+        elif status_value == "error":
+            counts["error"] += 1
+        else:
+            counts["idle"] += 1
+    return counts
+
+
+def _log_web_request(
+    *,
+    request: Request,
+    status_code: int,
+    started: float,
+    error: Exception | None = None,
+) -> None:
+    duration_ms = int((time.monotonic() - started) * 1000)
+    path = _safe_log_path(request)
+    if error is None:
+        LOGGER.info(
+            "event=web_request method=%s path=%s status=%s duration_ms=%s",
+            request.method,
+            path,
+            status_code,
+            duration_ms,
+        )
+        return
+    LOGGER.error(
+        "event=web_request_error method=%s path=%s status=%s duration_ms=%s error=%s",
+        request.method,
+        path,
+        status_code,
+        duration_ms,
+        _safe_log_text(f"{error.__class__.__name__}: {error}"),
+    )
+
+
+def _safe_log_text(value: object) -> str:
+    raw = str(value).replace("\r", "\n")
+    without_paths = ABSOLUTE_PATH_RE.sub("[path]", raw)
+    without_secrets = redact_secret_text(without_paths)
+    return _summary_text(without_secrets)
+
+
+def _safe_log_path(request: Request) -> str:
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None)
+    if isinstance(route_path, str):
+        return _summary_text(redact_secret_text(route_path))
+    return _safe_log_text(request.url.path)
 
 
 def _require_token(request: Request) -> None:

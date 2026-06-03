@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -65,6 +67,26 @@ def test_index_bootstraps_token_on_non_loopback_with_unsafe_bind(tmp_path: Path)
     assert 'window.__GROVE_SESSION_TOKEN__ = "test-token"' in index.text
 
 
+def test_health_is_public_and_does_not_expose_project_session_or_token(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/health")
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert payload["board_ok"] is True
+    assert isinstance(payload["version"], str)
+    assert isinstance(payload["started_at"], int)
+    assert isinstance(payload["uptime"], int)
+    assert "uptime_seconds" not in payload
+    rendered = json.dumps(payload)
+    assert "test-token" not in rendered
+    assert "dev10" not in rendered
+    assert "project" not in payload
+    assert "session" not in payload
+
+
 def test_rest_reads_and_writes_board_store(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     first = store.create_task(
@@ -110,6 +132,48 @@ def test_rest_reads_and_writes_board_store(tmp_path: Path) -> None:
     assert len(client.get(f"/api/tasks/{first.id}/comments", headers=headers).json()) == 2
 
 
+def test_status_includes_token_gated_node_liveness_summary(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "runner": {
+                "name": "runner",
+                "agent": "codex",
+                "tmux_pane": "dev10:1.0",
+                "status": "running",
+            },
+            "stale": {
+                "name": "stale",
+                "agent": "claude",
+                "tmux_pane": "dev10:1.1",
+                "status": "stale",
+            },
+            "idle": {"name": "idle", "agent": "codex", "tmux_pane": "dev10:1.2"},
+            "broken": {
+                "name": "broken",
+                "agent": "codex",
+                "tmux_pane": "dev10:1.3",
+                "error": "crashed",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    missing = client.get("/api/status")
+    response = client.get("/api/status", headers=auth_headers(client))
+
+    assert missing.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["nodes"] == {
+        "total": 4,
+        "running": 1,
+        "stale": 1,
+        "idle": 1,
+        "error": 1,
+    }
+
+
 def test_project_header_scopes_status_org_nodes_boards_and_tasks(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     dev10_task = store.create_task(
@@ -151,6 +215,73 @@ def test_project_header_scopes_status_org_nodes_boards_and_tasks(tmp_path: Path)
     assert boards.json() == [{"id": "dev11", "name": "dev11", "task_count": 1}]
     assert [task["id"] for task in tasks.json()] == [dev11_task.id]
     assert dev10_task.id not in str(tasks.json())
+
+
+def test_dashboard_token_persists_across_web_app_config_restarts(tmp_path: Path) -> None:
+    grove_home = tmp_path / ".grove"
+    first = WebAppConfig(grove_home=grove_home, registry_session="dev10")
+    second = WebAppConfig(grove_home=grove_home, registry_session="dev10")
+    token_path = grove_home / "dev10" / "dashboard-token"
+
+    assert first.token == second.token
+    assert token_path.read_text(encoding="utf-8").strip() == first.token
+    assert token_path.stat().st_mode & 0o077 == 0
+
+
+def test_dashboard_token_race_loser_rereads_existing_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    grove_home = tmp_path / ".grove"
+    token_path = grove_home / "dev10" / "dashboard-token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("winner-token\n", encoding="utf-8")
+    token_path.chmod(0o600)
+
+    def losing_open(
+        path: str | os.PathLike[str],
+        *args: object,
+    ) -> int:
+        assert Path(path) == token_path
+        raise FileExistsError(str(path))
+
+    monkeypatch.setattr("grove_bridge.web_app.os.open", losing_open)
+
+    config = WebAppConfig(grove_home=grove_home, registry_session="dev10")
+
+    assert config.token == "winner-token"
+    assert token_path.read_text(encoding="utf-8").strip() == "winner-token"
+
+
+def test_web_request_logging_redacts_secrets_and_absolute_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "xoxb-" + ("a" * 44)
+
+    def fail_index(config: WebAppConfig) -> object:
+        _ = config
+        raise RuntimeError(f"failed at /Users/chopin/dev/grove with {secret}")
+
+    monkeypatch.setattr(web_app, "_index_response", fail_index)
+    caplog.set_level(logging.INFO, logger="grove_bridge.web_app")
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        raise_server_exceptions=False,
+    )
+
+    response = client.get("/")
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+
+    assert response.status_code == 500
+    assert "event=web_request_error" in logs
+    assert "[path]" in logs
+    assert "[redacted]" in logs
+    assert "/Users/chopin" not in logs
+    assert secret not in logs
+    assert web_app._safe_log_text(f"/etc/grove/token {secret}") == "[path] [redacted]"
 
 
 @pytest.mark.parametrize("project", ["../dev10", "dev.10", "dev10/other", "dev10 other"])
@@ -1531,6 +1662,7 @@ def make_client(
     host: str = "127.0.0.1",
     unsafe_bind_token_bootstrap: bool = False,
     allowed_hosts: tuple[str, ...] = (),
+    raise_server_exceptions: bool = True,
 ) -> TestClient:
     dist = tmp_path / "dist"
     dist.mkdir()
@@ -1550,7 +1682,11 @@ def make_client(
         unsafe_bind_token_bootstrap=unsafe_bind_token_bootstrap,
         allowed_hosts=allowed_hosts,
     )
-    return TestClient(create_app(config=config, store=store), base_url=f"http://{host}:8765")
+    return TestClient(
+        create_app(config=config, store=store),
+        base_url=f"http://{host}:8765",
+        raise_server_exceptions=raise_server_exceptions,
+    )
 
 
 def auth_headers(client: TestClient) -> dict[str, str]:
