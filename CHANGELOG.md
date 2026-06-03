@@ -4,6 +4,28 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.10.0] — v1.9 (2026-06-04)
+
+Portable, easy-to-start team room. Auto-started after v1.8.0.
+
+### Portability
+
+- **Project export/import** — `grove export-project` writes a portable bundle
+  (bundle.json + grove.project.json + scaffold.yaml) with machine-local fields stripped
+  (session_id / transcript / absolute paths / secrets excluded); `grove import-project`
+  recreates the project with workspace-path containment (rejects traversal / absolute).
+  Round-trip preserves the org chart / nodes / workspace (machine-local stays fresh).
+
+### Onboarding
+
+- **Onboarding wizard v2** — a skippable, remembered first-run flow (create / load /
+  import a project, add first nodes, auth status) that reuses the existing project APIs.
+
+### Deferred (→ v1.10)
+
+- Self-retro lane; guarded autonomous pickup, routing planner, Slack command surface
+  (see docs/V1_10_BRAINSTORM.md).
+
 ## [0.9.0] — v1.8 (2026-06-04)
 
 Complete the team room — presence + a notification layer. Auto-started after v1.7.0.
