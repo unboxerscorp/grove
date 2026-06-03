@@ -11,6 +11,7 @@ import { cmdLoadProject } from "./commands/load-project.js";
 import { cmdNewProject } from "./commands/new-project.js";
 import { cmdOrg } from "./commands/org.js";
 import { cmdRebind } from "./commands/rebind.js";
+import { cmdRepair } from "./commands/repair.js";
 import { cmdSend } from "./commands/send.js";
 import { cmdServe } from "./commands/serve.js";
 import { cmdSession } from "./commands/session.js";
@@ -206,6 +207,16 @@ program
   .option("--session <session>", "target grove registry session")
   .option("--dry-run", "show planned registry changes without writing")
   .action(run((opts: Record<string, unknown>) => cmdRebind(withConfig(opts))));
+
+program
+  .command("repair")
+  .description("detect and repair stale grove node pane/transcript bindings")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .option("--session <session>", "target grove registry session")
+  .option("--node <node>", "repair one registry node")
+  .option("--all", "repair every registry node (default)")
+  .option("--json", "print the repair result as JSON")
+  .action(run((opts: Record<string, unknown>) => cmdRepair(withConfig(opts))));
 
 program
   .command("serve [nodes...]")
