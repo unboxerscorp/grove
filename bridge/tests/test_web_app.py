@@ -161,6 +161,59 @@ def test_team_auth_login_session_me_csrf_and_secret_storage(tmp_path: Path) -> N
     assert session_secret_path(tmp_path / ".grove", "dev10").stat().st_mode & 0o777 == 0o600
 
 
+def test_presence_reports_team_member_and_touches_activity(tmp_path: Path) -> None:
+    secret = "team-presence-secret"
+    member = write_team_member(tmp_path, secret=secret, role="operator")
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        auth_mode=AuthMode.TEAM_COOKIE,
+    )
+    login = client.post("/api/login", json={"name": "alice", "secret": secret})
+
+    response = client.get("/api/presence")
+
+    assert login.status_code == 200
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["auth_mode"] == "team-cookie"
+    assert payload["viewers"] == [{"name": "alice", "role": "operator"}]
+    rendered = json.dumps(payload)
+    assert member.id not in rendered
+    assert "sid" not in rendered
+    records = cast(TeamSessionStore, fastapi_app(client).state.team_session_store).active_sessions(
+        within_seconds=300
+    )
+    assert records[0].member_id == member.id
+    assert records[0].last_activity_at >= records[0].issued_at
+
+
+def test_presence_reports_anonymous_for_local_token_and_respects_project_scope(
+    tmp_path: Path,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"lead": {"name": "lead", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    headers = auth_headers(client) | {"X-Grove-Project": "dev11"}
+
+    missing = client.get("/api/presence")
+    response = client.get("/api/presence", headers=headers)
+    unknown = client.get(
+        "/api/presence",
+        headers=auth_headers(client) | {"X-Grove-Project": "missing"},
+    )
+
+    assert missing.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["project"] == "dev11"
+    assert response.json()["viewers"] == [{"kind": "anonymous", "count": 1}]
+    assert response.json()["anonymous_count"] == 1
+    assert unknown.status_code == 404
+
+
 def test_team_auth_rejects_signed_cookie_missing_from_session_store(tmp_path: Path) -> None:
     secret = "correct horse battery staple"
     write_team_member(tmp_path, secret=secret)

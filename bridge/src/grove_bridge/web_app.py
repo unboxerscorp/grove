@@ -73,6 +73,7 @@ GROVE_SPAWN_TIMEOUT_SECONDS = 30.0
 GROVE_PROJECT_TIMEOUT_SECONDS = 30.0
 TRANSCRIPT_MAX_BYTES = 2_000_000
 MAX_TIMESTAMP_SECONDS = 4_102_444_800
+PRESENCE_ACTIVE_SECONDS = 5 * 60
 TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?P<pane>[0-9]+)$")
 NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 PROJECT_NAME_RE = NODE_NAME_RE
@@ -381,6 +382,12 @@ def create_app(
         if detail:
             payload["node_details"] = _node_status_details(project.config)
         return payload
+
+    @app.get("/api/presence")
+    def presence_endpoint(request: Request) -> dict[str, object]:
+        auth = _require_auth(request)
+        project = resolve_project(request)
+        return _presence_payload(request, project=project, auth=auth)
 
     @app.get("/api/audit")
     def audit_endpoint(
@@ -1035,6 +1042,41 @@ def _valid_timestamp(value: object) -> int | None:
             if 0 <= parsed <= MAX_TIMESTAMP_SECONDS:
                 return parsed
     return None
+
+
+def _presence_payload(
+    request: Request,
+    *,
+    project: ProjectContext,
+    auth: AuthContext,
+) -> dict[str, object]:
+    config = _config(request)
+    if auth.mode == AuthMode.LOCAL_TOKEN:
+        return {
+            "project": project.name,
+            "auth_mode": config.auth_mode.value,
+            "active_window_seconds": PRESENCE_ACTIVE_SECONDS,
+            "viewers": [{"kind": "anonymous", "count": 1}],
+            "anonymous_count": 1,
+        }
+    registry = _member_registry(config)
+    viewers: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for record in _team_session_store(request).active_sessions(
+        within_seconds=PRESENCE_ACTIVE_SECONDS
+    ):
+        member = registry.find_by_id(record.member_id)
+        if member is None or not member.enabled or member.id in seen:
+            continue
+        seen.add(member.id)
+        viewers.append({"name": member.name, "role": member.role})
+    return {
+        "project": project.name,
+        "auth_mode": config.auth_mode.value,
+        "active_window_seconds": PRESENCE_ACTIVE_SECONDS,
+        "viewers": viewers,
+        "anonymous_count": 0,
+    }
 
 
 def _inbox_payload(

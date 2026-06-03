@@ -11,7 +11,7 @@ import secrets
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -60,6 +60,7 @@ class TeamSessionRecord:
     member_id: str
     issued_at: int
     expires_at: int
+    last_activity_at: int
 
 
 class MemberRegistry:
@@ -191,6 +192,7 @@ class TeamSessionStore:
             member_id=issued.member.id,
             issued_at=issued.issued_at,
             expires_at=issued.expires_at,
+            last_activity_at=issued.issued_at,
         )
         with self._lock:
             self._cleanup_expired_locked(int(time.time()))
@@ -213,7 +215,26 @@ class TeamSessionStore:
             record = self._sessions.get(sid)
             if record is None:
                 return False
-            return record.member_id == member_id and record.expires_at > current_time
+            if record.member_id != member_id or record.expires_at <= current_time:
+                return False
+            self._sessions[sid] = replace(record, last_activity_at=current_time)
+            return True
+
+    def active_sessions(
+        self,
+        *,
+        within_seconds: int,
+        now: int | None = None,
+    ) -> list[TeamSessionRecord]:
+        current_time = int(time.time()) if now is None else now
+        cutoff = current_time - within_seconds
+        with self._lock:
+            self._cleanup_expired_locked(current_time)
+            return sorted(
+                [record for record in self._sessions.values() if record.last_activity_at >= cutoff],
+                key=lambda record: (record.last_activity_at, record.member_id),
+                reverse=True,
+            )
 
     def _cleanup_expired_locked(self, now: int) -> None:
         expired = [sid for sid, record in self._sessions.items() if record.expires_at <= now]
