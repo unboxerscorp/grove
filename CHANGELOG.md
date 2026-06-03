@@ -4,6 +4,24 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.9.0] — v1.8 (2026-06-04)
+
+Complete the team room — presence + a notification layer. Auto-started after v1.7.0.
+
+### Collaboration
+
+- **Presence** — /api/presence shows who's connected: in team-auth mode, members by
+  name/role; on loopback, an anonymous count. A header presence indicator (4s poll,
+  project-scoped) renders name/role only (no id/session/token).
+- **Notification rules** — blocked / ask-human-pending tasks fire a notification through
+  the existing (dry-run-default) notifier, deduped via notify_subs so the same task
+  doesn't re-notify; payloads are path/token-redacted.
+
+### Deferred (→ v1.9)
+
+- Onboarding wizard v2, project import/export, self-retro lane, guarded autonomous
+  pickup (see docs/V1.9_BRAINSTORM.md).
+
 ## [0.8.0] — v1.7 (2026-06-04)
 
 The collaborative team room — a decision inbox + precise board replay. Auto-started
