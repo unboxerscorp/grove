@@ -89,6 +89,10 @@ const KO: Dict = {
   "org.info": "정보",
   "org.loadError": "조직도를 불러오지 못했습니다",
   "org.empty": "노드가 없습니다 — 노드를 추가해 시작하세요",
+  "org.delegEdges": "위임 흐름",
+  "org.delegLegend": "위임 엣지 — 누가 누구에게 작업을 위임했는지 (점선·화살표 방향)",
+  "org.delegEmpty": "최근 위임 기록 없음",
+  "org.delegEdge": "{from} → {to} · 위임 {n}회",
 
   "node.heading": "새 노드",
   "node.name": "이름 (필수)",
@@ -307,6 +311,10 @@ const EN: Dict = {
   "org.info": "Info",
   "org.loadError": "failed to load org",
   "org.empty": "no nodes yet — add one to begin",
+  "org.delegEdges": "Delegation",
+  "org.delegLegend": "Delegation edges — who delegated work to whom (dashed, arrow = direction)",
+  "org.delegEmpty": "no recent delegations",
+  "org.delegEdge": "{from} → {to} · delegated {n}×",
 
   "node.heading": "New node",
   "node.name": "Name (required)",

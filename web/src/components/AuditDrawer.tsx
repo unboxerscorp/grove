@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { api } from "../api";
+import { api, targetLabel } from "../api";
 import type { AuditEvent } from "../api";
 import { fmtAgo } from "../constants";
 import { useI18n } from "../i18n";
@@ -124,7 +124,7 @@ export function AuditDrawer(props: { open: boolean; projectTick: number; onClose
             <div key={`${ev.ts}-${i}`} className="audit-event">
               <span className="audit-event__actor">{ev.actor}</span>
               <span className="audit-event__action">{ev.action}</span>
-              <span className="audit-event__target">{ev.target}</span>
+              <span className="audit-event__target">{targetLabel(ev.target)}</span>
               <span className="audit-event__ts">{fmtAgo(ev.ts)}</span>
             </div>
           ))}

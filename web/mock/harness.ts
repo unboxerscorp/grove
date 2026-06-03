@@ -161,15 +161,26 @@ let ticketSeq = 0;
 const ticketBindings: Record<string, { kind: string; pane: string; project: string }> = {};
 let taskSeq = 0;
 
-// Audit log seed (6 events -> 2 pages at limit 4). Fixed ts for determinism.
-const AUDIT_EVENTS = [
+// Audit log seed. Mix of scalar-target events (spawn/claim/...) and structured
+// assign/delegate events whose `target.node` is the delegated-to org node — the
+// source for the OrgChart delegation overlay (V4-W2). root->backend appears
+// twice so the derived edge carries count=2. Fixed ts for determinism.
+type MockAuditTarget = string | { node?: string; task?: string };
+const AUDIT_EVENTS: { actor: string; action: string; target: MockAuditTarget; ts: string }[] = [
   { actor: "root", action: "spawn", target: "backend", ts: "2026-06-04T03:00:05Z" },
+  { actor: "root", action: "delegate", target: { node: "backend", task: "G-4" }, ts: "2026-06-04T03:00:30Z" },
   { actor: "backend", action: "claim", target: "G-4", ts: "2026-06-04T03:01:10Z" },
+  { actor: "root", action: "assign", target: { node: "frontend", task: "G-5" }, ts: "2026-06-04T03:01:40Z" },
   { actor: "backend", action: "complete", target: "G-4", ts: "2026-06-04T03:02:00Z" },
+  { actor: "backend", action: "delegate", target: { node: "researcher", task: "G-6" }, ts: "2026-06-04T03:02:30Z" },
   { actor: "frontend", action: "reparent", target: "docs", ts: "2026-06-04T03:03:00Z" },
+  { actor: "root", action: "delegate", target: { node: "backend", task: "G-8" }, ts: "2026-06-04T03:03:30Z" },
   { actor: "root", action: "block", target: "G-7", ts: "2026-06-04T03:04:00Z" },
   { actor: "root", action: "spawn", target: "frontend", ts: "2026-06-04T03:05:00Z" },
 ];
+
+const auditTargetNode = (t: MockAuditTarget): string | null =>
+  typeof t === "string" ? null : (t.node ?? null);
 let slack: { status: string; last_event_at: string | null; last_error: string | null } = {
   status: "not_configured",
   last_event_at: null,
@@ -248,8 +259,14 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const taskId = sp.get("task_id");
     let events = [...AUDIT_EVENTS];
     if (action) events = events.filter((e) => e.action.includes(action));
-    if (node) events = events.filter((e) => e.actor === node || e.target === node);
-    if (taskId) events = events.filter((e) => e.target === taskId);
+    if (node)
+      events = events.filter(
+        (e) => e.actor === node || e.target === node || auditTargetNode(e.target) === node,
+      );
+    if (taskId)
+      events = events.filter(
+        (e) => e.target === taskId || (typeof e.target !== "string" && e.target.task === taskId),
+      );
     const slice = events.slice(start, start + limit);
     const nextIdx = start + limit;
     return Promise.resolve(

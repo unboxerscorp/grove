@@ -54,11 +54,28 @@ export interface StatusSummary {
   detail?: NodeDetail[];
 }
 
+// An audit target is either a scalar (task id / node name) or a structured
+// reference. assign/delegate events carry the delegated-to node in `.node`.
+export type AuditTarget = string | { node?: string; task?: string; label?: string };
+
 export interface AuditEvent {
   actor: string;
   action: string;
-  target: string;
+  target: AuditTarget;
   ts: string | number;
+}
+
+/** Human-readable label for an audit target (drawer display). */
+export function targetLabel(target: AuditTarget): string {
+  if (typeof target === "string") return target;
+  if (!target) return "";
+  return target.label ?? target.task ?? target.node ?? "";
+}
+
+/** The node an event delegates/assigns to, if any (delegation edge endpoint). */
+export function targetNode(target: AuditTarget): string | null {
+  if (!target || typeof target === "string") return null;
+  return target.node ?? null;
 }
 
 export interface AuditPage {

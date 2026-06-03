@@ -325,7 +325,7 @@ export function App() {
           ) : view === "board" ? (
             <div className="dr-stage__empty">{t("stage.noBoards")}</div>
           ) : view === "team" ? (
-            <OrgChart boardId={boardId} liveTick={liveTick} onOpenTerminal={pickNode} />
+            <OrgChart boardId={boardId} liveTick={liveTick} projectTick={projectTick} onOpenTerminal={pickNode} />
           ) : view === "integrations" ? (
             <SlackPanel projectTick={projectTick} />
           ) : view === "auth" ? (

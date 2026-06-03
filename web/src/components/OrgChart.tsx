@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api } from "../api";
+import { api, targetNode } from "../api";
+import type { AuditEvent } from "../api";
 import { AGENTS, agentGlyph, COLUMNS, cx, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
@@ -96,6 +97,42 @@ function edgePath(a: XY, b: XY): string {
   const ey = b.y;
   const my = (sy + ey) / 2;
   return `M ${sx} ${sy} C ${sx} ${my}, ${ex} ${my}, ${ex} ${ey}`;
+}
+
+const centerOf = (p: XY): XY => ({ x: p.x + NODE_W / 2, y: p.y + NODE_H / 2 });
+
+/** The point on a node box's border along the ray from `from` toward its centre. */
+function borderPoint(from: XY, box: XY): XY {
+  const c = centerOf(box);
+  const dx = c.x - from.x;
+  const dy = c.y - from.y;
+  if (dx === 0 && dy === 0) return c;
+  const hw = NODE_W / 2;
+  const hh = NODE_H / 2;
+  const scale = Math.min(
+    Math.abs(dx) > 1e-6 ? hw / Math.abs(dx) : Infinity,
+    Math.abs(dy) > 1e-6 ? hh / Math.abs(dy) : Infinity,
+  );
+  return { x: c.x - dx * scale, y: c.y - dy * scale };
+}
+
+/**
+ * Delegation arc: actor box → target box, trimmed to both borders so the
+ * arrowhead lands on the target edge, bowed perpendicular so it reads as an
+ * overlay distinct from the vertical parent S-curves.
+ */
+function delegPath(a: XY, b: XY): string {
+  const ca = centerOf(a);
+  const cb = centerOf(b);
+  const start = borderPoint(cb, a);
+  const end = borderPoint(ca, b);
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const bow = 26;
+  const mx = (start.x + end.x) / 2 + (-dy / len) * bow;
+  const my = (start.y + end.y) / 2 + (dx / len) * bow;
+  return `M ${start.x} ${start.y} Q ${mx} ${my}, ${end.x} ${end.y}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -406,9 +443,10 @@ type DragState = {
 export function OrgChart(props: {
   boardId: string | null;
   liveTick: number;
+  projectTick: number;
   onOpenTerminal: (pane: string) => void;
 }) {
-  const { boardId, liveTick, onOpenTerminal } = props;
+  const { boardId, liveTick, projectTick, onOpenTerminal } = props;
   const { t } = useI18n();
 
   const [nodes, setNodes] = useState<OrgNode[]>([]);
@@ -416,6 +454,8 @@ export function OrgChart(props: {
   const [rootList, setRootList] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [delegEvents, setDelegEvents] = useState<AuditEvent[]>([]);
+  const [showDeleg, setShowDeleg] = useState(false); // overlay off by default
 
   const [cur, setCur] = useState<Positions>({});
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -455,6 +495,23 @@ export function OrgChart(props: {
       alive = false;
     };
   }, [liveTick, reloadKey, t]);
+
+  // Delegation source: recent audit events, re-scoped per project (projectTick).
+  // Read-only; on failure or empty audit we simply render no delegation edges.
+  useEffect(() => {
+    let alive = true;
+    api
+      .getAudit({ limit: 50 })
+      .then((page) => {
+        if (alive) setDelegEvents(Array.isArray(page.events) ? page.events : []);
+      })
+      .catch(() => {
+        if (alive) setDelegEvents([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [liveTick, projectTick, reloadKey]);
 
   const byName = useMemo(() => {
     const m: Record<string, OrgNode> = {};
@@ -646,6 +703,28 @@ export function OrgChart(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [structSig]);
 
+  // Delegation edges: assign/delegate audit events → actor → target.node.
+  // Both endpoints must be live org nodes; duplicates are merged with a count
+  // and the most-recent timestamp so frequency/recency can be surfaced.
+  const delegations = useMemo(() => {
+    const m = new Map<string, { from: string; to: string; count: number; lastTs: string | number }>();
+    for (const ev of delegEvents) {
+      if (ev.action !== "assign" && ev.action !== "delegate") continue;
+      const from = ev.actor;
+      const to = targetNode(ev.target);
+      if (!to || from === to || !byName[from] || !byName[to]) continue;
+      const key = `${from}>${to}`;
+      const prev = m.get(key);
+      if (prev) {
+        prev.count += 1;
+        if (ev.ts > prev.lastTs) prev.lastTs = ev.ts;
+      } else {
+        m.set(key, { from, to, count: 1, lastTs: ev.ts });
+      }
+    }
+    return Array.from(m.values());
+  }, [delegEvents, byName]);
+
   const stopPD = (e: React.PointerEvent) => e.stopPropagation();
 
   // What will happen if the user drops right now — drives the floating badge
@@ -669,10 +748,31 @@ export function OrgChart(props: {
           <span className="org__title">{t("org.title")}</span>
           <span className="org__sub">{t("org.subtitle", { n: nodes.length, g: groups.length })}</span>
         </div>
-        <button type="button" className={cx("org-addbtn", adding && "is-open")} onClick={() => setAdding((v) => !v)}>
-          {t("org.addNode")}
-        </button>
+        <div className="org__tools">
+          <button
+            type="button"
+            className={cx("org-deleg-toggle", showDeleg && "is-on")}
+            aria-pressed={showDeleg}
+            onClick={() => setShowDeleg((v) => !v)}
+          >
+            <span className="org-deleg-toggle__line" aria-hidden="true" />
+            {t("org.delegEdges")}
+            {showDeleg && delegations.length > 0 && (
+              <span className="org-deleg-toggle__n">{delegations.length}</span>
+            )}
+          </button>
+          <button type="button" className={cx("org-addbtn", adding && "is-open")} onClick={() => setAdding((v) => !v)}>
+            {t("org.addNode")}
+          </button>
+        </div>
       </div>
+
+      {showDeleg && (
+        <div className="org-deleg-legend" role="note">
+          <span className="org-deleg-legend__swatch" aria-hidden="true" />
+          {delegations.length > 0 ? t("org.delegLegend") : t("org.delegEmpty")}
+        </div>
+      )}
 
       {adding && (
         <NodeForm
@@ -702,6 +802,19 @@ export function OrgChart(props: {
       <div className={cx("org-canvas", drag && "is-dragging")} ref={canvasRef}>
         <div className="org-stage" style={{ width: layout.width, height: layout.height }}>
           <svg className={cx("org-edges", drag && "is-dragging")} width={layout.width} height={layout.height}>
+            <defs>
+              <marker
+                id="org-deleg-arrow"
+                viewBox="0 0 10 10"
+                refX="8.5"
+                refY="5"
+                markerWidth="7"
+                markerHeight="7"
+                orient="auto-start-reverse"
+              >
+                <path className="org-deleg-arrowhead" d="M 0 0 L 10 5 L 0 10 z" />
+              </marker>
+            </defs>
             {edges.map(([par, ch]) => {
               const a = posFor(par);
               const b = posFor(ch);
@@ -737,6 +850,29 @@ export function OrgChart(props: {
                 </g>
               );
             })}
+
+            {showDeleg && (
+              <g className="org-deleg-layer">
+                {delegations.map((dl) => {
+                  const a = posFor(dl.from);
+                  const b = posFor(dl.to);
+                  const d = delegPath(a, b);
+                  return (
+                    <path
+                      key={`${dl.from}>${dl.to}`}
+                      className="org-deleg-edge"
+                      data-deleg={`${dl.from}>${dl.to}`}
+                      data-count={dl.count}
+                      d={d}
+                      markerEnd="url(#org-deleg-arrow)"
+                      style={{ strokeWidth: 1.4 + Math.min(dl.count, 4) * 0.45 }}
+                    >
+                      <title>{t("org.delegEdge", { from: dl.from, to: dl.to, n: dl.count })}</title>
+                    </path>
+                  );
+                })}
+              </g>
+            )}
           </svg>
 
           {nodes.map((node) => {

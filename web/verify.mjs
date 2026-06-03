@@ -315,6 +315,38 @@ async function main() {
     await page.click(".node-drawer .dr-drawer__close");
     await page.waitForFunction(() => !document.querySelector(".node-drawer"), { timeout: 8000 });
 
+    // V4-W2 delegation overlay: off by default; the toggle reveals a distinct
+    // dashed/arrow layer of actor -> target.node edges (root->backend merged to
+    // count=2), and toggling off hides them again. Run on the clean layout.
+    const delegToggle = await page.$(".org-deleg-toggle");
+    const delegOffBefore = await page.evaluate(() => document.querySelectorAll(".org-deleg-edge").length);
+    await page.$eval(".org-deleg-toggle", (el) => el.click());
+    await page.waitForFunction(() => document.querySelectorAll(".org-deleg-edge").length >= 1, { timeout: 6000 });
+    const delegOn = await page.evaluate(() => {
+      const edges = Array.from(document.querySelectorAll(".org-deleg-edge"));
+      return {
+        count: edges.length,
+        arrow: edges.some((e) => (e.getAttribute("marker-end") || "").includes("org-deleg-arrow")),
+        dashed: edges.some((e) => getComputedStyle(e).strokeDasharray !== "none"),
+        rootBackendCount: document.querySelector('[data-deleg="root>backend"]')?.getAttribute("data-count") ?? "",
+        legend: !!document.querySelector(".org-deleg-legend"),
+        marker: !!document.querySelector("#org-deleg-arrow"),
+      };
+    });
+    await page.$eval(".org-deleg-toggle", (el) => el.click());
+    await page.waitForFunction(() => document.querySelectorAll(".org-deleg-edge").length === 0, { timeout: 5000 });
+    const delegOffAfter = await page.evaluate(() => document.querySelectorAll(".org-deleg-edge").length);
+    const delegationEdgesOk =
+      !!delegToggle &&
+      delegOffBefore === 0 &&
+      delegOn.count >= 1 &&
+      delegOn.arrow &&
+      delegOn.dashed &&
+      delegOn.marker &&
+      delegOn.rootBackendCount === "2" &&
+      delegOn.legend &&
+      delegOffAfter === 0;
+
     // Drag-intent labels: a read-only probe (snaps back, no PATCH) that checks
     // the floating badge flips between reparent and group modes.
     const badge = () =>
@@ -781,6 +813,7 @@ async function main() {
       statusBarOk &&
       detailOk &&
       auditOk &&
+      delegationEdgesOk &&
       diag.projectHeader === projAfterLoad &&
       errors.length === 0;
 
@@ -845,6 +878,8 @@ async function main() {
       detail,
       auditOk,
       audit: { ...audit1, after: auditAfterMore, filter: auditFilter },
+      delegationEdgesOk,
+      deleg: { offBefore: delegOffBefore, ...delegOn, offAfter: delegOffAfter },
       terminalTicketKind: diag.terminalTicketKind,
       wsMismatchCode: wsMismatch.code,
       slackStatus0,
