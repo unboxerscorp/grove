@@ -385,6 +385,10 @@ function snapshot(pane: string, n: number): string {
   );
 }
 
+// The board socket currently held open by the SPA. Board-live controls push
+// events through it so the client reloads and re-columns the affected card.
+let boardSocket: MockWS | null = null;
+
 class MockWS {
   url: string;
   readyState = 0;
@@ -437,8 +441,13 @@ class MockWS {
       this.emitSnapshot();
       this.timer = setInterval(() => this.emitSnapshot(), 700);
     } else if (this.kind === "board") {
+      boardSocket = this;
       setTimeout(() => this.emit(JSON.stringify({ cursor: 1, type: "task.updated", task_id: "G-1" })), 800);
     }
+  }
+
+  emitBoard(payload: unknown) {
+    this.emit(JSON.stringify(payload));
   }
 
   send(_data: string) {
@@ -448,8 +457,34 @@ class MockWS {
   close() {
     this.readyState = 3;
     if (this.timer) clearInterval(this.timer);
+    if (boardSocket === this) boardSocket = null;
     this.onclose?.({ code: 1000 });
   }
 }
+
+// --- board-live controls for the verifier -----------------------------------
+// claim/complete mutate a task's status AND push the matching board event, so
+// the SPA reloads the board snapshot and the card moves to its new column —
+// exactly the production claim->running->done flow over the event-tail.
+let boardEventSeq = 1;
+function pushBoardEvent(taskId: string, type: string): void {
+  boardSocket?.emitBoard({ cursor: ++boardEventSeq, type, task_id: taskId });
+}
+function mutateTaskStatus(id: string, status: string): boolean {
+  const task = findTask(id);
+  if (!task) return false;
+  task.status = status;
+  return true;
+}
+diag.claimTask = (id: string): boolean => {
+  const ok = mutateTaskStatus(id, "running");
+  if (ok) pushBoardEvent(id, "task.claimed");
+  return ok;
+};
+diag.completeTask = (id: string): boolean => {
+  const ok = mutateTaskStatus(id, "done");
+  if (ok) pushBoardEvent(id, "task.completed");
+  return ok;
+};
 
 window.WebSocket = MockWS as unknown as typeof WebSocket;

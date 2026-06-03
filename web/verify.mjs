@@ -111,6 +111,52 @@ async function main() {
     await page.click(".dr-drawer__close");
     await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
 
+    // #4 board live (claim -> running -> done): a board-tail event must reload
+    // the snapshot and re-column the card. The live spark lights while the
+    // socket is up. COLUMNS: triage,todo,scheduled,ready,running,blocked,review,done.
+    await page.waitForSelector(".dr-spark.is-on", { timeout: 8000 });
+    const boardLiveSpark = await page.evaluate(() => !!document.querySelector(".dr-spark.is-on"));
+    const RUNNING_COL = 4;
+    const DONE_COL = 7;
+    const colIndexOf = (id) =>
+      page.evaluate((tid) => {
+        const cols = Array.from(document.querySelectorAll(".dr-col"));
+        for (let i = 0; i < cols.length; i++) {
+          const here = Array.from(cols[i].querySelectorAll(".dr-card__id")).some((el) =>
+            (el.textContent ?? "").includes(tid),
+          );
+          if (here) return i;
+        }
+        return -1;
+      }, id);
+    const cardInCol = (idx, id) =>
+      page.waitForFunction(
+        (i, tid) => {
+          const col = document.querySelectorAll(".dr-col")[i];
+          return (
+            !!col &&
+            Array.from(col.querySelectorAll(".dr-card__id")).some((el) =>
+              (el.textContent ?? "").includes(tid),
+            )
+          );
+        },
+        { timeout: 8000 },
+        idx,
+        id,
+      );
+    const claimColBefore = await colIndexOf("G-4"); // seeded as "ready" (3)
+    await page.evaluate(() => window.__MOCK__?.claimTask("G-4"));
+    await cardInCol(RUNNING_COL, "G-4");
+    const claimCol = await colIndexOf("G-4");
+    await page.evaluate(() => window.__MOCK__?.completeTask("G-4"));
+    await cardInCol(DONE_COL, "G-4");
+    const completeCol = await colIndexOf("G-4");
+    const boardLiveOk =
+      boardLiveSpark === true &&
+      claimColBefore === 3 &&
+      claimCol === RUNNING_COL &&
+      completeCol === DONE_COL;
+
     // Interactive org canvas: switch to the Team tab; assert the graph renders
     // (nodes, bezier edges, group legend).
     await page.click('.dr-tab[data-view="team"]');
@@ -477,6 +523,7 @@ async function main() {
       i18nOk &&
       addOk &&
       mirrorOk &&
+      boardLiveOk &&
       teamOk &&
       slackOk &&
       authOk &&
@@ -508,6 +555,11 @@ async function main() {
       i18nOk,
       addOk,
       mirrorOk,
+      boardLiveOk,
+      boardLiveSpark,
+      claimColBefore,
+      claimCol,
+      completeCol,
       teamOk,
       slackOk,
       authOk,

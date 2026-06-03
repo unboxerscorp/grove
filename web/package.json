@@ -8,6 +8,8 @@
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "verify": "node verify.mjs",
+    "e2e": "node e2e/api.mjs",
+    "e2e:all": "npm run build && npm run verify && npm run e2e",
     "check": "npm run typecheck && npm run build && npm run verify"
   },
   "dependencies": {
