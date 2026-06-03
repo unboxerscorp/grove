@@ -15,6 +15,7 @@ import subprocess
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, cast
 from urllib.parse import unquote, urlparse
@@ -27,6 +28,19 @@ from grove_bridge.auth_status import collect_auth_status, redact_secret_text
 from grove_bridge.config import default_board_db_path
 from grove_bridge.slack import SlackConfig, SlackConfigStore, config_status, slack_manifest
 from grove_bridge.store import Board, BoardEvent, Comment, Run, SlackThread, SQLiteBoardStore, Task
+from grove_bridge.team_auth import (
+    CSRF_HEADER,
+    TEAM_SESSION_COOKIE,
+    TEAM_SESSION_TTL_SECONDS,
+    IssuedSession,
+    MemberRegistry,
+    SessionSigner,
+    TeamMember,
+    TeamSessionStore,
+    bootstrap_hint,
+    members_path,
+    session_secret_path,
+)
 
 SESSION_HEADER = "X-Grove-Session-Token"
 PROJECT_HEADER = "X-Grove-Project"
@@ -66,6 +80,11 @@ WILDCARD_BIND_HOSTS = frozenset({"0.0.0.0", "::"})
 TICKET_KINDS = frozenset({"board", "terminal"})
 
 
+class AuthMode(StrEnum):
+    LOCAL_TOKEN = "local-token"
+    TEAM_COOKIE = "team-cookie"
+
+
 @dataclass(frozen=True)
 class WebAppConfig:
     dist_dir: Path = field(default_factory=lambda: _repo_root() / "web" / "dist")
@@ -78,6 +97,7 @@ class WebAppConfig:
     port: int = 8765
     unsafe_bind_token_bootstrap: bool = False
     allowed_hosts: tuple[str, ...] = ()
+    auth_mode: AuthMode = AuthMode.LOCAL_TOKEN
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dist_dir", self.dist_dir.expanduser())
@@ -96,6 +116,7 @@ class WebAppConfig:
             "allowed_hosts",
             _normalize_allowed_hosts(self.allowed_hosts),
         )
+        object.__setattr__(self, "auth_mode", AuthMode(self.auth_mode))
 
 
 @dataclass(frozen=True)
@@ -104,6 +125,15 @@ class ProjectContext:
     name: str
     board: str
     from_header: bool
+
+
+@dataclass(frozen=True)
+class AuthContext:
+    mode: AuthMode
+    sid: str | None = None
+    member: TeamMember | None = None
+    csrf_token: str | None = None
+    expires_at: int | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +196,11 @@ class WsTicketPayload(BaseModel):
     pane_id: str | None = Field(default=None, max_length=200)
 
 
+class LoginPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    secret: str = Field(min_length=1, max_length=5000)
+
+
 class TicketStore:
     def __init__(self) -> None:
         self._tickets: dict[str, TicketGrant] = {}
@@ -210,6 +245,7 @@ def create_app(
     app.state.config = app_config
     app.state.store = board_store
     app.state.ticket_store = TicketStore()
+    app.state.team_session_store = TeamSessionStore()
     app.state.started_at = int(time.time())
 
     @app.middleware("http")
@@ -235,9 +271,60 @@ def create_app(
     def health_endpoint() -> dict[str, object]:
         return _health_payload(app)
 
+    @app.get("/api/me")
+    def me_endpoint(request: Request) -> dict[str, object]:
+        config_value = _config(request)
+        if config_value.auth_mode == AuthMode.LOCAL_TOKEN:
+            return {"auth_mode": config_value.auth_mode.value, "member": None}
+        auth = _require_auth(request)
+        return _me_payload(config_value, auth)
+
+    @app.post("/api/login")
+    def login_endpoint(
+        request: Request,
+        response: Response,
+        payload: LoginPayload,
+    ) -> dict[str, object]:
+        config_value = _config(request)
+        if config_value.auth_mode != AuthMode.TEAM_COOKIE:
+            raise HTTPException(status_code=404, detail="team auth is not enabled")
+        _require_allowed_origin(request)
+        registry = _member_registry(config_value)
+        member = registry.authenticate(payload.name, payload.secret)
+        if member is None:
+            raise HTTPException(
+                status_code=401,
+                detail=_team_auth_unauthorized_detail(config_value),
+            )
+        issued = _session_signer(config_value).issue(member)
+        _team_session_store(request).add(issued)
+        _set_team_session_cookie(response, request=request, issued=issued)
+        return {
+            "auth_mode": config_value.auth_mode.value,
+            "member": member.to_payload(),
+            "csrf": issued.csrf_token,
+            "expires_at": issued.expires_at,
+        }
+
+    @app.post("/api/logout")
+    def logout_endpoint(request: Request, response: Response) -> dict[str, object]:
+        auth = _require_state_change(request)
+        if auth.sid is not None:
+            _team_session_store(request).revoke(auth.sid)
+        response.delete_cookie(TEAM_SESSION_COOKIE)
+        return {"ok": True}
+
+    @app.get("/api/csrf")
+    def csrf_endpoint(request: Request) -> dict[str, object]:
+        config_value = _config(request)
+        if config_value.auth_mode == AuthMode.LOCAL_TOKEN:
+            return {"auth_mode": config_value.auth_mode.value, "csrf": None}
+        auth = _require_auth(request)
+        return {"auth_mode": config_value.auth_mode.value, "csrf": auth.csrf_token}
+
     @app.get("/api/status")
     def status_endpoint(request: Request) -> dict[str, object]:
-        _require_token(request)
+        _require_auth(request)
         project = resolve_project(request)
         return {
             "ok": True,
@@ -247,12 +334,12 @@ def create_app(
 
     @app.get("/api/auth-status")
     def auth_status_endpoint(request: Request) -> list[dict[str, object]]:
-        _require_token(request)
+        _require_auth(request)
         return [tool_status.to_payload() for tool_status in collect_auth_status()]
 
     @app.get("/api/projects")
     def projects_endpoint(request: Request) -> list[dict[str, object]]:
-        _require_token(request)
+        _require_auth(request)
         return _project_payloads(_config(request))
 
     @app.post("/api/projects")
@@ -273,7 +360,7 @@ def create_app(
 
     @app.get("/api/boards")
     def boards_endpoint(request: Request) -> list[dict[str, object]]:
-        _require_token(request)
+        _require_auth(request)
         project = resolve_project(request)
         boards = _store(request).list_boards()
         if project.from_header:
@@ -287,7 +374,7 @@ def create_app(
         status_filter: str | None = Query(default=None, alias="status"),
         assignee: str | None = Query(default=None),
     ) -> list[dict[str, object]]:
-        _require_token(request)
+        _require_auth(request)
         project = resolve_project(request)
         resolved_board = _resolve_board_id(board_id, project=project)
         try:
@@ -323,13 +410,13 @@ def create_app(
 
     @app.get("/api/tasks/{task_id}")
     def task_endpoint(request: Request, task_id: str) -> dict[str, object]:
-        _require_token(request)
+        _require_auth(request)
         project = resolve_project(request)
         return _task_payload(_task_for_project(_store(request), task_id, project=project))
 
     @app.get("/api/tasks/{task_id}/comments")
     def comments_endpoint(request: Request, task_id: str) -> list[dict[str, object]]:
-        _require_token(request)
+        _require_auth(request)
         project = resolve_project(request)
         _task_for_project(_store(request), task_id, project=project)
         return [
@@ -339,7 +426,7 @@ def create_app(
 
     @app.get("/api/tasks/{task_id}/runs")
     def runs_endpoint(request: Request, task_id: str) -> list[dict[str, object]]:
-        _require_token(request)
+        _require_auth(request)
         project = resolve_project(request)
         _task_for_project(_store(request), task_id, project=project)
         return [_run_payload(run) for run in _store(request).list_runs_for_task(task_id=task_id)]
@@ -365,7 +452,7 @@ def create_app(
 
     @app.get("/api/nodes")
     def nodes_endpoint(request: Request) -> list[dict[str, str]]:
-        _require_token(request)
+        _require_auth(request)
         return [_node_payload(node) for node in _registry_nodes(resolve_project(request).config)]
 
     @app.post("/api/nodes")
@@ -387,17 +474,17 @@ def create_app(
 
     @app.get("/api/org")
     def org_endpoint(request: Request) -> dict[str, object]:
-        _require_token(request)
+        _require_auth(request)
         return _org_payload(resolve_project(request).config)
 
     @app.get("/api/slack/manifest")
     def slack_manifest_endpoint(request: Request) -> dict[str, object]:
-        _require_token(request)
+        _require_auth(request)
         return slack_manifest()
 
     @app.get("/api/slack/config/status")
     def slack_config_status_endpoint(request: Request) -> dict[str, object]:
-        _require_token(request)
+        _require_auth(request)
         return config_status(_slack_config_path(_config(request)))
 
     @app.post("/api/slack/config")
@@ -432,7 +519,7 @@ def create_app(
         request: Request,
         task_id: str = Query(...),
     ) -> list[dict[str, object]]:
-        _require_token(request)
+        _require_auth(request)
         project = resolve_project(request)
         _task_for_project(_store(request), task_id, project=project)
         return [
@@ -682,9 +769,97 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="missing or invalid session token")
 
 
-def _require_state_change(request: Request) -> None:
-    _require_token(request)
+def _require_auth(request: Request) -> AuthContext:
+    config = _config(request)
+    if config.auth_mode == AuthMode.LOCAL_TOKEN:
+        _require_token(request)
+        return AuthContext(mode=AuthMode.LOCAL_TOKEN)
+    return _require_team_session(request, config=config)
+
+
+def _require_team_session(request: Request, *, config: WebAppConfig) -> AuthContext:
+    cookie_value = request.cookies.get(TEAM_SESSION_COOKIE)
+    if cookie_value is None or not cookie_value.strip():
+        raise HTTPException(status_code=401, detail=_team_auth_unauthorized_detail(config))
+    verified = _session_signer(config).verify(cookie_value, _member_registry(config))
+    if verified is None:
+        raise HTTPException(status_code=401, detail=_team_auth_unauthorized_detail(config))
+    if not _team_session_store(request).contains(
+        sid=verified.sid,
+        member_id=verified.member.id,
+    ):
+        raise HTTPException(status_code=401, detail=_team_auth_unauthorized_detail(config))
+    return AuthContext(
+        mode=AuthMode.TEAM_COOKIE,
+        sid=verified.sid,
+        member=verified.member,
+        csrf_token=verified.csrf_token,
+        expires_at=verified.expires_at,
+    )
+
+
+def _require_state_change(request: Request) -> AuthContext:
+    auth = _require_auth(request)
     _require_allowed_origin(request)
+    if auth.mode == AuthMode.TEAM_COOKIE:
+        _require_team_csrf(request, auth=auth)
+    return auth
+
+
+def _require_team_csrf(request: Request, *, auth: AuthContext) -> None:
+    supplied = request.headers.get(CSRF_HEADER)
+    expected = auth.csrf_token
+    if expected is None or supplied is None or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="missing or invalid csrf token")
+
+
+def _member_registry(config: WebAppConfig) -> MemberRegistry:
+    return MemberRegistry(members_path(config.grove_home, config.registry_session))
+
+
+def _session_signer(config: WebAppConfig) -> SessionSigner:
+    return SessionSigner(session_secret_path(config.grove_home, config.registry_session))
+
+
+def _team_session_store(request: Request) -> TeamSessionStore:
+    return cast(TeamSessionStore, request.app.state.team_session_store)
+
+
+def _team_auth_unauthorized_detail(config: WebAppConfig) -> dict[str, object]:
+    registry = _member_registry(config)
+    detail: dict[str, object] = {"error": "not authenticated"}
+    try:
+        has_members = bool(registry.list_members())
+    except ValueError:
+        has_members = True
+    if not has_members:
+        detail["bootstrap_hint"] = bootstrap_hint(registry.path)
+    return detail
+
+
+def _set_team_session_cookie(
+    response: Response,
+    *,
+    request: Request,
+    issued: IssuedSession,
+) -> None:
+    response.set_cookie(
+        TEAM_SESSION_COOKIE,
+        issued.cookie_value,
+        max_age=TEAM_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+    )
+
+
+def _me_payload(config: WebAppConfig, auth: AuthContext) -> dict[str, object]:
+    return {
+        "auth_mode": config.auth_mode.value,
+        "member": auth.member.to_payload() if auth.member is not None else None,
+        "csrf": auth.csrf_token,
+        "expires_at": auth.expires_at,
+    }
 
 
 def _require_allowed_origin(request: Request) -> None:
@@ -882,13 +1057,18 @@ def _index_response(config: WebAppConfig) -> HTMLResponse:
 
 
 def _bootstrap_script(config: WebAppConfig) -> str:
-    assignments = [f"window.__GROVE_AUTH_REQUIRED__ = {json.dumps(config.auth_required)};"]
+    assignments = [
+        f"window.__GROVE_AUTH_REQUIRED__ = {json.dumps(config.auth_required)};",
+        f"window.__GROVE_AUTH_MODE__ = {json.dumps(config.auth_mode.value)};",
+    ]
     if _token_bootstrap_allowed(config):
         assignments.insert(0, f"window.__GROVE_SESSION_TOKEN__ = {json.dumps(config.token)};")
     return "<script>" + "".join(assignments) + "</script>"
 
 
 def _token_bootstrap_allowed(config: WebAppConfig) -> bool:
+    if config.auth_mode != AuthMode.LOCAL_TOKEN:
+        return False
     host = _normalize_hostname(config.host)
     return host in LOOPBACK_HOSTS or config.unsafe_bind_token_bootstrap
 
@@ -1523,6 +1703,13 @@ def main(argv: list[str] | None = None) -> int:
             "May be repeated or comma-separated; loopback hosts are always allowed."
         ),
     )
+    parser.add_argument(
+        "--team-auth",
+        action="store_true",
+        help=(
+            "Use team cookie sessions with member login and CSRF instead of local dashboard tokens."
+        ),
+    )
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -1536,6 +1723,7 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         unsafe_bind_token_bootstrap=args.unsafe_bind,
         allowed_hosts=_normalize_allowed_hosts(args.allow_host),
+        auth_mode=AuthMode.TEAM_COOKIE if args.team_auth else AuthMode.LOCAL_TOKEN,
     )
     app = create_app(config=config)
     uvicorn.run(app, host=config.host, port=config.port)

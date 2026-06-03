@@ -13,10 +13,21 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+import grove_bridge.team_auth as team_auth
 import grove_bridge.web_app as web_app
 from grove_bridge.auth_status import ToolAuthStatus
 from grove_bridge.store import SQLiteBoardStore
-from grove_bridge.web_app import WebAppConfig, create_app
+from grove_bridge.team_auth import (
+    CSRF_HEADER,
+    TEAM_SESSION_COOKIE,
+    MemberRegistry,
+    TeamMember,
+    TeamSessionStore,
+    hash_secret,
+    members_path,
+    session_secret_path,
+)
+from grove_bridge.web_app import AuthMode, WebAppConfig, create_app
 
 
 def test_index_injects_session_token_and_serves_dist_assets(tmp_path: Path) -> None:
@@ -67,6 +78,21 @@ def test_index_bootstraps_token_on_non_loopback_with_unsafe_bind(tmp_path: Path)
     assert 'window.__GROVE_SESSION_TOKEN__ = "test-token"' in index.text
 
 
+def test_team_auth_index_never_bootstraps_local_session_token(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        host="0.0.0.0",
+        unsafe_bind_token_bootstrap=True,
+        auth_mode=AuthMode.TEAM_COOKIE,
+    )
+
+    index = client.get("/")
+
+    assert "window.__GROVE_SESSION_TOKEN__" not in index.text
+    assert 'window.__GROVE_AUTH_MODE__ = "team-cookie"' in index.text
+
+
 def test_health_is_public_and_does_not_expose_project_session_or_token(tmp_path: Path) -> None:
     client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
 
@@ -85,6 +111,104 @@ def test_health_is_public_and_does_not_expose_project_session_or_token(tmp_path:
     assert "dev10" not in rendered
     assert "project" not in payload
     assert "session" not in payload
+
+
+def test_team_auth_login_session_me_csrf_and_secret_storage(tmp_path: Path) -> None:
+    secret = "correct horse battery staple"
+    write_team_member(tmp_path, secret=secret)
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
+
+    assert client.get("/api/me").status_code == 401
+    assert client.get("/api/status", headers=auth_headers(client)).status_code == 401
+
+    login = client.post("/api/login", json={"name": "alice", "secret": secret})
+
+    assert login.status_code == 200
+    assert TEAM_SESSION_COOKIE in login.headers["set-cookie"]
+    assert "httponly" in login.headers["set-cookie"].lower()
+    assert "samesite=strict" in login.headers["set-cookie"].lower()
+    login_payload = login.json()
+    assert login_payload["member"] == {"id": "member-1", "name": "alice", "role": "admin"}
+    csrf = str(login_payload["csrf"])
+
+    me = client.get("/api/me")
+    assert me.status_code == 200
+    assert me.json()["member"]["name"] == "alice"
+    assert client.get("/api/csrf").json()["csrf"] == csrf
+    stolen_cookie = client.cookies.get(TEAM_SESSION_COOKIE)
+    assert stolen_cookie is not None
+
+    missing_csrf = client.post("/api/boards/main/tasks", json={"title": "blocked"})
+    assert missing_csrf.status_code == 403
+    created = client.post(
+        "/api/boards/main/tasks",
+        headers={CSRF_HEADER: csrf},
+        json={"title": "allowed"},
+    )
+    assert created.status_code == 200
+    assert created.json()["title"] == "allowed"
+
+    logout = client.post("/api/logout", headers={CSRF_HEADER: csrf})
+    assert logout.status_code == 200
+    client.cookies.set(TEAM_SESSION_COOKIE, stolen_cookie)
+    assert client.get("/api/me").status_code == 401
+
+    registry_text = members_path(tmp_path / ".grove", "dev10").read_text(encoding="utf-8")
+    assert secret not in registry_text
+    assert "pbkdf2_sha256" in registry_text
+    assert members_path(tmp_path / ".grove", "dev10").stat().st_mode & 0o777 == 0o600
+    assert session_secret_path(tmp_path / ".grove", "dev10").stat().st_mode & 0o777 == 0o600
+
+
+def test_team_auth_rejects_signed_cookie_missing_from_session_store(tmp_path: Path) -> None:
+    secret = "correct horse battery staple"
+    write_team_member(tmp_path, secret=secret)
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        auth_mode=AuthMode.TEAM_COOKIE,
+    )
+
+    login = client.post("/api/login", json={"name": "alice", "secret": secret})
+    assert login.status_code == 200
+
+    fastapi_app(client).state.team_session_store = TeamSessionStore()
+
+    assert client.get("/api/me").status_code == 401
+
+
+def test_unknown_team_member_login_still_runs_secret_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_team_member(tmp_path, secret="known-secret")
+    calls: list[tuple[str, str]] = []
+
+    def fake_verify_secret(secret: str, encoded_hash: str) -> bool:
+        calls.append((secret, encoded_hash))
+        return False
+
+    monkeypatch.setattr(team_auth, "verify_secret", fake_verify_secret)
+    registry = MemberRegistry(members_path(tmp_path / ".grove", "dev10"))
+
+    assert registry.authenticate("missing", "probe-secret") is None
+    assert calls == [("probe-secret", team_auth.DUMMY_SECRET_HASH)]
+
+
+def test_team_auth_without_members_returns_bootstrap_hint(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        auth_mode=AuthMode.TEAM_COOKIE,
+    )
+
+    response = client.get("/api/status")
+
+    assert response.status_code == 401
+    detail = response.json()["detail"]
+    assert detail["error"] == "not authenticated"
+    assert "members_path=" in detail["bootstrap_hint"]
 
 
 def test_rest_reads_and_writes_board_store(tmp_path: Path) -> None:
@@ -1662,6 +1786,7 @@ def make_client(
     host: str = "127.0.0.1",
     unsafe_bind_token_bootstrap: bool = False,
     allowed_hosts: tuple[str, ...] = (),
+    auth_mode: AuthMode = AuthMode.LOCAL_TOKEN,
     raise_server_exceptions: bool = True,
 ) -> TestClient:
     dist = tmp_path / "dist"
@@ -1681,6 +1806,7 @@ def make_client(
         host=host,
         unsafe_bind_token_bootstrap=unsafe_bind_token_bootstrap,
         allowed_hosts=allowed_hosts,
+        auth_mode=auth_mode,
     )
     return TestClient(
         create_app(config=config, store=store),
@@ -1691,6 +1817,22 @@ def make_client(
 
 def auth_headers(client: TestClient) -> dict[str, str]:
     return {"X-Grove-Session-Token": app_config(client).token}
+
+
+def write_team_member(
+    tmp_path: Path,
+    *,
+    name: str = "alice",
+    secret: str = "opensesame",
+) -> TeamMember:
+    member = TeamMember(
+        id="member-1",
+        name=name,
+        role="admin",
+        secret_hash=hash_secret(secret, salt=b"0" * 16),
+    )
+    MemberRegistry(members_path(tmp_path / ".grove", "dev10")).save_members([member])
+    return member
 
 
 def fastapi_app(client: TestClient) -> FastAPI:
