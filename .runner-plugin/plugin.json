@@ -1,0 +1,5 @@
+{
+  "name": "grove-runner-skills",
+  "version": "0.1.0",
+  "skills": "./skills/"
+}

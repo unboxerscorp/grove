@@ -15,6 +15,7 @@ This repo is growing into a cockpit product with multiple makers working at once
 - The lead/orchestrator owns prioritization and integration decisions.
 - Makers keep edits scoped to their stream and avoid unrelated refactors.
 - Reviewers and QA are read-only unless explicitly reassigned by the lead.
+- Before any delegation, node creation, group formation, org inspection, board task action, or work routing, agents must invoke the matching grove skill first, starting with `grove:harness`.
 - Do not modify operational fleet configs such as `fleet.yaml`, `grove.yaml`, or `cockpit.grove.yaml` unless the lead asks directly.
 - Preserve current P1/P2 behavior for event logs, watch, fan-in, and wait unless the task is explicitly about those behaviors.
 - Every handoff must state changed files, verification commands, and remaining risks.
