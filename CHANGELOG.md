@@ -4,6 +4,30 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.7.0] — v1.6 (2026-06-04)
+
+Reliability + delegation visibility. Auto-started after v1.5.0.
+
+### Reliability
+
+- **`grove repair` node auto-recovery** — detects dead/stale nodes (pane gone /
+  transcript missing-or-empty / stale) and recovers them non-destructively: a stale
+  pane target is re-resolved via paneTarget, a bound session with a broken transcript
+  is marker-rebound; a fully-lost pane is reported `unrecoverable` (never killed —
+  kill stays despawn-only). Focus-safe (preserveActiveWindow). Reports
+  {recovered, stale, unrecoverable}; `--all|--node|--json`.
+
+### Dashboard
+
+- **Delegation-chain explorer** — traces multi-hop delegation chains
+  (lead → sub-lead → leaf) from /api/audit assign/delegate events (cycle-graceful),
+  with a node filter; complements the single-edge overlay.
+
+### Deferred (→ v1.7)
+
+- Board event cursor replay; presence, notification rules, decision inbox, onboarding
+  wizard v2, project import/export (see docs/V1.7_BRAINSTORM.md).
+
 ## [0.6.0] — v1.5 (2026-06-04)
 
 Test-net hardening + dashboard delegation. Auto-started after v1.4.0.
