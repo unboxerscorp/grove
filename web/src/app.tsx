@@ -5,6 +5,7 @@ import type { Project } from "./api";
 import { BoardView } from "./components/BoardView";
 import { NodeList } from "./components/NodeList";
 import { AuditDrawer } from "./components/AuditDrawer";
+import { ChainDrawer } from "./components/ChainDrawer";
 import { AuthPanel } from "./components/AuthPanel";
 import { CostPanel } from "./components/CostPanel";
 import { HealthDot } from "./components/HealthDot";
@@ -46,6 +47,7 @@ export function App() {
   const [view, setView] = useState<View>("board");
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [chainOpen, setChainOpen] = useState(false);
   const [liveTick, setLiveTick] = useState(0);
   const [boardLive, setBoardLive] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -299,6 +301,9 @@ export function App() {
           <button type="button" className="dr-audit-btn" onClick={() => setAuditOpen(true)}>
             ⌗ {t("audit.open")}
           </button>
+          <button type="button" className="dr-audit-btn dr-chain-btn" onClick={() => setChainOpen(true)}>
+            ⛓ {t("chain.open")}
+          </button>
           <HealthDot />
           <span className={cx("dr-auth", AUTH_REQUIRED ? "is-secured" : "is-local")}>
             {AUTH_REQUIRED ? t("auth.secured") : t("auth.local")}
@@ -355,6 +360,7 @@ export function App() {
 
       <TaskDrawer taskId={openTaskId} onClose={() => setOpenTaskId(null)} />
       <AuditDrawer open={auditOpen} projectTick={projectTick} onClose={() => setAuditOpen(false)} />
+      <ChainDrawer open={chainOpen} projectTick={projectTick} onClose={() => setChainOpen(false)} />
     </div>
   );
 }

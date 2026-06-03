@@ -131,6 +131,49 @@ async function main() {
       auditAfterMore.cursorUsed &&
       /node=backend/.test(auditFilter);
 
+    // V6-W3 delegation-chain explorer: multi-hop chains derived from the audit
+    // assign/delegate graph (mock has root->backend->researcher). Open the
+    // drawer, assert a >=3-node (2-hop) chain in order, then focus a node.
+    await page.click(".dr-chain-btn");
+    await page.waitForSelector(".chain-drawer", { timeout: 5000 });
+    await page.waitForFunction(() => document.querySelectorAll(".chain-row").length >= 1, { timeout: 6000 });
+    const chain = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll(".chain-row"));
+      const multi = rows.find((r) => r.querySelectorAll(".chain-node").length >= 3);
+      const nodesOf = (r) =>
+        Array.from(r.querySelectorAll(".chain-node")).map((n) => n.getAttribute("data-node"));
+      return {
+        rows: rows.length,
+        hasMultiHop: !!multi,
+        multiNodes: multi ? nodesOf(multi) : [],
+        arrows: multi ? multi.querySelectorAll(".chain-arrow").length : 0,
+      };
+    });
+    // Focus a node: only chains through it remain, with that chip highlighted.
+    await page.type('.chain-filter input[name="node"]', "researcher");
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".chain-row").length >= 1 && !!document.querySelector(".chain-node.is-focus"),
+      { timeout: 5000 },
+    );
+    const chainFocus = await page.evaluate(() => ({
+      rows: document.querySelectorAll(".chain-row").length,
+      focus: document.querySelector(".chain-node.is-focus")?.getAttribute("data-node") ?? "",
+      allThroughFocus: Array.from(document.querySelectorAll(".chain-row")).every((r) =>
+        Array.from(r.querySelectorAll(".chain-node")).some((n) => n.getAttribute("data-node") === "researcher"),
+      ),
+    }));
+    await page.click(".chain-drawer .dr-drawer__close");
+    await page.waitForFunction(() => !document.querySelector(".chain-drawer"), { timeout: 5000 });
+    const chainOk =
+      chain.rows >= 1 &&
+      chain.hasMultiHop &&
+      chain.multiNodes.join(">") === "root>backend>researcher" &&
+      chain.arrows >= 2 &&
+      chainFocus.rows >= 1 &&
+      chainFocus.focus === "researcher" &&
+      chainFocus.allThroughFocus;
+
     // #1 i18n: Korean by default; KO/EN toggle flips all labels, then back.
     const brandText = () => page.$eval(".dr-brand__title", (el) => (el.textContent ?? "").trim());
     const i18n = { ko: await brandText(), en: "" };
@@ -882,6 +925,7 @@ async function main() {
       statusBarOk &&
       detailOk &&
       auditOk &&
+      chainOk &&
       delegationEdgesOk &&
       delegateOk &&
       diag.projectHeader === projAfterLoad &&
@@ -948,6 +992,8 @@ async function main() {
       detail,
       auditOk,
       audit: { ...audit1, after: auditAfterMore, filter: auditFilter },
+      chainOk,
+      chain: { ...chain, focus: chainFocus },
       costOk,
       cost,
       delegationEdgesOk,

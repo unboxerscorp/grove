@@ -240,6 +240,15 @@ const KO: Dict = {
   "audit.loading": "불러오는 중…",
   "audit.loadError": "감사 로그를 불러오지 못했습니다",
 
+  "chain.open": "위임 체인",
+  "chain.title": "위임 체인 탐색",
+  "chain.filterNode": "노드로 경로 필터",
+  "chain.flowHint": "← 상류 · 하류 →",
+  "chain.empty": "위임 체인 없음",
+  "chain.loading": "불러오는 중…",
+  "chain.loadError": "위임 체인을 불러오지 못했습니다",
+  "chain.hops": "{n}홉",
+
   "tab.cost": "비용",
   "cost.title": "비용 · 크레딧",
   "cost.note": "에이전트 타입별 토큰·비용 집계입니다. 추정값은 표시되며 사실로 간주하지 마세요.",
@@ -499,6 +508,15 @@ const EN: Dict = {
   "audit.more": "Load more",
   "audit.loading": "Loading…",
   "audit.loadError": "failed to load audit log",
+
+  "chain.open": "Chains",
+  "chain.title": "Delegation chains",
+  "chain.filterNode": "filter paths by node",
+  "chain.flowHint": "← upstream · downstream →",
+  "chain.empty": "no delegation chains",
+  "chain.loading": "Loading…",
+  "chain.loadError": "failed to load delegation chains",
+  "chain.hops": "{n} hops",
 
   "tab.cost": "Cost",
   "cost.title": "Cost · Credit",
