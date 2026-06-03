@@ -34,6 +34,7 @@ const PROJECT_HEADER = "X-Grove-Project";
 const ALPHA = "qae2e_alpha"; // default --session project (unlikely tmux collision)
 const BETA = "qae2e_beta"; // second registry, used to prove header binding/scope
 const READY_TIMEOUT_MS = 25_000;
+const NODE_LAST_SEEN = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
 
 // Secret shapes that must never appear in any response body.
 const SECRET_RES = [
@@ -152,6 +153,8 @@ function scaffold() {
           session_id: "s1",
           status: "running",
           role: "lead",
+          // Heartbeat ts so /api/status?detail=1 returns last_seen as an int.
+          last_seen: NODE_LAST_SEEN,
         },
         worker: {
           name: "worker",
@@ -160,6 +163,7 @@ function scaffold() {
           session_id: "s2",
           status: "idle",
           parent: "lead",
+          last_seen: NODE_LAST_SEEN,
         },
       },
     };
@@ -474,6 +478,198 @@ async function run() {
   check("ws/board rejects a reused ticket (single-use)", second.opened === false, `code ${second.code}`);
   const bogus = await wsProbe(boardUrl("not-a-real-ticket"));
   check("ws/board rejects a bogus ticket", bogus.opened === false, `code ${bogus.code}`);
+
+  // === v1.5 — new-endpoint coverage (systematic mock-drift guard) ============
+  // These assert the REAL backend shapes the FE consumes (api.ts). v1.4 shipped
+  // a drift bug where the mock matched FE assumptions but the real server did
+  // not (events vs items, number vs string confidence, agents[] vs by_agent{}).
+  // Covering them here means the same class of drift fails in CI, not prod.
+
+  // --- /api/audit: object actor/target, numeric next_cursor, filters+paging ---
+  eq("audit 401 without token", (await req("GET", "/api/audit")).status, 401);
+
+  // Graceful empty board (BETA has no events): items:[] + numeric cursor.
+  const emptyAudit = await req("GET", "/api/audit", { token, project: BETA });
+  eq("audit 200 on empty board", emptyAudit.status, 200);
+  check(
+    "audit empty board returns items:[] (graceful)",
+    Boolean(emptyAudit.json) && Array.isArray(emptyAudit.json.items) && emptyAudit.json.items.length === 0,
+  );
+  check(
+    "audit empty board next_cursor is a number",
+    Boolean(emptyAudit.json) && typeof emptyAudit.json.next_cursor === "number",
+  );
+
+  // Seed two audit.task.assign events on the ALPHA board (POST task w/ assignee).
+  eq(
+    "seed: assign task -> worker (200)",
+    (await req("POST", `/api/boards/${ALPHA}/tasks`, {
+      token,
+      project: ALPHA,
+      body: { title: "e2e assign A", assignee: "worker" },
+    })).status,
+    200,
+  );
+  eq(
+    "seed: assign task -> lead (200)",
+    (await req("POST", `/api/boards/${ALPHA}/tasks`, {
+      token,
+      project: ALPHA,
+      body: { title: "e2e assign B", assignee: "lead" },
+    })).status,
+    200,
+  );
+
+  const audit = await req("GET", "/api/audit", { token, project: ALPHA });
+  eq("audit 200 with token", audit.status, 200);
+  const items = audit.json && Array.isArray(audit.json.items) ? audit.json.items : null;
+  check("audit returns items[] (>=2 seeded)", Array.isArray(items) && items.length >= 2, items && items.length);
+  check("audit next_cursor is a number", Boolean(audit.json) && typeof audit.json.next_cursor === "number");
+  const ev = (items || []).find((e) => e.action === "assign") || (items || [])[0];
+  check(
+    "audit event actor is an OBJECT {kind,id} (not a string)",
+    Boolean(ev) &&
+      ev.actor &&
+      typeof ev.actor === "object" &&
+      !Array.isArray(ev.actor) &&
+      typeof ev.actor.kind === "string" &&
+      typeof ev.actor.id === "string",
+    ev && JSON.stringify(ev.actor),
+  );
+  check("audit event action is a string", Boolean(ev) && typeof ev.action === "string");
+  check(
+    "audit event target is an OBJECT (with .node for assign)",
+    Boolean(ev) && ev.target && typeof ev.target === "object" && !Array.isArray(ev.target),
+    ev && JSON.stringify(ev.target),
+  );
+  check("audit event ts is a number", Boolean(ev) && typeof ev.ts === "number", ev && JSON.stringify(ev.ts));
+  check(
+    "audit assign event carries target.node = assignee",
+    (items || []).some((e) => e.action === "assign" && e.target && (e.target.node === "worker" || e.target.node === "lead")),
+  );
+  check("audit leaks no secrets", !hasSecret(audit.json));
+
+  // action filter (exact match in store).
+  const assignOnly = await req("GET", "/api/audit?action=assign", { token, project: ALPHA });
+  const assignItems = (assignOnly.json && assignOnly.json.items) || [];
+  check(
+    "audit ?action=assign returns only assign events",
+    assignItems.length >= 2 && assignItems.every((e) => e.action === "assign"),
+    assignItems.map((e) => e.action).join(","),
+  );
+  const unknownAction = await req("GET", "/api/audit?action=__nope__", { token, project: ALPHA });
+  check(
+    "audit ?action=<unknown> returns empty items",
+    Array.isArray(unknownAction.json && unknownAction.json.items) && unknownAction.json.items.length === 0,
+  );
+
+  // node filter (actor.id / target.node / from_node / to_node).
+  const byWorker = await req("GET", "/api/audit?node=worker", { token, project: ALPHA });
+  const workerItems = (byWorker.json && byWorker.json.items) || [];
+  check(
+    "audit ?node=worker matches the worker-targeted assign",
+    workerItems.length >= 1 &&
+      workerItems.every(
+        (e) =>
+          e.actor.id === "worker" ||
+          (e.target && e.target.node === "worker") ||
+          e.from_node === "worker" ||
+          e.to_node === "worker",
+      ),
+    workerItems.length,
+  );
+
+  // cursor paging: limit=1 advances strictly without repeating.
+  const page1 = await req("GET", "/api/audit?action=assign&limit=1", { token, project: ALPHA });
+  const p1 = (page1.json && page1.json.items) || [];
+  check("audit paging page1 (limit=1) returns 1 item", p1.length === 1, p1.length);
+  const c1 = page1.json && page1.json.next_cursor;
+  const page2 = await req("GET", `/api/audit?action=assign&limit=1&cursor=${c1}`, { token, project: ALPHA });
+  const p2 = (page2.json && page2.json.items) || [];
+  check("audit paging page2 (cursor) returns the next item", p2.length === 1, p2.length);
+  check(
+    "audit paging advances strictly (page2.cursor > page1.cursor, no repeat)",
+    p1.length === 1 && p2.length === 1 && typeof p1[0].cursor === "number" && p2[0].cursor > p1[0].cursor,
+    `${p1[0] && p1[0].cursor} -> ${p2[0] && p2[0].cursor}`,
+  );
+
+  // --- /api/status?detail=1: node_details[], confidence is a STRING ---
+  const noDetail = await req("GET", "/api/status", { token, project: ALPHA });
+  check(
+    "status (no detail) omits node_details",
+    Boolean(noDetail.json) && !("node_details" in noDetail.json),
+  );
+  check(
+    "status nodes summary has {total,running} ints",
+    Boolean(noDetail.json) &&
+      noDetail.json.nodes &&
+      typeof noDetail.json.nodes.total === "number" &&
+      typeof noDetail.json.nodes.running === "number",
+  );
+  const detail = await req("GET", "/api/status?detail=1", { token, project: ALPHA });
+  eq("status?detail=1 200", detail.status, 200);
+  const nd = detail.json && Array.isArray(detail.json.node_details) ? detail.json.node_details : null;
+  check("status?detail=1 returns node_details[]", Array.isArray(nd) && nd.length >= 1, nd && nd.length);
+  const row = (nd || []).find((r) => r.name === "worker") || (nd || [])[0];
+  check("node_detail has name+status strings", Boolean(row) && typeof row.name === "string" && typeof row.status === "string");
+  check(
+    "node_detail confidence is a STRING (the v1.4 drift bug: FE treated it as number)",
+    Boolean(row) && typeof row.confidence === "string",
+    row && JSON.stringify(row.confidence),
+  );
+  check(
+    "node_detail confidence in {explicit,inferred}",
+    Boolean(row) && ["explicit", "inferred"].includes(row.confidence),
+    row && row.confidence,
+  );
+  check("node_detail source is a string", Boolean(row) && typeof row.source === "string", row && row.source);
+  check("node_detail status_reason is a string", Boolean(row) && typeof row.status_reason === "string");
+  check(
+    "node_detail last_seen is int-or-null (epoch seconds)",
+    Boolean(row) && (typeof row.last_seen === "number" || row.last_seen === null),
+    row && JSON.stringify(row.last_seen),
+  );
+  check(
+    "node_detail worker last_seen is the seeded int",
+    Boolean(row) && typeof row.last_seen === "number" && row.last_seen === NODE_LAST_SEEN,
+    row && JSON.stringify(row.last_seen),
+  );
+  check("status?detail=1 leaks no secrets", !hasSecret(detail.json));
+
+  // --- /api/cost: by_agent{} + totals{}, token/path non-exposure ---
+  eq("cost 401 without token", (await req("GET", "/api/cost")).status, 401);
+  const cost = await req("GET", "/api/cost", { token, project: ALPHA });
+  // Local dashboard-token mode is operator-equivalent -> 200. The viewer-403
+  // path (_require_cost_access) only triggers under TEAM_COOKIE auth, which this
+  // local-mode harness does not run.
+  eq("cost 200 with token (local operator)", cost.status, 200);
+  const byAgent = cost.json && cost.json.by_agent;
+  check("cost by_agent is an OBJECT (not an array)", Boolean(byAgent) && typeof byAgent === "object" && !Array.isArray(byAgent));
+  check(
+    "cost by_agent covers codex/claude/agy",
+    Boolean(byAgent) && ["codex", "claude", "agy"].every((a) => a in byAgent),
+    byAgent && Object.keys(byAgent).join(","),
+  );
+  const isMetric = (m) =>
+    Boolean(m) && typeof m === "object" && "value" in m && typeof m.source === "string" && typeof m.confidence === "string";
+  const codexAgent = byAgent && byAgent.codex;
+  check("cost by_agent.codex.total_tokens is a metric {value,source,confidence}", Boolean(codexAgent) && isMetric(codexAgent.total_tokens));
+  check("cost by_agent.codex.cost_usd_estimate is a metric", Boolean(codexAgent) && isMetric(codexAgent.cost_usd_estimate));
+  const agyAgent = byAgent && byAgent.agy;
+  check("cost by_agent.agy.credit_remaining is a metric (may be unknown)", Boolean(agyAgent) && isMetric(agyAgent.credit_remaining));
+  check("cost by_agent.agy.credit_status is a string", Boolean(agyAgent) && typeof agyAgent.credit_status === "string", agyAgent && agyAgent.credit_status);
+  check("cost by_agent.agy.warnings is an array", Boolean(agyAgent) && Array.isArray(agyAgent.warnings));
+  const totals = cost.json && cost.json.totals;
+  check(
+    "cost totals has total_tokens + cost_usd_estimate metrics",
+    Boolean(totals) && isMetric(totals.total_tokens) && isMetric(totals.cost_usd_estimate),
+  );
+  check("cost leaks no secrets", !hasSecret(cost.json));
+  check(
+    "cost exposes no filesystem paths (no GROVE_HOME/workspace/registry leak)",
+    !cost.text.includes(groveHome) && !cost.text.includes(`/tmp/${ALPHA}`) && !/registry\.json/.test(cost.text),
+    cost.text.slice(0, 160),
+  );
 }
 
 console.log("grove-web API e2e\n");
