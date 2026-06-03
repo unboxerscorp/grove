@@ -2,6 +2,7 @@ import type { AgentType } from "../config.js";
 
 export interface LaunchSpec {
   cwd: string;
+  initialPrompt?: string;
   model?: string;
   resumeId?: string;
 }

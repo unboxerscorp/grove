@@ -6,7 +6,10 @@ import { z } from "zod";
 
 import { expandHome } from "./util/paths.js";
 
-export const AgentTypeSchema = z.enum(["codex", "claude"]);
+const RawAgentTypeSchema = z.enum(["codex", "claude", "antigravity", "agy"]);
+export const AgentTypeSchema = RawAgentTypeSchema.transform((agent) =>
+  agent === "agy" ? "antigravity" : agent,
+);
 export type AgentType = z.infer<typeof AgentTypeSchema>;
 
 export const NodeConfigSchema = z

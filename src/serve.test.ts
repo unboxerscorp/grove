@@ -97,16 +97,16 @@ describe("grove chat completions facade", () => {
     expect(pool.nodeFor(null)).toBe("maker-b");
     expect(pool.stickySize()).toBe(0);
 
-    expect(pool.nodeFor("legacy-1")).toBe("maker-c");
-    expect(pool.nodeFor("legacy-2")).toBe("maker-a");
+    expect(pool.nodeFor("channel-1")).toBe("maker-c");
+    expect(pool.nodeFor("channel-2")).toBe("maker-a");
     expect(pool.stickySize()).toBe(2);
-    expect(pool.nodeFor("legacy-1")).toBe("maker-c");
-    expect(pool.nodeFor("legacy-3")).toBe("maker-b");
+    expect(pool.nodeFor("channel-1")).toBe("maker-c");
+    expect(pool.nodeFor("channel-3")).toBe("maker-b");
     expect(pool.stickySize()).toBe(2);
-    expect(pool.nodeFor("legacy-2")).toBe("maker-c");
+    expect(pool.nodeFor("channel-2")).toBe("maker-c");
 
     now = 100;
-    expect(pool.nodeFor("legacy-1")).toBe("maker-a");
+    expect(pool.nodeFor("channel-1")).toBe("maker-a");
   });
 
   test("streams OpenAI-compatible SSE chunks for a grove turn", async () => {
@@ -123,7 +123,7 @@ describe("grove chat completions facade", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Legacy-Session-Id": "legacy-1",
+        "X-Grove-Session-Id": "channel-1",
       },
       body: JSON.stringify({
         model: "grove-cockpit",
@@ -165,7 +165,7 @@ describe("grove chat completions facade", () => {
     ]);
   });
 
-  test("keeps X-Legacy-Session-Id sticky to the same grove node", async () => {
+  test("keeps X-Grove-Session-Id sticky to the same grove node", async () => {
     const calls: RuntimeCall[] = [];
     const runtime: GroveFacadeRuntime = {
       async runTurn(nodeName, prompt, timeoutMs) {
@@ -175,12 +175,12 @@ describe("grove chat completions facade", () => {
     };
     const baseUrl = await listen(runtime, ["maker-a", "maker-b"]);
 
-    for (const sessionId of ["legacy-1", "legacy-2", "legacy-1"]) {
+    for (const sessionId of ["channel-1", "channel-2", "channel-1"]) {
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Legacy-Session-Id": sessionId,
+          "X-Grove-Session-Id": sessionId,
         },
         body: JSON.stringify({
           model: "grove-cockpit",
@@ -208,7 +208,7 @@ describe("grove chat completions facade", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Legacy-Session-Id": "legacy-1",
+        "X-Grove-Session-Id": "channel-1",
       },
       body: JSON.stringify({
         model: "grove-cockpit",
@@ -259,7 +259,7 @@ describe("grove chat completions facade", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Legacy-Session-Id": "legacy-err",
+        "X-Grove-Session-Id": "channel-err",
       },
       body: JSON.stringify({
         model: "grove-cockpit",
@@ -303,7 +303,7 @@ describe("grove chat completions facade", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Legacy-Session-Id": "legacy-abort",
+        "X-Grove-Session-Id": "channel-abort",
       },
       body: JSON.stringify({
         model: "grove-cockpit",

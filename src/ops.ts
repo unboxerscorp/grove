@@ -222,7 +222,12 @@ async function launch(ctx: Context, nc: NodeCtx): Promise<void> {
   const { node, adapter, addr } = nc;
   const resumeId = node.resume ?? ctx.registry.nodes[node.name]?.sessionId;
   const before = adapter.snapshot(node.cwd);
-  const cmd = adapter.launchCommand({ cwd: node.cwd, model: node.model, resumeId });
+  const cmd = adapter.launchCommand({
+    cwd: node.cwd,
+    initialPrompt: node.role,
+    model: node.model,
+    resumeId,
+  });
   step(`launch ${color.bold(node.name)} ${color.dim(`(${adapter.label})`)} → ${color.dim(cmd)}`);
   await sendLiteral(addr, cmd);
   await sendEnter(addr);

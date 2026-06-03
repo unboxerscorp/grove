@@ -10,7 +10,7 @@ const DEFAULT_MODEL = "grove";
 const DEFAULT_STICKY_SESSION_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_MAX_STICKY_SESSIONS = 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
-const LEGACY_SESSION_HEADER = "x-legacy-session-id";
+const GROVE_SESSION_HEADER = "x-grove-session-id";
 
 const ChatContentPartSchema = z
   .object({
@@ -212,7 +212,7 @@ class GroveChatFacade {
     }
 
     const request = parsed.data;
-    const nodeName = this.pool.nodeFor(headerString(req.headers[LEGACY_SESSION_HEADER]));
+    const nodeName = this.pool.nodeFor(headerString(req.headers[GROVE_SESSION_HEADER]));
     const context = {
       created: this.now(),
       id: `chatcmpl-grove-${randomUUID()}`,
