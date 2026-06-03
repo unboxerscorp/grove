@@ -4,6 +4,7 @@ import type { Context } from "../context.js";
 import { loadContext } from "../context.js";
 import { applyTranscriptRebinds, planTranscriptRebinds } from "../rebind.js";
 import { loadOrInit, saveRegistry } from "../registry.js";
+import { paneTarget } from "../tmux.js";
 import { cmdRebind } from "./rebind.js";
 
 vi.mock("../context.js", () => ({
@@ -18,6 +19,11 @@ vi.mock("../rebind.js", () => ({
 vi.mock("../registry.js", () => ({
   loadOrInit: vi.fn(),
   saveRegistry: vi.fn(),
+}));
+
+vi.mock("../tmux.js", () => ({
+  paneTarget: vi.fn(),
+  target: (session: string, window: string) => `${session}:${window}`,
 }));
 
 afterEach(() => {
@@ -89,5 +95,59 @@ describe("cmdRebind", () => {
     expect(loadOrInit).toHaveBeenCalledWith("other", "/repo");
     expect(applyTranscriptRebinds).toHaveBeenCalled();
     expect(saveRegistry).toHaveBeenCalledWith(registry);
+  });
+
+  test("repairs stale explicit tmux pane bindings", async () => {
+    const loaded: Context = {
+      ...ctx(),
+      byName: new Map([
+        [
+          "viewer",
+          {
+            adapter: {} as never,
+            addr: "dev10:1.2",
+            node: {
+              agent: "codex",
+              children: [],
+              cwd: "/repo",
+              name: "viewer",
+              tmux: "1.2",
+            },
+          },
+        ],
+      ]),
+      nodes: [
+        {
+          agent: "codex",
+          children: [],
+          cwd: "/repo",
+          name: "viewer",
+          tmux: "1.2",
+        },
+      ],
+      registry: {
+        cwd: "/repo",
+        nodes: {
+          viewer: {
+            agent: "codex",
+            name: "viewer",
+            tmux_pane: "dev10:1.2",
+          },
+        },
+        session: "dev10",
+        updatedAt: "now",
+      },
+    };
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.mocked(loadContext).mockReturnValue(loaded);
+    vi.mocked(planTranscriptRebinds).mockReturnValue({ skipped: [], updates: [] });
+    vi.mocked(paneTarget).mockResolvedValue("dev10:1.%7");
+
+    await cmdRebind({});
+
+    expect(paneTarget).toHaveBeenCalledWith("dev10:1.2");
+    expect(loaded.registry.nodes.viewer?.tmux_pane).toBe("dev10:1.%7");
+    expect(saveRegistry).toHaveBeenCalledWith(loaded.registry);
   });
 });

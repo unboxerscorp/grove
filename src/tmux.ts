@@ -225,3 +225,15 @@ export async function killSession(name: string): Promise<void> {
 export async function killWindow(session: string, window: string): Promise<void> {
   await tmuxOk(["kill-window", "-t", target(session, window)]);
 }
+
+export function isSinglePaneTarget(addr: string): boolean {
+  const target = addr.trim();
+  if (!target) return false;
+  if (/^%\d+$/.test(target)) return true;
+  return /^[A-Za-z0-9][A-Za-z0-9_-]*:[A-Za-z0-9_.-]+\.(?:%\d+|\d+)$/.test(target);
+}
+
+export async function killPane(addr: string): Promise<boolean> {
+  if (!isSinglePaneTarget(addr)) return false;
+  return tmuxOk(["kill-pane", "-t", addr]);
+}

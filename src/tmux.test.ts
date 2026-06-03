@@ -8,6 +8,8 @@ import {
   createDetachedPane,
   detachedNewWindowPaneArgs,
   detachedSplitPaneArgs,
+  isSinglePaneTarget,
+  killPane,
   newWindowArgs,
   preserveActiveWindow,
   sendEnter,
@@ -37,6 +39,19 @@ async function activeWindow(session: string): Promise<string> {
 }
 
 describe("tmux detached pane commands", () => {
+  test("validates single-pane targets before kill-pane", async () => {
+    expect(isSinglePaneTarget("%5")).toBe(true);
+    expect(isSinglePaneTarget("dev10:1.0")).toBe(true);
+    expect(isSinglePaneTarget("dev10:1.%5")).toBe(true);
+    expect(isSinglePaneTarget("dev10")).toBe(false);
+    expect(isSinglePaneTarget("dev10:1")).toBe(false);
+    expect(isSinglePaneTarget("")).toBe(false);
+
+    expect(await killPane("dev10")).toBe(false);
+    expect(await killPane("dev10:1")).toBe(false);
+    expect(await killPane("")).toBe(false);
+  });
+
   test("builds a detached new-window command that prints the full pane target", () => {
     expect(
       detachedNewWindowPaneArgs({

@@ -2,6 +2,7 @@
 import { Command } from "commander";
 
 import { cmdAsk } from "./commands/ask.js";
+import { cmdDespawn } from "./commands/despawn.js";
 import { cmdDown } from "./commands/down.js";
 import { cmdGather } from "./commands/gather.js";
 import { cmdInit } from "./commands/init.js";
@@ -104,6 +105,21 @@ program
   .option("-c, --config <file>", "path to grove.yaml")
   .option("--json", "print the spawn result as JSON")
   .action(run((opts: Record<string, unknown>) => cmdSpawn(withConfig(opts))));
+
+program
+  .command("despawn [node]")
+  .description("kill a node pane and remove it from the session registry")
+  .option("--session <session>", "target tmux/grove session")
+  .option("--group <group>", "despawn every node in a group (requires --yes)")
+  .option("--all", "despawn every node in the session registry (requires --yes)")
+  .option("-y, --yes", "confirm bulk despawn")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .option("--json", "print the despawn result as JSON")
+  .action(
+    run((node: string | undefined, opts: Record<string, unknown>) =>
+      cmdDespawn(node, withConfig(opts)),
+    ),
+  );
 
 program
   .command("send <node> <message...>")
