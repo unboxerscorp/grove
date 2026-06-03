@@ -4,6 +4,51 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.4.0] — v1.3 (2026-06-04)
+
+The multi-orchestrator team OS made real — delegation as a command + real team
+auth + an audit lane. Auto-started after v1.2.0 per the standing 24/7 directive.
+
+### Multi-orchestrator
+
+- **`grove delegate <node> "<title>" [--body|--board|--session|--json]`** — board-as-
+  delegation as a command: any orchestrator node creates a board task assigned to a
+  child via the local grove-web API, and the pull executor runs it. URL/token discovery
+  via `~/.grove/<session>/web.json` + the stable dashboard-token. Live-verified
+  end-to-end (node delegate → task on board). grove-web now writes web.json on startup.
+
+### Team auth
+
+- **Real team auth** (`--team-auth` opt-in; loopback stays local-token frictionless):
+  member registry (PBKDF2-SHA256, roles admin/operator/viewer, no plaintext, 0600),
+  HttpOnly+SameSite signed cookie session with a **server-side session store
+  (logout revokes; a stolen cookie is dead after logout)**, CSRF on state-change,
+  `/api/me|login|logout|csrf`, constant-time-ish login (no member-existence oracle).
+  Team mode never bootstraps the HTML token.
+
+### Audit & observability
+
+- **Audit lane** — board mutations (claim/complete/block + create-task assignee + node
+  spawn/update) record audit events with the resolved **actor**; read-only `/api/audit`
+  (token + role gated, project-scoped, SQL-filtered cursor pagination).
+- `/api/status?detail=1` — per-node detail (status running/idle/error/blocked/dead,
+  last_seen, reason) tagged source/confidence (never mixing estimate with fact).
+
+### Reliability / polish
+
+- Stabilized the flaky tmux focus-restore test (deterministic execFile mock; 5×
+  consecutive green).
+
+### Docs
+
+- `docs/DESIGN_delegate.md`, `docs/DESIGN_audit_and_cost.md`, `docs/ROADMAP_v1.3.md`.
+
+### Deferred (→ v1.4)
+
+- FE team surfaces: audit drawer, org-graph delegation edges, cost/credit view
+  (esp. agy credit); best-effort `/api/cost` implementation; non-loopback
+  `GROVE_WEB_URL` token-egress guard.
+
 ## [0.3.0] — v1.2 (2026-06-04)
 
 Reliability core + observability + resilience + team-mode design. Auto-started
