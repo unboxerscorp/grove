@@ -247,6 +247,7 @@ def create_app(
     app.state.ticket_store = TicketStore()
     app.state.team_session_store = TeamSessionStore()
     app.state.started_at = int(time.time())
+    _write_web_companion(app_config, started_at=cast(int, app.state.started_at))
 
     @app.middleware("http")
     async def request_log_middleware(
@@ -662,12 +663,74 @@ def _dashboard_token_path(grove_home: Path, session: str) -> Path:
     return grove_home / session / "dashboard-token"
 
 
+def _web_companion_path(grove_home: Path, session: str) -> Path:
+    return grove_home / session / "web.json"
+
+
+def _write_web_companion(config: WebAppConfig, *, started_at: int) -> None:
+    payload = {
+        "url": _web_companion_url(config),
+        "host": config.host,
+        "port": config.port,
+        "pid": os.getpid(),
+        "started_at": started_at,
+    }
+    _write_secret_json_atomic(
+        _web_companion_path(config.grove_home, config.registry_session),
+        payload,
+    )
+
+
+def _remove_web_companion(config: WebAppConfig, *, started_at: int) -> None:
+    path = _web_companion_path(config.grove_home, config.registry_session)
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    if not isinstance(loaded, dict):
+        return
+    if loaded.get("pid") != os.getpid() or loaded.get("started_at") != started_at:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
+def _web_companion_url(config: WebAppConfig) -> str:
+    host = _normalize_hostname(config.host)
+    if host is None or host in LOOPBACK_HOSTS or _wildcard_bind_host(config.host):
+        url_host = "127.0.0.1"
+    else:
+        url_host = host
+    if ":" in url_host and not url_host.startswith("["):
+        url_host = f"[{url_host}]"
+    return f"http://{url_host}:{config.port}"
+
+
 def _read_dashboard_token(path: Path) -> str:
     token = path.read_text(encoding="utf-8").strip()
     if not token:
         raise ValueError("dashboard token file is empty")
     path.chmod(0o600)
     return token
+
+
+def _write_secret_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp")
+    try:
+        _create_secret_file_exclusive(
+            tmp_path,
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        )
+        os.replace(tmp_path, path)
+        path.chmod(0o600)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _create_secret_file_exclusive(path: Path, value: str) -> None:
@@ -1726,7 +1789,11 @@ def main(argv: list[str] | None = None) -> int:
         auth_mode=AuthMode.TEAM_COOKIE if args.team_auth else AuthMode.LOCAL_TOKEN,
     )
     app = create_app(config=config)
-    uvicorn.run(app, host=config.host, port=config.port)
+    started_at = cast(int, app.state.started_at)
+    try:
+        uvicorn.run(app, host=config.host, port=config.port)
+    finally:
+        _remove_web_companion(config, started_at=started_at)
     return 0
 
 

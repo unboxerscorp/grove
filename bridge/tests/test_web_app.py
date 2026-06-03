@@ -377,6 +377,42 @@ def test_dashboard_token_race_loser_rereads_existing_token(
     assert token_path.read_text(encoding="utf-8").strip() == "winner-token"
 
 
+def test_web_companion_is_written_for_delegate_discovery(tmp_path: Path) -> None:
+    make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        host="0.0.0.0",
+        port=9876,
+    )
+    web_path = tmp_path / ".grove" / "dev10" / "web.json"
+
+    payload = json.loads(web_path.read_text(encoding="utf-8"))
+
+    assert payload == {
+        "url": "http://127.0.0.1:9876",
+        "host": "0.0.0.0",
+        "port": 9876,
+        "pid": os.getpid(),
+        "started_at": payload["started_at"],
+    }
+    assert isinstance(payload["started_at"], int)
+    assert web_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_web_companion_is_rewritten_on_restart(tmp_path: Path) -> None:
+    make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"), port=8765)
+    web_path = tmp_path / ".grove" / "dev10" / "web.json"
+    first = json.loads(web_path.read_text(encoding="utf-8"))
+
+    make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"), port=9877)
+    second = json.loads(web_path.read_text(encoding="utf-8"))
+
+    assert first["port"] == 8765
+    assert second["port"] == 9877
+    assert second["url"] == "http://127.0.0.1:9877"
+    assert web_path.stat().st_mode & 0o777 == 0o600
+
+
 def test_web_request_logging_redacts_secrets_and_absolute_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1784,13 +1820,14 @@ def make_client(
     store: SQLiteBoardStore,
     *,
     host: str = "127.0.0.1",
+    port: int = 8765,
     unsafe_bind_token_bootstrap: bool = False,
     allowed_hosts: tuple[str, ...] = (),
     auth_mode: AuthMode = AuthMode.LOCAL_TOKEN,
     raise_server_exceptions: bool = True,
 ) -> TestClient:
     dist = tmp_path / "dist"
-    dist.mkdir()
+    dist.mkdir(exist_ok=True)
     (dist / "index.html").write_text(
         '<html><body><div id="app"></div><script src="/app.js"></script></body></html>',
         encoding="utf-8",
@@ -1804,13 +1841,14 @@ def make_client(
         token="test-token",
         auth_required=True,
         host=host,
+        port=port,
         unsafe_bind_token_bootstrap=unsafe_bind_token_bootstrap,
         allowed_hosts=allowed_hosts,
         auth_mode=auth_mode,
     )
     return TestClient(
         create_app(config=config, store=store),
-        base_url=f"http://{host}:8765",
+        base_url=f"http://{host}:{port}",
         raise_server_exceptions=raise_server_exceptions,
     )
 
