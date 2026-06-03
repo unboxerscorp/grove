@@ -1,7 +1,9 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, test, vi } from "vitest";
+
 import type { AgentAdapter } from "./adapters/types.js";
 import type { Context, NodeCtx } from "./context.js";
 import { readTurnEventsSince } from "./events.js";
@@ -132,7 +134,7 @@ describe("watch scan", () => {
       eventLogDir,
       pollIntervalMs: 10,
       reloadContext: () => refreshedCtx,
-    } as never);
+    });
 
     vi.advanceTimersByTime(10);
     watcher.stop();
@@ -157,7 +159,7 @@ describe("watch scan", () => {
     const watcher = startTurnEventWatcher(ctx, {
       eventLogDir,
       watchFile,
-    } as never);
+    });
     watcher.stop();
 
     expect(watchFile).toHaveBeenCalled();

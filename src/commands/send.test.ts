@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+
 import { loadContext, nodeOf } from "../context.js";
 import { eventLogSize } from "../events.js";
 import { recordPending, resolveTranscript, submitMessage } from "../ops.js";
@@ -66,9 +67,7 @@ describe("cmdSend", () => {
       100,
       expect.objectContaining({ eventLogOffset: 0 }),
     );
-    expect(info).toHaveBeenCalledWith(
-      expect.stringContaining("submission unconfirmed"),
-    );
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("submission unconfirmed"));
     expect(warn).not.toHaveBeenCalled();
   });
 

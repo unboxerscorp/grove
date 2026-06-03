@@ -61,11 +61,7 @@ export async function hasWindow(session: string, window: string): Promise<boolea
   return windows.includes(window);
 }
 
-export async function newWindow(
-  session: string,
-  window: string,
-  cwd?: string,
-): Promise<void> {
+export async function newWindow(session: string, window: string, cwd?: string): Promise<void> {
   const args = ["new-window", "-t", session, "-n", window];
   if (cwd) args.push("-c", cwd);
   await tmux(args);
@@ -96,9 +92,7 @@ export async function capturePane(addr: string, lines = 200): Promise<string> {
 
 export async function paneCommand(addr: string): Promise<string> {
   try {
-    return (
-      await tmux(["display-message", "-t", addr, "-p", "#{pane_current_command}"])
-    ).trim();
+    return (await tmux(["display-message", "-t", addr, "-p", "#{pane_current_command}"])).trim();
   } catch {
     return "";
   }

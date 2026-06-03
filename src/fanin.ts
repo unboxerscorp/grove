@@ -1,6 +1,6 @@
-import { eventLogPath, eventLogSize, readTurnEventsSince } from "./events.js";
-import type { GroveTurnEvent } from "./events.js";
 import type { Context, NodeCtx } from "./context.js";
+import type { GroveTurnEvent } from "./events.js";
+import { eventLogPath, eventLogSize, readTurnEventsSince } from "./events.js";
 import { resolveTranscript } from "./ops.js";
 import { saveRegistry } from "./registry.js";
 import { eventsDir } from "./util/paths.js";
@@ -57,7 +57,10 @@ interface NodeWaitState {
 
 const FAN_IN_INTERVAL_MS = 1000;
 
-function transcriptIdOf(ctx: Context, state: Pick<NodeWaitState, "name" | "nc" | "transcript">): string {
+function transcriptIdOf(
+  ctx: Context,
+  state: Pick<NodeWaitState, "name" | "nc" | "transcript">,
+): string {
   return (
     state.nc.adapter.sessionIdFromPath(state.transcript) ??
     ctx.registry.nodes[state.name]?.sessionId ??
@@ -157,9 +160,7 @@ function finalizeResult(
 
   const completed = order.filter((item) => item.status === "done");
   const failed = order.filter((item) => item.status === "failed");
-  const pending = states
-    .filter((state) => !state.terminal)
-    .map((state) => pendingForState(state));
+  const pending = states.filter((state) => !state.terminal).map((state) => pendingForState(state));
   const summaries: Record<string, string> = {};
   for (const item of order) {
     if (item.summary) summaries[item.node] = item.summary;
@@ -203,10 +204,7 @@ function collectTranscriptCompletions(
 ): void {
   for (const state of states) {
     if (state.terminal) continue;
-    const completion = state.nc.adapter.readCompletionSince(
-      state.transcript,
-      state.fromOffset,
-    );
+    const completion = state.nc.adapter.readCompletionSince(state.transcript, state.fromOffset);
     state.fromOffset = completion.offset;
     if (!completion.done) continue;
     const terminal = terminalFromTranscriptCompletion(

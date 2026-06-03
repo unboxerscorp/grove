@@ -2,8 +2,7 @@ import os from "node:os";
 import path from "node:path";
 
 /** Root for grove's runtime state. Override with $GROVE_HOME. */
-export const GROVE_HOME =
-  process.env.GROVE_HOME ?? path.join(os.homedir(), ".grove");
+export const GROVE_HOME = process.env.GROVE_HOME ?? path.join(os.homedir(), ".grove");
 
 export function sessionDir(session: string): string {
   return path.join(GROVE_HOME, session);

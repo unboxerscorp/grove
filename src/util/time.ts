@@ -1,4 +1,4 @@
-import { watch, type FSWatcher } from "node:fs";
+import { type FSWatcher, watch } from "node:fs";
 import { dirname } from "node:path";
 
 export function sleep(ms: number): Promise<void> {

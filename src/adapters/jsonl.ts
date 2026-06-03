@@ -1,10 +1,4 @@
-import {
-  closeSync,
-  openSync,
-  readdirSync,
-  readSync,
-  statSync,
-} from "node:fs";
+import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 
 export function fileSize(p: string): number {
@@ -69,10 +63,7 @@ export function walk(dir: string, filter: (p: string) => boolean): string[] {
 }
 
 /** Map of path → mtimeMs for all files under `dir` matching `filter`. */
-export function snapshotMtimes(
-  dir: string,
-  filter: (p: string) => boolean,
-): Map<string, number> {
+export function snapshotMtimes(dir: string, filter: (p: string) => boolean): Map<string, number> {
   const m = new Map<string, number>();
   for (const p of walk(dir, filter)) m.set(p, mtimeMs(p));
   return m;

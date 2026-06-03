@@ -15,4 +15,4 @@ export function getAdapter(agent: AgentType): AgentAdapter {
 }
 
 export type { AgentAdapter, Completion, DetectedSession, LaunchSpec } from "./types.js";
-export { codexAdapter, claudeAdapter };
+export { claudeAdapter, codexAdapter };

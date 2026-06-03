@@ -1,4 +1,5 @@
 import path from "node:path";
+
 import { homedir } from "../util/paths.js";
 import {
   fileSize,
@@ -12,8 +13,7 @@ import {
 import type { AgentAdapter, Completion, DetectedSession, LaunchSpec } from "./types.js";
 
 const ROOT = path.join(homedir(), ".codex", "sessions");
-const UUID_RE =
-  /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 
 function isJsonl(p: string): boolean {
   return p.endsWith(".jsonl");
@@ -88,9 +88,9 @@ export const codexAdapter: AgentAdapter = {
       const p = payloadOf(obj);
       const t = p["type"];
       if (t === "task_complete" && typeof p["last_agent_message"] === "string") {
-        last = p["last_agent_message"] as string;
+        last = p["last_agent_message"];
       } else if (t === "agent_message" && typeof p["message"] === "string") {
-        last = p["message"] as string;
+        last = p["message"];
       }
     }
     return last;

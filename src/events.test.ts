@@ -1,12 +1,14 @@
 import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, test } from "vitest";
+
 import {
   appendTurnEvent,
   eventLogPath,
-  readTurnEventsSince,
   type GroveTurnEvent,
+  readTurnEventsSince,
 } from "./events.js";
 
 let tempDirs: string[] = [];

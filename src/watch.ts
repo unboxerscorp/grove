@@ -1,6 +1,7 @@
-import { existsSync, watch, type FSWatcher } from "node:fs";
 import { createHash } from "node:crypto";
+import { existsSync, type FSWatcher, watch } from "node:fs";
 import { basename } from "node:path";
+
 import type { Context, NodeCtx } from "./context.js";
 import { appendTurnEvent, type GroveTurnEvent } from "./events.js";
 import { resolveTranscript } from "./ops.js";
@@ -90,10 +91,7 @@ export function scanNodeForTurnEvent(
     completion.offset,
     completion.text ?? "",
   );
-  const appended = appendTurnEvent(
-    opts.eventLogDir ?? eventsDir(ctx.config.session),
-    event,
-  );
+  const appended = appendTurnEvent(opts.eventLogDir ?? eventsDir(ctx.config.session), event);
   return { appended, nextOffset: completion.offset };
 }
 

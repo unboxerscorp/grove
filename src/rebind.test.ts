@@ -1,18 +1,12 @@
-import {
-  mkdtempSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, test } from "vitest";
+
 import type { AgentAdapter } from "./adapters/types.js";
 import type { Context, NodeCtx } from "./context.js";
-import {
-  applyTranscriptRebinds,
-  planTranscriptRebinds,
-} from "./rebind.js";
+import { applyTranscriptRebinds, planTranscriptRebinds } from "./rebind.js";
 
 let tempDirs: string[] = [];
 
@@ -173,8 +167,6 @@ describe("planTranscriptRebinds", () => {
     const plan = planTranscriptRebinds(ctx);
 
     expect(plan.updates).toEqual([]);
-    expect(plan.skipped).toEqual([
-      expect.objectContaining({ node: "docs", reason: "ambiguous" }),
-    ]);
+    expect(plan.skipped).toEqual([expect.objectContaining({ node: "docs", reason: "ambiguous" })]);
   });
 });

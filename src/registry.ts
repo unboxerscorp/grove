@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+
 import type { AgentType } from "./config.js";
 import { registryPath, sessionDir } from "./util/paths.js";
 

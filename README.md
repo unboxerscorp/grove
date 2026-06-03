@@ -15,7 +15,7 @@ grove send reviewer "review the diff on branch hotfix"
 
 ## Why
 
-One agent in one terminal is a chat. A *tree* of agents is an org. grove gives you the org:
+One agent in one terminal is a chat. A _tree_ of agents is an org. grove gives you the org:
 
 - **Declarative** — the org-chart is a file (`grove.yaml`), versioned with your repo.
 - **Heterogeneous** — mix `claude` and `codex` nodes freely. Each is just a node.
@@ -38,9 +38,9 @@ A **node** is one agent instance. It has a name, an agent type, an optional role
 
 An **adapter** teaches grove how to talk to one kind of agent. Adding a new agent type = implementing three operations: how to launch it, how to know it finished a turn, and how to read what it said. Two adapters ship today:
 
-| agent | launch | "turn done" signal |
-|-------|--------|--------------------|
-| `codex` | `codex resume <id>` | `task_complete` event in the session jsonl |
+| agent    | launch                 | "turn done" signal                             |
+| -------- | ---------------------- | ---------------------------------------------- |
+| `codex`  | `codex resume <id>`    | `task_complete` event in the session jsonl     |
 | `claude` | `claude --resume <id>` | assistant message with `stop_reason: end_turn` |
 
 ## Quick start
@@ -52,11 +52,29 @@ grove up                   # bring the tree up
 grove status
 ```
 
+## Development gate
+
+Install Node dependencies with `pnpm install`. Install pre-commit hooks with:
+
+```bash
+pnpm hooks:install
+```
+
+The single local verification gate is:
+
+```bash
+pnpm check
+```
+
+It runs Prettier, ESLint, TypeScript typecheck, Vitest, Ruff, Ruff format, mypy strict,
+and pytest. Python checks run through `uv`; install it with `brew install uv` or the
+installer documented at <https://docs.astral.sh/uv/getting-started/installation/>.
+
 ### `grove.yaml`
 
 ```yaml
-session: my-project              # tmux session name
-cwd: /path/to/repo               # default working dir for every node
+session: my-project # tmux session name
+cwd: /path/to/repo # default working dir for every node
 defaults:
   agent: codex
   model: gpt-5.5
@@ -78,17 +96,17 @@ nodes:
 
 ## Commands
 
-| command | what it does |
-|---------|--------------|
-| `grove up [--config f]` | create the tmux session and bring up every node (idempotent — adopts already-running windows) |
-| `grove down` | kill the session |
-| `grove status` | tree view of every node: agent, tmux state, last event |
-| `grove send <node> "<msg>"` | give a node a task (non-blocking) |
-| `grove wait <node>` | block until the node finishes its current turn, print the result |
-| `grove ask <node> "<msg>"` | `send` + `wait` in one shot |
-| `grove tail <node>` | follow a node's output live |
-| `grove session <node>` | print a node's resolved session id + transcript path |
-| `grove init` | scaffold a `grove.yaml` and a delegation-protocol doc |
+| command                     | what it does                                                                                  |
+| --------------------------- | --------------------------------------------------------------------------------------------- |
+| `grove up [--config f]`     | create the tmux session and bring up every node (idempotent — adopts already-running windows) |
+| `grove down`                | kill the session                                                                              |
+| `grove status`              | tree view of every node: agent, tmux state, last event                                        |
+| `grove send <node> "<msg>"` | give a node a task (non-blocking)                                                             |
+| `grove wait <node>`         | block until the node finishes its current turn, print the result                              |
+| `grove ask <node> "<msg>"`  | `send` + `wait` in one shot                                                                   |
+| `grove tail <node>`         | follow a node's output live                                                                   |
+| `grove session <node>`      | print a node's resolved session id + transcript path                                          |
+| `grove init`                | scaffold a `grove.yaml` and a delegation-protocol doc                                         |
 
 ## Status
 

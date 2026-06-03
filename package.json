@@ -24,9 +24,28 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "check:ts": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "check:py": "cd bridge && uv run --group dev ruff check . && uv run --group dev ruff format --check . && uv run --group dev mypy src tests && uv run --group dev pytest",
+    "check": "pnpm check:ts && pnpm check:py",
+    "hooks:install": "lefthook install",
     "prepublishOnly": "pnpm build"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,mjs,cjs}": [
+      "prettier --write",
+      "eslint --fix --max-warnings=0"
+    ],
+    "*.{json,md,mdx,yml,yaml,css}": "prettier --write",
+    "bridge/**/*.py": [
+      "uv run --project bridge --group dev ruff format",
+      "uv run --project bridge --group dev ruff check --fix"
+    ]
   },
   "keywords": [
     "ai",
@@ -46,9 +65,18 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@types/node": "^22.10.5",
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-simple-import-sort": "^13.0.0",
+    "globals": "^17.6.0",
+    "lefthook": "^2.1.9",
+    "lint-staged": "^17.0.7",
+    "prettier": "^3.8.3",
     "tsup": "^8.3.5",
     "typescript": "^5.7.3",
+    "typescript-eslint": "^8.60.1",
     "vitest": "^2.1.8"
   }
 }

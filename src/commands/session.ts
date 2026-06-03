@@ -1,10 +1,7 @@
 import { loadContext, nodeOf } from "../context.js";
 import { resolveTranscript } from "../ops.js";
 
-export async function cmdSession(
-  name: string,
-  opts: { config?: string },
-): Promise<void> {
+export async function cmdSession(name: string, opts: { config?: string }): Promise<void> {
   const ctx = loadContext(opts.config);
   const nc = nodeOf(ctx, name);
   const rt = ctx.registry.nodes[name];

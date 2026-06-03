@@ -1,12 +1,7 @@
 import path from "node:path";
+
 import { cwdSlug, homedir } from "../util/paths.js";
-import {
-  fileSize,
-  jsonLines,
-  newestChanged,
-  readFrom,
-  snapshotMtimes,
-} from "./jsonl.js";
+import { fileSize, jsonLines, newestChanged, readFrom, snapshotMtimes } from "./jsonl.js";
 import type { AgentAdapter, Completion, DetectedSession, LaunchSpec } from "./types.js";
 
 function projectDir(cwd: string): string {

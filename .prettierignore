@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.git/
+.grove-home/
+.venv/
+.pytest_cache/
+__pycache__/
+bridge/.venv/
+bridge/.pytest_cache/
+cockpit.grove.yaml
+fleet.yaml
+grove.yaml

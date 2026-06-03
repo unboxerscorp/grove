@@ -1,5 +1,6 @@
 import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
+
 import { color, info, warn } from "../util/log.js";
 
 function template(session: string, cwd: string): string {

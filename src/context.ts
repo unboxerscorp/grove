@@ -1,10 +1,5 @@
-import { getAdapter, type AgentAdapter } from "./adapters/index.js";
-import {
-  loadConfig,
-  resolveNodes,
-  type GroveConfig,
-  type ResolvedNode,
-} from "./config.js";
+import { type AgentAdapter, getAdapter } from "./adapters/index.js";
+import { type GroveConfig, loadConfig, type ResolvedNode, resolveNodes } from "./config.js";
 import { loadOrInit, type Registry } from "./registry.js";
 import { target } from "./tmux.js";
 

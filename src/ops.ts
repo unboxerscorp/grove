@@ -99,9 +99,7 @@ export interface WaitOptions {
 
 function transcriptIdOf(ctx: Context, nc: NodeCtx, transcript: string): string {
   return (
-    nc.adapter.sessionIdFromPath(transcript) ??
-    ctx.registry.nodes[nc.node.name]?.sessionId ??
-    ""
+    nc.adapter.sessionIdFromPath(transcript) ?? ctx.registry.nodes[nc.node.name]?.sessionId ?? ""
   );
 }
 
@@ -296,9 +294,7 @@ export async function bringUp(ctx: Context): Promise<BringUpResult> {
     if (node.tmux) {
       const running = await paneCommand(nc.addr);
       if (running && !SHELLS.has(running)) {
-        step(
-          `adopt ${color.bold(node.name)} ${color.dim(`(${nc.adapter.label}) @ ${node.tmux}`)}`,
-        );
+        step(`adopt ${color.bold(node.name)} ${color.dim(`(${nc.adapter.label}) @ ${node.tmux}`)}`);
         registerExisting(ctx, nc);
         result.adopted.push(node.name);
         continue;

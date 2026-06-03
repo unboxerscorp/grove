@@ -4,10 +4,7 @@ import { color, err, info } from "../util/log.js";
 import { waitForChangeOrTimeout } from "../util/time.js";
 
 /** Stream a node's completed turns as they land. Runs until interrupted. */
-export async function cmdTail(
-  name: string,
-  opts: { config?: string },
-): Promise<void> {
+export async function cmdTail(name: string, opts: { config?: string }): Promise<void> {
   const ctx = loadContext(opts.config);
   const nc = nodeOf(ctx, name);
   const transcript = resolveTranscript(ctx, nc);

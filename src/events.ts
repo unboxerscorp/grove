@@ -65,10 +65,7 @@ function isTurnEvent(value: unknown): value is GroveTurnEvent {
   );
 }
 
-export function readTurnEventsSince(
-  eventLogDir: string,
-  fromOffset: number,
-): TurnEventReadResult {
+export function readTurnEventsSince(eventLogDir: string, fromOffset: number): TurnEventReadResult {
   const logPath = eventLogPath(eventLogDir);
   let buffer: Buffer;
   try {
@@ -128,10 +125,7 @@ function claimNonce(eventLogDir: string, nonce: string): boolean {
   return true;
 }
 
-export function appendTurnEvent(
-  eventLogDir: string,
-  event: GroveTurnEvent,
-): boolean {
+export function appendTurnEvent(eventLogDir: string, event: GroveTurnEvent): boolean {
   mkdirSync(eventLogDir, { recursive: true });
   if (!claimNonce(eventLogDir, event.nonce)) return false;
 

@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+
 import type { ResolvedNode } from "./config.js";
 import type { Context, NodeCtx } from "./context.js";
 
@@ -65,7 +66,7 @@ function findStringProperty(value: unknown, key: string): string | null {
     return null;
   }
   const record = value as Record<string, unknown>;
-  if (typeof record[key] === "string") return record[key] as string;
+  if (typeof record[key] === "string") return record[key];
   for (const child of Object.values(record)) {
     const found = findStringProperty(child, key);
     if (found) return found;
@@ -106,9 +107,7 @@ function earlyUserText(transcript: string): string {
     if (record.type === "user") {
       const message = record.message;
       if (message && typeof message === "object") {
-        parts.push(
-          ...messageContentText((message as Record<string, unknown>).content),
-        );
+        parts.push(...messageContentText((message as Record<string, unknown>).content));
       }
       continue;
     }
@@ -222,10 +221,7 @@ export function planTranscriptRebinds(ctx: Context): TranscriptRebindPlan {
   return { updates, skipped };
 }
 
-export function applyTranscriptRebinds(
-  ctx: Context,
-  plan: TranscriptRebindPlan,
-): void {
+export function applyTranscriptRebinds(ctx: Context, plan: TranscriptRebindPlan): void {
   for (const update of plan.updates) {
     const nc = ctx.byName.get(update.node);
     if (!nc) continue;

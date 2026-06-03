@@ -1,7 +1,7 @@
 import type { Context } from "../context.js";
+import { loadContext } from "../context.js";
 import { resolveTranscript } from "../ops.js";
 import { hasSession, paneCommand } from "../tmux.js";
-import { loadContext } from "../context.js";
 import { color } from "../util/log.js";
 
 const SHELLS = new Set(["zsh", "-zsh", "bash", "-bash", "sh", "fish", "tmux"]);
@@ -41,13 +41,9 @@ export async function renderStatus(ctx: Context): Promise<void> {
     const branch = isRoot ? "" : last ? "└─ " : "├─ ";
     const cmd = alive ? await paneCommand(nc.addr) : "";
     const dot =
-      cmd && !SHELLS.has(cmd)
-        ? color.green("●")
-        : cmd
-          ? color.yellow("◐")
-          : color.gray("○");
+      cmd && !SHELLS.has(cmd) ? color.green("●") : cmd ? color.yellow("◐") : color.gray("○");
     const transcript = resolveTranscript(ctx, nc);
-    const last_ = transcript ? nc.adapter.readLast(transcript) ?? "" : "";
+    const last_ = transcript ? (nc.adapter.readLast(transcript) ?? "") : "";
     const snippet = last_.replace(/\s+/g, " ").trim().slice(0, 60);
     lines.push(
       `${prefix}${branch}${dot} ${color.bold(name)} ${color.dim(`[${nc.adapter.label}]`)}  ${color.gray(snippet)}`,

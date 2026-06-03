@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+
 import { cmdAsk } from "./commands/ask.js";
 import { cmdDown } from "./commands/down.js";
 import { cmdGather } from "./commands/gather.js";
@@ -105,9 +106,7 @@ program
   .option("-t, --timeout <dur>", "max wait, e.g. 30s 20m 1h", "30m")
   .option("--json", "print the fixed fan-in result schema as JSON")
   .action(
-    run((nodes: string[], opts: Record<string, unknown>) =>
-      cmdGather(nodes, withConfig(opts)),
-    ),
+    run((nodes: string[], opts: Record<string, unknown>) => cmdGather(nodes, withConfig(opts))),
   );
 
 program

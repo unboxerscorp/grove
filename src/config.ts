@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+
 import { expandHome } from "./util/paths.js";
 
 export const AgentTypeSchema = z.enum(["codex", "claude"]);
@@ -71,7 +73,7 @@ export function findConfig(explicit?: string): string {
 
 export function loadConfig(explicit?: string): { path: string; config: GroveConfig } {
   const cfgPath = findConfig(explicit);
-  const raw = parseYaml(readFileSync(cfgPath, "utf8"));
+  const raw: unknown = parseYaml(readFileSync(cfgPath, "utf8"));
   const config = GroveConfigSchema.parse(raw);
   return { path: cfgPath, config };
 }

@@ -3,4 +3,11 @@ dist/
 *.log
 .DS_Store
 .grove-home/
+.venv/
+.pytest_cache/
+__pycache__/
 coverage/
+.worktrees/
+/cockpit.grove.yaml
+/fleet.yaml
+/grove.yaml

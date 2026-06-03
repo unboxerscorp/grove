@@ -20,9 +20,7 @@ export async function cmdGather(
     mode: "all",
     timeoutMs,
   });
-  process.stdout.write(
-    opts.json ? `${renderGatherJson(result)}\n` : renderGatherText(result),
-  );
+  process.stdout.write(opts.json ? `${renderGatherJson(result)}\n` : renderGatherText(result));
   if (result.deadlineExceeded) {
     process.exitCode = 1;
   }

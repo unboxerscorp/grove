@@ -1,15 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, describe, expect, test } from "vitest";
+
 import type { AgentAdapter } from "./adapters/types.js";
 import type { Context, NodeCtx } from "./context.js";
 import { appendTurnEvent, type GroveTurnEvent } from "./events.js";
-import {
-  renderGatherJson,
-  renderGatherText,
-  waitForFanIn,
-} from "./fanin.js";
+import { renderGatherJson, renderGatherText, waitForFanIn } from "./fanin.js";
 
 let tempDirs: string[] = [];
 
@@ -74,8 +72,7 @@ function makeContext(
       transcriptForSession: () => transcript,
       snapshot: () => new Map<string, number>(),
       detectNew: () => null,
-      sessionIdFromPath: (path: string) =>
-        path.match(/\/([^/]+)-session\.jsonl$/)?.[1] ?? null,
+      sessionIdFromPath: (path: string) => path.match(/\/([^/]+)-session\.jsonl$/)?.[1] ?? null,
       size: (path: string) => sizes.get(path) ?? 0,
       readCompletionSince: (_path: string, offset: number) => {
         const completion = opts.completions?.[node.name];
@@ -102,9 +99,7 @@ function makeContext(
       session: "grove-test",
       cwd: "/tmp/grove-test",
       defaults: { agent: "codex" },
-      nodes: Object.fromEntries(
-        nodeNames.map((name) => [name, { agent: "codex", children: [] }]),
-      ),
+      nodes: Object.fromEntries(nodeNames.map((name) => [name, { agent: "codex", children: [] }])),
     },
     nodes,
     byName,

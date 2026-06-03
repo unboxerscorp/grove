@@ -1,5 +1,5 @@
 import { loadContext, nodeOf } from "../context.js";
-import { renderFanInJson, waitForFanIn, type FanInMode } from "../fanin.js";
+import { type FanInMode, renderFanInJson, waitForFanIn } from "../fanin.js";
 import { clearPending, waitForCompletion } from "../ops.js";
 import { color, err, info } from "../util/log.js";
 import { parseDuration } from "../util/time.js";

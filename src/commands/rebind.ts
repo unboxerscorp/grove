@@ -1,15 +1,9 @@
 import { loadContext } from "../context.js";
-import {
-  applyTranscriptRebinds,
-  planTranscriptRebinds,
-} from "../rebind.js";
+import { applyTranscriptRebinds, planTranscriptRebinds } from "../rebind.js";
 import { saveRegistry } from "../registry.js";
 import { color, info, warn } from "../util/log.js";
 
-export async function cmdRebind(opts: {
-  config?: string;
-  dryRun?: boolean;
-}): Promise<void> {
+export async function cmdRebind(opts: { config?: string; dryRun?: boolean }): Promise<void> {
   const ctx = loadContext(opts.config);
   const plan = planTranscriptRebinds(ctx);
 

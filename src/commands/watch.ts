@@ -1,6 +1,6 @@
 import { loadContext } from "../context.js";
-import { startTurnEventWatcher } from "../watch.js";
 import { color, info, warn } from "../util/log.js";
+import { startTurnEventWatcher } from "../watch.js";
 
 export async function cmdWatch(opts: { config?: string }): Promise<void> {
   const ctx = loadContext(opts.config);
@@ -10,11 +10,7 @@ export async function cmdWatch(opts: { config?: string }): Promise<void> {
   if (watcher.watched.length === 0) {
     warn("no transcripts resolved; run grove up or grove send first");
   } else {
-    info(
-      `watching completions for ${watcher.watched
-        .map((name) => color.bold(name))
-        .join(", ")}`,
-    );
+    info(`watching completions for ${watcher.watched.map((name) => color.bold(name)).join(", ")}`);
   }
 
   await new Promise<void>((resolve) => {
