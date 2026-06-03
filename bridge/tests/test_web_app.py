@@ -565,6 +565,244 @@ def test_audit_endpoint_rejects_team_viewer_role(tmp_path: Path) -> None:
     assert response.status_code == 403
 
 
+def test_inbox_returns_blocked_and_ask_human_items_with_cursor_and_redaction(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    secret = "xoxb-" + ("a" * 44)
+    normal = store.create_task(
+        board="dev10",
+        title=f"Normal blocked /Users/chopin/{secret}",
+        body=f"Body includes /etc/passwd and {secret}",
+        assignee="reviewer",
+        status="blocked",
+        priority=5,
+        metadata={"reason": f"Raw reason /Applications/Grove.app {secret}"},
+    )
+    human_task = store.create_task(
+        board="dev10",
+        title="Needs human decision",
+        body="Pick one option",
+        assignee="maker",
+        priority=10,
+    )
+    claim = store.claim_next(board="dev10", assignee="maker", node_id="maker", ttl_seconds=30)
+    assert claim is not None
+    assert store.block(
+        board="dev10",
+        task_id=human_task.id,
+        run_id=claim.run_id,
+        claim_lock=claim.claim_lock,
+        reason=f"Need decision /usr/local/bin/tool {secret}",
+        metadata={"question": "Choose release path"},
+        needs_human=True,
+    )
+    store.upsert_slack_thread(
+        board="dev10",
+        task_id=human_task.id,
+        team_id="",
+        channel_id="C123",
+        thread_ts=f"pending:{human_task.id}",
+        mode="human_gate_pending",
+        node="maker",
+    )
+    store.add_notify_sub(
+        board="dev10",
+        task_id=human_task.id,
+        channel_kind="slack",
+        room_id="C123",
+        thread_id="1700000000.000100",
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    first = client.get("/api/inbox?limit=1", headers=headers)
+    second = client.get(f"/api/inbox?cursor={first.json()['next_cursor']}", headers=headers)
+    response = client.get("/api/inbox", headers=headers)
+
+    assert first.status_code == 200
+    assert first.json()["total"] == 2
+    assert first.json()["next_cursor"] == 1
+    assert len(first.json()["items"]) == 1
+    assert second.status_code == 200
+    assert second.json()["next_cursor"] is None
+    payload = response.json()
+    by_task = {item["task_id"]: item for item in payload["items"]}
+    human = by_task[human_task.id]
+    assert human["type"] == "ask_human"
+    assert human["needs_human"] is True
+    assert "human_gate_pending" in human["sources"]
+    assert "notify_sub" in human["sources"]
+    assert human["node"] == "maker"
+    assert human["blocked_reason"] == "Need decision [path] [redacted]"
+    assert human["slack"]["pending"][0]["thread_id"] == f"pending:{human_task.id}"
+    assert human["slack"]["notify_subs"][0]["thread_id"] == "1700000000.000100"
+    assert payload["answer"]["endpoint"] == "/api/tasks/{task_id}/answer"
+    assert "comment_endpoint" not in payload["answer"]
+    assert human["answer"]["endpoint"] == f"/api/tasks/{human_task.id}/answer"
+    assert human["answer"]["slack_thread_reply"] is True
+    blocked = by_task[normal.id]
+    assert blocked["type"] == "blocked_task"
+    assert blocked["sources"] == ["blocked_task"]
+    assert blocked["title"] == "Normal blocked [path]"
+    assert blocked["body"] == "Body includes [path] and [redacted]"
+    rendered = json.dumps(payload)
+    assert "/Users/chopin" not in rendered
+    assert "/etc/passwd" not in rendered
+    assert "/Applications" not in rendered
+    assert "/usr/local/bin/tool" not in rendered
+    assert secret not in rendered
+
+
+def test_inbox_token_and_project_gate(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    dev10 = store.create_task(
+        board="dev10",
+        title="dev10 blocked",
+        body=None,
+        assignee="maker10",
+        status="blocked",
+    )
+    dev11 = store.create_task(
+        board="dev11",
+        title="dev11 blocked",
+        body=None,
+        assignee="maker11",
+        status="blocked",
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"maker11": {"name": "maker11", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+
+    missing = client.get("/api/inbox")
+    scoped = client.get(
+        "/api/inbox",
+        headers=auth_headers(client) | {"X-Grove-Project": "dev11"},
+    )
+
+    assert missing.status_code == 401
+    assert scoped.status_code == 200
+    rendered = json.dumps(scoped.json())
+    assert scoped.json()["project"] == "dev11"
+    assert dev11.id in rendered
+    assert "dev11 blocked" in rendered
+    assert dev10.id not in rendered
+    assert "dev10 blocked" not in rendered
+
+
+def test_inbox_empty_project_is_graceful(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/inbox", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    assert response.json()["project"] == "dev10"
+    assert response.json()["items"] == []
+    assert response.json()["next_cursor"] is None
+    assert response.json()["total"] == 0
+
+
+def test_inbox_answer_adds_comment_unblocks_and_removes_item(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="dev10",
+        title="Needs answer",
+        body="What should we do?",
+        assignee="maker",
+        status="blocked",
+        metadata={"needs_human": True},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    before = client.get("/api/inbox", headers=headers)
+    answered = client.post(
+        f"/api/tasks/{task.id}/answer",
+        headers=headers,
+        json={"text": "Proceed with option A"},
+    )
+    after = client.get("/api/inbox", headers=headers)
+    comments = client.get(f"/api/tasks/{task.id}/comments", headers=headers)
+    loaded = store.get_task(board="dev10", task_id=task.id)
+
+    assert before.status_code == 200
+    assert [item["task_id"] for item in before.json()["items"]] == [task.id]
+    assert answered.status_code == 200
+    assert answered.json()["ok"] is True
+    assert answered.json()["task"]["status"] == "ready"
+    assert loaded.status == "ready"
+    assert comments.status_code == 200
+    assert comments.json()[0]["author"] == "local:lead"
+    assert comments.json()[0]["body"] == "Proceed with option A"
+    assert after.status_code == 200
+    assert after.json()["items"] == []
+
+
+def test_inbox_answer_rejects_team_viewer_role(tmp_path: Path) -> None:
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="dev10",
+        title="Viewer cannot answer",
+        body=None,
+        assignee="maker",
+        status="blocked",
+    )
+    client = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
+    login = client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+
+    response = client.post(f"/api/tasks/{task.id}/answer", json={"text": "answer"})
+
+    assert login.status_code == 200
+    assert response.status_code == 403
+    assert store.get_task(board="dev10", task_id=task.id).status == "blocked"
+    assert store.list_comments(board="dev10", task_id=task.id) == []
+
+
+def test_inbox_answer_respects_project_scope(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    dev10 = store.create_task(
+        board="dev10",
+        title="dev10 blocked",
+        body=None,
+        assignee="maker10",
+        status="blocked",
+    )
+    dev11 = store.create_task(
+        board="dev11",
+        title="dev11 blocked",
+        body=None,
+        assignee="maker11",
+        status="blocked",
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"maker11": {"name": "maker11", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client) | {"X-Grove-Project": "dev11"}
+
+    wrong_project = client.post(
+        f"/api/tasks/{dev10.id}/answer",
+        headers=headers,
+        json={"text": "wrong project"},
+    )
+    right_project = client.post(
+        f"/api/tasks/{dev11.id}/answer",
+        headers=headers,
+        json={"text": "right project"},
+    )
+
+    assert wrong_project.status_code == 404
+    assert right_project.status_code == 200
+    assert store.get_task(board="dev10", task_id=dev10.id).status == "blocked"
+    assert store.get_task(board="dev11", task_id=dev11.id).status == "ready"
+
+
 def test_cost_endpoint_reports_best_effort_agent_usage_and_agy_unknown(
     tmp_path: Path,
 ) -> None:

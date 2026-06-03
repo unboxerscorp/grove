@@ -26,8 +26,24 @@ from pydantic import BaseModel, Field
 
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
 from grove_bridge.config import default_board_db_path
-from grove_bridge.slack import SlackConfig, SlackConfigStore, config_status, slack_manifest
-from grove_bridge.store import Board, BoardEvent, Comment, Run, SlackThread, SQLiteBoardStore, Task
+from grove_bridge.slack import (
+    HUMAN_GATE_MODE,
+    HUMAN_GATE_PENDING_MODE,
+    SlackConfig,
+    SlackConfigStore,
+    config_status,
+    slack_manifest,
+)
+from grove_bridge.store import (
+    Board,
+    BoardEvent,
+    Comment,
+    NotifySub,
+    Run,
+    SlackThread,
+    SQLiteBoardStore,
+    Task,
+)
 from grove_bridge.team_auth import (
     CSRF_HEADER,
     TEAM_SESSION_COOKIE,
@@ -171,6 +187,10 @@ class CostNodeSnapshot:
 class CommentPayload(BaseModel):
     author: str = Field(default="dev-room", min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=20_000)
+
+
+class AnswerPayload(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
 
 
 class TaskCreatePayload(BaseModel):
@@ -389,6 +409,16 @@ def create_app(
             "next_cursor": events[-1].cursor if events else cursor,
         }
 
+    @app.get("/api/inbox")
+    def inbox_endpoint(
+        request: Request,
+        cursor: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        return _inbox_payload(_store(request), project=project, cursor=cursor, limit=limit)
+
     @app.get("/api/cost")
     def cost_endpoint(
         request: Request,
@@ -540,6 +570,37 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="task not found") from exc
         return _comment_payload(comment)
+
+    @app.post("/api/tasks/{task_id}/answer")
+    def answer_task_endpoint(
+        request: Request,
+        task_id: str,
+        payload: AnswerPayload,
+    ) -> dict[str, object]:
+        auth = _require_state_change(request)
+        _require_answer_access(auth)
+        project = resolve_project(request)
+        task = _task_for_project(_store(request), task_id, project=project)
+        if task.status != "blocked":
+            raise HTTPException(status_code=409, detail="task is not blocked")
+        actor = _actor_payload(auth)
+        author = _answer_author(actor)
+        try:
+            comment = _store(request).add_comment_to_task(
+                task_id=task_id,
+                author=author,
+                body=payload.text,
+            )
+            unblocked = _store(request).unblock_task_by_id(task_id=task_id, actor=author)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="task not found") from exc
+        if not unblocked:
+            raise HTTPException(status_code=409, detail="task could not be unblocked")
+        return {
+            "ok": True,
+            "task": _task_payload(_store(request).get_task_by_id(task_id)),
+            "comment": _comment_payload(comment),
+        }
 
     @app.get("/api/nodes")
     def nodes_endpoint(request: Request) -> list[dict[str, str]]:
@@ -974,6 +1035,174 @@ def _valid_timestamp(value: object) -> int | None:
             if 0 <= parsed <= MAX_TIMESTAMP_SECONDS:
                 return parsed
     return None
+
+
+def _inbox_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    cursor: int,
+    limit: int,
+) -> dict[str, object]:
+    now = int(time.time())
+    tasks = store.list_tasks(board=project.board, status="blocked")
+    items = [
+        _inbox_item_payload(store, task, project=project, now=now)
+        for task in tasks
+        if task.status == "blocked"
+    ]
+    page = items[cursor : cursor + limit]
+    next_cursor = cursor + len(page) if cursor + len(page) < len(items) else None
+    return {
+        "project": project.name,
+        "items": page,
+        "next_cursor": next_cursor,
+        "total": len(items),
+        "answer": {
+            "endpoint": "/api/tasks/{task_id}/answer",
+            "method": "POST",
+            "body": {"text": "human answer"},
+            "human_gate": "Slack thread replies use the same comment plus unblock flow",
+            "audit": "unblock is recorded through board events with the answer actor",
+        },
+    }
+
+
+def _inbox_item_payload(
+    store: SQLiteBoardStore,
+    task: Task,
+    *,
+    project: ProjectContext,
+    now: int,
+) -> dict[str, object]:
+    runs = store.list_runs(board=project.board, task_id=task.id)
+    blocked_run = _latest_blocked_run(runs)
+    notify_subs = store.list_notify_subs(board=project.board, task_id=task.id)
+    slack_threads = [
+        thread
+        for thread in store.list_slack_threads(task_id=task.id)
+        if thread.board_id == task.board_id
+    ]
+    human_threads = [thread for thread in slack_threads if thread.mode == HUMAN_GATE_MODE]
+    pending_threads = [thread for thread in slack_threads if thread.mode == HUMAN_GATE_PENDING_MODE]
+    needs_human = bool(task.metadata.get("needs_human"))
+    blocked_since = _inbox_blocked_since(task, blocked_run)
+    sources = _inbox_sources(
+        needs_human=needs_human,
+        human_threads=human_threads,
+        pending_threads=pending_threads,
+        notify_subs=notify_subs,
+    )
+    return {
+        "id": task.id,
+        "type": "ask_human" if "ask_human" in sources else "blocked_task",
+        "task_id": task.id,
+        "title": _inbox_text(task.title),
+        "body": _inbox_optional_text(task.body),
+        "status": task.status,
+        "assignee": _inbox_optional_text(task.assignee),
+        "node": _inbox_optional_text(_inbox_node(task, blocked_run)),
+        "blocked_reason": _inbox_optional_text(_inbox_blocked_reason(task, blocked_run)),
+        "blocked_since": blocked_since,
+        "waiting_seconds": max(0, now - blocked_since),
+        "needs_human": needs_human,
+        "sources": sources,
+        "slack": {
+            "threads": [_inbox_slack_thread_payload(thread) for thread in human_threads],
+            "pending": [_inbox_slack_thread_payload(thread) for thread in pending_threads],
+            "notify_subs": [_inbox_notify_sub_payload(sub) for sub in notify_subs],
+        },
+        "answer": {
+            "endpoint": f"/api/tasks/{task.id}/answer",
+            "method": "POST",
+            "slack_thread_reply": bool(human_threads or notify_subs),
+            "note": "answer adds a comment and unblocks the task",
+        },
+    }
+
+
+def _latest_blocked_run(runs: Sequence[Run]) -> Run | None:
+    blocked = [run for run in runs if run.status == "blocked" or run.outcome == "blocked"]
+    if not blocked:
+        return None
+    return max(blocked, key=lambda run: (run.ended_at or run.started_at, run.id))
+
+
+def _inbox_blocked_since(task: Task, run: Run | None) -> int:
+    if run is not None:
+        return run.ended_at or run.started_at
+    return task.updated_at or task.created_at
+
+
+def _inbox_node(task: Task, run: Run | None) -> str | None:
+    metadata_node = _mapping_string(task.metadata, "node")
+    if metadata_node is not None:
+        return metadata_node
+    if task.assignee is not None:
+        return task.assignee
+    return None if run is None else run.node_id
+
+
+def _inbox_blocked_reason(task: Task, run: Run | None) -> str | None:
+    if run is not None:
+        if run.error is not None and run.error.strip():
+            return run.error
+        if run.summary is not None and run.summary.strip():
+            return run.summary
+    for key in ("reason", "question", "blocked_reason", "blockedReason"):
+        value = _mapping_string(task.metadata, key)
+        if value is not None:
+            return value
+    return task.result
+
+
+def _inbox_sources(
+    *,
+    needs_human: bool,
+    human_threads: Sequence[SlackThread],
+    pending_threads: Sequence[SlackThread],
+    notify_subs: Sequence[NotifySub],
+) -> list[str]:
+    sources = ["blocked_task"]
+    if needs_human or human_threads or pending_threads or notify_subs:
+        sources.append("ask_human")
+    if needs_human:
+        sources.append("needs_human")
+    if pending_threads:
+        sources.append(HUMAN_GATE_PENDING_MODE)
+    if human_threads:
+        sources.append(HUMAN_GATE_MODE)
+    if notify_subs:
+        sources.append("notify_sub")
+    return sources
+
+
+def _inbox_slack_thread_payload(thread: SlackThread) -> dict[str, object]:
+    return {
+        "channel": _inbox_text(thread.channel_id),
+        "thread_id": _inbox_text(thread.thread_ts),
+        "mode": _inbox_text(thread.mode),
+        "created_at": thread.created_at,
+        "updated_at": thread.updated_at,
+    }
+
+
+def _inbox_notify_sub_payload(sub: NotifySub) -> dict[str, object]:
+    return {
+        "channel_kind": _inbox_text(sub.channel_kind),
+        "room_id": _inbox_text(sub.room_id),
+        "thread_id": _inbox_text(sub.thread_id),
+        "user_id": _inbox_optional_text(sub.user_id),
+        "created_at": sub.created_at,
+    }
+
+
+def _inbox_text(value: str) -> str:
+    return _safe_log_text(value)
+
+
+def _inbox_optional_text(value: str | None) -> str | None:
+    return None if value is None else _inbox_text(value)
 
 
 def _cost_project_context(request: Request, project_name: str | None) -> ProjectContext:
@@ -1740,6 +1969,12 @@ def _require_cost_access(auth: AuthContext) -> None:
             raise HTTPException(status_code=403, detail="cost requires operator role")
 
 
+def _require_answer_access(auth: AuthContext) -> None:
+    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
+        if auth.member.role == "viewer":
+            raise HTTPException(status_code=403, detail="answer requires operator role")
+
+
 def _actor_payload(auth: AuthContext) -> dict[str, object]:
     if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
         return {
@@ -1754,6 +1989,15 @@ def _actor_payload(auth: AuthContext) -> dict[str, object]:
 def _actor_id(actor: Mapping[str, object]) -> str:
     actor_id = actor.get("id")
     return actor_id if isinstance(actor_id, str) else "system"
+
+
+def _answer_author(actor: Mapping[str, object]) -> str:
+    kind = actor.get("kind")
+    login = actor.get("login")
+    if isinstance(kind, str) and isinstance(login, str) and login.strip():
+        return f"{kind}:{login.strip()}"
+    actor_id = _actor_id(actor)
+    return f"actor:{actor_id}"
 
 
 def _member_registry(config: WebAppConfig) -> MemberRegistry:
