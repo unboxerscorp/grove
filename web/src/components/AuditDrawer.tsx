@@ -2,11 +2,26 @@ import { useEffect, useRef, useState } from "react";
 
 import { actorLabel, api, targetLabel } from "../api";
 import type { AuditEvent } from "../api";
-import { fmtAgo } from "../constants";
+import { cx, fmtAgo } from "../constants";
 import { useI18n } from "../i18n";
 import { useFocusTrap } from "../useFocusTrap";
 
 const PAGE = 4;
+
+// Autonomy actions (v1.10 backend): node self-claim + retrospective. Surfaced
+// with distinct chips/icons and exposed as quick filters.
+const ACTION_FILTERS = ["", "autopickup", "retro"] as const;
+
+function actionClass(action: string): string {
+  if (action === "autopickup") return "is-autopickup";
+  if (action === "retro") return "is-retro";
+  return "";
+}
+function actionGlyph(action: string): string {
+  if (action === "autopickup") return "⚡";
+  if (action === "retro") return "↺";
+  return "";
+}
 
 /**
  * Read-only audit lane (drawer). Consumes GET /api/audit (cursor-paged) with
@@ -103,6 +118,21 @@ export function AuditDrawer(props: { open: boolean; projectTick: number; onClose
           </button>
         </header>
 
+        <div className="audit-quickfilter" role="group" aria-label={t("audit.filterAction")}>
+          {ACTION_FILTERS.map((a) => (
+            <button
+              key={a || "all"}
+              type="button"
+              data-action={a || "all"}
+              className={cx("audit-qf", actionClass(a), action === a && "is-on")}
+              aria-pressed={action === a}
+              onClick={() => setAction(a)}
+            >
+              {a ? `${actionGlyph(a)} ${t(`audit.action.${a}`)}` : t("audit.action.all")}
+            </button>
+          ))}
+        </div>
+
         <div className="audit-filter">
           <input
             className="dr-input"
@@ -128,9 +158,12 @@ export function AuditDrawer(props: { open: boolean; projectTick: number; onClose
           {error && <div className="audit-msg is-error">{error}</div>}
           {!error && events.length === 0 && !loading && <div className="audit-msg">{t("audit.empty")}</div>}
           {events.map((ev, i) => (
-            <div key={ev.cursor ?? `${ev.ts}-${i}`} className="audit-event">
+            <div key={ev.cursor ?? `${ev.ts}-${i}`} className={cx("audit-event", actionClass(ev.action))}>
               <span className="audit-event__actor">{actorLabel(ev.actor)}</span>
-              <span className="audit-event__action">{ev.action}</span>
+              <span className={cx("audit-event__action", actionClass(ev.action))} data-action={ev.action}>
+                {actionGlyph(ev.action) && <span className="audit-event__glyph" aria-hidden="true">{actionGlyph(ev.action)}</span>}
+                {ev.action}
+              </span>
               <span className="audit-event__target">{targetLabel(ev.target)}</span>
               <span className="audit-event__ts">{fmtAgo(ev.ts)}</span>
             </div>

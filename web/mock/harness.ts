@@ -192,6 +192,9 @@ const AUDIT_EVENTS: MockAuditEvent[] = [
   { cursor: 8, id: "e8", actor: nodeActor("root"), action: "delegate", target: { type: "task", id: "G-8", node: "backend" }, ts: AUDIT_TS0 + 210, task_id: "G-8" },
   { cursor: 9, id: "e9", actor: nodeActor("root"), action: "block", target: { type: "task", id: "G-7", node: "frontend" }, ts: AUDIT_TS0 + 240, task_id: "G-7" },
   { cursor: 10, id: "e10", actor: nodeActor("root"), action: "spawn", target: { type: "node", id: "frontend", node: "frontend" }, ts: AUDIT_TS0 + 300, task_id: null },
+  // v1.10 autonomy events: node self-claim (autopickup) + retrospective (retro).
+  { cursor: 11, id: "e11", actor: nodeActor("backend"), action: "autopickup", target: { type: "task", id: "G-10", node: "backend" }, ts: AUDIT_TS0 + 330, task_id: "G-10" },
+  { cursor: 12, id: "e12", actor: nodeActor("researcher"), action: "retro", target: { type: "task", id: "G-6", node: "researcher" }, ts: AUDIT_TS0 + 360, task_id: "G-6" },
 ];
 
 // Decision inbox seed — MIRRORS web_app.py _inbox_item_payload: blocked +

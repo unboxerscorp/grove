@@ -81,6 +81,10 @@ ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 STACK_TRACE_RE = re.compile(r"(?i)(traceback|\bfile \"|\bat .+\(.+:\d+:\d+\))")
 NODE_AGENTS = frozenset({"codex", "claude", "antigravity"})
 COST_AGENTS = ("codex", "claude", "agy")
+PLAN_ROLE_WEIGHT = 50.0
+PLAN_CAPABILITY_WEIGHT = 20.0
+PLAN_LOAD_WEIGHT = 30.0
+PLAN_COST_WEIGHT = 10.0
 STATIC_SUFFIXES = {
     ".css",
     ".gif",
@@ -183,6 +187,19 @@ class CostNodeSnapshot:
     turns: int
     usage: CostUsage
     payload: dict[str, object]
+
+
+@dataclass(frozen=True)
+class PlanCandidateDraft:
+    node: str
+    payload: dict[str, object]
+    role_score: float
+    capability_score: float
+    load_score: float
+    token_signal: float | None
+    cost_usd_signal: float | None
+    cost_source: str
+    cost_confidence: str
 
 
 class CommentPayload(BaseModel):
@@ -451,6 +468,17 @@ def create_app(
             agent_filter=agent,
             include=include,
         )
+
+    @app.get("/api/plan")
+    def plan_endpoint(
+        request: Request,
+        role: str = Query(min_length=1, max_length=200),
+        task_id: str = Query(min_length=1, max_length=200),
+    ) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        task = _task_for_project(_store(request), task_id, project=project)
+        return _plan_payload(_store(request), project=project, task=task, role=role)
 
     @app.get("/api/auth-status")
     def auth_status_endpoint(request: Request) -> list[dict[str, object]]:
@@ -1356,6 +1384,349 @@ def _cost_payload(
             "estimate": "unknown cost without an explicit price source",
         }
     return payload
+
+
+def _plan_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    task: Task,
+    role: str,
+) -> dict[str, object]:
+    clean_role = _safe_log_text(role)
+    role_terms = _plan_terms(role) | _plan_metadata_terms(task.metadata, "role", "roles")
+    if not role_terms:
+        raise HTTPException(status_code=400, detail="role must contain searchable terms")
+    capability_terms = _plan_metadata_terms(task.metadata, "capability", "capabilities")
+    runs = store.list_runs_for_board(board=project.board)
+    runs_by_node = _runs_by_node(runs)
+    drafts = [
+        _plan_candidate_draft(
+            store,
+            project=project,
+            node=node,
+            role_terms=role_terms,
+            capability_terms=capability_terms,
+            runs=runs_by_node.get(_cost_node_name(node), []),
+        )
+        for node in _cost_registry_node_records(project.config)
+    ]
+    candidates = _plan_ranked_candidates(drafts)
+    return {
+        "project": project.name,
+        "task": {
+            "id": task.id,
+            "title": _safe_log_text(task.title),
+            "status": task.status,
+        },
+        "requested_role": clean_role,
+        "requirements": {
+            "role_terms": sorted(
+                _plan_public_terms(role)
+                | _plan_public_metadata_terms(task.metadata, "role", "roles")
+            ),
+            "capability_terms": sorted(
+                _plan_public_metadata_terms(task.metadata, "capability", "capabilities")
+            ),
+        },
+        "generated_at": _cost_metric(int(time.time()), source="server", confidence="explicit"),
+        "read_only": True,
+        "recommended_action": "review the ranked candidates and assign manually",
+        "candidates": candidates,
+        "limitations": [
+            "Scores are best-effort routing hints from registry, board load, and usage metadata.",
+            "No task is claimed, assigned, spawned, or executed by this endpoint.",
+        ],
+    }
+
+
+def _plan_candidate_draft(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    node: Mapping[str, object],
+    role_terms: set[str],
+    capability_terms: set[str],
+    runs: Sequence[Run],
+) -> PlanCandidateDraft:
+    name = _cost_node_name(node)
+    agent = _cost_node_agent(node)
+    status_value, reason, status_confidence = _node_status_detail(node)
+    running_tasks = len(store.list_tasks(board=project.board, status="running", assignee=name))
+    blocked_tasks = len(store.list_tasks(board=project.board, status="blocked", assignee=name))
+    node_terms = _plan_node_terms(node)
+    role_score = _plan_match_score(role_terms, node_terms, PLAN_ROLE_WEIGHT)
+    capability_score = _plan_match_score(
+        capability_terms,
+        node_terms,
+        PLAN_CAPABILITY_WEIGHT,
+    )
+    load_score = _plan_load_score(
+        status_value,
+        running_tasks=running_tasks,
+        blocked_tasks=blocked_tasks,
+    )
+    usage = _cost_usage_for_node(node, config=project.config, runs=runs)
+    payload: dict[str, object] = {
+        "node": _safe_log_text(name),
+        "agent": _safe_log_text(agent),
+        "role": _safe_log_text(_mapping_string(node, "role") or ""),
+        "group": _safe_log_text(_mapping_string(node, "group") or ""),
+        "status": status_value,
+        "status_reason": _safe_log_text(reason),
+        "score_breakdown": {
+            "role_match": _cost_metric(
+                round(role_score, 3),
+                source="registry+request",
+                confidence="inferred",
+            ),
+            "capability_match": _cost_metric(
+                round(capability_score, 3),
+                source="registry+task_metadata",
+                confidence="inferred" if capability_terms else "unknown",
+                status_value="unknown" if not capability_terms else None,
+            ),
+            "load": _cost_metric(
+                round(load_score, 3),
+                source="registry+board_store",
+                confidence="partial" if status_confidence != "explicit" else "explicit",
+            ),
+        },
+        "signals": {
+            "running_tasks": _cost_metric(
+                running_tasks,
+                source="board_store",
+                confidence="explicit",
+            ),
+            "blocked_tasks": _cost_metric(
+                blocked_tasks,
+                source="board_store",
+                confidence="explicit",
+            ),
+            "cost_basis": {
+                "total_tokens": _cost_metric(
+                    usage.total_tokens,
+                    source=usage.source if usage.total_tokens is not None else "none",
+                    confidence=usage.confidence if usage.total_tokens is not None else "unknown",
+                    status_value="unknown" if usage.total_tokens is None else None,
+                ),
+                "cost_usd": _cost_metric(
+                    usage.cost_usd,
+                    source=usage.source if usage.cost_usd is not None else "none",
+                    confidence=usage.confidence if usage.cost_usd is not None else "unknown",
+                    status_value="unknown" if usage.cost_usd is None else None,
+                ),
+            },
+        },
+    }
+    return PlanCandidateDraft(
+        node=name,
+        payload=payload,
+        role_score=role_score,
+        capability_score=capability_score,
+        load_score=load_score,
+        token_signal=float(usage.total_tokens) if usage.total_tokens is not None else None,
+        cost_usd_signal=usage.cost_usd,
+        cost_source=_plan_cost_source(usage),
+        cost_confidence=_plan_cost_confidence(usage),
+    )
+
+
+def _plan_ranked_candidates(drafts: Sequence[PlanCandidateDraft]) -> list[dict[str, object]]:
+    cost_scores = _plan_cost_scores(drafts)
+    candidates: list[dict[str, object]] = []
+    for draft in drafts:
+        cost_score = cost_scores.get(draft.node, 0.0)
+        total_score = draft.role_score + draft.capability_score + draft.load_score + cost_score
+        payload = dict(draft.payload)
+        score_breakdown = dict(cast(dict[str, object], payload["score_breakdown"]))
+        score_breakdown["cost"] = _cost_metric(
+            round(cost_score, 3),
+            source=draft.cost_source,
+            confidence=draft.cost_confidence,
+            status_value=(
+                "unknown" if draft.token_signal is None and draft.cost_usd_signal is None else None
+            ),
+        )
+        payload["score_breakdown"] = score_breakdown
+        payload["score"] = _cost_metric(
+            round(total_score, 3),
+            source="planner",
+            confidence=_plan_candidate_confidence(draft),
+        )
+        candidates.append(payload)
+    candidates.sort(
+        key=lambda item: (
+            -_plan_payload_score(item),
+            str(item["node"]),
+        )
+    )
+    for index, candidate in enumerate(candidates, start=1):
+        candidate["rank"] = _cost_metric(index, source="planner", confidence="explicit")
+    return candidates
+
+
+def _plan_payload_score(item: Mapping[str, object]) -> float:
+    score = item.get("score")
+    if not isinstance(score, Mapping):
+        return 0.0
+    value = score.get("value")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return 0.0
+
+
+def _plan_cost_scores(drafts: Sequence[PlanCandidateDraft]) -> dict[str, float]:
+    token_scores = _plan_inverse_unit_scores(
+        {draft.node: draft.token_signal for draft in drafts},
+    )
+    usd_scores = _plan_inverse_unit_scores(
+        {draft.node: draft.cost_usd_signal for draft in drafts},
+    )
+    combined: dict[str, float] = {}
+    for draft in drafts:
+        components: list[float] = []
+        if draft.token_signal is not None:
+            components.append(token_scores[draft.node])
+        if draft.cost_usd_signal is not None:
+            components.append(usd_scores[draft.node])
+        combined[draft.node] = sum(components) / len(components) if components else 0.0
+    return combined
+
+
+def _plan_inverse_unit_scores(values_by_node: Mapping[str, float | None]) -> dict[str, float]:
+    values = [value for value in values_by_node.values() if value is not None]
+    if not values:
+        return {node: 0.0 for node in values_by_node}
+    low = min(values)
+    high = max(values)
+    scores: dict[str, float] = {}
+    for node, value in values_by_node.items():
+        if value is None:
+            scores[node] = 0.0
+        elif high == low:
+            scores[node] = PLAN_COST_WEIGHT
+        else:
+            scores[node] = PLAN_COST_WEIGHT * ((high - value) / (high - low))
+    return scores
+
+
+def _plan_candidate_confidence(draft: PlanCandidateDraft) -> str:
+    if draft.token_signal is None and draft.cost_usd_signal is None:
+        return "partial"
+    if draft.cost_confidence == "explicit":
+        return "partial"
+    if draft.cost_confidence == "unknown":
+        return "partial"
+    return draft.cost_confidence
+
+
+def _plan_cost_source(usage: CostUsage) -> str:
+    sources: list[str] = []
+    if usage.total_tokens is not None:
+        sources.append("total_tokens")
+    if usage.cost_usd is not None:
+        sources.append("cost_usd")
+    if not sources:
+        return "none"
+    return f"{usage.source}:{'+'.join(sources)}"
+
+
+def _plan_cost_confidence(usage: CostUsage) -> str:
+    if usage.total_tokens is None and usage.cost_usd is None:
+        return "unknown"
+    return usage.confidence
+
+
+def _plan_load_score(status_value: str, *, running_tasks: int, blocked_tasks: int) -> float:
+    base = {
+        "idle": PLAN_LOAD_WEIGHT,
+        "running": 12.0,
+        "blocked": 6.0,
+        "error": 0.0,
+        "dead": 0.0,
+    }.get(status_value, 15.0)
+    penalty = min(10.0, (running_tasks * 5.0) + (blocked_tasks * 3.0))
+    return max(0.0, base - penalty)
+
+
+def _plan_match_score(required: set[str], available: set[str], weight: float) -> float:
+    if not required:
+        return 0.0
+    matched = required & available
+    return weight * (len(matched) / len(required))
+
+
+def _plan_node_terms(node: Mapping[str, object]) -> set[str]:
+    terms: set[str] = set()
+    for key in (
+        "_cost_name",
+        "_cost_agent",
+        "agent",
+        "name",
+        "role",
+        "group",
+        "description",
+        "capability",
+        "capabilities",
+        "skills",
+        "tags",
+    ):
+        terms.update(_plan_value_terms(node.get(key)))
+    return terms
+
+
+def _plan_metadata_terms(metadata: Mapping[str, object], *keys: str) -> set[str]:
+    terms: set[str] = set()
+    for key in keys:
+        terms.update(_plan_value_terms(metadata.get(key)))
+    return terms
+
+
+def _plan_public_metadata_terms(metadata: Mapping[str, object], *keys: str) -> set[str]:
+    terms: set[str] = set()
+    for key in keys:
+        terms.update(_plan_public_value_terms(metadata.get(key)))
+    return terms
+
+
+def _plan_value_terms(value: object) -> set[str]:
+    if isinstance(value, str):
+        return _plan_terms(value)
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        terms: set[str] = set()
+        for item in value:
+            terms.update(_plan_value_terms(item))
+        return terms
+    return set()
+
+
+def _plan_public_value_terms(value: object) -> set[str]:
+    if isinstance(value, str):
+        return _plan_public_terms(value)
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        terms: set[str] = set()
+        for item in value:
+            terms.update(_plan_public_value_terms(item))
+        return terms
+    return set()
+
+
+def _plan_public_terms(value: str) -> set[str]:
+    safe_terms = _plan_terms(_safe_log_text(value))
+    return {_plan_public_term(term) for term in safe_terms if term}
+
+
+def _plan_public_term(term: str) -> str:
+    if len(term) > 48:
+        return "redacted"
+    if term in {"applications", "etc", "home", "opt", "private", "tmp", "users", "usr", "var"}:
+        return "path"
+    return term
+
+
+def _plan_terms(value: str) -> set[str]:
+    return {term for term in re.findall(r"[a-z0-9]+", value.lower()) if term}
 
 
 def _cost_window(window: str, *, now: int) -> tuple[dict[str, object], int | None]:

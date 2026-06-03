@@ -1200,6 +1200,210 @@ def test_cost_endpoint_scopes_project_query_and_header(tmp_path: Path) -> None:
     assert missing.status_code == 404
 
 
+def test_plan_endpoint_ranks_candidates_with_role_load_and_cost_signals(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="dev10",
+        title="Plan Python work",
+        body=None,
+        assignee=None,
+        metadata={"capability": "python"},
+    )
+    for node, tokens in (("python-idle", 25), ("python-running", 300), ("reviewer", 5)):
+        usage_task = store.create_task(
+            board="dev10",
+            title=f"{node} usage",
+            body=None,
+            assignee=node,
+        )
+        claim = store.claim_next(board="dev10", assignee=node, node_id=node, ttl_seconds=30)
+        assert claim is not None
+        assert store.complete(
+            board="dev10",
+            task_id=usage_task.id,
+            run_id=claim.run_id,
+            claim_lock=claim.claim_lock,
+            result="done",
+            summary="done",
+            metadata={"node": node, "total_tokens": tokens},
+        )
+    running_task = store.create_task(
+        board="dev10",
+        title="running load",
+        body=None,
+        assignee="python-running",
+    )
+    assert store.claim_next(
+        board="dev10",
+        assignee="python-running",
+        node_id="python-running",
+        ttl_seconds=30,
+        task_id=running_task.id,
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "python-idle": {
+                "name": "python-idle",
+                "agent": "codex",
+                "role": "Python maker",
+                "capabilities": ["python", "bridge"],
+                "status": "idle",
+                "tmux_pane": "dev10:1.0",
+            },
+            "python-running": {
+                "name": "python-running",
+                "agent": "codex",
+                "role": "Python maker",
+                "capabilities": ["python"],
+                "status": "running",
+                "tmux_pane": "dev10:1.1",
+            },
+            "reviewer": {
+                "name": "reviewer",
+                "agent": "claude",
+                "role": "reviewer",
+                "capabilities": ["review"],
+                "status": "idle",
+                "tmux_pane": "dev10:1.2",
+            },
+        },
+    )
+    client = make_client(tmp_path, store)
+
+    response = client.get(
+        f"/api/plan?role=python&task_id={task.id}",
+        headers=auth_headers(client),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["read_only"] is True
+    assert payload["candidates"][0]["node"] == "python-idle"
+    assert payload["candidates"][0]["rank"] == {
+        "value": 1,
+        "source": "planner",
+        "confidence": "explicit",
+    }
+    top = payload["candidates"][0]
+    assert top["score"]["source"] == "planner"
+    assert top["score"]["confidence"] == "partial"
+    assert top["score_breakdown"]["role_match"]["source"] == "registry+request"
+    assert top["score_breakdown"]["capability_match"]["value"] == 20.0
+    assert top["score_breakdown"]["cost"]["source"] == "run_metadata:total_tokens"
+    assert top["signals"]["cost_basis"]["total_tokens"] == {
+        "value": 25,
+        "source": "run_metadata",
+        "confidence": "explicit",
+    }
+    assert top["signals"]["cost_basis"]["cost_usd"] == {
+        "value": None,
+        "source": "none",
+        "confidence": "unknown",
+        "status": "unknown",
+    }
+    running = {item["node"]: item for item in payload["candidates"]}["python-running"]
+    assert running["signals"]["running_tasks"] == {
+        "value": 1,
+        "source": "board_store",
+        "confidence": "explicit",
+    }
+    assert running["score_breakdown"]["load"]["value"] < top["score_breakdown"]["load"]["value"]
+    assert store.list_runs(board="dev10", task_id=task.id) == []
+    assert store.get_task(board="dev10", task_id=task.id).assignee is None
+
+
+def test_plan_endpoint_token_scope_and_empty_candidates(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    dev10 = store.create_task(board="dev10", title="dev10 task", body=None, assignee=None)
+    dev11 = store.create_task(board="dev11", title="dev11 task", body=None, assignee=None)
+    write_registry(tmp_path, "dev10", {})
+    write_registry(
+        tmp_path,
+        "dev11",
+        {
+            "maker11": {
+                "name": "maker11",
+                "agent": "codex",
+                "role": "python",
+                "tmux_pane": "dev11:1.0",
+            }
+        },
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    missing_token = client.get(f"/api/plan?role=python&task_id={dev10.id}")
+    wrong_project = client.get(
+        f"/api/plan?role=python&task_id={dev10.id}",
+        headers=headers | {"X-Grove-Project": "dev11"},
+    )
+    empty = client.get(f"/api/plan?role=python&task_id={dev10.id}", headers=headers)
+    scoped = client.get(
+        f"/api/plan?role=python&task_id={dev11.id}",
+        headers=headers | {"X-Grove-Project": "dev11"},
+    )
+
+    assert missing_token.status_code == 401
+    assert wrong_project.status_code == 404
+    assert empty.status_code == 200
+    assert empty.json()["candidates"] == []
+    assert scoped.status_code == 200
+    assert scoped.json()["project"] == "dev11"
+    assert scoped.json()["candidates"][0]["node"] == "maker11"
+
+
+def test_plan_endpoint_redacts_requirement_terms_from_role_and_metadata(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    secret = "xoxb-" + ("a" * 44)
+    task = store.create_task(
+        board="dev10",
+        title="sensitive planner task",
+        body=None,
+        assignee=None,
+        metadata={
+            "role": f"python /Users/chopin/private/{secret} token {secret}",
+            "capabilities": [f"bridge /Applications/Grove.app/{secret} token {secret}"],
+        },
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "maker": {
+                "name": "maker",
+                "agent": "codex",
+                "role": "python",
+                "capabilities": ["bridge"],
+                "tmux_pane": "dev10:1.0",
+            }
+        },
+    )
+    client = make_client(tmp_path, store)
+
+    response = client.get(
+        f"/api/plan?role=python%20/Users/chopin/{secret}%20{secret}&task_id={task.id}",
+        headers=auth_headers(client),
+    )
+
+    assert response.status_code == 200
+    rendered_requirements = json.dumps(response.json()["requirements"])
+    assert secret not in rendered_requirements
+    assert "xoxb" not in rendered_requirements
+    assert "Users" not in rendered_requirements
+    assert "users" not in rendered_requirements
+    assert "chopin" not in rendered_requirements
+    assert "/Applications" not in rendered_requirements
+    assert "applications" not in rendered_requirements
+    assert "path" in rendered_requirements
+    assert "redacted" in rendered_requirements
+
+
 def test_cost_endpoint_wraps_and_redacts_last_seen(tmp_path: Path) -> None:
     secret = "xoxb-" + ("a" * 44)
     write_registry(

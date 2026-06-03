@@ -808,6 +808,19 @@ export function OrgChart(props: {
     return Array.from(m.values());
   }, [delegEvents, byName]);
 
+  // Autonomy (inferred): nodes that self-claimed work appear as the actor of an
+  // `autopickup` audit event. No backend per-node autonomy flag is exposed yet,
+  // so this is a read-only inference from recent audit (V11-W2).
+  const autonomousNodes = useMemo(() => {
+    const set = new Set<string>();
+    for (const ev of delegEvents) {
+      if (ev.action !== "autopickup") continue;
+      const id = actorId(ev.actor);
+      if (id && byName[id]) set.add(id);
+    }
+    return set;
+  }, [delegEvents, byName]);
+
   const stopPD = (e: React.PointerEvent) => e.stopPropagation();
 
   // What will happen if the user drops right now — drives the floating badge
@@ -987,6 +1000,11 @@ export function OrgChart(props: {
                 <div className="org-node__main">
                   <span className={cx("org-node__dot", statusClass(node.status))} />
                   <span className="org-node__name">{node.name}</span>
+                  {autonomousNodes.has(node.name) && (
+                    <span className="org-node__auto" data-auto={node.name} title={t("autonomy.inferredHint")}>
+                      ⚡ {t("autonomy.auto")}
+                    </span>
+                  )}
                   <span className="org-node__agent">{agentGlyph(node.agent)}</span>
                 </div>
                 {node.role && <div className="org-node__role">{node.role}</div>}

@@ -3786,3 +3786,82 @@ button {
   border-top: 1px solid var(--line-soft);
   padding-top: 14px;
 }
+
+/* ── autonomy visibility (V11-W2) ────────────────────────────────────────── */
+.audit-quickfilter {
+  display: flex;
+  gap: 6px;
+  padding: 10px 16px 0;
+  flex-wrap: wrap;
+}
+
+.audit-qf {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 10px;
+  transition:
+    color 0.14s ease,
+    border-color 0.14s ease,
+    background 0.14s ease;
+}
+
+.audit-qf:hover {
+  color: var(--text);
+}
+
+.audit-qf.is-on {
+  color: var(--ink);
+  background: var(--dim);
+  border-color: var(--dim);
+}
+
+.audit-qf.is-autopickup.is-on {
+  background: var(--teal);
+  border-color: var(--teal);
+}
+
+.audit-qf.is-retro.is-on {
+  background: var(--blue);
+  border-color: var(--blue);
+}
+
+/* distinct action chips for autonomy events in the lane */
+.audit-event__glyph {
+  margin-right: 3px;
+}
+
+.audit-event__action.is-autopickup {
+  color: var(--teal);
+  border-color: rgba(84, 199, 184, 0.5);
+}
+
+.audit-event__action.is-retro {
+  color: var(--blue);
+  border-color: rgba(120, 162, 255, 0.5);
+}
+
+.audit-event.is-autopickup {
+  border-left: 2px solid var(--teal);
+}
+
+.audit-event.is-retro {
+  border-left: 2px solid var(--blue);
+}
+
+/* org node autonomy badge (inferred from audit autopickup) */
+.org-node__auto {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--teal);
+  border: 1px dashed rgba(84, 199, 184, 0.55);
+  border-radius: 999px;
+  padding: 0 5px;
+  line-height: 14px;
+}

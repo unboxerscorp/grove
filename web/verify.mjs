@@ -216,6 +216,57 @@ async function main() {
       auditAfterMore.cursorUsed &&
       /node=backend/.test(auditFilter);
 
+    // V11-W2 autonomy visibility (audit): autopickup/retro events get distinct
+    // chips + glyphs and quick action filters (exact action filter on /api/audit).
+    await page.click(".dr-audit-btn");
+    await page.waitForSelector(".audit-drawer", { timeout: 5000 });
+    // The drawer re-renders (not remounts), so clear the node filter carried over
+    // from the auditOk test before exercising the action quick-filters.
+    await page.click('.audit-filter input[name="node"]', { clickCount: 3 });
+    await page.keyboard.press("Backspace");
+    await page.waitForFunction(() => /node=&/.test(window.__MOCK__?.auditFilter ?? ""), { timeout: 5000 });
+    await page.click('.audit-qf[data-action="autopickup"]');
+    await page.waitForFunction(
+      () => {
+        const evs = Array.from(document.querySelectorAll(".audit-event"));
+        return (
+          evs.length >= 1 &&
+          evs.every((e) => e.querySelector(".audit-event__action")?.getAttribute("data-action") === "autopickup")
+        );
+      },
+      { timeout: 6000 },
+    );
+    const autoPick = await page.evaluate(() => ({
+      count: document.querySelectorAll(".audit-event.is-autopickup").length,
+      chip: !!document.querySelector(".audit-event__action.is-autopickup"),
+      glyph: !!document.querySelector(".audit-event.is-autopickup .audit-event__glyph"),
+      filter: window.__MOCK__?.auditFilter ?? "",
+    }));
+    await page.click('.audit-qf[data-action="retro"]');
+    await page.waitForFunction(
+      () => {
+        const evs = Array.from(document.querySelectorAll(".audit-event"));
+        return (
+          evs.length >= 1 &&
+          evs.every((e) => e.querySelector(".audit-event__action")?.getAttribute("data-action") === "retro")
+        );
+      },
+      { timeout: 6000 },
+    );
+    const autoRetro = await page.evaluate(() => ({
+      count: document.querySelectorAll(".audit-event.is-retro").length,
+      chip: !!document.querySelector(".audit-event__action.is-retro"),
+    }));
+    await page.click(".audit-drawer .dr-drawer__close");
+    await page.waitForFunction(() => !document.querySelector(".audit-drawer"), { timeout: 5000 });
+    const autoAuditOk =
+      autoPick.count >= 1 &&
+      autoPick.chip &&
+      autoPick.glyph &&
+      /action=autopickup/.test(autoPick.filter) &&
+      autoRetro.count >= 1 &&
+      autoRetro.chip;
+
     // V6-W3 delegation-chain explorer: multi-hop chains derived from the audit
     // assign/delegate graph (mock has root->backend->researcher). Open the
     // drawer, assert a >=3-node (2-hop) chain in order, then focus a node.
@@ -507,6 +558,18 @@ async function main() {
       legend: document.querySelectorAll(".org-legend__item").length,
       descs: document.querySelectorAll(".org-node__desc").length,
     }));
+
+    // V11-W2 autonomy visibility (org): a node that self-claimed (autopickup
+    // actor in the audit) shows an inferred "⚡ auto" badge — read-only.
+    await page.waitForSelector('[data-name="backend"] .org-node__auto', { timeout: 6000 });
+    const autoNode = await page.evaluate(() => ({
+      onBackend: !!document.querySelector('[data-name="backend"] .org-node__auto'),
+      count: document.querySelectorAll(".org-node__auto").length,
+      // Visible text must reveal the inference (not read as a config flag).
+      text: (document.querySelector('[data-name="backend"] .org-node__auto')?.textContent ?? "").trim(),
+    }));
+    const autonomyVisOk =
+      autoAuditOk && autoNode.onBackend && autoNode.count >= 1 && /추론|inferred/.test(autoNode.text);
 
     const center = async (name) =>
       page.$eval(`[data-name="${name}"]`, (el) => {
@@ -1099,6 +1162,7 @@ async function main() {
       inboxOk &&
       presenceOk &&
       wizardOk &&
+      autonomyVisOk &&
       delegationEdgesOk &&
       delegateOk &&
       diag.projectHeader === projAfterLoad &&
@@ -1175,6 +1239,8 @@ async function main() {
       presence: { ...presence, anon: presenceAnon },
       wizardOk,
       wizard: { s0: wizStep0, s1: wizStep1, last: wizLast, flag: wizFlag, afterReload: wizAfterReload },
+      autonomyVisOk,
+      autonomy: { pick: autoPick, retro: autoRetro, node: autoNode },
       costOk,
       cost,
       delegationEdgesOk,

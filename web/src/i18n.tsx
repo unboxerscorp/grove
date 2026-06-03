@@ -239,6 +239,11 @@ const KO: Dict = {
   "audit.more": "더 보기",
   "audit.loading": "불러오는 중…",
   "audit.loadError": "감사 로그를 불러오지 못했습니다",
+  "audit.action.all": "전체",
+  "audit.action.autopickup": "자가 claim",
+  "audit.action.retro": "회고",
+  "autonomy.auto": "자율(추론)",
+  "autonomy.inferredHint": "최근 자가 claim(autopickup) 기록으로 추정 — 자율 작업 픽업",
 
   "chain.open": "위임 체인",
   "chain.title": "위임 체인 탐색",
@@ -551,6 +556,11 @@ const EN: Dict = {
   "audit.more": "Load more",
   "audit.loading": "Loading…",
   "audit.loadError": "failed to load audit log",
+  "audit.action.all": "All",
+  "audit.action.autopickup": "self-claim",
+  "audit.action.retro": "retro",
+  "autonomy.auto": "auto (inferred)",
+  "autonomy.inferredHint": "inferred from a recent self-claim (autopickup) — autonomous pickup",
 
   "chain.open": "Chains",
   "chain.title": "Delegation chains",
