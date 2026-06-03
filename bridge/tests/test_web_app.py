@@ -1987,6 +1987,129 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
     }
 
 
+def test_node_autopickup_toggle_persists_and_audits(tmp_path: Path) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    missing_token = client.get("/api/nodes/worker/autopickup")
+    initial = client.get("/api/nodes/worker/autopickup", headers=headers)
+    enabled = client.post(
+        "/api/nodes/worker/autopickup",
+        headers=headers,
+        json={"enabled": True},
+    )
+    persisted = SQLiteBoardStore(db_path).node_autopickup_state(board="dev10", node="worker")
+    disabled = client.post(
+        "/api/nodes/worker/autopickup",
+        headers=headers,
+        json={"enabled": False},
+    )
+    audits = store.list_audit_events(board="dev10", action="autopickup", node="worker")
+
+    assert missing_token.status_code == 401
+    assert initial.status_code == 200
+    assert initial.json()["enabled"] is False
+    assert initial.json()["configured"] is False
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+    assert persisted["enabled"] is True
+    assert persisted["configured"] is True
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+    assert len(audits) == 2
+    assert audits[0].kind == "audit.node.autopickup"
+    assert audits[0].payload["target"] == {"type": "node", "id": "worker", "node": "worker"}
+    assert audits[0].payload["enabled"] is True
+    assert audits[1].payload["enabled"] is False
+
+
+def test_node_autopickup_toggle_rejects_scope_invalid_and_global_off(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.set_autopickup_global(board="dev10", enabled=False)
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"other": {"name": "other", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    global_off = client.post(
+        "/api/nodes/worker/autopickup",
+        headers=headers,
+        json={"enabled": True},
+    )
+    store.set_autopickup_global(board="dev10", enabled=True, kill_switch=True)
+    kill_switched = client.post(
+        "/api/nodes/worker/autopickup",
+        headers=headers,
+        json={"enabled": True},
+    )
+    disable_allowed = client.post(
+        "/api/nodes/worker/autopickup",
+        headers=headers,
+        json={"enabled": False},
+    )
+    invalid = client.post(
+        "/api/nodes/-bad/autopickup",
+        headers=headers,
+        json={"enabled": True},
+    )
+    wrong_project = client.post(
+        "/api/nodes/worker/autopickup",
+        headers=headers | {"X-Grove-Project": "dev11"},
+        json={"enabled": False},
+    )
+
+    assert global_off.status_code == 409
+    assert "global" in global_off.json()["detail"]
+    assert kill_switched.status_code == 409
+    assert "global" in kill_switched.json()["detail"]
+    assert disable_allowed.status_code == 200
+    assert invalid.status_code == 400
+    assert wrong_project.status_code == 404
+    assert store.node_autopickup_enabled(board="dev10", node="worker") is False
+
+
+def test_node_autopickup_toggle_rejects_team_viewer(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        auth_mode=AuthMode.TEAM_COOKIE,
+    )
+    login = client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+    csrf = str(login.json()["csrf"])
+
+    response = client.post(
+        "/api/nodes/worker/autopickup",
+        headers={CSRF_HEADER: csrf},
+        json={"enabled": True},
+    )
+
+    assert login.status_code == 200
+    assert response.status_code == 403
+
+
 def test_create_node_invokes_spawn_with_literal_argv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -17,17 +17,36 @@ function fmtScore(v: number | null | undefined): string {
  * The endpoint never claims/assigns — this surfaces the ranking for MANUAL
  * assignment only, mirroring `read_only:true` in the backend response.
  */
-function PlannerPanel({ taskId, defaultRole, t }: { taskId: string; defaultRole: string; t: TFn }) {
+function PlannerPanel(props: {
+  taskId: string;
+  boardId: string | null;
+  defaultRole: string;
+  taskTitle: string;
+  taskBody?: string;
+  onDelegated?: () => void;
+  t: TFn;
+}) {
+  const { taskId, boardId, defaultRole, taskTitle, taskBody, onDelegated, t } = props;
   const [role, setRole] = useState(defaultRole);
   const [plan, setPlan] = useState<PlanResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Delegation is an EXPLICIT, two-step user action (button -> confirm) layered
+  // over the read-only recommendation; nothing is delegated automatically.
+  const [confirmNode, setConfirmNode] = useState<string | null>(null);
+  const [busyNode, setBusyNode] = useState<string | null>(null);
+  const [doneNode, setDoneNode] = useState<string | null>(null);
+  const [delegErr, setDelegErr] = useState<string | null>(null);
 
   const recommend = () => {
     const r = role.trim();
     if (!r || loading) return;
     setLoading(true);
     setError(null);
+    setDoneNode(null);
+    setConfirmNode(null);
+    setDelegErr(null);
     api
       .getPlan({ role: r, task_id: taskId })
       .then((p) => setPlan(p))
@@ -38,6 +57,29 @@ function PlannerPanel({ taskId, defaultRole, t }: { taskId: string; defaultRole:
         setError(t("plan.error"));
       })
       .finally(() => setLoading(false));
+  };
+
+  const confirmDelegate = (node: string) => {
+    if (busyNode || !boardId) {
+      if (!boardId) setDelegErr(t("plan.delegateError"));
+      return;
+    }
+    setBusyNode(node);
+    setDelegErr(null);
+    api
+      .delegate(boardId, node, { title: taskTitle, body: taskBody })
+      .then(() => {
+        setBusyNode(null);
+        setConfirmNode(null);
+        setDoneNode(node);
+        onDelegated?.(); // bump liveTick -> board + audit refresh
+      })
+      .catch(() => {
+        // Fixed message only (v1.11 pattern) — no raw cause / path / secret.
+        setBusyNode(null);
+        setConfirmNode(null);
+        setDelegErr(t("plan.delegateError"));
+      });
   };
 
   const candidates = plan?.candidates ?? [];
@@ -69,15 +111,39 @@ function PlannerPanel({ taskId, defaultRole, t }: { taskId: string; defaultRole:
 
       {plan && (
         <>
-          {/* read_only:true must read as a recommendation, never an action. */}
+          {/* read_only:true is the DEFAULT: ranking only. Delegation is opt-in
+              per candidate via an explicit button + confirm. */}
           <div className="plan-readonly" role="note">
             🛈 {t("plan.readonly")}
           </div>
+          {delegErr && <div className="plan-msg is-error">{delegErr}</div>}
           {candidates.length === 0 && <div className="plan-msg">{t("plan.empty")}</div>}
           <ol className="plan-list">
-            {candidates.map((c) => (
-              <PlanRow key={c.node} c={c} t={t} />
-            ))}
+            {candidates.map((c) => {
+              const state =
+                doneNode === c.node
+                  ? "done"
+                  : busyNode === c.node
+                    ? "busy"
+                    : confirmNode === c.node
+                      ? "confirm"
+                      : "idle";
+              return (
+                <PlanRow
+                  key={c.node}
+                  c={c}
+                  t={t}
+                  delegState={state}
+                  canDelegate={!!boardId}
+                  onAsk={() => {
+                    setDelegErr(null);
+                    setConfirmNode(c.node);
+                  }}
+                  onConfirm={() => confirmDelegate(c.node)}
+                  onCancel={() => setConfirmNode(null)}
+                />
+              );
+            })}
           </ol>
         </>
       )}
@@ -85,7 +151,16 @@ function PlannerPanel({ taskId, defaultRole, t }: { taskId: string; defaultRole:
   );
 }
 
-function PlanRow({ c, t }: { c: PlanCandidate; t: TFn }) {
+function PlanRow(props: {
+  c: PlanCandidate;
+  t: TFn;
+  delegState: "idle" | "confirm" | "busy" | "done";
+  canDelegate: boolean;
+  onAsk: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const { c, t, delegState, canDelegate, onAsk, onConfirm, onCancel } = props;
   const score = c.score;
   const breakdown = c.score_breakdown ?? {};
   // Top score factors (read-only reasons), each with its confidence.
@@ -110,12 +185,41 @@ function PlanRow({ c, t }: { c: PlanCandidate; t: TFn }) {
           </span>
         ))}
       </div>
+      <div className="plan-cand__deleg">
+        {delegState === "done" ? (
+          <span className="plan-deleg__ok">✓ {t("plan.delegated", { node: c.node })}</span>
+        ) : delegState === "confirm" ? (
+          <span className="plan-deleg__confirm">
+            <span className="plan-deleg__q">{t("plan.delegateConfirm", { node: c.node })}</span>
+            <button type="button" className="dr-btn dr-btn--primary plan-deleg__yes" onClick={onConfirm}>
+              {t("plan.delegateYes")}
+            </button>
+            <button type="button" className="dr-btn dr-btn--ghost plan-deleg__no" onClick={onCancel}>
+              {t("node.cancel")}
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="dr-btn dr-btn--ghost plan-deleg__btn"
+            disabled={delegState === "busy" || !canDelegate}
+            onClick={onAsk}
+          >
+            {delegState === "busy" ? t("plan.delegating") : t("plan.delegate")}
+          </button>
+        )}
+      </div>
     </li>
   );
 }
 
-export function TaskDrawer(props: { taskId: string | null; onClose: () => void }) {
-  const { taskId, onClose } = props;
+export function TaskDrawer(props: {
+  taskId: string | null;
+  boardId: string | null;
+  onClose: () => void;
+  onDelegated?: () => void;
+}) {
+  const { taskId, boardId, onClose, onDelegated } = props;
   const { t } = useI18n();
   const panelRef = useRef<HTMLElement | null>(null);
   useFocusTrap(!!taskId, panelRef);
@@ -247,7 +351,15 @@ export function TaskDrawer(props: { taskId: string | null; onClose: () => void }
               ))}
             </section>
 
-            <PlannerPanel taskId={task.id} defaultRole={task.assignee ?? ""} t={t} />
+            <PlannerPanel
+              taskId={task.id}
+              boardId={boardId}
+              defaultRole={task.assignee ?? ""}
+              taskTitle={task.title}
+              taskBody={task.body}
+              onDelegated={onDelegated}
+              t={t}
+            />
           </div>
         )}
       </aside>

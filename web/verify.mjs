@@ -477,6 +477,29 @@ async function main() {
       !redactTerms.includes("etc") &&
       !redactTerms.some((x) => typeof x === "string" && x.length > 48);
 
+    // V12-W2 planner -> delegate one-click: EXPLICIT two-step (button -> confirm).
+    // Candidates are present (from the recommend above). Recommending alone never
+    // POSTs (proven by mutBefore===mutAfter); the "Delegate" button only opens a
+    // confirm (still no POST); the delegate POST fires only after "Confirm".
+    const delegBefore = await page.evaluate(() => JSON.stringify(window.__MOCK__?.lastTaskPost ?? null));
+    await page.click('[data-node="backend"] .plan-deleg__btn');
+    await page.waitForSelector('[data-node="backend"] .plan-deleg__yes', { timeout: 5000 });
+    const afterAsk = await page.evaluate(() => JSON.stringify(window.__MOCK__?.lastTaskPost ?? null));
+    await page.click('[data-node="backend"] .plan-deleg__yes');
+    await page.waitForSelector('[data-node="backend"] .plan-deleg__ok', { timeout: 6000 });
+    const delegated = await page.evaluate(() => ({
+      post: window.__MOCK__?.lastTaskPost ?? null,
+      ok: !!document.querySelector('[data-node="backend"] .plan-deleg__ok'),
+      okText: (document.querySelector('[data-node="backend"] .plan-deleg__ok')?.textContent ?? "").trim(),
+    }));
+    const plannerDelegateOk =
+      delegBefore === afterAsk && // confirm step: NO POST before "Confirm"
+      delegated.ok &&
+      Boolean(delegated.post) &&
+      delegated.post.assignee === "backend" &&
+      delegated.post.status === "ready" &&
+      delegBefore !== JSON.stringify(delegated.post); // POST only after confirm
+
     // P1: an error must render a FIXED message — never the raw cause / request
     // path / role input (which could be a secret).
     await page.evaluate(() => (window.__MOCK__.planError = true));
@@ -506,6 +529,7 @@ async function main() {
       planner.fetches >= 1 &&
       mutBefore === mutAfter && // no auto-delegation as a side effect
       redactionOk &&
+      plannerDelegateOk &&
       errorNoLeakOk;
 
     // Close the task drawer.
@@ -1330,7 +1354,15 @@ async function main() {
       autonomyVisOk,
       autonomy: { pick: autoPick, retro: autoRetro, node: autoNode },
       plannerSurfaceOk,
-      planner: { ...planner, redactTerms, redactionOk, errText: errState.text, errLeak: errState.leak },
+      planner: {
+        ...planner,
+        redactTerms,
+        redactionOk,
+        delegate: { noPostOnAsk: delegBefore === afterAsk, ...delegated },
+        plannerDelegateOk,
+        errText: errState.text,
+        errLeak: errState.leak,
+      },
       costOk,
       cost,
       delegationEdgesOk,

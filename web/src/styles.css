@@ -4008,3 +4008,41 @@ button {
   color: var(--amber);
   border-color: rgba(240, 184, 96, 0.5);
 }
+
+/* ── planner → delegate (explicit, two-step) ─────────────────────────────── */
+.plan-cand__deleg {
+  display: flex;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.plan-deleg__btn {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.plan-deleg__confirm {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.plan-deleg__q {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--amber);
+}
+
+.plan-deleg__yes,
+.plan-deleg__no {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.plan-deleg__ok {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--teal);
+}

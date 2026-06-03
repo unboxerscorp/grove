@@ -4,6 +4,7 @@ import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+import pytest
 from pytest import MonkeyPatch
 
 import grove_bridge.pull_executor as pull_executor_module
@@ -239,6 +240,12 @@ class ClaimConflictStore:
 
     def last_autopickup_at(self, *, board: str, node: str) -> int | None:
         return None
+
+    def node_autopickup_enabled(self, *, board: str, node: str) -> bool | None:
+        return None
+
+    def autopickup_global_state(self, *, board: str) -> Mapping[str, bool]:
+        return {"enabled": True, "kill_switch": False}
 
 
 class FakeProcess:
@@ -749,6 +756,95 @@ def test_autonomous_pickup_cooldown_persists_across_executor_restart(
     assert third_result.autopicked == 1
     assert store.get_task(board="main", task_id=first.id).status == "done"
     assert store.get_task(board="main", task_id=second.id).status == "done"
+
+
+def test_autonomous_pickup_uses_persisted_node_toggle(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Runtime opt in",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    store.set_node_autopickup_enabled(board="main", node="codex-a", enabled=True)
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="done",
+            stderr="",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=False, roles=("maker",))},
+        ),
+    )
+
+    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+
+    assert result.autopicked == 1
+    assert store.get_task(board="main", task_id=task.id).status == "done"
+
+
+@pytest.mark.parametrize(
+    ("enabled", "kill_switch"),
+    [
+        (False, False),
+        (True, True),
+    ],
+)
+def test_autonomous_pickup_runtime_global_gate_blocks_persisted_node_toggle(
+    tmp_path: Path,
+    enabled: bool,
+    kill_switch: bool,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Runtime global gate",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    store.set_node_autopickup_enabled(board="main", node="codex-a", enabled=True)
+    store.set_autopickup_global(board="main", enabled=enabled, kill_switch=kill_switch)
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="done",
+            stderr="",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=False, roles=("maker",))},
+        ),
+    )
+
+    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+
+    assert result.autopicked == 0
+    assert store.get_task(board="main", task_id=task.id).status == "ready"
+    assert runner.calls == []
 
 
 def test_autonomous_pickup_respects_inflight_and_kill_switches(tmp_path: Path) -> None:

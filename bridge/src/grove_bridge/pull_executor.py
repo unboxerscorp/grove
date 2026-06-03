@@ -139,6 +139,10 @@ class BoardStoreProtocol(Protocol):
 
     def last_autopickup_at(self, *, board: str, node: str) -> int | None: ...
 
+    def node_autopickup_enabled(self, *, board: str, node: str) -> bool | None: ...
+
+    def autopickup_global_state(self, *, board: str) -> Mapping[str, bool]: ...
+
 
 @dataclass
 class TickResult:
@@ -241,6 +245,9 @@ class PullExecutor:
         pickup = self.config.autonomous_pickup
         if remaining <= 0 or not pickup.enabled or pickup.kill_switch:
             return remaining
+        global_state = self.store.autopickup_global_state(board=board)
+        if not global_state["enabled"] or global_state["kill_switch"]:
+            return remaining
         now = time.time()
         ready_tasks = self.store.list_tasks(board=board, status="ready")
         for node, rule in pickup.nodes.items():
@@ -302,7 +309,9 @@ class PullExecutor:
         rule: AutoPickupNodeConfig,
         now: float,
     ) -> bool:
-        if not rule.enabled or rule.kill_switch:
+        configured_enabled = self.store.node_autopickup_enabled(board=board, node=node)
+        enabled = configured_enabled if configured_enabled is not None else rule.enabled
+        if not enabled or rule.kill_switch:
             return False
         if not rule.roles and not rule.capabilities:
             return False

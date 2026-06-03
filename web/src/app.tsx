@@ -410,7 +410,12 @@ export function App() {
         </section>
       </main>
 
-      <TaskDrawer taskId={openTaskId} onClose={() => setOpenTaskId(null)} />
+      <TaskDrawer
+        taskId={openTaskId}
+        boardId={boardId}
+        onDelegated={() => setLiveTick((x) => x + 1)}
+        onClose={() => setOpenTaskId(null)}
+      />
       <AuditDrawer open={auditOpen} projectTick={projectTick} onClose={() => setAuditOpen(false)} />
       <ChainDrawer open={chainOpen} projectTick={projectTick} onClose={() => setChainOpen(false)} />
       <InboxDrawer

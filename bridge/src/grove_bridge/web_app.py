@@ -240,6 +240,10 @@ class NodeUpdatePayload(BaseModel):
     description: str | None = Field(default=None, max_length=1000)
 
 
+class AutoPickupTogglePayload(BaseModel):
+    enabled: bool
+
+
 class ProjectCreatePayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     template: str | None = Field(default=None, max_length=200)
@@ -729,6 +733,47 @@ def create_app(
             summary=name,
         )
         return org
+
+    @app.get("/api/nodes/{node}/autopickup")
+    def get_node_autopickup_endpoint(request: Request, node: str) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        node_name = _node_in_project(node, config=project.config)
+        return _node_autopickup_payload(_store(request), project=project, node=node_name)
+
+    @app.post("/api/nodes/{node}/autopickup")
+    def set_node_autopickup_endpoint(
+        request: Request,
+        node: str,
+        payload: AutoPickupTogglePayload,
+    ) -> dict[str, object]:
+        auth = _require_state_change(request)
+        _require_node_mutation_access(auth)
+        project = resolve_project(request)
+        node_name = _node_in_project(node, config=project.config)
+        global_state = _store(request).autopickup_global_state(board=project.board)
+        if payload.enabled and (not global_state["enabled"] or global_state["kill_switch"]):
+            raise HTTPException(status_code=409, detail="global autopickup gate is disabled")
+        state = _store(request).set_node_autopickup_enabled(
+            board=project.board,
+            node=node_name,
+            enabled=payload.enabled,
+        )
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.node.autopickup",
+            actor=_actor_payload(auth),
+            action="autopickup",
+            target={"type": "node", "id": node_name, "node": node_name},
+            payload={"project": project.name, "enabled": payload.enabled},
+            summary=f"{node_name} autopickup {'enabled' if payload.enabled else 'disabled'}",
+        )
+        return _node_autopickup_payload(
+            _store(request),
+            project=project,
+            node=node_name,
+            state=state,
+        )
 
     @app.get("/api/org")
     def org_endpoint(request: Request) -> dict[str, object]:
@@ -2442,6 +2487,12 @@ def _require_retro_access(auth: AuthContext) -> None:
             raise HTTPException(status_code=403, detail="retro requires operator role")
 
 
+def _require_node_mutation_access(auth: AuthContext) -> None:
+    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
+        if auth.member.role == "viewer":
+            raise HTTPException(status_code=403, detail="node mutation requires operator role")
+
+
 def _actor_payload(auth: AuthContext) -> dict[str, object]:
     if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
         return {
@@ -3076,6 +3127,38 @@ def _node_name_from_spawn_result(payload: Mapping[str, object], *, fallback: str
         if isinstance(value, str) and value.strip():
             return value.strip()
     return fallback
+
+
+def _node_in_project(name: str, *, config: WebAppConfig) -> str:
+    node_name = _validated_node_ref(name, field_name="node")
+    if not any(node["name"] == node_name for node in _registry_node_records(config)):
+        raise HTTPException(status_code=404, detail="node not found")
+    return node_name
+
+
+def _node_autopickup_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    node: str,
+    state: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    raw = (
+        dict(state)
+        if state is not None
+        else store.node_autopickup_state(
+            board=project.board,
+            node=node,
+        )
+    )
+    return {
+        "project": project.name,
+        "node": _safe_log_text(node),
+        "enabled": bool(raw.get("enabled")),
+        "configured": bool(raw.get("configured")),
+        "global_enabled": bool(raw.get("global_enabled")),
+        "global_kill_switch": bool(raw.get("global_kill_switch")),
+    }
 
 
 def _update_node_relationships(

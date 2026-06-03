@@ -1009,6 +1009,70 @@ class SQLiteBoardStore:
             return None
         return _row_int(row, "ts")
 
+    def node_autopickup_enabled(self, *, board: str, node: str) -> bool | None:
+        settings = self._board_settings(board)
+        if settings is None:
+            return None
+        nodes = _autopickup_nodes(settings)
+        raw = nodes.get(node)
+        if not isinstance(raw, Mapping):
+            return None
+        value = raw.get("enabled")
+        return value if isinstance(value, bool) else None
+
+    def autopickup_global_state(self, *, board: str) -> dict[str, bool]:
+        settings = self._board_settings(board) or {}
+        raw = _autopickup_settings(settings)
+        return {
+            "enabled": _setting_bool(raw.get("enabled"), default=True),
+            "kill_switch": _setting_bool(raw.get("kill_switch"), default=False),
+        }
+
+    def set_autopickup_global(
+        self,
+        *,
+        board: str,
+        enabled: bool | None = None,
+        kill_switch: bool | None = None,
+    ) -> dict[str, bool]:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            raw = _mutable_autopickup_settings(settings)
+            if enabled is not None:
+                raw["enabled"] = enabled
+            if kill_switch is not None:
+                raw["kill_switch"] = kill_switch
+            self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
+        return self.autopickup_global_state(board=board)
+
+    def set_node_autopickup_enabled(
+        self,
+        *,
+        board: str,
+        node: str,
+        enabled: bool,
+    ) -> dict[str, object]:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            nodes = _mutable_autopickup_nodes(settings)
+            nodes[node] = {"enabled": enabled, "updated_at": now}
+            self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
+        return self.node_autopickup_state(board=board, node=node)
+
+    def node_autopickup_state(self, *, board: str, node: str) -> dict[str, object]:
+        global_state = self.autopickup_global_state(board=board)
+        enabled = self.node_autopickup_enabled(board=board, node=node)
+        return {
+            "enabled": bool(enabled) if enabled is not None else False,
+            "configured": enabled is not None,
+            "global_enabled": global_state["enabled"],
+            "global_kill_switch": global_state["kill_switch"],
+        }
+
     def add_audit_event(
         self,
         *,
@@ -1181,6 +1245,46 @@ class SQLiteBoardStore:
         if row is None:
             return None
         return _row_str(row, "id")
+
+    def _board_settings(self, slug: str) -> dict[str, object] | None:
+        board_id = self._board_id_for_slug(slug)
+        if board_id is None:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT settings_json FROM boards WHERE id = ?",
+                (board_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _json_dict(row["settings_json"])
+
+    def _settings_for_update(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        board_id: str,
+    ) -> dict[str, object]:
+        row = conn.execute(
+            "SELECT settings_json FROM boards WHERE id = ?",
+            (board_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(board_id)
+        return _json_dict(row["settings_json"])
+
+    def _write_board_settings(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        board_id: str,
+        settings: Mapping[str, object],
+        now: int,
+    ) -> None:
+        conn.execute(
+            "UPDATE boards SET settings_json = ?, updated_at = ? WHERE id = ?",
+            (_json(settings), now, board_id),
+        )
 
     def _init_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(
@@ -1419,6 +1523,37 @@ def _clean(value: str) -> str:
 
 def _node_actor(node_id: str) -> dict[str, object]:
     return {"kind": "node", "id": node_id, "login": node_id, "role": "none"}
+
+
+def _autopickup_settings(settings: Mapping[str, object]) -> Mapping[str, object]:
+    raw = settings.get("autopickup")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _autopickup_nodes(settings: Mapping[str, object]) -> Mapping[str, object]:
+    raw = _autopickup_settings(settings).get("nodes")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _mutable_autopickup_settings(settings: dict[str, object]) -> dict[str, object]:
+    raw = settings.get("autopickup")
+    if not isinstance(raw, dict):
+        raw = {}
+        settings["autopickup"] = raw
+    return cast(dict[str, object], raw)
+
+
+def _mutable_autopickup_nodes(settings: dict[str, object]) -> dict[str, object]:
+    raw = _mutable_autopickup_settings(settings)
+    nodes = raw.get("nodes")
+    if not isinstance(nodes, dict):
+        nodes = {}
+        raw["nodes"] = nodes
+    return cast(dict[str, object], nodes)
+
+
+def _setting_bool(value: object, *, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
 
 
 def _audit_payload(
