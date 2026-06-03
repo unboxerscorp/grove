@@ -620,6 +620,7 @@ class MockWS {
   private kind: "term" | "board" | "other";
   private pane = "";
   private ticket = "";
+  private cursorParam = "";
 
   constructor(url: string) {
     this.url = url;
@@ -629,6 +630,7 @@ class MockWS {
     const params = new URLSearchParams(queryPart);
     this.pane = params.get("pane_id") ?? "";
     this.ticket = params.get("ticket") ?? "";
+    this.cursorParam = params.get("cursor") ?? "";
     this.kind = pathPart.includes("/ws/terminal")
       ? "term"
       : pathPart.includes("/ws/board")
@@ -639,6 +641,13 @@ class MockWS {
 
   private emit(s: string) {
     this.onmessage?.({ data: s });
+  }
+
+  // Deliver a board event live and record the high-water cursor handed to a
+  // connected client (== the cursor the FE will track + send on reconnect).
+  deliverBoard(payload: { cursor: number; type: string; task_id: string }) {
+    diag.boardLiveMaxCursor = Math.max((diag.boardLiveMaxCursor as number) ?? 0, payload.cursor);
+    this.emit(JSON.stringify(payload));
   }
 
   private emitSnapshot() {
@@ -678,12 +687,25 @@ class MockWS {
       diag.boardWsTicket = this.ticket;
       diag.boardWsConnects = ((diag.boardWsConnects as number) ?? 0) + 1;
       boardSocket = this;
-      setTimeout(() => this.emit(JSON.stringify({ cursor: 1, type: "task.updated", task_id: "G-1" })), 800);
+      // Mirror /ws/board?cursor=N (web_app.py board_ws -> list_events_after):
+      // replay ONLY events after the client's cursor — the downtime-missed ones,
+      // not a from-0 dump. Record the requested cursor + replay count so verify
+      // can prove the FE tracked and sent its last-seen cursor.
+      const since = Number(this.cursorParam) || 0;
+      diag.boardCursorParam = since;
+      const missed = boardEventLog.filter((e) => e.cursor > since);
+      diag.boardLastReplayCount = missed.length;
+      if (missed.length > 0) {
+        setTimeout(() => {
+          for (const e of missed) this.deliverBoard(e);
+        }, 100);
+      } else if (since === 0) {
+        // First connect / no cursor: initial heartbeat (drives the live spark).
+        setTimeout(() => this.deliverBoard({ cursor: 1, type: "task.updated", task_id: "G-1" }), 800);
+      }
+      // Reconnect with nothing missed: emit nothing — the FE's onopen catch-up
+      // reload is the fallback for silent (eventless) changes.
     }
-  }
-
-  emitBoard(payload: unknown) {
-    this.emit(JSON.stringify(payload));
   }
 
   // Simulate a server-initiated close with a specific code (4401 auth-reject,
@@ -715,8 +737,13 @@ class MockWS {
 // the SPA reloads the board snapshot and the card moves to its new column —
 // exactly the production claim->running->done flow over the event-tail.
 let boardEventSeq = 1;
+// Durable log of board events so a reconnect can replay events-after-cursor
+// (events pushed while disconnected are "missed" and recovered on reconnect).
+const boardEventLog: { cursor: number; type: string; task_id: string }[] = [];
 function pushBoardEvent(taskId: string, type: string): void {
-  boardSocket?.emitBoard({ cursor: ++boardEventSeq, type, task_id: taskId });
+  const ev = { cursor: ++boardEventSeq, type, task_id: taskId };
+  boardEventLog.push(ev);
+  boardSocket?.deliverBoard(ev); // live delivery; no-op while disconnected
 }
 function mutateTaskStatus(id: string, status: string): boolean {
   const task = findTask(id);
@@ -737,6 +764,16 @@ diag.completeTask = (id: string): boolean => {
 // Mutate a task's status WITHOUT emitting an event — used to prove the board's
 // onopen catch-up reload (a forced reconnect must surface the silent change).
 diag.silentSetStatus = (id: string, status: string): boolean => mutateTaskStatus(id, status);
+// Mutate a task AND log a board event while disconnected: the event is "missed"
+// live (no socket) but recoverable via the reconnect's events-after-cursor
+// replay — proves precise cursor replay (V7-W3).
+diag.missEvent = (id: string, status: string, type: string): boolean => {
+  if (!mutateTaskStatus(id, status)) return false;
+  const ev = { cursor: ++boardEventSeq, type, task_id: id };
+  boardEventLog.push(ev);
+  boardSocket?.deliverBoard(ev); // boardSocket is null during downtime -> not delivered
+  return true;
+};
 // Force a server-side close on the live board / terminal socket.
 diag.closeBoard = (code: number): boolean => {
   const s = boardSocket;

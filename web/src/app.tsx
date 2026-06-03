@@ -129,12 +129,20 @@ export function App() {
   // adoption, where boardId is unchanged) reconnects with a fresh project-bound
   // ticket. Reconnects use exponential backoff (capped); a 4401 close (auth
   // rejected) stops the loop — a reload is needed, not a retry storm.
+  //
+  // Cursor replay: each board event carries a `cursor` (rowid). We track the
+  // last one and reconnect with ?cursor=<last> so /ws/board replays only the
+  // events-after-cursor missed during downtime — not a blanket from-0 dump.
+  // First connect / no cursor yet → no param → the onopen catch-up reload is
+  // the fallback. `lastCursor` lives per effect-run, so a project/board switch
+  // resets it (the new board starts fresh with the full-reload fallback).
   useEffect(() => {
     if (!boardId) return;
     let disposed = false;
     let ws: WebSocket | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let backoff = 1000;
+    let lastCursor: number | null = null;
 
     const scheduleReconnect = () => {
       if (disposed) return;
@@ -150,7 +158,11 @@ export function App() {
         .then(({ ticket }) => {
           if (disposed) return;
           try {
-            ws = new WebSocket(wsUrl("/ws/board", { ticket }));
+            const params: Record<string, string> = { ticket };
+            // Reconnect from the last applied cursor → precise events-after
+            // replay; omit on the first connect (full-reload fallback path).
+            if (lastCursor !== null) params.cursor = String(lastCursor);
+            ws = new WebSocket(wsUrl("/ws/board", params));
           } catch {
             scheduleReconnect();
             return;
@@ -158,12 +170,25 @@ export function App() {
           ws.onopen = () => {
             backoff = 1000; // reset on a successful connect
             setBoardLive(true);
-            // Catch-up: re-request the board snapshot on every (re)connect so
-            // events missed while the socket was down are reflected immediately
-            // (no cursor bookkeeping needed). Harmless on the first connect.
+            // Catch-up reload: cheap safety net that also covers silent
+            // (eventless) state changes and the first-connect / no-cursor case.
+            // Precise per-event replay arrives as messages below.
             setLiveTick((x) => x + 1);
           };
-          ws.onmessage = () => setLiveTick((x) => x + 1);
+          ws.onmessage = (ev: MessageEvent) => {
+            // Track the last board event cursor so the next reconnect requests
+            // only events-after-cursor. Monotonic guard keeps duplicate / out-
+            // of-order frames graceful (never rewinds the cursor).
+            try {
+              const msg = JSON.parse(typeof ev.data === "string" ? ev.data : "") as { cursor?: unknown };
+              if (typeof msg.cursor === "number" && (lastCursor === null || msg.cursor > lastCursor)) {
+                lastCursor = msg.cursor;
+              }
+            } catch {
+              /* non-JSON frame — still a change signal */
+            }
+            setLiveTick((x) => x + 1);
+          };
           ws.onclose = (ev: CloseEvent) => {
             if (disposed) return; // normal close from our own teardown (switch/unmount)
             setBoardLive(false);

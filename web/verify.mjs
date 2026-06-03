@@ -275,6 +275,30 @@ async function main() {
       claimCol === RUNNING_COL &&
       completeCol === DONE_COL;
 
+    // V7-W3 board cursor replay: on reconnect the FE requests events-after its
+    // last-seen cursor (precise), NOT a from-0 reload. An event that lands
+    // during downtime is replayed — scoped to exactly the missed event(s).
+    const liveMaxBefore = await page.evaluate(() => window.__MOCK__?.boardLiveMaxCursor ?? 0);
+    const connBeforeReplay = await page.evaluate(() => window.__MOCK__?.boardWsConnects ?? 0);
+    await page.evaluate(() => window.__MOCK__?.closeBoard(1006));
+    // Push a board event while the socket is down (G-5 todo -> running): missed
+    // live, recoverable only via the reconnect's events-after-cursor replay.
+    await page.evaluate(() => window.__MOCK__?.missEvent("G-5", "running", "task.claimed"));
+    await page.waitForFunction(
+      (prev) => (window.__MOCK__?.boardWsConnects ?? 0) > prev,
+      { timeout: 8000 },
+      connBeforeReplay,
+    );
+    await cardInCol(RUNNING_COL, "G-5");
+    const replay = await page.evaluate(() => ({
+      cursorParam: window.__MOCK__?.boardCursorParam ?? -1,
+      replayCount: window.__MOCK__?.boardLastReplayCount ?? -1,
+    }));
+    const cursorReplayOk =
+      liveMaxBefore > 0 &&
+      replay.cursorParam === liveMaxBefore && // reconnected with the tracked cursor
+      replay.replayCount === 1; // only the 1 missed event replayed (not from 0)
+
     // #N4 board WS lifecycle (여정6: WS 재연결·백오프): onopen catch-up reload,
     // non-4401 close -> reconnect, 4401 (auth reject) -> stop the loop.
     const REVIEW_COL = 6;
@@ -911,6 +935,7 @@ async function main() {
       addOk &&
       mirrorOk &&
       boardLiveOk &&
+      cursorReplayOk &&
       n4Ok &&
       n5Ok &&
       n1Ok &&
@@ -959,6 +984,8 @@ async function main() {
       claimColBefore,
       claimCol,
       completeCol,
+      cursorReplayOk,
+      cursorReplay: { liveMaxBefore, ...replay },
       n4Ok,
       n4Reconnected,
       n4CatchUpCol,
