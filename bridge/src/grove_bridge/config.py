@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
+
+from grove_bridge.ask_human import AskHumanConfig
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,7 @@ class BridgeConfig:
     poll_interval_seconds: float = 5.0
     max_tasks_per_tick: int = 1
     grove_binary: str = "grove"
+    ask_human: AskHumanConfig = field(default_factory=AskHumanConfig)
 
     def __post_init__(self) -> None:
         if not self.boards:
@@ -90,6 +93,7 @@ def load_bridge_config(path: str | Path) -> BridgeConfig:
             raw.get("grove_binary", BridgeConfig.grove_binary),
             field="grove_binary",
         ),
+        ask_human=_ask_human_config(raw.get("ask_human")),
     )
 
 
@@ -112,6 +116,19 @@ def _lane_configs(value: object) -> dict[str, LaneConfig]:
             timeout=_string(lane_raw.get("timeout", "30m"), field=f"lanes.{assignee}.timeout"),
         )
     return lanes
+
+
+def _ask_human_config(value: object) -> AskHumanConfig:
+    if value is None:
+        return AskHumanConfig()
+    if not isinstance(value, dict):
+        raise ValueError("ask_human must be a table")
+    raw = cast(Mapping[str, object], value)
+    return AskHumanConfig(
+        enabled=_bool(raw.get("enabled", AskHumanConfig.enabled), field="ask_human.enabled"),
+        dry_run=_bool(raw.get("dry_run", AskHumanConfig.dry_run), field="ask_human.dry_run"),
+        channel=_optional_string(raw.get("channel"), field="ask_human.channel"),
+    )
 
 
 def _string_tuple(value: object, *, field: str) -> tuple[str, ...]:
@@ -149,3 +166,9 @@ def _positive_float(value: object, *, field: str) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
         raise ValueError(f"{field} must be a positive number")
     return float(value)
+
+
+def _bool(value: object, *, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field} must be a boolean")
+    return value

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast, runtime_checkable
 
+from grove_bridge.ask_human import AskHumanNotifierProtocol, build_ask_human_notifier
 from grove_bridge.config import BridgeConfig, LaneConfig, load_bridge_config
 from grove_bridge.grove import (
     GroveRunnerProtocol,
@@ -62,6 +63,7 @@ class PullExecutor:
         config: BridgeConfig,
         kanban_db: object | None = None,
         grove_runner: GroveRunnerProtocol | None = None,
+        ask_human_notifier: AskHumanNotifierProtocol | None = None,
     ) -> None:
         self.config = config
         self.kanban_db = (
@@ -71,6 +73,7 @@ class PullExecutor:
             grove_binary=config.grove_binary,
             heartbeat_interval_seconds=config.heartbeat_interval_seconds,
         )
+        self.ask_human_notifier = ask_human_notifier
         self.node_pool = NodePool(config.lanes)
 
     def run_once(self) -> TickResult:
@@ -209,6 +212,13 @@ class PullExecutor:
         )
         if blocked:
             self.kanban_db.add_comment(conn, task.id, "grove-bridge", comment)
+            if self.ask_human_notifier is not None:
+                self.ask_human_notifier.notify_blocked(
+                    conn=conn,
+                    task=task,
+                    reason=reason,
+                    comment=comment,
+                )
             tick.blocked += 1
         else:
             tick.terminal_conflicts += 1
@@ -314,7 +324,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     config = load_bridge_config(args.config)
     kanban_db = load_kanban_db(args.legacy_agent_path)
-    executor = PullExecutor(config=config, kanban_db=kanban_db)
+    executor = PullExecutor(
+        config=config,
+        kanban_db=kanban_db,
+        ask_human_notifier=build_ask_human_notifier(config=config, kanban_db=kanban_db),
+    )
     if args.once:
         executor.run_once()
     else:

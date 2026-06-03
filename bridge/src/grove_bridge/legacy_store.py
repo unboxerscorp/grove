@@ -75,6 +75,24 @@ class KanbanDbProtocol(Protocol):
 
     def add_comment(self, conn: object, task_id: str, author: str, body: str) -> int: ...
 
+    def add_notify_sub(
+        self,
+        conn: object,
+        *,
+        task_id: str,
+        platform: str,
+        chat_id: str,
+        thread_id: str | None = None,
+        user_id: str | None = None,
+        notifier_profile: str | None = None,
+    ) -> None: ...
+
+    def list_notify_subs(
+        self,
+        conn: object,
+        task_id: str | None = None,
+    ) -> list[dict[str, object]]: ...
+
     def block_task(
         self,
         conn: object,
@@ -83,6 +101,8 @@ class KanbanDbProtocol(Protocol):
         reason: str | None = None,
         expected_run_id: int | None = None,
     ) -> bool: ...
+
+    def unblock_task(self, conn: object, task_id: str) -> bool: ...
 
     def release_stale_claims(self, conn: object) -> int: ...
 

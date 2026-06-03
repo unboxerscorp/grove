@@ -7,6 +7,8 @@ from pathlib import Path
 
 from pytest import MonkeyPatch
 
+import grove_bridge.pull_executor as pull_executor_module
+from grove_bridge.ask_human import AskHumanNotifier
 from grove_bridge.config import BridgeConfig, LaneConfig, load_bridge_config
 from grove_bridge.grove import GroveRunResult, SubprocessGroveRunner
 from grove_bridge.pull_executor import PullExecutor
@@ -234,6 +236,11 @@ claim_ttl_seconds = 120
 heartbeat_interval_seconds = 30
 max_tasks_per_tick = 3
 
+[ask_human]
+enabled = true
+dry_run = false
+channel = "C-ops"
+
 [lanes."grove:codex"]
 nodes = ["codex-a", "codex-b"]
 grove_config = "cockpit.grove.yaml"
@@ -252,10 +259,66 @@ nodes = ["claude-a"]
     assert config.claim_ttl_seconds == 120
     assert config.heartbeat_interval_seconds == 30
     assert config.max_tasks_per_tick == 3
+    assert config.ask_human.enabled is True
+    assert config.ask_human.dry_run is False
+    assert config.ask_human.channel == "C-ops"
     assert config.lanes["grove:codex"].nodes == ("codex-a", "codex-b")
     assert config.lanes["grove:codex"].grove_config == "cockpit.grove.yaml"
     assert config.lanes["grove:codex"].timeout == "45m"
     assert config.lanes["grove:claude"].nodes == ("claude-a",)
+
+
+def test_main_wires_ask_human_notifier_from_config(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "bridge.toml"
+    config_path.write_text(
+        """
+boards = ["default"]
+
+[ask_human]
+enabled = true
+dry_run = false
+channel = "C-ops"
+
+[lanes."grove:codex"]
+nodes = ["codex-a"]
+""".strip(),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    class MainFakeExecutor:
+        def __init__(
+            self,
+            *,
+            config: BridgeConfig,
+            kanban_db: object | None = None,
+            grove_runner: object | None = None,
+            ask_human_notifier: object | None = None,
+        ) -> None:
+            captured["config"] = config
+            captured["kanban_db"] = kanban_db
+            captured["ask_human_notifier"] = ask_human_notifier
+
+        def run_once(self) -> None:
+            captured["ran_once"] = True
+
+        def run_forever(self) -> None:
+            raise AssertionError("main should run only once in this test")
+
+    kanban_db = object()
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test-token")
+    monkeypatch.setattr(pull_executor_module, "load_kanban_db", lambda extra_path=None: kanban_db)
+    monkeypatch.setattr(pull_executor_module, "PullExecutor", MainFakeExecutor)
+
+    exit_code = pull_executor_module.main(["--config", str(config_path), "--once"])
+
+    assert exit_code == 0
+    assert captured["kanban_db"] is kanban_db
+    assert captured["ran_once"] is True
+    assert isinstance(captured["ask_human_notifier"], AskHumanNotifier)
 
 
 def test_run_once_claims_lane_task_and_completes_with_grove_metadata() -> None:
