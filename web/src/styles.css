@@ -3632,3 +3632,157 @@ button {
     display: none;
   }
 }
+
+/* ── onboarding wizard v2 (V9-W2) ────────────────────────────────────────── */
+.onb-wizard {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.onb-wizard__scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 8, 12, 0.72);
+  backdrop-filter: blur(3px);
+}
+
+.onb-wizard__panel {
+  position: relative;
+  width: min(520px, 94vw);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px 24px 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background:
+    radial-gradient(120% 90% at 50% -20%, rgba(84, 199, 184, 0.07), transparent 60%),
+    var(--panel);
+  box-shadow: 0 40px 80px -30px rgba(0, 0, 0, 0.95);
+  animation: dr-rise 0.26s ease both;
+}
+
+.onb-wizard__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.onb-wizard__brand {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.onb-skip {
+  font-family: var(--ui);
+  font-size: 12px;
+  color: var(--faint);
+  background: transparent;
+  border: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.onb-skip:hover {
+  color: var(--dim);
+}
+
+.onb-stepper {
+  display: flex;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onb-stepper__dot {
+  flex: 1;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.onb-stepper__dot.is-done {
+  background: rgba(84, 199, 184, 0.5);
+}
+
+.onb-stepper__dot.is-active {
+  background: var(--teal);
+}
+
+.onb-step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 132px;
+}
+
+.onb-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.onb-body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+
+.onb-proj {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 4px;
+}
+
+.onb-proj__row {
+  display: flex;
+  gap: 8px;
+}
+
+.onb-proj__row .dr-input {
+  flex: 1;
+}
+
+.onb-import-note {
+  margin: 2px 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.onb-proj__ok {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--teal);
+}
+
+.onb-proj__err {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--coral);
+}
+
+.onb-proj__hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.onb-wizard__foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 14px;
+}

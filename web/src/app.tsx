@@ -8,6 +8,7 @@ import { AuditDrawer } from "./components/AuditDrawer";
 import { ChainDrawer } from "./components/ChainDrawer";
 import { InboxDrawer } from "./components/InboxDrawer";
 import { PresenceIndicator } from "./components/PresenceIndicator";
+import { OnboardingWizard } from "./components/OnboardingWizard";
 import { AuthPanel } from "./components/AuthPanel";
 import { CostPanel } from "./components/CostPanel";
 import { HealthDot } from "./components/HealthDot";
@@ -417,6 +418,14 @@ export function App() {
         projectTick={projectTick}
         onAnswered={() => setLiveTick((x) => x + 1)}
         onClose={() => setInboxOpen(false)}
+      />
+      <OnboardingWizard
+        projectCount={projects.length}
+        onProjectReady={(name) => {
+          void loadProjects();
+          switchProject(name);
+        }}
+        onNavigate={(v) => setView(v)}
       />
     </div>
   );

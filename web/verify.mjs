@@ -56,6 +56,56 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
 
+    // V9-W2 onboarding wizard: shows on first visit, steps welcome -> project
+    // (reused create/load forms) -> node -> auth, skippable, and remembered via
+    // localStorage so a reload does NOT re-show it. Runs first (it overlays the
+    // dashboard); the trailing reload leaves the app in the normal returning-user
+    // state the rest of the suite expects.
+    await page.waitForSelector(".onb-wizard", { timeout: 8000 });
+    const wizStep0 = await page.evaluate(() => ({
+      visible: !!document.querySelector(".onb-wizard"),
+      step: document.querySelector(".onb-step")?.getAttribute("data-step"),
+      dots: document.querySelectorAll(".onb-stepper__dot").length,
+    }));
+    await page.click(".onb-next"); // welcome -> project
+    await page.waitForSelector(".onb-proj-name", { timeout: 5000 });
+    const wizStep1 = await page.evaluate(() => ({
+      step: document.querySelector(".onb-step")?.getAttribute("data-step"),
+      hasCreate: !!document.querySelector(".onb-proj-create"),
+      hasLoad: !!document.querySelector(".onb-proj-load"),
+      hasImport: !!document.querySelector(".onb-import-note"),
+    }));
+    await page.click(".onb-next"); // project -> node
+    await page.waitForFunction(() => document.querySelector(".onb-step")?.getAttribute("data-step") === "2", { timeout: 5000 });
+    await page.click(".onb-next"); // node -> auth
+    await page.waitForFunction(() => document.querySelector(".onb-step")?.getAttribute("data-step") === "3", { timeout: 5000 });
+    const wizLast = await page.evaluate(() => ({
+      step: document.querySelector(".onb-step")?.getAttribute("data-step"),
+      hasFinish: !!document.querySelector(".onb-finish"),
+      activeDot: Array.from(document.querySelectorAll(".onb-stepper__dot")).findIndex((d) => d.classList.contains("is-active")),
+    }));
+    await page.click(".onb-skip"); // skip/dismiss -> hide + persist flag
+    await page.waitForFunction(() => !document.querySelector(".onb-wizard"), { timeout: 5000 });
+    const wizFlag = await page.evaluate(() => localStorage.getItem("grove.onboarded.v2"));
+    await page.reload({ waitUntil: "load" });
+    await page.waitForSelector(".devroom .dr-brand", { timeout: 8000 });
+    await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
+    await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+    const wizAfterReload = await page.evaluate(() => !!document.querySelector(".onb-wizard"));
+    const wizardOk =
+      wizStep0.visible &&
+      wizStep0.step === "0" &&
+      wizStep0.dots === 4 &&
+      wizStep1.step === "1" &&
+      wizStep1.hasCreate &&
+      wizStep1.hasLoad &&
+      wizStep1.hasImport &&
+      wizLast.step === "3" &&
+      wizLast.hasFinish &&
+      wizLast.activeDot === 3 &&
+      wizFlag === "1" &&
+      wizAfterReload === false;
+
     // V2-W4 node status heatmap (from GET /api/status) + server health dot
     // (GET /api/health). Mock summary mirrors _node_liveness_summary:
     // running=2, idle=2, stale=0, error=1, total=5 — error is its OWN bucket,
@@ -1048,6 +1098,7 @@ async function main() {
       chainOk &&
       inboxOk &&
       presenceOk &&
+      wizardOk &&
       delegationEdgesOk &&
       delegateOk &&
       diag.projectHeader === projAfterLoad &&
@@ -1122,6 +1173,8 @@ async function main() {
       inbox: { badgeBefore: inboxBadgeBefore, ...inboxBefore, ...answered, badgeAfter: inboxBadgeAfter, ...deniedState },
       presenceOk,
       presence: { ...presence, anon: presenceAnon },
+      wizardOk,
+      wizard: { s0: wizStep0, s1: wizStep1, last: wizLast, flag: wizFlag, afterReload: wizAfterReload },
       costOk,
       cost,
       delegationEdgesOk,
