@@ -105,7 +105,7 @@ def test_nodes_parse_fake_registry(tmp_path: Path, monkeypatch: MonkeyPatch) -> 
                 "agent": "claude",
                 "sessionId": "sess-beta",
                 "transcript": "/tmp/beta.jsonl",
-                "tmux_pane": "dev10:beta",
+                "tmux_pane": "dev10:2.0",
             },
         },
     )
@@ -126,7 +126,7 @@ def test_nodes_parse_fake_registry(tmp_path: Path, monkeypatch: MonkeyPatch) -> 
         {
             "name": "beta",
             "agent": "claude",
-            "tmux_pane": "dev10:beta",
+            "tmux_pane": "dev10:2.0",
             "session_id": "sess-beta",
             "status": "idle",
         },
@@ -147,7 +147,12 @@ def test_registry_nodes_without_explicit_panes_cannot_expose_lead_or_pane_target
             "explicit-worker": {
                 "name": "explicit-worker",
                 "agent": "codex",
-                "tmux_pane": "dev10:0.16",
+                "tmux_pane": "dev10:1.2",
+            },
+            "explicit-pane-zero-worker": {
+                "name": "explicit-pane-zero-worker",
+                "agent": "codex",
+                "tmux_pane": "dev10:2.0",
             },
             "explicit-lead": {
                 "name": "explicit-lead",
@@ -163,16 +168,67 @@ def test_registry_nodes_without_explicit_panes_cannot_expose_lead_or_pane_target
     assert response.status_code == 200
     assert response.json() == [
         {
+            "name": "explicit-pane-zero-worker",
+            "agent": "codex",
+            "tmux_pane": "dev10:2.0",
+            "session_id": "",
+            "status": "idle",
+        },
+        {
             "name": "explicit-worker",
             "agent": "codex",
-            "tmux_pane": "dev10:0.16",
+            "tmux_pane": "dev10:1.2",
+            "session_id": "",
+            "status": "idle",
+        },
+    ]
+    assert plugin_api._allowed_panes() == {"dev10:1.2", "dev10:2.0"}
+    assert not plugin_api._pane_allowed("dev10:0.0")
+    assert not plugin_api._pane_allowed("dev10:foo.1")
+    assert plugin_api._pane_allowed("dev10:1.2")
+    assert plugin_api._pane_allowed("dev10:2.0")
+
+
+@pytest.mark.parametrize("alias", ["dev10:00.00", "dev10:0.00", "dev10:00.0", "dev10:000.0"])
+def test_lead_numeric_aliases_are_not_exposed(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    alias: str,
+) -> None:
+    write_registry(
+        tmp_path,
+        session="dev10",
+        nodes={
+            "lead-alias": {
+                "name": "lead-alias",
+                "agent": "codex",
+                "tmux_pane": alias,
+            },
+            "worker": {
+                "name": "worker",
+                "agent": "codex",
+                "tmux_pane": "dev10:2.0",
+            },
+        },
+    )
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
+
+    response = make_client().get("/api/plugins/grove-viewer/nodes")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "name": "worker",
+            "agent": "codex",
+            "tmux_pane": "dev10:2.0",
             "session_id": "",
             "status": "idle",
         }
     ]
-    assert plugin_api._allowed_panes() == {"dev10:0.16"}
-    assert not plugin_api._pane_allowed("dev10:0.0")
-    assert not plugin_api._pane_allowed("dev10:foo.1")
+    assert plugin_api._valid_tmux_pane(alias)
+    assert not plugin_api._valid_exposed_tmux_pane(alias)
+    assert not plugin_api._pane_allowed(alias)
+    assert plugin_api._pane_allowed("dev10:2.0")
 
 
 def test_board_summary_uses_fake_kanban_db(monkeypatch: MonkeyPatch) -> None:
@@ -210,7 +266,7 @@ def test_term_streams_fake_tmux_frames(
     write_registry(
         tmp_path,
         session="dev10",
-        nodes={"alpha": {"name": "alpha", "agent": "codex", "tmux_pane": "dev10:0.1"}},
+        nodes={"alpha": {"name": "alpha", "agent": "codex", "tmux_pane": "dev10:1.2"}},
     )
     monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
     monkeypatch.setattr(plugin_api, "POLL_INTERVAL_SECONDS", 0.01)
@@ -224,12 +280,12 @@ def test_term_streams_fake_tmux_frames(
     monkeypatch.setattr(plugin_api, "_tmux_capture", fake_capture)
 
     with make_client().websocket_connect(
-        "/api/plugins/grove-viewer/term?pane=dev10:0.1&ticket=ok"
+        "/api/plugins/grove-viewer/term?pane=dev10:1.2&ticket=ok"
     ) as ws:
         assert ws.receive_text() == "frame 1"
         assert ws.receive_text() == "frame 2"
 
-    assert captures[:2] == ["dev10:0.1", "dev10:0.1"]
+    assert captures[:2] == ["dev10:1.2", "dev10:1.2"]
 
 
 @pytest.mark.parametrize(
@@ -237,9 +293,12 @@ def test_term_streams_fake_tmux_frames(
     [
         "dev10:1.2; x",
         "dev10:1.2 -X",
+        "dev10:1.2 -t dev10:0.0",
         "../dev10:1.2",
         "dev10:1.2/../../0.0",
         "dev10:1.2 option",
+        "dev10:beta",
+        "other:1.2",
     ],
 )
 def test_term_rejects_injection_like_pane_values(
@@ -250,7 +309,7 @@ def test_term_rejects_injection_like_pane_values(
     write_registry(
         tmp_path,
         session="dev10",
-        nodes={"alpha": {"name": "alpha", "agent": "codex", "tmux_pane": "dev10:0.1"}},
+        nodes={"alpha": {"name": "alpha", "agent": "codex", "tmux_pane": "dev10:1.2"}},
     )
     monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
     monkeypatch.setattr(plugin_api, "_ws_auth_ok", allow_ws)
@@ -273,14 +332,14 @@ def test_term_rejects_invalid_ticket(tmp_path: Path, monkeypatch: MonkeyPatch) -
     write_registry(
         tmp_path,
         session="dev10",
-        nodes={"alpha": {"name": "alpha", "agent": "codex", "tmux_pane": "dev10:0.1"}},
+        nodes={"alpha": {"name": "alpha", "agent": "codex", "tmux_pane": "dev10:1.2"}},
     )
     monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
     monkeypatch.setattr(plugin_api, "_ws_auth_ok", deny_ws)
 
     with pytest.raises(WebSocketDisconnect) as exc:
         with make_client().websocket_connect(
-            "/api/plugins/grove-viewer/term?pane=dev10:0.1&ticket=bad"
+            "/api/plugins/grove-viewer/term?pane=dev10:1.2&ticket=bad"
         ):
             pass
 
@@ -294,7 +353,7 @@ def test_term_rejects_pane_outside_allowlist(
     write_registry(
         tmp_path,
         session="dev10",
-        nodes={"alpha": {"name": "alpha", "agent": "codex", "tmux_pane": "dev10:0.1"}},
+        nodes={"alpha": {"name": "alpha", "agent": "codex", "tmux_pane": "dev10:1.2"}},
     )
     monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
     monkeypatch.setattr(plugin_api, "_ws_auth_ok", allow_ws)
@@ -312,7 +371,7 @@ def test_send_allows_only_registry_panes(tmp_path: Path, monkeypatch: MonkeyPatc
     write_registry(
         tmp_path,
         session="dev10",
-        nodes={"alpha": {"name": "alpha", "agent": "codex", "tmux_pane": "dev10:0.1"}},
+        nodes={"alpha": {"name": "alpha", "agent": "codex", "tmux_pane": "dev10:2.0"}},
     )
     monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
     sends: list[tuple[str, str]] = []
@@ -325,7 +384,7 @@ def test_send_allows_only_registry_panes(tmp_path: Path, monkeypatch: MonkeyPatc
 
     ok = client.post(
         "/api/plugins/grove-viewer/send",
-        json={"pane": "dev10:0.1", "data": "hello"},
+        json={"pane": "dev10:2.0", "data": "hello"},
     )
     blocked = client.post(
         "/api/plugins/grove-viewer/send",
@@ -335,7 +394,7 @@ def test_send_allows_only_registry_panes(tmp_path: Path, monkeypatch: MonkeyPatc
     assert ok.status_code == 200
     assert ok.json() == {"ok": True}
     assert blocked.status_code == 403
-    assert sends == [("dev10:0.1", "hello")]
+    assert sends == [("dev10:2.0", "hello")]
 
 
 def test_tmux_capture_uses_literal_argv_without_shell(monkeypatch: MonkeyPatch) -> None:
@@ -362,10 +421,10 @@ def test_tmux_capture_uses_literal_argv_without_shell(monkeypatch: MonkeyPatch) 
 
     monkeypatch.setattr("plugin_api.subprocess.run", fake_run)
 
-    assert plugin_api._tmux_capture("dev10:0.16") == "pane text"
+    assert plugin_api._tmux_capture("dev10:2.0") == "pane text"
     assert calls == [
         {
-            "args": ["tmux", "capture-pane", "-t", "dev10:0.16", "-p"],
+            "args": ["tmux", "capture-pane", "-t", "dev10:2.0", "-p"],
             "capture_output": True,
             "text": True,
             "timeout": plugin_api.TMUX_TIMEOUT_SECONDS,
@@ -398,7 +457,7 @@ def test_tmux_send_uses_literal_argv_and_literal_data(monkeypatch: MonkeyPatch) 
 
     monkeypatch.setattr("plugin_api.subprocess.run", fake_run)
 
-    plugin_api._tmux_send("dev10:0.16", "hello; rm -rf /")
+    plugin_api._tmux_send("dev10:2.0", "hello; rm -rf /")
 
     assert calls == [
         {
@@ -406,7 +465,7 @@ def test_tmux_send_uses_literal_argv_and_literal_data(monkeypatch: MonkeyPatch) 
                 "tmux",
                 "send-keys",
                 "-t",
-                "dev10:0.16",
+                "dev10:2.0",
                 "-l",
                 "--",
                 "hello; rm -rf /",

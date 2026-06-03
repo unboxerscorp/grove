@@ -29,8 +29,7 @@ DEFAULT_GROVE_SESSION = "dev10"
 DEFAULT_BOARD = "default"
 POLL_INTERVAL_SECONDS = 1.0
 TMUX_TIMEOUT_SECONDS = 5.0
-TMUX_PANE_RE = re.compile(r"^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+(?:\.[0-9]+)?$")
-LEAD_LIKE_PANE_RE = re.compile(r"^[A-Za-z0-9_.-]+:(?:0|[A-Za-z0-9_.-]+\.0)$")
+TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?P<pane>[0-9]+)$")
 BOARD_COLUMNS = (
     "triage",
     "todo",
@@ -280,11 +279,24 @@ def _mapping_string(mapping: Mapping[str, object], key: str) -> str | None:
 
 
 def _valid_tmux_pane(pane: str) -> bool:
-    return bool(TMUX_PANE_RE.fullmatch(pane))
+    return _tmux_pane_parts(pane) is not None
 
 
 def _valid_exposed_tmux_pane(pane: str) -> bool:
-    return _valid_tmux_pane(pane) and not LEAD_LIKE_PANE_RE.fullmatch(pane)
+    parts = _tmux_pane_parts(pane)
+    return parts is not None and not _is_lead_pane(parts)
+
+
+def _tmux_pane_parts(pane: str) -> tuple[int, int] | None:
+    match = TMUX_PANE_RE.fullmatch(pane)
+    if match is None or match.group("session") != _configured_session():
+        return None
+    return int(match.group("window")), int(match.group("pane"))
+
+
+def _is_lead_pane(parts: tuple[int, int]) -> bool:
+    window, pane = parts
+    return window == 0 and pane == 0
 
 
 def _allowed_panes() -> set[str]:
