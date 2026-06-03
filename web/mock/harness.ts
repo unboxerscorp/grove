@@ -193,6 +193,60 @@ const AUDIT_EVENTS: MockAuditEvent[] = [
   { cursor: 9, id: "e9", actor: nodeActor("root"), action: "block", target: { type: "task", id: "G-7", node: "frontend" }, ts: AUDIT_TS0 + 240, task_id: "G-7" },
   { cursor: 10, id: "e10", actor: nodeActor("root"), action: "spawn", target: { type: "node", id: "frontend", node: "frontend" }, ts: AUDIT_TS0 + 300, task_id: null },
 ];
+
+// Decision inbox seed — MIRRORS web_app.py _inbox_item_payload: blocked +
+// ask-human tasks with answer.endpoint. Distinct ids (H-*) so answering them
+// doesn't disturb the board-card assertions. `let` so /answer can drop items.
+type MockInboxItem = {
+  id: string;
+  type: string;
+  task_id: string;
+  title: string;
+  body?: string;
+  status: string;
+  node?: string;
+  blocked_reason?: string;
+  blocked_since: number;
+  waiting_seconds: number;
+  needs_human: boolean;
+  sources: string[];
+  answer: { endpoint: string; method: string; slack_thread_reply: boolean; note: string };
+};
+const inboxItem = (id: string, ask: boolean, extra: Partial<MockInboxItem>): MockInboxItem => ({
+  id,
+  type: ask ? "ask_human" : "blocked_task",
+  task_id: id,
+  title: extra.title ?? id,
+  status: "blocked",
+  blocked_since: AUDIT_TS0,
+  waiting_seconds: 600,
+  needs_human: ask,
+  sources: ask ? ["blocked_task", "ask_human"] : ["blocked_task"],
+  answer: {
+    endpoint: `/api/tasks/${id}/answer`,
+    method: "POST",
+    slack_thread_reply: ask,
+    note: "answer adds a comment and unblocks the task",
+  },
+  ...extra,
+});
+let INBOX_ITEMS: MockInboxItem[] = [
+  inboxItem("H-1", true, {
+    title: "Approve prod deploy window?",
+    body: "Agent needs a human to confirm the Friday deploy window.",
+    node: "backend",
+    blocked_reason: "needs human decision: deploy window",
+    blocked_since: AUDIT_TS0 - 600,
+  }),
+  inboxItem("H-2", false, {
+    title: "Schema migration conflict",
+    node: "researcher",
+    blocked_reason: "two migrations touch the same table",
+    blocked_since: AUDIT_TS0 - 300,
+    waiting_seconds: 300,
+  }),
+];
+
 let slack: { status: string; last_event_at: string | null; last_error: string | null } = {
   status: "not_configured",
   last_event_at: null,
@@ -357,6 +411,25 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     );
   }
 
+  if (p === "/api/inbox") {
+    // Mirrors web_app.py _inbox_payload: {project, items, next_cursor, total}.
+    diag.inboxFetches = ((diag.inboxFetches as number) ?? 0) + 1;
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const cursor = Number(u.searchParams.get("cursor") ?? "0") || 0;
+    const limit = Number(u.searchParams.get("limit") ?? "50") || 50;
+    const page = INBOX_ITEMS.slice(cursor, cursor + limit);
+    const nextIdx = cursor + page.length;
+    return Promise.resolve(
+      json({
+        project: proj,
+        items: page,
+        next_cursor: nextIdx < INBOX_ITEMS.length ? nextIdx : null,
+        total: INBOX_ITEMS.length,
+        answer: { endpoint: "/api/tasks/{task_id}/answer", method: "POST", body: { text: "human answer" } },
+      }),
+    );
+  }
+
   if (p === "/api/boards") {
     const scoped = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"];
     if (scoped === SOLO_PROJECT) {
@@ -397,6 +470,25 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     if (status) list = list.filter((t) => t.status === status);
     if (assignee) list = list.filter((t) => (t.assignee ?? "").toLowerCase().includes(assignee.toLowerCase()));
     return Promise.resolve(json(list));
+  }
+
+  m = p.match(/^\/api\/tasks\/([^/]+)\/answer$/);
+  if (m && method === "POST") {
+    const id = decodeURIComponent(m[1]!);
+    // Team-viewer denial path (verify can flip this to exercise the safe error).
+    if (diag.denyAnswer) {
+      diag.answerDenied = ((diag.answerDenied as number) ?? 0) + 1;
+      return Promise.resolve(new Response(JSON.stringify({ detail: "answer requires operator role" }), { status: 403 }));
+    }
+    const payload = (init?.body ? JSON.parse(init.body as string) : {}) as { text?: string };
+    diag.answeredTask = id;
+    diag.answerText = payload.text ?? "";
+    const before = INBOX_ITEMS.length;
+    INBOX_ITEMS = INBOX_ITEMS.filter((it) => it.task_id !== id); // unblock -> drops out of inbox
+    diag.inboxRemoved = before - INBOX_ITEMS.length;
+    return Promise.resolve(
+      json({ ok: true, task: { id, status: "ready" }, comment: { id: "c-ans", body: payload.text ?? "" } }),
+    );
   }
 
   m = p.match(/^\/api\/tasks\/([^/]+)\/comments$/);

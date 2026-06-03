@@ -6,6 +6,7 @@ import { BoardView } from "./components/BoardView";
 import { NodeList } from "./components/NodeList";
 import { AuditDrawer } from "./components/AuditDrawer";
 import { ChainDrawer } from "./components/ChainDrawer";
+import { InboxDrawer } from "./components/InboxDrawer";
 import { AuthPanel } from "./components/AuthPanel";
 import { CostPanel } from "./components/CostPanel";
 import { HealthDot } from "./components/HealthDot";
@@ -48,6 +49,8 @@ export function App() {
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
   const [chainOpen, setChainOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [inboxCount, setInboxCount] = useState(0);
   const [liveTick, setLiveTick] = useState(0);
   const [boardLive, setBoardLive] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -121,6 +124,23 @@ export function App() {
       clearInterval(t);
     };
   }, [projectTick]);
+
+  // Decision-inbox count for the header badge (re-scoped per project; refreshed
+  // on liveTick so a submitted answer / new block updates the badge).
+  useEffect(() => {
+    let alive = true;
+    api
+      .getInbox({ limit: 1 })
+      .then((p) => {
+        if (alive) setInboxCount(typeof p.total === "number" ? p.total : (p.items?.length ?? 0));
+      })
+      .catch(() => {
+        if (alive) setInboxCount(0);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [liveTick, projectTick]);
 
   // Board event-tail: a single-use ws-ticket (carrying the current project via
   // the X-Grove-Session-Token/X-Grove-Project headers) is minted, then the
@@ -329,6 +349,10 @@ export function App() {
           <button type="button" className="dr-audit-btn dr-chain-btn" onClick={() => setChainOpen(true)}>
             ⛓ {t("chain.open")}
           </button>
+          <button type="button" className="dr-audit-btn dr-inbox-btn" onClick={() => setInboxOpen(true)}>
+            ⚑ {t("inbox.open")}
+            {inboxCount > 0 && <span className="dr-inbox-btn__badge">{inboxCount}</span>}
+          </button>
           <HealthDot />
           <span className={cx("dr-auth", AUTH_REQUIRED ? "is-secured" : "is-local")}>
             {AUTH_REQUIRED ? t("auth.secured") : t("auth.local")}
@@ -386,6 +410,12 @@ export function App() {
       <TaskDrawer taskId={openTaskId} onClose={() => setOpenTaskId(null)} />
       <AuditDrawer open={auditOpen} projectTick={projectTick} onClose={() => setAuditOpen(false)} />
       <ChainDrawer open={chainOpen} projectTick={projectTick} onClose={() => setChainOpen(false)} />
+      <InboxDrawer
+        open={inboxOpen}
+        projectTick={projectTick}
+        onAnswered={() => setLiveTick((x) => x + 1)}
+        onClose={() => setInboxOpen(false)}
+      />
     </div>
   );
 }

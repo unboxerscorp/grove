@@ -174,6 +174,66 @@ async function main() {
       chainFocus.focus === "researcher" &&
       chainFocus.allThroughFocus;
 
+    // V7-W1 decision inbox: header badge count, list of blocked/ask-human items,
+    // answer an item -> POST /api/tasks/{id}/answer -> item drops out + badge
+    // decrements; then a 403 (team viewer) locks the answer UI behind a notice.
+    const inboxBadgeBefore = await page.evaluate(
+      () => (document.querySelector(".dr-inbox-btn__badge")?.textContent ?? "").trim(),
+    );
+    await page.click(".dr-inbox-btn");
+    await page.waitForSelector(".inbox-drawer", { timeout: 5000 });
+    await page.waitForFunction(() => document.querySelectorAll(".inbox-item").length >= 1, { timeout: 6000 });
+    const inboxBefore = await page.evaluate(() => ({
+      items: document.querySelectorAll(".inbox-item").length,
+      hasHuman: !!document.querySelector(".inbox-type.is-human"),
+      hasReason: !!document.querySelector(".inbox-item__reason"),
+      hasAnswer: !!document.querySelector('[data-task="H-1"] .inbox-answer__input'),
+    }));
+    // Answer H-1 -> POST -> it drops out of the list.
+    await page.type('[data-task="H-1"] .inbox-answer__input', "approved: ship Friday");
+    await page.click('[data-task="H-1"] .inbox-answer__submit');
+    await page.waitForFunction(() => !document.querySelector('[data-task="H-1"]'), { timeout: 6000 });
+    const answered = await page.evaluate(() => ({
+      task: window.__MOCK__?.answeredTask ?? "",
+      text: window.__MOCK__?.answerText ?? "",
+      removed: window.__MOCK__?.inboxRemoved ?? 0,
+      items: document.querySelectorAll(".inbox-item").length,
+    }));
+    // Header badge decremented (liveTick refetch of the count).
+    await page.waitForFunction(
+      (prev) => (document.querySelector(".dr-inbox-btn__badge")?.textContent ?? "").trim() !== prev,
+      { timeout: 6000 },
+      inboxBadgeBefore,
+    );
+    const inboxBadgeAfter = await page.evaluate(
+      () => (document.querySelector(".dr-inbox-btn__badge")?.textContent ?? "").trim(),
+    );
+    // Team-viewer denial: next answer 403 -> safe notice + answer UI hidden.
+    await page.evaluate(() => (window.__MOCK__.denyAnswer = true));
+    await page.type('[data-task="H-2"] .inbox-answer__input', "should fail");
+    await page.click('[data-task="H-2"] .inbox-answer__submit');
+    await page.waitForSelector(".inbox-denied", { timeout: 6000 });
+    const deniedState = await page.evaluate(() => ({
+      notice: !!document.querySelector(".inbox-denied"),
+      answerHidden: !document.querySelector(".inbox-answer__input"),
+    }));
+    await page.evaluate(() => (window.__MOCK__.denyAnswer = false));
+    await page.click(".inbox-drawer .dr-drawer__close");
+    await page.waitForFunction(() => !document.querySelector(".inbox-drawer"), { timeout: 5000 });
+    const inboxOk =
+      inboxBadgeBefore === "2" &&
+      inboxBefore.items === 2 &&
+      inboxBefore.hasHuman &&
+      inboxBefore.hasReason &&
+      inboxBefore.hasAnswer &&
+      answered.task === "H-1" &&
+      answered.text === "approved: ship Friday" &&
+      answered.removed === 1 &&
+      answered.items === 1 &&
+      inboxBadgeAfter === "1" &&
+      deniedState.notice &&
+      deniedState.answerHidden;
+
     // #1 i18n: Korean by default; KO/EN toggle flips all labels, then back.
     const brandText = () => page.$eval(".dr-brand__title", (el) => (el.textContent ?? "").trim());
     const i18n = { ko: await brandText(), en: "" };
@@ -951,6 +1011,7 @@ async function main() {
       detailOk &&
       auditOk &&
       chainOk &&
+      inboxOk &&
       delegationEdgesOk &&
       delegateOk &&
       diag.projectHeader === projAfterLoad &&
@@ -1021,6 +1082,8 @@ async function main() {
       audit: { ...audit1, after: auditAfterMore, filter: auditFilter },
       chainOk,
       chain: { ...chain, focus: chainFocus },
+      inboxOk,
+      inbox: { badgeBefore: inboxBadgeBefore, ...inboxBefore, ...answered, badgeAfter: inboxBadgeAfter, ...deniedState },
       costOk,
       cost,
       delegationEdgesOk,

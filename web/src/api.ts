@@ -175,6 +175,40 @@ export interface CostSummary {
   by_agent: Record<string, CostAgentMetrics>;
 }
 
+// Decision inbox (web_app.py _inbox_item_payload). A blocked / ask-human task
+// awaiting a human decision. `answer.endpoint` is the POST target that comments
+// + unblocks the task (operator/admin; team viewers get 403).
+export interface InboxAnswer {
+  endpoint: string;
+  method?: string;
+  slack_thread_reply?: boolean;
+  note?: string;
+}
+
+export interface InboxItem {
+  id: string;
+  type: string; // "ask_human" | "blocked_task"
+  task_id: string;
+  title: string;
+  body?: string | null;
+  status?: string;
+  assignee?: string | null;
+  node?: string | null;
+  blocked_reason?: string | null;
+  blocked_since?: number; // epoch seconds
+  waiting_seconds?: number;
+  needs_human?: boolean;
+  sources?: string[];
+  answer?: InboxAnswer;
+}
+
+export interface InboxPage {
+  project?: string;
+  items: InboxItem[];
+  next_cursor?: number | null;
+  total?: number;
+}
+
 export interface Project {
   name: string; // = session
   workspace: string;
@@ -332,6 +366,28 @@ export const api = {
   // Cost/credit usage (project-scoped; 403 for team viewers). Per-agent token +
   // cost metrics carry source/confidence; agy credit may be unknown.
   getCost: () => getJSON<CostSummary>("/api/cost"),
+
+  // Decision inbox: blocked + ask-human tasks awaiting a human (project-scoped).
+  getInbox: (params: { cursor?: number; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.cursor !== undefined) q.set("cursor", String(params.cursor));
+    if (params.limit) q.set("limit", String(params.limit));
+    const qs = q.toString();
+    return getJSON<InboxPage>(`/api/inbox${qs ? `?${qs}` : ""}`);
+  },
+
+  // Answer a blocked/ask-human task: POSTs to the item's answer.endpoint
+  // (/api/tasks/{id}/answer) which comments + unblocks. 403 for team viewers.
+  async answerTask(endpoint: string, text: string): Promise<{ ok?: boolean }> {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error(`answer: HTTP ${res.status}`);
+    return (await res.json()) as { ok?: boolean };
+  },
 
   // Projects (= sessions).
   listProjects: () => getJSON<Project[]>("/api/projects"),
