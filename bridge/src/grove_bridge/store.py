@@ -12,6 +12,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
+from grove_bridge.auth_status import redact_secret_text
+
 DONE_STATUSES = ("done", "archived")
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 
@@ -335,6 +337,22 @@ class SQLiteBoardStore:
                 payload={"node_id": node_id},
                 now=now,
             )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=run_id,
+                kind="audit.task.claim",
+                payload=_audit_payload(
+                    actor=_node_actor(node_id),
+                    action="claim",
+                    target={"type": "task", "id": task_id, "node": assignee},
+                    board=board,
+                    status="ok",
+                    ts=now,
+                ),
+                now=now,
+            )
             row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
             if row is None:
                 raise RuntimeError("claimed task disappeared")
@@ -428,6 +446,11 @@ class SQLiteBoardStore:
                 """,
                 (now, _clean(summary), _json(metadata), board_id, run_id, task_id, claim_lock),
             )
+            run_row = conn.execute(
+                "SELECT node_id FROM runs WHERE board_id = ? AND id = ?",
+                (board_id, run_id),
+            ).fetchone()
+            node_id = _row_str(run_row, "node_id") if run_row is not None else "unknown"
             self._add_event(
                 conn,
                 board_id=board_id,
@@ -435,6 +458,23 @@ class SQLiteBoardStore:
                 run_id=run_id,
                 kind="task.completed",
                 payload={"summary": summary},
+                now=now,
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=run_id,
+                kind="audit.task.complete",
+                payload=_audit_payload(
+                    actor=_node_actor(node_id),
+                    action="complete",
+                    target={"type": "task", "id": task_id, "node": node_id},
+                    board=board,
+                    status="ok",
+                    summary=summary,
+                    ts=now,
+                ),
                 now=now,
             )
             self._promote_ready_children(conn, board_id=board_id, parent_id=task_id, now=now)
@@ -488,6 +528,11 @@ class SQLiteBoardStore:
                 """,
                 (now, _json(run_metadata), reason, board_id, run_id, task_id, claim_lock),
             )
+            run_row = conn.execute(
+                "SELECT node_id FROM runs WHERE board_id = ? AND id = ?",
+                (board_id, run_id),
+            ).fetchone()
+            node_id = _row_str(run_row, "node_id") if run_row is not None else "unknown"
             self._add_event(
                 conn,
                 board_id=board_id,
@@ -495,6 +540,24 @@ class SQLiteBoardStore:
                 run_id=run_id,
                 kind="task.blocked",
                 payload={"reason": reason, "needs_human": needs_human},
+                now=now,
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=run_id,
+                kind="audit.task.block",
+                payload=_audit_payload(
+                    actor=_node_actor(node_id),
+                    action="block",
+                    target={"type": "task", "id": task_id, "node": node_id},
+                    board=board,
+                    status="ok",
+                    summary=reason,
+                    ts=now,
+                    extra={"needs_human": needs_human},
+                ),
                 now=now,
             )
         return True
@@ -846,6 +909,93 @@ class SQLiteBoardStore:
             ).fetchall()
         return [_event_from_row(row) for row in rows]
 
+    def list_audit_events(
+        self,
+        *,
+        board: str,
+        cursor: int = 0,
+        limit: int = 100,
+        action: str | None = None,
+        node: str | None = None,
+        task_id: str | None = None,
+    ) -> list[BoardEvent]:
+        board_id = self._board_id_for_slug(board)
+        if board_id is None:
+            return []
+        clauses = ["rowid > ?", "board_id = ?", "kind LIKE 'audit.%'"]
+        params: list[object] = [cursor, board_id]
+        if task_id is not None:
+            clauses.append("task_id = ?")
+            params.append(task_id)
+        if action is not None:
+            clauses.append("json_extract(payload_json, '$.action') = ?")
+            params.append(action)
+        if node is not None:
+            clauses.append(
+                """
+                (
+                    json_extract(payload_json, '$.actor.id') = ?
+                    OR json_extract(payload_json, '$.target.node') = ?
+                    OR json_extract(payload_json, '$.from_node') = ?
+                    OR json_extract(payload_json, '$.to_node') = ?
+                )
+                """
+            )
+            params.extend([node, node, node, node])
+        sql = (
+            "SELECT rowid AS cursor, * FROM events WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY rowid ASC LIMIT ?"
+        )
+        params.append(max(1, min(limit, 500)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_event_from_row(row) for row in rows]
+
+    def add_audit_event(
+        self,
+        *,
+        board: str,
+        kind: str,
+        actor: Mapping[str, object],
+        action: str,
+        target: Mapping[str, object],
+        task_id: str | None = None,
+        run_id: str | None = None,
+        status: str = "ok",
+        summary: str | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> BoardEvent:
+        now = _now()
+        board_id = self._ensure_board(board)
+        event_payload = _audit_payload(
+            actor=actor,
+            action=action,
+            target=target,
+            board=board,
+            status=status,
+            summary=summary,
+            ts=now,
+            extra=payload,
+        )
+        with self._connect() as conn:
+            event_id = self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=run_id,
+                kind=kind,
+                payload=event_payload,
+                now=now,
+            )
+            row = conn.execute(
+                "SELECT rowid AS cursor, * FROM events WHERE id = ?",
+                (event_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("created audit event disappeared")
+        return _event_from_row(row)
+
     def release_stale(
         self,
         *,
@@ -964,6 +1114,16 @@ class SQLiteBoardStore:
         if row is None:
             raise KeyError(board_id)
         return _row_str(row, "slug")
+
+    def _board_id_for_slug(self, slug: str) -> str | None:
+        clean = slug.strip()
+        if not clean:
+            return None
+        with self._connect() as conn:
+            row = conn.execute("SELECT id FROM boards WHERE slug = ?", (clean,)).fetchone()
+        if row is None:
+            return None
+        return _row_str(row, "id")
 
     def _init_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(
@@ -1198,6 +1358,42 @@ def _now() -> int:
 
 def _clean(value: str) -> str:
     return value
+
+
+def _node_actor(node_id: str) -> dict[str, object]:
+    return {"kind": "node", "id": node_id, "login": node_id, "role": "none"}
+
+
+def _audit_payload(
+    *,
+    actor: Mapping[str, object],
+    action: str,
+    target: Mapping[str, object],
+    board: str,
+    status: str,
+    ts: int,
+    summary: str | None = None,
+    extra: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "actor": dict(actor),
+        "action": action,
+        "target": dict(target),
+        "board": board,
+        "status": status,
+        "ts": ts,
+    }
+    if summary is not None:
+        payload["summary"] = _safe_summary(summary)
+    if extra is not None:
+        payload.update(dict(extra))
+    return payload
+
+
+def _safe_summary(value: str) -> str:
+    redacted = redact_secret_text(value.replace("\r", "\n"))
+    first_line = next((line.strip() for line in redacted.splitlines() if line.strip()), "")
+    return first_line[:500]
 
 
 def _json(value: Mapping[str, object]) -> str:

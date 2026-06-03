@@ -266,6 +266,7 @@ def test_status_includes_token_gated_node_liveness_summary(tmp_path: Path) -> No
                 "agent": "codex",
                 "tmux_pane": "dev10:1.0",
                 "status": "running",
+                "last_seen": 123,
             },
             "stale": {
                 "name": "stale",
@@ -286,6 +287,7 @@ def test_status_includes_token_gated_node_liveness_summary(tmp_path: Path) -> No
 
     missing = client.get("/api/status")
     response = client.get("/api/status", headers=auth_headers(client))
+    detail = client.get("/api/status?detail=1", headers=auth_headers(client))
 
     assert missing.status_code == 401
     assert response.status_code == 200
@@ -296,6 +298,18 @@ def test_status_includes_token_gated_node_liveness_summary(tmp_path: Path) -> No
         "idle": 1,
         "error": 1,
     }
+    by_name = {node["name"]: node for node in detail.json()["node_details"]}
+    assert by_name["runner"] == {
+        "name": "runner",
+        "status": "running",
+        "last_seen": 123,
+        "status_reason": "registry status: running",
+        "source": "registry",
+        "confidence": "explicit",
+    }
+    assert by_name["stale"]["status"] == "dead"
+    assert by_name["broken"]["status"] == "error"
+    assert by_name["broken"]["status_reason"] == "crashed"
 
 
 def test_project_header_scopes_status_org_nodes_boards_and_tasks(tmp_path: Path) -> None:
@@ -501,6 +515,56 @@ def test_rest_creates_task_on_board(tmp_path: Path) -> None:
     assert store.get_task(board="main", task_id=task["id"]).priority == 7
 
 
+def test_audit_endpoint_returns_assigned_task_events_with_actor(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client) | {"X-Grove-Project": "dev11"}
+
+    created = client.post(
+        "/api/boards/main/tasks",
+        headers=headers,
+        json={"title": "Delegate this", "assignee": "worker"},
+    )
+    audit = client.get("/api/audit?limit=10", headers=headers)
+    filtered = client.get("/api/audit?action=assign&node=worker", headers=headers)
+    next_page = client.get(
+        f"/api/audit?cursor={audit.json()['next_cursor']}",
+        headers=headers,
+    )
+
+    assert created.status_code == 200
+    assert audit.status_code == 200
+    assert filtered.status_code == 200
+    assert next_page.status_code == 200
+    assert next_page.json()["items"] == []
+    item = filtered.json()["items"][0]
+    assert item["type"] == "audit.task.assign"
+    assert item["action"] == "assign"
+    assert item["actor"] == {"kind": "local", "id": "lead", "login": "lead", "role": "none"}
+    assert item["target"] == {"type": "task", "id": created.json()["id"], "node": "worker"}
+    assert item["summary"] == "Delegate this"
+
+
+def test_audit_endpoint_rejects_team_viewer_role(tmp_path: Path) -> None:
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        auth_mode=AuthMode.TEAM_COOKIE,
+    )
+    login = client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+
+    response = client.get("/api/audit")
+
+    assert login.status_code == 200
+    assert response.status_code == 403
+
+
 def test_state_change_rejects_disallowed_origin(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     client = make_client(tmp_path, store)
@@ -681,7 +745,8 @@ def test_projects_endpoint_lists_registry_sessions_with_tmux_status(
         return subprocess.CompletedProcess(args=args, returncode=returncode, stdout=b"", stderr=b"")
 
     monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
-    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
 
     response = client.get("/api/projects", headers=auth_headers(client))
 
@@ -744,7 +809,8 @@ def test_create_project_invokes_new_project_with_literal_argv(
         )
 
     monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
-    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
 
     response = client.post(
         "/api/projects",
@@ -813,7 +879,8 @@ def test_create_project_sanitizes_internal_cli_errors(
         )
 
     monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
-    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
 
     response = client.post(
         "/api/projects",
@@ -855,7 +922,8 @@ def test_load_project_invokes_load_project_and_returns_integrity_result(
         )
 
     monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
-    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
 
     response = client.post(
         "/api/projects/load",
@@ -1034,7 +1102,8 @@ def test_create_node_invokes_spawn_with_literal_argv(
         )
 
     monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
-    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
 
     response = client.post(
         "/api/nodes",
@@ -1085,6 +1154,19 @@ def test_create_node_invokes_spawn_with_literal_argv(
             "check": False,
         }
     ]
+    audit_events = store.list_audit_events(board="dev10")
+    assert audit_events[-1].kind == "audit.node.spawn"
+    assert audit_events[-1].payload["actor"] == {
+        "kind": "local",
+        "id": "lead",
+        "login": "lead",
+        "role": "none",
+    }
+    assert audit_events[-1].payload["target"] == {
+        "type": "node",
+        "id": "worker-1",
+        "node": "worker-1",
+    }
 
 
 @pytest.mark.parametrize(
@@ -1862,11 +1944,12 @@ def write_team_member(
     *,
     name: str = "alice",
     secret: str = "opensesame",
+    role: team_auth.MemberRole = "admin",
 ) -> TeamMember:
     member = TeamMember(
         id="member-1",
         name=name,
-        role="admin",
+        role=role,
         secret_hash=hash_secret(secret, salt=b"0" * 16),
     )
     MemberRegistry(members_path(tmp_path / ".grove", "dev10")).save_members([member])

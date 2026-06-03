@@ -324,13 +324,46 @@ def create_app(
         return {"auth_mode": config_value.auth_mode.value, "csrf": auth.csrf_token}
 
     @app.get("/api/status")
-    def status_endpoint(request: Request) -> dict[str, object]:
+    def status_endpoint(
+        request: Request,
+        detail: int = Query(default=0),
+    ) -> dict[str, object]:
         _require_auth(request)
         project = resolve_project(request)
-        return {
+        payload: dict[str, object] = {
             "ok": True,
             "project": project.name,
             "nodes": _node_liveness_summary(project.config),
+        }
+        if detail:
+            payload["node_details"] = _node_status_details(project.config)
+        return payload
+
+    @app.get("/api/audit")
+    def audit_endpoint(
+        request: Request,
+        cursor: int = Query(default=0, ge=0),
+        limit: int = Query(default=100, ge=1, le=500),
+        action: str | None = Query(default=None),
+        node: str | None = Query(default=None),
+        task_id: str | None = Query(default=None),
+    ) -> dict[str, object]:
+        auth = _require_auth(request)
+        _require_audit_access(auth)
+        project = resolve_project(request)
+        events = _store(request).list_audit_events(
+            board=project.board,
+            cursor=cursor,
+            limit=limit,
+            action=action,
+            node=node,
+            task_id=task_id,
+        )
+        return {
+            "items": [
+                _audit_event_payload(_store(request), event, project=project) for event in events
+            ],
+            "next_cursor": events[-1].cursor if events else cursor,
         }
 
     @app.get("/api/auth-status")
@@ -394,11 +427,12 @@ def create_app(
         board_id: str,
         payload: TaskCreatePayload,
     ) -> dict[str, object]:
-        _require_state_change(request)
+        auth = _require_state_change(request)
         title = payload.title.strip()
         if not title:
             raise HTTPException(status_code=400, detail="title is required")
         project = resolve_project(request)
+        actor = _actor_payload(auth)
         task = _store(request).create_task(
             board=_resolve_board_id(board_id, project=project),
             title=title,
@@ -406,7 +440,19 @@ def create_app(
             assignee=payload.assignee,
             status=payload.status,
             priority=payload.priority,
+            created_by=_actor_id(actor),
         )
+        if task.assignee:
+            _store(request).add_audit_event(
+                board=_resolve_board_id(board_id, project=project),
+                kind="audit.task.assign",
+                actor=actor,
+                action="assign",
+                target={"type": "task", "id": task.id, "node": task.assignee},
+                task_id=task.id,
+                payload={"project": project.name, "to_node": task.assignee},
+                summary=task.title,
+            )
         return _task_payload(task)
 
     @app.get("/api/tasks/{task_id}")
@@ -461,8 +507,20 @@ def create_app(
         request: Request,
         payload: NodeCreatePayload,
     ) -> dict[str, object]:
-        _require_state_change(request)
-        return _spawn_node(payload, config=resolve_project(request).config)
+        auth = _require_state_change(request)
+        project = resolve_project(request)
+        node = _spawn_node(payload, config=project.config)
+        node_name = _node_name_from_spawn_result(node, fallback=payload.name)
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.node.spawn",
+            actor=_actor_payload(auth),
+            action="spawn",
+            target={"type": "node", "id": node_name, "node": node_name},
+            payload={"project": project.name, "agent": payload.agent},
+            summary=node_name,
+        )
+        return node
 
     @app.patch("/api/nodes/{name}")
     def update_node_endpoint(
@@ -470,8 +528,19 @@ def create_app(
         name: str,
         payload: NodeUpdatePayload,
     ) -> dict[str, object]:
-        _require_state_change(request)
-        return _update_node_relationships(name, payload, config=resolve_project(request).config)
+        auth = _require_state_change(request)
+        project = resolve_project(request)
+        org = _update_node_relationships(name, payload, config=project.config)
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.node.update",
+            actor=_actor_payload(auth),
+            action="update",
+            target={"type": "node", "id": name, "node": name},
+            payload={"project": project.name},
+            summary=name,
+        )
+        return org
 
     @app.get("/api/org")
     def org_endpoint(request: Request) -> dict[str, object]:
@@ -782,6 +851,75 @@ def _node_liveness_summary(config: WebAppConfig) -> dict[str, int]:
     return counts
 
 
+def _node_status_details(config: WebAppConfig) -> list[dict[str, object]]:
+    raw_nodes = _load_registry(config).get("nodes")
+    if not isinstance(raw_nodes, dict):
+        return []
+    details: list[dict[str, object]] = []
+    for key, raw_node in raw_nodes.items():
+        if not isinstance(key, str) or not isinstance(raw_node, dict):
+            continue
+        node = _string_mapping(raw_node)
+        pane = _mapping_string(node, "tmux_pane")
+        if pane is None or not _valid_exposed_tmux_pane(pane, config=config):
+            continue
+        name = _mapping_string(node, "name") or key
+        status_value, reason, confidence = _node_status_detail(node)
+        details.append(
+            {
+                "name": name,
+                "status": status_value,
+                "last_seen": _node_last_seen(node),
+                "status_reason": reason,
+                "source": "registry",
+                "confidence": confidence,
+            }
+        )
+    return sorted(details, key=lambda item: str(item["name"]))
+
+
+def _node_status_detail(node: Mapping[str, object]) -> tuple[str, str, str]:
+    explicit = _mapping_string(node, "status")
+    if explicit is not None:
+        normalized = _normalized_node_detail_status(explicit)
+        reason = _node_status_reason(node, fallback=f"registry status: {explicit}")
+        return normalized, reason, "explicit"
+    if node.get("error") is not None:
+        return "error", _node_status_reason(node, fallback="registry error present"), "inferred"
+    if isinstance(node.get("blocked"), bool) and node.get("blocked") is True:
+        return "blocked", _node_status_reason(node, fallback="registry blocked flag"), "inferred"
+    if isinstance(node.get("pending"), Mapping):
+        return "running", _node_status_reason(node, fallback="pending turn in registry"), "inferred"
+    return "idle", _node_status_reason(node, fallback="no active turn recorded"), "inferred"
+
+
+def _normalized_node_detail_status(value: str) -> str:
+    clean = value.strip().lower()
+    if clean in {"running", "idle", "error", "blocked", "dead"}:
+        return clean
+    if clean == "stale":
+        return "dead"
+    return "idle"
+
+
+def _node_status_reason(node: Mapping[str, object], *, fallback: str) -> str:
+    for key in ("status_reason", "statusReason", "reason", "error"):
+        value = _mapping_string(node, key)
+        if value:
+            return _safe_log_text(value)
+    return fallback
+
+
+def _node_last_seen(node: Mapping[str, object]) -> int | str | None:
+    for key in ("last_seen", "lastSeen", "last_heartbeat_at", "updated_at"):
+        value = node.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _log_web_request(
     *,
     request: Request,
@@ -874,6 +1012,28 @@ def _require_team_csrf(request: Request, *, auth: AuthContext) -> None:
     expected = auth.csrf_token
     if expected is None or supplied is None or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=403, detail="missing or invalid csrf token")
+
+
+def _require_audit_access(auth: AuthContext) -> None:
+    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
+        if auth.member.role == "viewer":
+            raise HTTPException(status_code=403, detail="audit requires operator role")
+
+
+def _actor_payload(auth: AuthContext) -> dict[str, object]:
+    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
+        return {
+            "kind": "member",
+            "id": auth.member.id,
+            "login": auth.member.name,
+            "role": auth.member.role,
+        }
+    return {"kind": "local", "id": "lead", "login": "lead", "role": "none"}
+
+
+def _actor_id(actor: Mapping[str, object]) -> str:
+    actor_id = actor.get("id")
+    return actor_id if isinstance(actor_id, str) else "system"
 
 
 def _member_registry(config: WebAppConfig) -> MemberRegistry:
@@ -1466,6 +1626,19 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
     return {str(key): value for key, value in loaded.items()}
 
 
+def _node_name_from_spawn_result(payload: Mapping[str, object], *, fallback: str) -> str:
+    for key in ("name", "node", "id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raw_node = payload.get("node")
+    if isinstance(raw_node, Mapping):
+        value = raw_node.get("name")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return fallback
+
+
 def _update_node_relationships(
     name: str,
     payload: NodeUpdatePayload,
@@ -1736,6 +1909,36 @@ def _event_payload(event: BoardEvent) -> dict[str, object]:
     if event.task_id is not None:
         payload["task_id"] = event.task_id
     return payload
+
+
+def _audit_event_payload(
+    store: SQLiteBoardStore,
+    event: BoardEvent,
+    *,
+    project: ProjectContext,
+) -> dict[str, object]:
+    payload = dict(event.payload)
+    rendered: dict[str, object] = {
+        "cursor": event.cursor,
+        "id": event.id,
+        "ts": event.created_at,
+        "type": event.kind,
+        "project": project.name,
+        "board_id": event.board_id,
+        "task_id": event.task_id,
+        "run_id": event.run_id,
+        "actor": payload.get("actor"),
+        "action": payload.get("action"),
+        "target": payload.get("target"),
+    }
+    try:
+        rendered["board"] = store.board_slug_for_id(event.board_id)
+    except KeyError:
+        rendered["board"] = project.board
+    for key in ("from_node", "to_node", "status", "summary", "source", "confidence"):
+        if key in payload:
+            rendered[key] = payload[key]
+    return rendered
 
 
 def main(argv: list[str] | None = None) -> int:

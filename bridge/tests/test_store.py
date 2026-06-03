@@ -183,6 +183,79 @@ def test_heartbeat_complete_and_block_require_current_run_and_claim(
     assert run.status == "blocked"
     assert run.error == "needs input"
     assert run.metadata == {"needs_human": True, "node": "codex-b"}
+    audit_events = store.list_audit_events(board="main")
+    assert [event.kind for event in audit_events] == [
+        "audit.task.claim",
+        "audit.task.complete",
+        "audit.task.claim",
+        "audit.task.block",
+    ]
+    assert audit_events[0].payload["actor"] == {
+        "kind": "node",
+        "id": "codex-a",
+        "login": "codex-a",
+        "role": "none",
+    }
+    assert audit_events[1].payload["summary"] == "done summary"
+    assert audit_events[3].payload["target"] == {
+        "type": "task",
+        "id": block_task.id,
+        "node": "codex-b",
+    }
+
+
+def test_audit_filters_apply_before_limit_for_pagination(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    local_actor = {"kind": "local", "id": "lead", "login": "lead", "role": "none"}
+    store.add_audit_event(
+        board="main",
+        kind="audit.task.block",
+        actor=local_actor,
+        action="block",
+        target={"type": "task", "id": "task-a", "node": "qa"},
+    )
+    first_assign = store.add_audit_event(
+        board="main",
+        kind="audit.task.assign",
+        actor=local_actor,
+        action="assign",
+        target={"type": "task", "id": "task-b", "node": "worker"},
+    )
+    store.add_audit_event(
+        board="main",
+        kind="audit.node.spawn",
+        actor={"kind": "node", "id": "qa", "login": "qa", "role": "none"},
+        action="spawn",
+        target={"type": "node", "id": "qa", "node": "qa"},
+    )
+    second_assign = store.add_audit_event(
+        board="main",
+        kind="audit.task.assign",
+        actor=local_actor,
+        action="assign",
+        target={"type": "task", "id": "task-c", "node": "worker"},
+    )
+
+    first_page = store.list_audit_events(board="main", limit=1, action="assign")
+    second_page = store.list_audit_events(
+        board="main",
+        cursor=first_page[-1].cursor,
+        limit=1,
+        action="assign",
+    )
+    done_page = store.list_audit_events(
+        board="main",
+        cursor=second_page[-1].cursor,
+        limit=1,
+        action="assign",
+    )
+    node_page = store.list_audit_events(board="main", limit=1, node="worker")
+
+    assert [event.id for event in first_page] == [first_assign.id]
+    assert [event.id for event in second_page] == [second_assign.id]
+    assert done_page == []
+    assert [event.id for event in node_page] == [first_assign.id]
+    assert first_page[0].cursor < second_page[0].cursor
 
 
 def test_release_stale_returns_running_tasks_to_ready(tmp_path: Path) -> None:
