@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { cmdAsk } from "./commands/ask.js";
 import { cmdDown } from "./commands/down.js";
 import { cmdInit } from "./commands/init.js";
+import { cmdRebind } from "./commands/rebind.js";
 import { cmdSend } from "./commands/send.js";
 import { cmdSession } from "./commands/session.js";
 import { cmdStatus } from "./commands/status.js";
@@ -94,6 +95,13 @@ program
   .description("print a node's resolved session id + transcript path")
   .option("-c, --config <file>", "path to grove.yaml")
   .action(run((node: string, opts: Record<string, unknown>) => cmdSession(node, withConfig(opts))));
+
+program
+  .command("rebind")
+  .description("repair registry session/transcript bindings using node startup markers")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .option("--dry-run", "show planned registry changes without writing")
+  .action(run((opts: Record<string, unknown>) => cmdRebind(withConfig(opts))));
 
 program
   .command("init")

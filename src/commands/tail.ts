@@ -1,7 +1,7 @@
 import { loadContext, nodeOf } from "../context.js";
 import { resolveTranscript } from "../ops.js";
 import { color, err, info } from "../util/log.js";
-import { sleep } from "../util/time.js";
+import { waitForChangeOrTimeout } from "../util/time.js";
 
 /** Stream a node's completed turns as they land. Runs until interrupted. */
 export async function cmdTail(
@@ -24,6 +24,7 @@ export async function cmdTail(
     if (comp.done && comp.text) {
       console.log(`\n${color.cyan(`◆ ${name}`)}\n${comp.text}`);
     }
-    await sleep(1500);
+    // Wake on the next transcript append, or after 1.5s as a safety net.
+    await waitForChangeOrTimeout(transcript, 1500);
   }
 }

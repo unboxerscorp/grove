@@ -7,14 +7,17 @@ import {
   listWindows,
   newSession,
   newWindow,
+  paneCommand,
   sendEnter,
   sendLiteral,
+  sendText,
 } from "./tmux.js";
 import { color, info, step, warn } from "./util/log.js";
-import { poll, sleep } from "./util/time.js";
+import { poll, sleep, waitForChangeOrTimeout } from "./util/time.js";
 
 const READY_TIMEOUT_MS = 30_000;
 const DETECT_TIMEOUT_MS = 20_000;
+const SHELLS = new Set(["zsh", "-zsh", "bash", "-bash", "sh", "fish", "tmux"]);
 const BP_START = "\x1b[200~";
 const BP_END = "\x1b[201~";
 
@@ -28,6 +31,34 @@ export function resolveTranscript(ctx: Context, nc: NodeCtx): string {
     if (p) return p;
   }
   return rt?.transcript ?? "";
+}
+
+/** Record the in-flight turn baseline so a later `grove wait` scans from before
+ *  the response lands (fixes the send→wait race). */
+export function recordPending(
+  ctx: Context,
+  nc: NodeCtx,
+  transcript: string,
+  fromOffset: number,
+): void {
+  const prev = ctx.registry.nodes[nc.node.name] ?? {
+    name: nc.node.name,
+    agent: nc.node.agent,
+  };
+  ctx.registry.nodes[nc.node.name] = {
+    ...prev,
+    pending: { transcript, fromOffset, submittedAt: new Date().toISOString() },
+  };
+  saveRegistry(ctx.registry);
+}
+
+/** Drop a node's in-flight baseline once its turn has been collected. */
+export function clearPending(ctx: Context, nc: NodeCtx): void {
+  const rt = ctx.registry.nodes[nc.node.name];
+  if (rt?.pending) {
+    delete rt.pending;
+    saveRegistry(ctx.registry);
+  }
 }
 
 /**
@@ -48,6 +79,8 @@ export interface WaitOptions {
   timeoutMs: number;
   /** byte offset to start scanning from (defaults to current transcript size) */
   fromOffset?: number;
+  /** transcript captured when the turn was submitted */
+  transcript?: string;
   intervalMs?: number;
 }
 
@@ -57,11 +90,16 @@ export async function waitForCompletion(
   nc: NodeCtx,
   opts: WaitOptions,
 ): Promise<string | null> {
-  const interval = opts.intervalMs ?? 1500;
-  const transcript = resolveTranscript(ctx, nc);
+  // fs.watch wakes us on append; this is just the safety-net re-check period.
+  const interval = opts.intervalMs ?? 2500;
+  const resolvedTranscript = resolveTranscript(ctx, nc);
+  if (opts.transcript && resolvedTranscript !== opts.transcript) {
+    throw new Error(`${nc.node.name}: transcript stale — run fleet repair`);
+  }
+  const transcript = opts.transcript ?? resolvedTranscript;
   if (!transcript) {
     throw new Error(
-      `"${nc.node.name}": no session transcript resolved — run \`grove up\` first`,
+      `"${nc.node.name}": no session transcript resolved — run \`grove up\` (or \`fleet repair\`) first`,
     );
   }
 
@@ -72,7 +110,8 @@ export async function waitForCompletion(
     if (comp.done) return comp.text ?? "";
     offset = comp.offset;
     if (Date.now() >= deadline) return null;
-    await sleep(interval);
+    // Wake on the next transcript append, or after `interval` as a safety net.
+    await waitForChangeOrTimeout(transcript, interval);
   }
 }
 
@@ -86,8 +125,15 @@ export async function ask(
   const transcript = resolveTranscript(ctx, nc);
   const haveBaseline = Boolean(transcript) && nc.adapter.size(transcript) > 0;
   const fromOffset = haveBaseline ? nc.adapter.size(transcript) : undefined;
+  if (transcript) recordPending(ctx, nc, transcript, fromOffset ?? 0);
   await submitMessage(nc, message);
-  return waitForCompletion(ctx, nc, { timeoutMs, fromOffset });
+  const res = await waitForCompletion(ctx, nc, {
+    timeoutMs,
+    fromOffset,
+    transcript: transcript || undefined,
+  });
+  if (res !== null) clearPending(ctx, nc);
+  return res;
 }
 
 function registerExisting(ctx: Context, nc: NodeCtx): void {
@@ -178,6 +224,27 @@ export async function bringUp(ctx: Context): Promise<BringUpResult> {
 
   for (const node of ctx.nodes) {
     const nc = ctx.byName.get(node.name)!;
+
+    // Explicit tmux target (e.g. an existing pane "0.1"): launch in place,
+    // no window creation. Adopt if a non-shell agent already runs there.
+    if (node.tmux) {
+      const running = await paneCommand(nc.addr);
+      if (running && !SHELLS.has(running)) {
+        step(
+          `adopt ${color.bold(node.name)} ${color.dim(`(${nc.adapter.label}) @ ${node.tmux}`)}`,
+        );
+        registerExisting(ctx, nc);
+        result.adopted.push(node.name);
+        continue;
+      }
+      await sendText(nc.addr, `cd ${node.cwd}`);
+      await sendEnter(nc.addr);
+      await sleep(300);
+      await launch(ctx, nc);
+      result.launched.push(node.name);
+      continue;
+    }
+
     if (existingWindows.includes(node.name)) {
       step(`adopt ${color.bold(node.name)} ${color.dim(`(${nc.adapter.label})`)}`);
       registerExisting(ctx, nc);

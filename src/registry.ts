@@ -9,6 +9,10 @@ export interface NodeRuntime {
   sessionId?: string;
   /** resolved transcript path, once detected */
   transcript?: string;
+  /** Baseline for the in-flight turn, recorded at submit time so a later
+   *  `wait` scans from before the response (fixes the send→wait race).
+   *  Set by send/ask, cleared on completion. */
+  pending?: { transcript: string; fromOffset: number; submittedAt: string };
 }
 
 export interface Registry {

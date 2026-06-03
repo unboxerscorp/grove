@@ -14,6 +14,10 @@ export const NodeConfigSchema = z
     role: z.string().optional(),
     cwd: z.string().optional(),
     resume: z.string().optional(),
+    // Explicit tmux target suffix, e.g. a window index or "window.pane" ("0.1").
+    // When set, grove launches the agent in that existing pane instead of
+    // creating a new window named after the node.
+    tmux: z.string().optional(),
     children: z.array(z.string()).default([]),
     parent: z.string().optional(),
   })
@@ -43,6 +47,7 @@ export interface ResolvedNode {
   role?: string;
   cwd: string;
   resume?: string;
+  tmux?: string;
   children: string[];
   parent?: string;
 }
@@ -81,6 +86,7 @@ export function resolveNodes(config: GroveConfig): ResolvedNode[] {
       role: n.role,
       cwd: expandHome(n.cwd ?? config.cwd),
       resume: n.resume,
+      tmux: n.tmux,
       children: n.children,
       parent: n.parent,
     });

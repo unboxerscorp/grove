@@ -4,6 +4,7 @@
 export * from "./config.js";
 export * from "./context.js";
 export * from "./ops.js";
+export * from "./rebind.js";
 export * from "./registry.js";
 export { getAdapter, codexAdapter, claudeAdapter } from "./adapters/index.js";
 export type {

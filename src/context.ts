@@ -31,7 +31,7 @@ export function loadContext(configOpt?: string): Context {
     byName.set(node.name, {
       node,
       adapter: getAdapter(node.agent),
-      addr: target(config.session, node.name),
+      addr: target(config.session, node.tmux ?? node.name),
     });
   }
   const registry = loadOrInit(config.session, config.cwd);
