@@ -4,6 +4,30 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.8.0] — v1.7 (2026-06-04)
+
+The collaborative team room — a decision inbox + precise board replay. Auto-started
+after v1.6.0.
+
+### Collaboration
+
+- **Decision inbox** — /api/inbox surfaces blocked + ask-human tasks that need a human
+  decision (project-scoped, sanitized), shown in a dashboard inbox drawer with an
+  unresolved-count badge. Answering (POST /api/tasks/{id}/answer) records the answer as
+  a comment **and** unblocks the task (operator/admin; viewers read-only), so the item
+  resolves and disappears; the audit lane records the actor.
+
+### Reliability
+
+- **Board event cursor replay** — on WS reconnect the client requests
+  events-after-cursor (the server already streams via list_events_after): precise
+  downtime catch-up instead of a full reload, with the full-reload fallback preserved.
+
+### Deferred (→ v1.8)
+
+- Presence; notification rules, onboarding wizard v2, project import/export, self-retro
+  lane (see docs/V1.8_BRAINSTORM.md).
+
 ## [0.7.0] — v1.6 (2026-06-04)
 
 Reliability + delegation visibility. Auto-started after v1.5.0.
