@@ -209,6 +209,40 @@ export interface InboxPage {
   total?: number;
 }
 
+// Planner (web_app.py _plan_payload): READ-ONLY delegation recommendations.
+// Ranked candidate nodes with per-factor metrics (source/confidence). The
+// endpoint never claims/assigns — `read_only` is always true; the FE surfaces
+// the ranking for manual assignment only. Metrics reuse the CostMetric shape.
+export type PlanMetric = CostMetric;
+
+export interface PlanCandidate {
+  node: string;
+  agent?: string;
+  role?: string;
+  group?: string;
+  status?: string;
+  status_reason?: string;
+  rank?: PlanMetric;
+  score?: PlanMetric;
+  score_breakdown?: Record<string, PlanMetric>;
+  signals?: {
+    running_tasks?: PlanMetric;
+    blocked_tasks?: PlanMetric;
+    cost_basis?: Record<string, PlanMetric>;
+  };
+}
+
+export interface PlanResult {
+  project?: string;
+  task?: { id: string; title?: string; status?: string };
+  requested_role?: string;
+  requirements?: { role_terms?: string[]; capability_terms?: string[] };
+  read_only?: boolean;
+  recommended_action?: string;
+  candidates: PlanCandidate[];
+  limitations?: string[];
+}
+
 // Presence (web_app.py _presence_payload). Team-auth → viewers carry {name,role}
 // only (no id/secret); local-token → a single {kind:"anonymous",count} + an
 // anonymous_count. The FE renders members as chips or "anonymous N".
@@ -269,7 +303,10 @@ function headers(extra?: Record<string, string>): Record<string, string> {
 
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: headers(), credentials: "same-origin" });
-  if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+  // Strip the query string from the thrown message: it can carry user input
+  // (e.g. a role/filter that may be a path or secret) — never put it in an Error
+  // that a caller might surface. Callers should still prefer fixed UI messages.
+  if (!res.ok) throw new Error(`${path.split("?")[0]}: HTTP ${res.status}`);
   return (await res.json()) as T;
 }
 
@@ -388,6 +425,11 @@ export const api = {
   // Presence: who's viewing this project (name/role for team auth; anonymous
   // count for local-token). Project-scoped via headers.
   getPresence: () => getJSON<Presence>("/api/presence"),
+
+  // Planner: read-only ranked node recommendations for a task+role. Never
+  // assigns/claims — for manual assignment only.
+  getPlan: (params: { role: string; task_id: string }) =>
+    getJSON<PlanResult>(`/api/plan?${new URLSearchParams({ role: params.role, task_id: params.task_id }).toString()}`),
 
   // Decision inbox: blocked + ask-human tasks awaiting a human (project-scoped).
   getInbox: (params: { cursor?: number; limit?: number } = {}) => {

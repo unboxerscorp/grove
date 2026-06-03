@@ -1,10 +1,118 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
-import { initials, statusColor } from "../constants";
+import type { PlanCandidate, PlanResult } from "../api";
+import { cx, initials, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
+import type { TFn } from "../i18n";
 import type { Comment, Run, Task } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
+
+function fmtScore(v: number | null | undefined): string {
+  return typeof v === "number" ? v.toFixed(2) : "—";
+}
+
+/**
+ * Read-only planner recommendations: ranked candidate nodes for a task+role.
+ * The endpoint never claims/assigns — this surfaces the ranking for MANUAL
+ * assignment only, mirroring `read_only:true` in the backend response.
+ */
+function PlannerPanel({ taskId, defaultRole, t }: { taskId: string; defaultRole: string; t: TFn }) {
+  const [role, setRole] = useState(defaultRole);
+  const [plan, setPlan] = useState<PlanResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const recommend = () => {
+    const r = role.trim();
+    if (!r || loading) return;
+    setLoading(true);
+    setError(null);
+    api
+      .getPlan({ role: r, task_id: taskId })
+      .then((p) => setPlan(p))
+      .catch(() => {
+        // Fixed message only — never surface e.message: the raw cause can carry
+        // the request path + the role input (potential secret/path) into the UI.
+        setPlan(null);
+        setError(t("plan.error"));
+      })
+      .finally(() => setLoading(false));
+  };
+
+  const candidates = plan?.candidates ?? [];
+
+  return (
+    <section className="dr-drawer__section plan-panel">
+      <h3 className="dr-drawer__h">{t("plan.title")}</h3>
+      <div className="plan-controls">
+        <input
+          className="dr-input plan-role"
+          name="planRole"
+          type="text"
+          placeholder={t("plan.rolePh")}
+          value={role}
+          spellCheck={false}
+          onChange={(e) => setRole(e.target.value)}
+        />
+        <button
+          type="button"
+          className="dr-btn dr-btn--primary plan-run"
+          disabled={loading || !role.trim()}
+          onClick={recommend}
+        >
+          {loading ? t("plan.running") : t("plan.recommend")}
+        </button>
+      </div>
+
+      {error && <div className="plan-msg is-error">{error}</div>}
+
+      {plan && (
+        <>
+          {/* read_only:true must read as a recommendation, never an action. */}
+          <div className="plan-readonly" role="note">
+            🛈 {t("plan.readonly")}
+          </div>
+          {candidates.length === 0 && <div className="plan-msg">{t("plan.empty")}</div>}
+          <ol className="plan-list">
+            {candidates.map((c) => (
+              <PlanRow key={c.node} c={c} t={t} />
+            ))}
+          </ol>
+        </>
+      )}
+    </section>
+  );
+}
+
+function PlanRow({ c, t }: { c: PlanCandidate; t: TFn }) {
+  const score = c.score;
+  const breakdown = c.score_breakdown ?? {};
+  // Top score factors (read-only reasons), each with its confidence.
+  const factors = Object.entries(breakdown).slice(0, 4);
+  return (
+    <li className="plan-cand" data-node={c.node}>
+      <div className="plan-cand__head">
+        <span className="plan-cand__rank">#{typeof c.rank?.value === "number" ? c.rank.value : "?"}</span>
+        <span className="plan-cand__node">{c.node}</span>
+        {c.role && <span className="plan-cand__role">{c.role}</span>}
+        <span className="plan-cand__score">
+          {fmtScore(score?.value)}
+          {score?.confidence && <span className={cx("plan-conf", `is-${score.confidence}`)}>{t(`cost.conf.${score.confidence}`)}</span>}
+        </span>
+      </div>
+      <div className="plan-cand__factors">
+        {factors.map(([key, m]) => (
+          <span key={key} className="plan-factor" title={`${m.source} · ${m.confidence}`}>
+            <span className="plan-factor__k">{t(`plan.factor.${key}`)}</span>
+            <span className="plan-factor__v">{fmtScore(m.value)}</span>
+            <span className={cx("plan-conf", `is-${m.confidence}`)}>{t(`cost.conf.${m.confidence}`)}</span>
+          </span>
+        ))}
+      </div>
+    </li>
+  );
+}
 
 export function TaskDrawer(props: { taskId: string | null; onClose: () => void }) {
   const { taskId, onClose } = props;
@@ -138,6 +246,8 @@ export function TaskDrawer(props: { taskId: string | null; onClose: () => void }
                 </div>
               ))}
             </section>
+
+            <PlannerPanel taskId={task.id} defaultRole={task.assignee ?? ""} t={t} />
           </div>
         )}
       </aside>

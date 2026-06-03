@@ -3865,3 +3865,146 @@ button {
   padding: 0 5px;
   line-height: 14px;
 }
+
+/* ── planner recommendations (read-only) ─────────────────────────────────── */
+.plan-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.plan-role {
+  flex: 1;
+}
+
+.plan-readonly {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--amber);
+  border: 1px dashed rgba(240, 184, 96, 0.45);
+  border-radius: 9px;
+  padding: 7px 10px;
+  margin-bottom: 8px;
+  background: rgba(240, 184, 96, 0.06);
+}
+
+.plan-msg {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--faint);
+  padding: 6px 2px;
+}
+
+.plan-msg.is-error {
+  color: var(--coral);
+}
+
+.plan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plan-cand {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+  animation: dr-rise 0.2s ease both;
+}
+
+.plan-cand:first-child {
+  border-color: rgba(84, 199, 184, 0.4);
+}
+
+.plan-cand__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.plan-cand__rank {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--teal);
+}
+
+.plan-cand__node {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.plan-cand__role {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.plan-cand__score {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.plan-cand__factors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.plan-factor {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.plan-factor__k {
+  color: var(--faint);
+}
+
+.plan-factor__v {
+  color: var(--text);
+}
+
+.plan-conf {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint);
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  padding: 0 5px;
+}
+
+.plan-conf.is-explicit {
+  color: var(--teal);
+  border-color: rgba(84, 199, 184, 0.4);
+  border-style: solid;
+}
+
+.plan-conf.is-inferred,
+.plan-conf.is-partial {
+  color: var(--amber);
+  border-color: rgba(240, 184, 96, 0.5);
+}

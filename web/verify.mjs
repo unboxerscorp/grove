@@ -421,6 +421,93 @@ async function main() {
       comments: document.querySelectorAll(".dr-comment").length,
     }));
 
+    // v1.11 planner FE surfacing: read-only ranked node recommendations in the
+    // task drawer. Snapshot task-mutation diag before/after to prove recommending
+    // never auto-assigns/claims (read_only is preserved end to end).
+    const mutBefore = await page.evaluate(() =>
+      JSON.stringify({
+        lastTaskPost: window.__MOCK__?.lastTaskPost ?? null,
+        assignedAssignee: window.__MOCK__?.assignedAssignee ?? "",
+      }),
+    );
+    await page.waitForSelector(".plan-panel .plan-role", { timeout: 6000 });
+    await page.click(".plan-panel .plan-role", { clickCount: 3 }); // clear prefilled role
+    await page.keyboard.press("Backspace");
+    await page.type(".plan-panel .plan-role", "backend");
+    await page.click(".plan-panel .plan-run");
+    await page.waitForFunction(() => document.querySelectorAll(".plan-cand").length >= 1, { timeout: 6000 });
+    const planner = await page.evaluate(() => {
+      const cands = Array.from(document.querySelectorAll(".plan-cand"));
+      return {
+        count: cands.length,
+        nodes: cands.map((c) => c.getAttribute("data-node")),
+        firstRank: (cands[0]?.querySelector(".plan-cand__rank")?.textContent ?? "").trim(),
+        hasScore: !!document.querySelector(".plan-cand__score"),
+        factors: document.querySelectorAll(".plan-factor").length,
+        hasConf: !!document.querySelector(".plan-conf"),
+        readonly: !!document.querySelector(".plan-readonly"),
+        readonlyText: (document.querySelector(".plan-readonly")?.textContent ?? "").trim(),
+        role: window.__MOCK__?.planRole ?? "",
+        fetches: window.__MOCK__?.planFetches ?? 0,
+      };
+    });
+    const mutAfter = await page.evaluate(() =>
+      JSON.stringify({
+        lastTaskPost: window.__MOCK__?.lastTaskPost ?? null,
+        assignedAssignee: window.__MOCK__?.assignedAssignee ?? "",
+      }),
+    );
+    // P2: mock redaction mirrors backend _plan_public_terms in TWO stages and
+    // order — _safe_log_text (absolute path -> [path], secret -> [redacted])
+    // BEFORE tokenizing. An absolute path + secret-token role must therefore
+    // come back masked with NO "passwd"/"xoxb"/"etc" leaking through.
+    await page.click(".plan-panel .plan-role", { clickCount: 3 });
+    await page.keyboard.press("Backspace");
+    await page.type(".plan-panel .plan-role", "/etc/passwd xoxb-1234567890abcdef backend");
+    await page.click(".plan-panel .plan-run");
+    await page.waitForFunction(() => (window.__MOCK__?.planFetches ?? 0) >= 2, { timeout: 6000 });
+    const redactTerms = await page.evaluate(() => window.__MOCK__?.planRoleTerms ?? []);
+    const redactionOk =
+      Array.isArray(redactTerms) &&
+      redactTerms.includes("path") && // /etc/passwd absolute path masked
+      redactTerms.includes("redacted") && // xoxb-… secret token masked
+      redactTerms.includes("backend") &&
+      !redactTerms.includes("passwd") && // leaf must NOT survive the path mask
+      !redactTerms.includes("xoxb") && // secret prefix must NOT survive
+      !redactTerms.includes("etc") &&
+      !redactTerms.some((x) => typeof x === "string" && x.length > 48);
+
+    // P1: an error must render a FIXED message — never the raw cause / request
+    // path / role input (which could be a secret).
+    await page.evaluate(() => (window.__MOCK__.planError = true));
+    await page.click(".plan-panel .plan-role", { clickCount: 3 });
+    await page.keyboard.press("Backspace");
+    await page.type(".plan-panel .plan-role", "xoxb-leak-secret-role");
+    await page.click(".plan-panel .plan-run");
+    await page.waitForSelector(".plan-panel .plan-msg.is-error", { timeout: 6000 });
+    const errState = await page.evaluate(() => {
+      const txt = (document.querySelector(".plan-panel .plan-msg.is-error")?.textContent ?? "").trim();
+      return { text: txt, leak: /xoxb-leak-secret-role|\/api\/plan|HTTP \d|task_id=/.test(txt) };
+    });
+    await page.evaluate(() => (window.__MOCK__.planError = false));
+    const errorNoLeakOk =
+      /추천을 불러오지 못했습니다|Couldn't load/.test(errState.text) && errState.leak === false;
+
+    const plannerSurfaceOk =
+      planner.count >= 3 &&
+      planner.firstRank === "#1" &&
+      planner.nodes[0] === "backend" &&
+      planner.hasScore &&
+      planner.factors >= 3 &&
+      planner.hasConf &&
+      planner.readonly &&
+      /자동 배정하지 않습니다|수동/.test(planner.readonlyText) &&
+      planner.role === "backend" &&
+      planner.fetches >= 1 &&
+      mutBefore === mutAfter && // no auto-delegation as a side effect
+      redactionOk &&
+      errorNoLeakOk;
+
     // Close the task drawer.
     await page.click(".dr-drawer__close");
     await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
@@ -1163,6 +1250,7 @@ async function main() {
       presenceOk &&
       wizardOk &&
       autonomyVisOk &&
+      plannerSurfaceOk &&
       delegationEdgesOk &&
       delegateOk &&
       diag.projectHeader === projAfterLoad &&
@@ -1241,6 +1329,8 @@ async function main() {
       wizard: { s0: wizStep0, s1: wizStep1, last: wizLast, flag: wizFlag, afterReload: wizAfterReload },
       autonomyVisOk,
       autonomy: { pick: autoPick, retro: autoRetro, node: autoNode },
+      plannerSurfaceOk,
+      planner: { ...planner, redactTerms, redactionOk, errText: errState.text, errLeak: errState.leak },
       costOk,
       cost,
       delegationEdgesOk,

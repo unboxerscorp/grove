@@ -11,6 +11,7 @@
 //   - project scope (X-Grove-Project -> 400 invalid / 404 unknown / board scope)
 //   - slack status  (not_configured, empty tokens, no secrets)
 //   - ws-ticket     (issuance, ttl, project binding, single-use over real WS)
+//   - plan          (read-only ranked candidates, redaction, project/task scope)
 //
 // Each check asserts the CORRECT contract. A failing check is a real defect to
 // report as `# BUG(Pn)` — never relax the assertion to match a bug.
@@ -33,6 +34,7 @@ const SESSION_HEADER = "X-Grove-Session-Token";
 const PROJECT_HEADER = "X-Grove-Project";
 const ALPHA = "qae2e_alpha"; // default --session project (unlikely tmux collision)
 const BETA = "qae2e_beta"; // second registry, used to prove header binding/scope
+const EMPTY = "qae2e_empty"; // created during the plan checks to prove empty-registry behavior
 const READY_TIMEOUT_MS = 25_000;
 const NODE_LAST_SEEN = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
 
@@ -57,6 +59,15 @@ function eq(label, actual, expected) {
 function hasSecret(value) {
   const s = JSON.stringify(value ?? null);
   return SECRET_RES.some((re) => re.test(s));
+}
+function isTaggedMetric(value) {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    "value" in value &&
+    typeof value.source === "string" &&
+    typeof value.confidence === "string"
+  );
 }
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -391,6 +402,141 @@ async function run() {
   check(
     "'main' alias returns the scoped board's tasks",
     (aliasTasks.json || []).some((t) => t.title === "e2e scoped task"),
+  );
+
+  // --- /api/plan: read-only real-server planner contract + project isolation ---
+  const planPath = (role, taskId) =>
+    `/api/plan?${new URLSearchParams({ role, task_id: taskId }).toString()}`;
+  const planAlphaSeed = await req("POST", `/api/boards/${ALPHA}/tasks`, {
+    token,
+    project: ALPHA,
+    body: { title: "e2e plan alpha", body: "route to the codex worker", assignee: "worker" },
+  });
+  eq("seed: plan alpha task 200", planAlphaSeed.status, 200);
+  const alphaPlanTaskId = planAlphaSeed.json && planAlphaSeed.json.id;
+  check("seed: plan alpha task returns id", typeof alphaPlanTaskId === "string" && alphaPlanTaskId.length > 0);
+
+  const planBetaSeed = await req("POST", `/api/boards/${BETA}/tasks`, {
+    token,
+    project: BETA,
+    body: { title: "e2e plan beta", body: "must not leak into alpha" },
+  });
+  eq("seed: plan beta task 200", planBetaSeed.status, 200);
+  const betaPlanTaskId = planBetaSeed.json && planBetaSeed.json.id;
+  check("seed: plan beta task returns id", typeof betaPlanTaskId === "string" && betaPlanTaskId.length > 0);
+
+  eq("plan 401 without token", (await req("GET", planPath("codex worker", alphaPlanTaskId))).status, 401);
+  eq(
+    "plan 401 with wrong token",
+    (await req("GET", planPath("codex worker", alphaPlanTaskId), { token: "wrong-token" })).status,
+    401,
+  );
+  const plan = await req("GET", planPath("codex worker", alphaPlanTaskId), { token, project: ALPHA });
+  eq("plan 200 with token", plan.status, 200);
+  eq("plan project == alpha", plan.json && plan.json.project, ALPHA);
+  eq("plan task id echoes requested task", plan.json && plan.json.task && plan.json.task.id, alphaPlanTaskId);
+  eq("plan read_only true", plan.json && plan.json.read_only, true);
+  check("plan generated_at is tagged metric", isTaggedMetric(plan.json && plan.json.generated_at));
+  const candidates = plan.json && Array.isArray(plan.json.candidates) ? plan.json.candidates : [];
+  check("plan candidates is ranked array with alpha nodes", candidates.length === 2, candidates.length);
+  check(
+    "plan ranks are 1..N in array order",
+    candidates.every((candidate, index) => candidate.rank && candidate.rank.value === index + 1),
+    candidates.map((candidate) => candidate.rank && candidate.rank.value).join(","),
+  );
+  check(
+    "plan score values are sorted descending",
+    candidates.every((candidate, index, array) => {
+      if (index === 0) return true;
+      return candidate.score.value <= array[index - 1].score.value;
+    }),
+    candidates.map((candidate) => candidate.score && candidate.score.value).join(","),
+  );
+  check("plan top candidate is the codex worker", candidates[0] && candidates[0].node === "worker", candidates[0] && candidates[0].node);
+  check(
+    "plan score elements carry {source,confidence}",
+    candidates.every((candidate) => {
+      const breakdown = candidate.score_breakdown;
+      return (
+        isTaggedMetric(candidate.rank) &&
+        isTaggedMetric(candidate.score) &&
+        breakdown &&
+        typeof breakdown === "object" &&
+        !Array.isArray(breakdown) &&
+        Object.values(breakdown).every(isTaggedMetric)
+      );
+    }),
+  );
+  check(
+    "plan signal metrics carry {source,confidence}",
+    candidates.every((candidate) => {
+      const signals = candidate.signals;
+      const costBasis = signals && signals.cost_basis;
+      return (
+        signals &&
+        typeof signals === "object" &&
+        isTaggedMetric(signals.running_tasks) &&
+        isTaggedMetric(signals.blocked_tasks) &&
+        costBasis &&
+        typeof costBasis === "object" &&
+        Object.values(costBasis).every(isTaggedMetric)
+      );
+    }),
+  );
+
+  const redactRole = "codex /tmp/e2e-secret sk-test-1234567890abcdef012345";
+  const redactedPlan = await req("GET", planPath(redactRole, alphaPlanTaskId), { token, project: ALPHA });
+  eq("plan redaction request 200", redactedPlan.status, 200);
+  const roleTerms = (redactedPlan.json && redactedPlan.json.requirements && redactedPlan.json.requirements.role_terms) || [];
+  check("plan requirements role_terms is an array", Array.isArray(roleTerms));
+  check("plan requirements redacts path to placeholder", roleTerms.includes("path"), roleTerms.join(","));
+  check("plan requirements redacts secret to placeholder", roleTerms.includes("redacted"), roleTerms.join(","));
+  check(
+    "plan requirements leak no secret/path terms",
+    !hasSecret(redactedPlan.json) &&
+      !redactedPlan.text.includes("/tmp/e2e-secret") &&
+      !roleTerms.some((term) => ["tmp", "e2e", "secret", "sk", "test", "1234567890abcdef012345"].includes(term)),
+    roleTerms.join(","),
+  );
+
+  eq(
+    "plan rejects alpha task_id under beta project (scope isolation)",
+    (await req("GET", planPath("codex worker", alphaPlanTaskId), { token, project: BETA })).status,
+    404,
+  );
+  eq(
+    "plan rejects beta task_id under alpha project (scope isolation)",
+    (await req("GET", planPath("codex worker", betaPlanTaskId), { token, project: ALPHA })).status,
+    404,
+  );
+  eq(
+    "plan missing task_id -> 404",
+    (await req("GET", planPath("codex worker", "task_missing_e2e"), { token, project: ALPHA })).status,
+    404,
+  );
+
+  const emptyDir = path.join(groveHome, EMPTY);
+  mkdirSync(emptyDir, { recursive: true });
+  const emptyRegistryPath = path.join(emptyDir, "registry.json");
+  writeFileSync(
+    emptyRegistryPath,
+    JSON.stringify({ workspace: `/tmp/${EMPTY}`, nodes: {} }, null, 2),
+  );
+  chmodSync(emptyRegistryPath, 0o444);
+  const emptySeed = await req("POST", `/api/boards/${EMPTY}/tasks`, {
+    token,
+    project: EMPTY,
+    body: { title: "e2e empty-registry plan task" },
+  });
+  eq("seed: empty-registry plan task 200", emptySeed.status, 200);
+  const emptyPlan = await req("GET", planPath("codex worker", emptySeed.json && emptySeed.json.id), {
+    token,
+    project: EMPTY,
+  });
+  eq("plan empty registry project 200", emptyPlan.status, 200);
+  check(
+    "plan empty registry returns candidates:[] gracefully",
+    Boolean(emptyPlan.json) && Array.isArray(emptyPlan.json.candidates) && emptyPlan.json.candidates.length === 0,
   );
 
   // --- slack status ---

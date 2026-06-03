@@ -453,6 +453,111 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     );
   }
 
+  if (p === "/api/plan") {
+    // Mirrors web_app.py _plan_payload: READ-ONLY ranked candidates with per-
+    // factor metrics (source/confidence), redacted requirements, read_only:true.
+    diag.planFetches = ((diag.planFetches as number) ?? 0) + 1;
+    if (diag.planError) {
+      // Server-error path so verify can prove the FE shows a FIXED message and
+      // never leaks the request path / role input.
+      return Promise.resolve(new Response(JSON.stringify({ detail: "plan failed" }), { status: 500 }));
+    }
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const role = u.searchParams.get("role") ?? "";
+    const taskId = u.searchParams.get("task_id") ?? "";
+    diag.planRole = role;
+    diag.planTaskId = taskId;
+    // Mirror web_app.py _plan_public_terms EXACTLY, in two stages and that order:
+    //   1) _safe_log_text: mask absolute paths -> "[path]" (ABSOLUTE_PATH_RE),
+    //      then secret tokens -> "[redacted]" (auth_status.TOKEN_RE), collapse ws.
+    //   2) tokenize [a-z0-9]+, then _plan_public_term: >48 -> "redacted",
+    //      path segment -> "path", else the term.
+    // Masking BEFORE tokenizing is essential: "/etc/passwd" must not leak
+    // "passwd", and "xoxb-…" must not leak "xoxb".
+    const ABSOLUTE_PATH_RE = /(?<![A-Za-z0-9_./-])\/(?!\/)[^\s'"()<>]+/g;
+    const SECRET_RE =
+      /\b(?:(?:xox[baprs]|xapp)-[A-Za-z0-9-]+|gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|[A-Za-z0-9_-]{40,})\b/gi;
+    const safeLogText = (value: string): string =>
+      String(value)
+        .replace(/\r/g, "\n")
+        .replace(ABSOLUTE_PATH_RE, "[path]")
+        .replace(SECRET_RE, "[redacted]")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 500);
+    const PATH_SEGMENTS = new Set(["applications", "etc", "home", "opt", "private", "tmp", "users", "usr", "var"]);
+    const planPublicTerms = (value: string): string[] => {
+      const out = new Set<string>();
+      for (const m of safeLogText(value).toLowerCase().matchAll(/[a-z0-9]+/g)) {
+        const term = m[0];
+        if (!term) continue;
+        if (term.length > 48) out.add("redacted");
+        else if (PATH_SEGMENTS.has(term)) out.add("path");
+        else out.add(term);
+      }
+      return [...out].sort();
+    };
+    const roleTerms = planPublicTerms(role);
+    diag.planRoleTerms = roleTerms;
+    const met = (value: number | null, source: string, confidence: string, status?: string) =>
+      status ? { value, source, confidence, status } : { value, source, confidence };
+    const candidate = (
+      node: string,
+      agent: string,
+      crole: string,
+      rank: number,
+      score: number,
+      roleM: number,
+      capM: number,
+      load: number,
+      cost: number,
+      running: number,
+    ) => ({
+      node,
+      agent,
+      role: crole,
+      group: "build",
+      status: "idle",
+      status_reason: "no active turn recorded",
+      rank: met(rank, "planner", "explicit"),
+      score: met(score, "planner", "partial"),
+      score_breakdown: {
+        role_match: met(roleM, "registry+request", "inferred"),
+        capability_match: met(capM, "registry+task_metadata", "inferred"),
+        load: met(load, "registry+board_store", "explicit"),
+        cost: met(cost, "transcript", "partial"),
+      },
+      signals: {
+        running_tasks: met(running, "board_store", "explicit"),
+        blocked_tasks: met(0, "board_store", "explicit"),
+        cost_basis: {
+          total_tokens: met(node === "researcher" ? null : 120000, node === "researcher" ? "none" : "transcript", node === "researcher" ? "unknown" : "partial", node === "researcher" ? "unknown" : undefined),
+          cost_usd: met(node === "researcher" ? null : 1.2, node === "researcher" ? "none" : "estimate", node === "researcher" ? "unknown" : "partial", node === "researcher" ? "unknown" : undefined),
+        },
+      },
+    });
+    return Promise.resolve(
+      json({
+        project: proj,
+        task: { id: taskId, title: "task", status: "ready" },
+        requested_role: role,
+        requirements: { role_terms: roleTerms, capability_terms: [] },
+        generated_at: met(AUDIT_TS0 + 400, "server", "explicit"),
+        read_only: true,
+        recommended_action: "review the ranked candidates and assign manually",
+        candidates: [
+          candidate("backend", "codex", "백엔드", 1, 2.41, 1.0, 0.6, 0.55, 0.26, 1),
+          candidate("frontend", "claude", "프런트엔드", 2, 1.78, 0.5, 0.4, 0.6, 0.28, 0),
+          candidate("researcher", "claude", "리서치", 3, 1.12, 0.3, 0.2, 0.5, 0.12, 0),
+        ],
+        limitations: [
+          "Scores are best-effort routing hints from registry, board load, and usage metadata.",
+          "No task is claimed, assigned, spawned, or executed by this endpoint.",
+        ],
+      }),
+    );
+  }
+
   if (p === "/api/inbox") {
     // Mirrors web_app.py _inbox_payload: {project, items, next_cursor, total}.
     diag.inboxFetches = ((diag.inboxFetches as number) ?? 0) + 1;
