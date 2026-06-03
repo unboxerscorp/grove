@@ -33,6 +33,22 @@ export interface AuthTool {
   login_hint?: string;
 }
 
+export interface NodeSummary {
+  running: number;
+  total: number;
+  stale: number;
+}
+
+export interface StatusSummary {
+  project?: string;
+  nodes?: NodeSummary;
+}
+
+export interface Health {
+  ok: boolean;
+  board_ok?: boolean;
+}
+
 export interface NodePatch {
   parent?: string | null;
   group?: string | null;
@@ -170,6 +186,12 @@ export const api = {
     }
     return (await res.json()) as OrgNode;
   },
+
+  // Live status: project + node liveness summary (token-scoped via headers()).
+  getStatus: () => getJSON<StatusSummary>("/api/status"),
+
+  // Server liveness (unauthenticated; the extra headers are harmless).
+  getHealth: () => getJSON<Health>("/api/health"),
 
   // Dev-tool auth status.
   getAuthStatus: () => getJSON<AuthTool[]>("/api/auth-status"),

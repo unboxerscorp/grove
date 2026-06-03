@@ -203,6 +203,14 @@ const KO: Dict = {
   "auth.copied": "복사됨",
 
   "node.description": "설명 (선택)",
+
+  "status.nodes": "노드 상태",
+  "status.stale": "멈춤",
+  "status.total": "전체",
+  "health.ok": "서버 정상",
+  "health.degraded": "보드 저하",
+  "health.down": "서버 응답 없음",
+  "health.pending": "확인 중",
 };
 
 const EN: Dict = {
@@ -398,6 +406,14 @@ const EN: Dict = {
   "auth.copied": "Copied",
 
   "node.description": "Description (optional)",
+
+  "status.nodes": "Node status",
+  "status.stale": "stale",
+  "status.total": "total",
+  "health.ok": "server ok",
+  "health.degraded": "board degraded",
+  "health.down": "server down",
+  "health.pending": "checking",
 };
 
 const STRINGS: Record<Lang, Dict> = { ko: KO, en: EN };

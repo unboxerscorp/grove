@@ -193,6 +193,19 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   const p = u.pathname;
   const method = (init?.method ?? "GET").toUpperCase();
 
+  if (p === "/api/health") {
+    diag.healthFetched = true;
+    return Promise.resolve(json({ ok: true, board_ok: true }));
+  }
+
+  if (p === "/api/status") {
+    diag.statusFetches = ((diag.statusFetches as number) ?? 0) + 1;
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const running = ORG_NODES.filter((n) => n.status === "running").length;
+    const stale = ORG_NODES.filter((n) => n.status === "error").length;
+    return Promise.resolve(json({ project: proj, nodes: { running, total: ORG_NODES.length, stale } }));
+  }
+
   if (p === "/api/boards") {
     const scoped = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"];
     if (scoped === SOLO_PROJECT) {

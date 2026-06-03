@@ -5,6 +5,8 @@ import type { Project } from "./api";
 import { BoardView } from "./components/BoardView";
 import { NodeList } from "./components/NodeList";
 import { AuthPanel } from "./components/AuthPanel";
+import { HealthDot } from "./components/HealthDot";
+import { NodeStatusBar } from "./components/NodeStatusBar";
 import { OrgChart } from "./components/OrgChart";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
 import { SlackPanel } from "./components/SlackPanel";
@@ -283,6 +285,7 @@ export function App() {
             <span className="dr-stat__n is-live">{liveCount}</span>
             <span className="dr-stat__l">{t("stat.live")}</span>
           </div>
+          <HealthDot />
           <span className={cx("dr-auth", AUTH_REQUIRED ? "is-secured" : "is-local")}>
             {AUTH_REQUIRED ? t("auth.secured") : t("auth.local")}
           </span>
@@ -306,6 +309,8 @@ export function App() {
           </div>
         </div>
       </header>
+
+      <NodeStatusBar liveTick={liveTick} projectTick={projectTick} />
 
       <main className="dr-main">
         <NodeList nodes={nodes} selectedPane={selectedPane} onSelect={pickNode} boardLive={boardLive} />

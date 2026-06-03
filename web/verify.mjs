@@ -56,6 +56,27 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
 
+    // V2-W4 node status heatmap (from GET /api/status) + server health dot
+    // (GET /api/health). Mock summary: running=2, stale=1, total=5 (idle=2).
+    await page.waitForFunction(
+      () => /\d/.test(document.querySelector(".nodestat__chip.is-running")?.textContent ?? ""),
+      { timeout: 8000 },
+    );
+    await page.waitForSelector(".health-dot.is-ok", { timeout: 8000 });
+    const statusBar = await page.evaluate(() => ({
+      present: !!document.querySelector(".nodestat"),
+      segs: document.querySelectorAll(".nodestat__seg").length,
+      running: (document.querySelector(".nodestat__chip.is-running")?.textContent ?? "").trim(),
+      total: (document.querySelector(".nodestat__total")?.textContent ?? "").trim(),
+      healthOk: !!document.querySelector(".health-dot.is-ok"),
+    }));
+    const statusBarOk =
+      statusBar.present &&
+      statusBar.segs === 3 &&
+      /2/.test(statusBar.running) &&
+      /5/.test(statusBar.total) &&
+      statusBar.healthOk;
+
     // #1 i18n: Korean by default; KO/EN toggle flips all labels, then back.
     const brandText = () => page.$eval(".dr-brand__title", (el) => (el.textContent ?? "").trim());
     const i18n = { ko: await brandText(), en: "" };
@@ -714,6 +735,7 @@ async function main() {
       projectOk &&
       wsBindOk &&
       wsKindOk &&
+      statusBarOk &&
       diag.projectHeader === projAfterLoad &&
       errors.length === 0;
 
@@ -772,6 +794,8 @@ async function main() {
       orgDescs: orgView.descs,
       wsBindOk,
       wsKindOk,
+      statusBarOk,
+      statusBar,
       terminalTicketKind: diag.terminalTicketKind,
       wsMismatchCode: wsMismatch.code,
       slackStatus0,
