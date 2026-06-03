@@ -40,7 +40,14 @@ const TASKS: Record<string, MockTask[]> = {
     { id: "I-2", title: "Reverse proxy + TLS", status: "running", assignee: "root" },
     { id: "I-3", title: "Nightly backups", status: "done", assignee: "docs" },
   ],
+  // N1: a distinct, isolated project so a switch swaps the whole context and
+  // leaves no residue from the default project's boards/tasks.
+  "solo-x": [{ id: "S-1", title: "solo task", status: "running", assignee: "solo" }],
 };
+
+// N1 scope target: switching to this project must re-scope org/board/nodes to a
+// single distinct node with none of the default project's data bleeding through.
+const SOLO_PROJECT = "solo-x";
 
 interface OrgNodeMock {
   name: string;
@@ -104,6 +111,19 @@ function buildOrg() {
   };
 }
 
+// N1: solo-x's own org/nodes — one node, no relation to ORG_NODES above.
+const SOLO_NODES: OrgNodeMock[] = [
+  { name: "solo", agent: "claude", role: "혼자", parent: null, group: "", tmux_pane: "solo-x:0.0", session_id: "sess-solo", status: "running" },
+];
+function buildSoloOrg() {
+  return {
+    nodes: SOLO_NODES.map((n) => ({ ...n, children: [] as string[] })),
+    roots: ["solo"],
+    groups: {} as Record<string, string[]>,
+    children: {} as Record<string, string[]>,
+  };
+}
+
 function findTask(id: string): MockTask | undefined {
   for (const list of Object.values(TASKS)) {
     const t = list.find((x) => x.id === id);
@@ -135,6 +155,10 @@ const diag: Record<string, unknown> = {};
 (window as unknown as { __MOCK__: Record<string, unknown> }).__MOCK__ = diag;
 
 let ticketSeq = 0;
+// Mirrors the backend: each ws-ticket is bound to a kind (terminal|board), an
+// optional pane, and the request's project. The WS endpoints reject (1008) when
+// the ticket's binding doesn't match the socket it's used on.
+const ticketBindings: Record<string, { kind: string; pane: string; project: string }> = {};
 let taskSeq = 0;
 let slack: { status: string; last_event_at: string | null; last_error: string | null } = {
   status: "not_configured",
@@ -151,6 +175,7 @@ interface ProjectMock {
 const PROJECTS: ProjectMock[] = [
   { name: "dev10", workspace: "~/dev/grove", node_count: 5, status: "running" },
   { name: "infra-ops", workspace: "~/dev/infra", node_count: 2, status: "idle" },
+  { name: SOLO_PROJECT, workspace: "~/dev/solo", node_count: 1, status: "running" },
 ];
 
 function json(body: unknown): Response {
@@ -168,7 +193,13 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   const p = u.pathname;
   const method = (init?.method ?? "GET").toUpperCase();
 
-  if (p === "/api/boards") return Promise.resolve(json(BOARDS));
+  if (p === "/api/boards") {
+    const scoped = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"];
+    if (scoped === SOLO_PROJECT) {
+      return Promise.resolve(json([{ id: "solo-x", name: "Solo", task_count: 1 }]));
+    }
+    return Promise.resolve(json(BOARDS));
+  }
 
   let m = p.match(/^\/api\/boards\/([^/]+)\/tasks$/);
   if (m) {
@@ -250,8 +281,9 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 
   if (p === "/api/org") {
     const hdrs = init?.headers as Record<string, string> | undefined;
-    diag.projectHeader = hdrs?.["X-Grove-Project"] ?? "";
-    return Promise.resolve(json(buildOrg()));
+    const proj = hdrs?.["X-Grove-Project"] ?? "";
+    diag.projectHeader = proj;
+    return Promise.resolve(json(proj === SOLO_PROJECT ? buildSoloOrg() : buildOrg()));
   }
 
   if (p === "/api/nodes") {
@@ -283,6 +315,8 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       diag.createdNodeDesc = node.description;
       return Promise.resolve(json({ ...node, children: [] }));
     }
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"];
+    if (proj === SOLO_PROJECT) return Promise.resolve(json(SOLO_NODES.map(basicNode)));
     return Promise.resolve(json(ORG_NODES.map(basicNode)));
   }
 
@@ -324,7 +358,15 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const hdrs = init?.headers as Record<string, string> | undefined;
     diag.ticketHeader = hdrs?.["X-Grove-Session-Token"] ?? "";
     diag.wsTicketProject = hdrs?.["X-Grove-Project"] ?? ""; // project bound into the ticket
-    return Promise.resolve(json({ ticket: `mock-ticket-${++ticketSeq}`, ttl_seconds: 30 }));
+    const reqBody = (init?.body ? JSON.parse(init.body as string) : {}) as { kind?: string; pane_id?: string };
+    diag.wsTicketKind = reqBody.kind ?? "";
+    const ticket = `mock-ticket-${++ticketSeq}`;
+    ticketBindings[ticket] = {
+      kind: reqBody.kind ?? "",
+      pane: reqBody.pane_id ?? "",
+      project: (hdrs?.["X-Grove-Project"] ?? "") as string,
+    };
+    return Promise.resolve(json({ ticket, ttl_seconds: 30 }));
   }
 
   // --- Slack integration ----------------------------------------------------
@@ -385,9 +427,11 @@ function snapshot(pane: string, n: number): string {
   );
 }
 
-// The board socket currently held open by the SPA. Board-live controls push
-// events through it so the client reloads and re-columns the affected card.
+// The board / terminal sockets currently held open by the SPA. Live controls
+// push events or simulate server-side closes through these refs to exercise the
+// client's reload / reconnect / close-code paths.
 let boardSocket: MockWS | null = null;
+let termSocket: MockWS | null = null;
 
 class MockWS {
   url: string;
@@ -402,24 +446,21 @@ class MockWS {
   private seq = 0;
   private kind: "term" | "board" | "other";
   private pane = "";
+  private ticket = "";
 
   constructor(url: string) {
     this.url = url;
     // Parse without `new URL` — the mock's file:// origin yields empty-host WS
     // URLs (ws:///ws/board?…) that `new URL` rejects.
     const [pathPart = "", queryPart = ""] = url.split("?");
-    this.pane = new URLSearchParams(queryPart).get("pane_id") ?? "";
+    const params = new URLSearchParams(queryPart);
+    this.pane = params.get("pane_id") ?? "";
+    this.ticket = params.get("ticket") ?? "";
     this.kind = pathPart.includes("/ws/terminal")
       ? "term"
       : pathPart.includes("/ws/board")
         ? "board"
         : "other";
-    if (this.kind === "term") diag.terminalWsUrl = url;
-    if (this.kind === "board") {
-      diag.boardWsConnected = true;
-      diag.boardWsTicket = new URLSearchParams(queryPart).get("ticket") ?? "";
-      diag.boardWsConnects = ((diag.boardWsConnects as number) ?? 0) + 1;
-    }
     setTimeout(() => this.open(), 120);
   }
 
@@ -434,13 +475,35 @@ class MockWS {
   }
 
   private open() {
+    // Backend mirror: a ticket is bound to a kind (+ pane for terminals). Reject
+    // (1008) when the socket's endpoint/pane doesn't match the ticket binding,
+    // so verify catches the FE sending a board ticket to /ws/terminal etc.
+    const endpointKind = this.kind === "term" ? "terminal" : this.kind === "board" ? "board" : "";
+    const binding = ticketBindings[this.ticket];
+    const valid =
+      this.kind === "other" ||
+      (!!binding && binding.kind === endpointKind && (this.kind !== "term" || binding.pane === this.pane));
+    if (!valid) {
+      this.readyState = 3;
+      diag.wsRejected = ((diag.wsRejected as number) ?? 0) + 1;
+      this.onclose?.({ code: 1008 });
+      return;
+    }
+
     this.readyState = 1;
     this.onopen?.({});
     if (this.kind === "term") {
+      diag.terminalWsUrl = this.url;
+      diag.terminalTicketKind = binding!.kind;
+      diag.terminalWsConnects = ((diag.terminalWsConnects as number) ?? 0) + 1;
+      termSocket = this;
       // Backend sends a full snapshot on change; emit one periodically.
       this.emitSnapshot();
       this.timer = setInterval(() => this.emitSnapshot(), 700);
     } else if (this.kind === "board") {
+      diag.boardWsConnected = true;
+      diag.boardWsTicket = this.ticket;
+      diag.boardWsConnects = ((diag.boardWsConnects as number) ?? 0) + 1;
       boardSocket = this;
       setTimeout(() => this.emit(JSON.stringify({ cursor: 1, type: "task.updated", task_id: "G-1" })), 800);
     }
@@ -448,6 +511,17 @@ class MockWS {
 
   emitBoard(payload: unknown) {
     this.emit(JSON.stringify(payload));
+  }
+
+  // Simulate a server-initiated close with a specific code (4401 auth-reject,
+  // 1008 pane-unavailable, 1006 abnormal) so the SPA's close-code handling and
+  // reconnect/backoff paths can be exercised without our own teardown guard.
+  simulateClose(code: number) {
+    this.readyState = 3;
+    if (this.timer) clearInterval(this.timer);
+    if (boardSocket === this) boardSocket = null;
+    if (termSocket === this) termSocket = null;
+    this.onclose?.({ code });
   }
 
   send(_data: string) {
@@ -458,6 +532,7 @@ class MockWS {
     this.readyState = 3;
     if (this.timer) clearInterval(this.timer);
     if (boardSocket === this) boardSocket = null;
+    if (termSocket === this) termSocket = null;
     this.onclose?.({ code: 1000 });
   }
 }
@@ -485,6 +560,24 @@ diag.completeTask = (id: string): boolean => {
   const ok = mutateTaskStatus(id, "done");
   if (ok) pushBoardEvent(id, "task.completed");
   return ok;
+};
+// Mutate a task's status WITHOUT emitting an event — used to prove the board's
+// onopen catch-up reload (a forced reconnect must surface the silent change).
+diag.silentSetStatus = (id: string, status: string): boolean => mutateTaskStatus(id, status);
+// Force a server-side close on the live board / terminal socket.
+diag.closeBoard = (code: number): boolean => {
+  const s = boardSocket;
+  boardSocket = null;
+  if (!s) return false;
+  s.simulateClose(code);
+  return true;
+};
+diag.closeTerminal = (code: number): boolean => {
+  const s = termSocket;
+  termSocket = null;
+  if (!s) return false;
+  s.simulateClose(code);
+  return true;
 };
 
 window.WebSocket = MockWS as unknown as typeof WebSocket;

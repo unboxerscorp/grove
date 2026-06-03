@@ -227,11 +227,16 @@ export const api = {
     return (await res.json()) as SlackStatus;
   },
 
-  async wsTicket(): Promise<WsTicket> {
+  // Mint a single-use ws-ticket bound to the active project AND the requested
+  // WS kind (+ pane for terminals). The backend rejects (1008) a terminal/board
+  // WS whose ticket kind/pane doesn't match, so the ticket must be requested for
+  // the exact socket it will be used on.
+  async wsTicket(req: { kind: "terminal" | "board"; pane_id?: string }): Promise<WsTicket> {
     const res = await fetch("/api/ws-ticket", {
       method: "POST",
-      headers: headers(),
+      headers: headers({ "Content-Type": "application/json" }),
       credentials: "same-origin",
+      body: JSON.stringify(req),
     });
     if (!res.ok) throw new Error(`/api/ws-ticket: HTTP ${res.status}`);
     return (await res.json()) as WsTicket;

@@ -36,6 +36,35 @@ def test_index_injects_session_token_and_serves_dist_assets(tmp_path: Path) -> N
     assert 'window.__GROVE_SESSION_TOKEN__ = "test-token"' in fallback.text
 
 
+def test_index_does_not_bootstrap_token_on_non_loopback_without_unsafe_bind(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        host="0.0.0.0",
+    )
+
+    index = client.get("/")
+
+    assert index.status_code == 200
+    assert "window.__GROVE_SESSION_TOKEN__" not in index.text
+    assert "window.__GROVE_AUTH_REQUIRED__ = true" in index.text
+
+
+def test_index_bootstraps_token_on_non_loopback_with_unsafe_bind(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        host="0.0.0.0",
+        unsafe_bind_token_bootstrap=True,
+    )
+
+    index = client.get("/")
+
+    assert 'window.__GROVE_SESSION_TOKEN__ = "test-token"' in index.text
+
+
 def test_rest_reads_and_writes_board_store(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     first = store.create_task(
@@ -55,7 +84,9 @@ def test_rest_reads_and_writes_board_store(tmp_path: Path) -> None:
     client = make_client(tmp_path, store)
     headers = auth_headers(client)
 
-    assert client.get("/api/status").json()["ok"] is True
+    assert client.get("/api/health").json()["ok"] is True
+    assert client.get("/api/status").status_code == 401
+    assert client.get("/api/status", headers=headers).json()["ok"] is True
     assert client.get("/api/boards").status_code == 401
     boards = client.get("/api/boards", headers=headers).json()
     assert boards == [{"id": "main", "name": "main", "task_count": 2}]
@@ -177,6 +208,86 @@ def test_rest_creates_task_on_board(tmp_path: Path) -> None:
     assert task["assignee"] == "grove:codex"
     assert task["status"] == "blocked"
     assert store.get_task(board="main", task_id=task["id"]).priority == 7
+
+
+def test_state_change_rejects_disallowed_origin(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+
+    response = client.post(
+        "/api/boards/main/tasks",
+        headers=auth_headers(client) | {"Origin": "http://evil.example"},
+        json={"title": "Blocked by origin"},
+    )
+
+    assert response.status_code == 403
+    assert store.list_tasks(board="main") == []
+
+
+def test_state_change_rejects_disallowed_host(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+
+    response = client.post(
+        "/api/boards/main/tasks",
+        headers=auth_headers(client) | {"Host": "evil.example", "Origin": "http://evil.example"},
+        json={"title": "Blocked by host"},
+    )
+
+    assert response.status_code == 403
+    assert store.list_tasks(board="main") == []
+
+
+def test_state_change_rejects_missing_origin_on_remote_host(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(
+        tmp_path,
+        store,
+        host="100.100.90.87",
+        allowed_hosts=("100.100.90.87",),
+    )
+
+    response = client.post(
+        "/api/boards/main/tasks",
+        headers=auth_headers(client),
+        json={"title": "Blocked without origin"},
+    )
+
+    assert response.status_code == 403
+    assert store.list_tasks(board="main") == []
+
+
+def test_state_change_allows_allowlisted_remote_host_with_origin(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(
+        tmp_path,
+        store,
+        host="100.100.90.87",
+        allowed_hosts=("100.100.90.87", "192.168.1.186"),
+    )
+
+    response = client.post(
+        "/api/boards/main/tasks",
+        headers=auth_headers(client) | {"Origin": "http://100.100.90.87:8765"},
+        json={"title": "Allowed remote"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "Allowed remote"
+
+
+def test_state_change_allows_loopback_without_origin(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+
+    response = client.post(
+        "/api/boards/main/tasks",
+        headers=auth_headers(client),
+        json={"title": "Allowed loopback"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "Allowed loopback"
 
 
 def test_rest_rejects_empty_task_title(tmp_path: Path) -> None:
@@ -1042,12 +1153,12 @@ def test_ws_ticket_is_single_use_and_expires(
     now = 1000.0
     monkeypatch.setattr("grove_bridge.web_app.time.time", lambda: now)
     client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
-    ticket = client.post("/api/ws-ticket", headers=auth_headers(client)).json()["ticket"]
+    ticket = ws_ticket(client)
 
     assert web_app._consume_ticket(ticket_store(client), ticket) is not None
     assert web_app._consume_ticket(ticket_store(client), ticket) is None
 
-    expired = client.post("/api/ws-ticket", headers=auth_headers(client)).json()["ticket"]
+    expired = ws_ticket(client)
     now = 1031.0
     assert web_app._consume_ticket(ticket_store(client), expired) is None
 
@@ -1070,6 +1181,72 @@ def test_ws_ticket_binds_project_from_request_header(tmp_path: Path) -> None:
     assert response.json()["project"] == "dev11"
     assert grant is not None
     assert grant.project.name == "dev11"
+    assert grant.kind == "board"
+    assert grant.pane_id is None
+
+
+def test_ws_ticket_uses_query_fallback_when_body_is_empty(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"}},
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post(
+        "/api/ws-ticket",
+        headers=auth_headers(client),
+        params={"kind": "terminal", "pane_id": "dev10:2.0"},
+        json={},
+    )
+    grant = web_app._consume_ticket(ticket_store(client), response.json()["ticket"])
+
+    assert response.status_code == 200
+    assert grant is not None
+    assert grant.kind == "terminal"
+    assert grant.pane_id == "dev10:2.0"
+
+
+def test_ws_ticket_rejects_kind_and_pane_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"},
+            "other": {"name": "other", "agent": "codex", "tmux_pane": "dev10:3.0"},
+        },
+    )
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(board="dev10", title="Tail me", body=None, assignee="worker")
+    client = make_client(tmp_path, store)
+    monkeypatch.setattr(web_app, "_tmux_capture", lambda pane: b"selected")
+
+    accepted_ticket = terminal_ticket(client, "dev10:2.0")
+    with client.websocket_connect(f"/ws/terminal?ticket={accepted_ticket}&pane_id=dev10:2.0") as ws:
+        assert ws.receive_json()["pane_id"] == "dev10:2.0"
+
+    board_ticket = ws_ticket(client)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/ws/terminal?ticket={board_ticket}&pane_id=dev10:2.0"):
+            pass
+    assert exc.value.code == 1008
+
+    terminal_ticket_value = terminal_ticket(client, "dev10:2.0")
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(
+            f"/ws/terminal?ticket={terminal_ticket_value}&pane_id=dev10:3.0"
+        ):
+            pass
+    assert exc.value.code == 1008
+
+    terminal_board_ticket = terminal_ticket(client, "dev10:2.0")
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/ws/board?ticket={terminal_board_ticket}"):
+            pass
+    assert exc.value.code == 1008
 
 
 @pytest.mark.parametrize(
@@ -1095,7 +1272,7 @@ def test_terminal_rejects_lead_pane_aliases(
         "_tmux_capture",
         lambda unsafe_pane: pytest.fail(f"capture should not run for {unsafe_pane}"),
     )
-    ticket = ws_ticket(client)
+    ticket = terminal_ticket(client, "dev10:2.0")
 
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect(f"/ws/terminal?ticket={ticket}&pane_id={pane}"):
@@ -1133,7 +1310,7 @@ def test_terminal_rejects_injection_like_pane_values(
         "_tmux_capture",
         lambda unsafe_pane: pytest.fail(f"capture should not run for {unsafe_pane}"),
     )
-    ticket = ws_ticket(client)
+    ticket = terminal_ticket(client, "dev10:1.2")
 
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect(f"/ws/terminal?ticket={ticket}&pane_id={pane}"):
@@ -1160,7 +1337,7 @@ def test_terminal_streams_worker_pane_frame(
         return b"pane text"
 
     monkeypatch.setattr(web_app, "_tmux_capture", fake_capture)
-    ticket = ws_ticket(client)
+    ticket = terminal_ticket(client, "dev10:2.0")
 
     with client.websocket_connect(f"/ws/terminal?ticket={ticket}&pane_id=dev10:2.0") as ws:
         frame = ws.receive_json()
@@ -1187,20 +1364,22 @@ def test_terminal_uses_project_header_for_pane_allowlist(
     )
     client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
     monkeypatch.setattr(web_app, "_tmux_capture", lambda pane: b"selected")
-    ticket = client.post(
-        "/api/ws-ticket",
-        headers=auth_headers(client) | {"X-Grove-Project": "dev11"},
-    ).json()["ticket"]
+    ticket = terminal_ticket(
+        client,
+        "dev11:2.0",
+        headers={"X-Grove-Project": "dev11"},
+    )
 
     with client.websocket_connect(f"/ws/terminal?ticket={ticket}&pane_id=dev11:2.0") as ws:
         frame = ws.receive_json()
 
     assert frame["pane_id"] == "dev11:2.0"
 
-    rejected_ticket = client.post(
-        "/api/ws-ticket",
-        headers=auth_headers(client) | {"X-Grove-Project": "dev11"},
-    ).json()["ticket"]
+    rejected_ticket = terminal_ticket(
+        client,
+        "dev11:2.0",
+        headers={"X-Grove-Project": "dev11"},
+    )
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect(f"/ws/terminal?ticket={rejected_ticket}&pane_id=dev10:2.0"):
             pass
@@ -1224,7 +1403,7 @@ def test_terminal_ignores_websocket_project_header_and_uses_ticket_project(
     )
     client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
     monkeypatch.setattr(web_app, "_tmux_capture", lambda pane: b"selected")
-    ticket = ws_ticket(client)
+    ticket = terminal_ticket(client, "dev10:2.0")
 
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect(
@@ -1255,7 +1434,7 @@ def test_terminal_skips_unchanged_capture_frames(
         return payloads[min(len(captures) - 1, len(payloads) - 1)]
 
     monkeypatch.setattr(web_app, "_tmux_capture", fake_capture)
-    ticket = ws_ticket(client)
+    ticket = terminal_ticket(client, "dev10:2.0")
 
     with client.websocket_connect(f"/ws/terminal?ticket={ticket}&pane_id=dev10:2.0") as ws:
         first = ws.receive_json()
@@ -1345,7 +1524,14 @@ def test_board_ws_rejects_missing_ticket(tmp_path: Path) -> None:
             pass
 
 
-def make_client(tmp_path: Path, store: SQLiteBoardStore) -> TestClient:
+def make_client(
+    tmp_path: Path,
+    store: SQLiteBoardStore,
+    *,
+    host: str = "127.0.0.1",
+    unsafe_bind_token_bootstrap: bool = False,
+    allowed_hosts: tuple[str, ...] = (),
+) -> TestClient:
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text(
@@ -1360,8 +1546,11 @@ def make_client(tmp_path: Path, store: SQLiteBoardStore) -> TestClient:
         board_db_path=tmp_path / "board.db",
         token="test-token",
         auth_required=True,
+        host=host,
+        unsafe_bind_token_bootstrap=unsafe_bind_token_bootstrap,
+        allowed_hosts=allowed_hosts,
     )
-    return TestClient(create_app(config=config, store=store))
+    return TestClient(create_app(config=config, store=store), base_url=f"http://{host}:8765")
 
 
 def auth_headers(client: TestClient) -> dict[str, str]:
@@ -1380,8 +1569,31 @@ def ticket_store(client: TestClient) -> web_app.TicketStore:
     return cast(web_app.TicketStore, fastapi_app(client).state.ticket_store)
 
 
-def ws_ticket(client: TestClient) -> str:
-    return str(client.post("/api/ws-ticket", headers=auth_headers(client)).json()["ticket"])
+def ws_ticket(
+    client: TestClient,
+    *,
+    kind: str = "board",
+    pane_id: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> str:
+    request_headers = auth_headers(client)
+    if headers is not None:
+        request_headers.update(headers)
+    payload: dict[str, str] = {"kind": kind}
+    if pane_id is not None:
+        payload["pane_id"] = pane_id
+    response = client.post("/api/ws-ticket", headers=request_headers, json=payload)
+    assert response.status_code == 200
+    return str(response.json()["ticket"])
+
+
+def terminal_ticket(
+    client: TestClient,
+    pane_id: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> str:
+    return ws_ticket(client, kind="terminal", pane_id=pane_id, headers=headers)
 
 
 def write_registry(

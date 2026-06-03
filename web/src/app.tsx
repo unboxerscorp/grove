@@ -139,7 +139,7 @@ export function App() {
     function connect() {
       if (disposed) return;
       api
-        .wsTicket()
+        .wsTicket({ kind: "board" })
         .then(({ ticket }) => {
           if (disposed) return;
           try {

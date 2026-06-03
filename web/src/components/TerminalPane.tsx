@@ -110,7 +110,7 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
       if (disposed || !node) return;
       const target = node;
       api
-        .wsTicket()
+        .wsTicket({ kind: "terminal", pane_id: target.tmux_pane })
         .then(({ ticket }) => {
           if (disposed) return;
           const url = wsUrl("/ws/terminal", { ticket, pane_id: target.tmux_pane });

@@ -11,13 +11,13 @@ import re
 import secrets
 import subprocess
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import cast
-from urllib.parse import unquote
+from typing import Annotated, cast
+from urllib.parse import unquote, urlparse
 
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, status
+from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, status
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 
@@ -54,6 +54,9 @@ STATIC_SUFFIXES = {
     ".woff",
     ".woff2",
 }
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+WILDCARD_BIND_HOSTS = frozenset({"0.0.0.0", "::"})
+TICKET_KINDS = frozenset({"board", "terminal"})
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,8 @@ class WebAppConfig:
     auth_required: bool = True
     host: str = "127.0.0.1"
     port: int = 8765
+    unsafe_bind_token_bootstrap: bool = False
+    allowed_hosts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dist_dir", self.dist_dir.expanduser())
@@ -77,6 +82,11 @@ class WebAppConfig:
             raise ValueError("session token is required")
         if self.port <= 0:
             raise ValueError("port must be positive")
+        object.__setattr__(
+            self,
+            "allowed_hosts",
+            _normalize_allowed_hosts(self.allowed_hosts),
+        )
 
 
 @dataclass(frozen=True)
@@ -92,6 +102,8 @@ class TicketGrant:
     ticket: str
     expires_at: float
     project: ProjectContext
+    kind: str
+    pane_id: str | None
 
 
 class CommentPayload(BaseModel):
@@ -140,6 +152,11 @@ class SlackConfigPayload(BaseModel):
     default_node: str | None = Field(default=None, max_length=200)
 
 
+class WsTicketPayload(BaseModel):
+    kind: str | None = Field(default=None, max_length=50)
+    pane_id: str | None = Field(default=None, max_length=200)
+
+
 class TicketStore:
     def __init__(self) -> None:
         self._tickets: dict[str, TicketGrant] = {}
@@ -148,6 +165,8 @@ class TicketStore:
         self,
         *,
         project: ProjectContext,
+        kind: str,
+        pane_id: str | None = None,
         ttl_seconds: int = TICKET_TTL_SECONDS,
     ) -> TicketGrant:
         ticket = secrets.token_urlsafe(24)
@@ -155,6 +174,8 @@ class TicketStore:
             ticket=ticket,
             expires_at=time.time() + ttl_seconds,
             project=project,
+            kind=kind,
+            pane_id=pane_id,
         )
         self._tickets[ticket] = grant
         return grant
@@ -181,8 +202,13 @@ def create_app(
     app.state.store = board_store
     app.state.ticket_store = TicketStore()
 
+    @app.get("/api/health")
+    def health_endpoint() -> dict[str, object]:
+        return {"ok": True}
+
     @app.get("/api/status")
     def status_endpoint(request: Request) -> dict[str, object]:
+        _require_token(request)
         project = resolve_project(request)
         return {"ok": True, "project": project.name}
 
@@ -201,7 +227,7 @@ def create_app(
         request: Request,
         payload: ProjectCreatePayload,
     ) -> dict[str, object]:
-        _require_token(request)
+        _require_state_change(request)
         return _create_project(payload)
 
     @app.post("/api/projects/load")
@@ -209,7 +235,7 @@ def create_app(
         request: Request,
         payload: ProjectLoadPayload,
     ) -> dict[str, object]:
-        _require_token(request)
+        _require_state_change(request)
         return _load_project(payload)
 
     @app.get("/api/boards")
@@ -247,7 +273,7 @@ def create_app(
         board_id: str,
         payload: TaskCreatePayload,
     ) -> dict[str, object]:
-        _require_token(request)
+        _require_state_change(request)
         title = payload.title.strip()
         if not title:
             raise HTTPException(status_code=400, detail="title is required")
@@ -291,7 +317,7 @@ def create_app(
         task_id: str,
         payload: CommentPayload,
     ) -> dict[str, object]:
-        _require_token(request)
+        _require_state_change(request)
         project = resolve_project(request)
         _task_for_project(_store(request), task_id, project=project)
         try:
@@ -314,7 +340,7 @@ def create_app(
         request: Request,
         payload: NodeCreatePayload,
     ) -> dict[str, object]:
-        _require_token(request)
+        _require_state_change(request)
         return _spawn_node(payload, config=resolve_project(request).config)
 
     @app.patch("/api/nodes/{name}")
@@ -323,7 +349,7 @@ def create_app(
         name: str,
         payload: NodeUpdatePayload,
     ) -> dict[str, object]:
-        _require_token(request)
+        _require_state_change(request)
         return _update_node_relationships(name, payload, config=resolve_project(request).config)
 
     @app.get("/api/org")
@@ -346,7 +372,7 @@ def create_app(
         request: Request,
         payload: SlackConfigPayload,
     ) -> dict[str, object]:
-        _require_token(request)
+        _require_state_change(request)
         try:
             config_value = SlackConfig(
                 app_token=payload.app_token.strip(),
@@ -361,7 +387,7 @@ def create_app(
 
     @app.post("/api/slack/test")
     def slack_test_endpoint(request: Request) -> dict[str, object]:
-        _require_token(request)
+        _require_state_change(request)
         configured = SlackConfigStore(_slack_config_path(_config(request))).load() is not None
         return {
             "ok": configured,
@@ -382,14 +408,35 @@ def create_app(
         ]
 
     @app.post("/api/ws-ticket")
-    def ws_ticket_endpoint(request: Request) -> dict[str, object]:
-        _require_token(request)
+    def ws_ticket_endpoint(
+        request: Request,
+        payload: Annotated[WsTicketPayload | None, Body()] = None,
+        kind: str = Query(default="board"),
+        pane_id: str | None = Query(default=None),
+    ) -> dict[str, object]:
+        _require_state_change(request)
         project = resolve_project(request)
-        grant = _ticket_store(request).issue(project=project)
+        requested_kind, requested_pane = _ws_ticket_request_scope(
+            payload,
+            query_kind=kind,
+            query_pane_id=pane_id,
+        )
+        clean_kind, clean_pane = _validated_ticket_scope(
+            requested_kind,
+            requested_pane,
+            project=project,
+        )
+        grant = _ticket_store(request).issue(
+            project=project,
+            kind=clean_kind,
+            pane_id=clean_pane,
+        )
         return {
             "ticket": grant.ticket,
             "ttl_seconds": TICKET_TTL_SECONDS,
             "project": project.name,
+            "kind": grant.kind,
+            "pane_id": grant.pane_id,
         }
 
     @app.websocket("/ws/terminal")
@@ -403,6 +450,9 @@ def create_app(
             await websocket.close(code=4401)
             return
         project = grant.project
+        if grant.kind != "terminal" or grant.pane_id != pane_id:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
         if not _pane_allowed(pane_id, config=project.config):
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
@@ -439,6 +489,9 @@ def create_app(
         grant = _consume_ticket(_ticket_store(websocket), ticket)
         if grant is None:
             await websocket.close(code=4401)
+            return
+        if grant.kind != "board":
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
         project = grant.project
         await websocket.accept()
@@ -482,6 +535,76 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="missing or invalid session token")
 
 
+def _require_state_change(request: Request) -> None:
+    _require_token(request)
+    _require_allowed_origin(request)
+
+
+def _require_allowed_origin(request: Request) -> None:
+    config = _config(request)
+    request_host = _request_hostname(request.headers.get("host"))
+    if request_host is None:
+        raise HTTPException(status_code=400, detail="invalid host")
+    allowed_hosts = _allowed_request_hosts(config)
+    if request_host not in allowed_hosts:
+        raise HTTPException(status_code=403, detail="host not allowed")
+    origin = request.headers.get("origin")
+    if origin is None or not origin.strip():
+        if request_host not in LOOPBACK_HOSTS:
+            raise HTTPException(status_code=403, detail="origin required")
+        return
+    origin_host = _origin_hostname(origin)
+    if origin_host is None:
+        raise HTTPException(status_code=403, detail="origin not allowed")
+    if origin_host not in allowed_hosts:
+        raise HTTPException(status_code=403, detail="origin not allowed")
+
+
+def _allowed_request_hosts(config: WebAppConfig) -> set[str]:
+    hosts = set(LOOPBACK_HOSTS)
+    hosts.update(config.allowed_hosts)
+    return hosts
+
+
+def _normalize_allowed_hosts(values: Sequence[str]) -> tuple[str, ...]:
+    hosts: dict[str, None] = {}
+    for value in values:
+        for raw_host in value.split(","):
+            host = _origin_hostname(raw_host) if "://" in raw_host else _request_hostname(raw_host)
+            if host is not None:
+                hosts[host] = None
+    return tuple(hosts)
+
+
+def _request_hostname(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    parsed = urlparse(f"//{value.strip()}")
+    return _normalize_hostname(parsed.hostname)
+
+
+def _origin_hostname(value: str) -> str | None:
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    return _normalize_hostname(parsed.hostname)
+
+
+def _normalize_hostname(value: str | None) -> str | None:
+    if value is None:
+        return None
+    host = value.strip().lower()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    host = host.rstrip(".")
+    return host or None
+
+
+def _wildcard_bind_host(host: str) -> bool:
+    normalized = _normalize_hostname(host)
+    return normalized in WILDCARD_BIND_HOSTS
+
+
 def _config(source: Request | WebSocket) -> WebAppConfig:
     return cast(WebAppConfig, source.app.state.config)
 
@@ -517,6 +640,40 @@ def _resolve_board_id(board_id: str, *, project: ProjectContext) -> str:
     if board_id in {project.board, "main", "default"}:
         return project.board
     raise HTTPException(status_code=404, detail="board not found")
+
+
+def _validated_ticket_scope(
+    kind: str,
+    pane_id: str | None,
+    *,
+    project: ProjectContext,
+) -> tuple[str, str | None]:
+    clean_kind = kind.strip().lower()
+    if clean_kind not in TICKET_KINDS:
+        raise HTTPException(status_code=400, detail="invalid ticket kind")
+    clean_pane = pane_id.strip() if pane_id is not None else None
+    if clean_pane == "":
+        clean_pane = None
+    if clean_kind == "board":
+        if clean_pane is not None:
+            raise HTTPException(status_code=400, detail="board tickets cannot bind a pane")
+        return clean_kind, None
+    if clean_pane is None:
+        raise HTTPException(status_code=400, detail="terminal pane_id is required")
+    if not _pane_allowed(clean_pane, config=project.config):
+        raise HTTPException(status_code=400, detail="pane not allowed")
+    return clean_kind, clean_pane
+
+
+def _ws_ticket_request_scope(
+    payload: WsTicketPayload | None,
+    *,
+    query_kind: str,
+    query_pane_id: str | None,
+) -> tuple[str, str | None]:
+    if payload is None or not payload.model_fields_set:
+        return query_kind, query_pane_id
+    return payload.kind or "board", payload.pane_id
 
 
 def _store(source: Request | WebSocket) -> SQLiteBoardStore:
@@ -569,17 +726,24 @@ def _index_response(config: WebAppConfig) -> HTMLResponse:
     if not index_path.is_file():
         raise HTTPException(status_code=500, detail="web distribution not found")
     html = index_path.read_text(encoding="utf-8")
-    injected = (
-        "<script>"
-        f"window.__GROVE_SESSION_TOKEN__ = {json.dumps(config.token)};"
-        f"window.__GROVE_AUTH_REQUIRED__ = {json.dumps(config.auth_required)};"
-        "</script>"
-    )
+    injected = _bootstrap_script(config)
     if "<head>" in html:
         html = html.replace("<head>", f"<head>{injected}", 1)
     else:
         html = f"{injected}{html}"
     return HTMLResponse(html)
+
+
+def _bootstrap_script(config: WebAppConfig) -> str:
+    assignments = [f"window.__GROVE_AUTH_REQUIRED__ = {json.dumps(config.auth_required)};"]
+    if _token_bootstrap_allowed(config):
+        assignments.insert(0, f"window.__GROVE_SESSION_TOKEN__ = {json.dumps(config.token)};")
+    return "<script>" + "".join(assignments) + "</script>"
+
+
+def _token_bootstrap_allowed(config: WebAppConfig) -> bool:
+    host = _normalize_hostname(config.host)
+    return host in LOOPBACK_HOSTS or config.unsafe_bind_token_bootstrap
 
 
 def _is_static_asset_path(path: str) -> bool:
@@ -1194,6 +1358,24 @@ def main(argv: list[str] | None = None) -> int:
         "--session",
         default=os.environ.get("GROVE_VIEWER_SESSION", DEFAULT_SESSION),
     )
+    parser.add_argument(
+        "--unsafe-bind",
+        action="store_true",
+        help=(
+            "Inject the session token into HTML even when binding to a non-loopback host. "
+            "Required for intentional remote access; unsafe on untrusted networks."
+        ),
+    )
+    parser.add_argument(
+        "--allow-host",
+        action="append",
+        default=[],
+        metavar="HOST[,HOST...]",
+        help=(
+            "Allow state-changing requests for these Host/Origin hosts. "
+            "May be repeated or comma-separated; loopback hosts are always allowed."
+        ),
+    )
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -1205,6 +1387,8 @@ def main(argv: list[str] | None = None) -> int:
         registry_session=args.session,
         host=args.host,
         port=args.port,
+        unsafe_bind_token_bootstrap=args.unsafe_bind,
+        allowed_hosts=_normalize_allowed_hosts(args.allow_host),
     )
     app = create_app(config=config)
     uvicorn.run(app, host=config.host, port=config.port)

@@ -157,6 +157,58 @@ async function main() {
       claimCol === RUNNING_COL &&
       completeCol === DONE_COL;
 
+    // #N4 board WS lifecycle (여정6: WS 재연결·백오프): onopen catch-up reload,
+    // non-4401 close -> reconnect, 4401 (auth reject) -> stop the loop.
+    const REVIEW_COL = 6;
+    const boardConnAfterLive = await page.evaluate(() => window.__MOCK__?.boardWsConnects ?? 0);
+    // Silently move G-2 (review) -> done with NO board event, then force a
+    // reconnect: only the onopen catch-up snapshot reload can surface it in Done.
+    await page.evaluate(() => window.__MOCK__?.silentSetStatus("G-2", "done"));
+    const n4CatchUpBefore = await colIndexOf("G-2"); // still review (6) — no reload yet
+    await page.evaluate(() => window.__MOCK__?.closeBoard(1006));
+    await cardInCol(DONE_COL, "G-2");
+    await page.waitForFunction(() => !!document.querySelector(".dr-spark.is-on"), { timeout: 8000 });
+    const n4CatchUpCol = await colIndexOf("G-2");
+    const n4Reconnected = await page.evaluate(
+      (prev) => (window.__MOCK__?.boardWsConnects ?? 0) > prev,
+      boardConnAfterLive,
+    );
+    // 4401 must stop the reconnect loop: connects must NOT grow, spark goes dark.
+    const boardConnBefore4401 = await page.evaluate(() => window.__MOCK__?.boardWsConnects ?? 0);
+    await page.evaluate(() => window.__MOCK__?.closeBoard(4401));
+    await new Promise((r) => setTimeout(r, 1500)); // > the 1s backoff a retry would use
+    const n4NoReconnect = await page.evaluate(
+      (prev) => (window.__MOCK__?.boardWsConnects ?? 0) === prev,
+      boardConnBefore4401,
+    );
+    const n4SparkOff = await page.evaluate(() => !document.querySelector(".dr-spark.is-on"));
+    const n4Ok =
+      n4CatchUpBefore === REVIEW_COL &&
+      n4Reconnected === true &&
+      n4CatchUpCol === DONE_COL &&
+      n4NoReconnect === true &&
+      n4SparkOff === true;
+
+    // #N2 ask-human visualization (여정3): a blocked task is surfaced in the
+    // Blocked column and its drawer shows the blocked status pill. (A dedicated
+    // "사람 대기" badge + Slack-thread link in the drawer is still a product gap
+    // — no SPA UI exists yet; this asserts the blocked visualization that does.)
+    const BLOCKED_COL = 5;
+    const n2BlockedCol = await colIndexOf("G-7"); // G-7 is seeded status: "blocked"
+    await page.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll(".dr-card"));
+      const target = cards.find((c) => (c.querySelector(".dr-card__id")?.textContent ?? "").includes("G-7"));
+      if (target instanceof HTMLElement) target.click();
+    });
+    await page.waitForSelector(".dr-drawer__panel", { timeout: 8000 });
+    const n2Drawer = await page.evaluate(() => ({
+      ticket: (document.querySelector(".dr-drawer__ticket")?.textContent ?? "").trim(),
+      hasPill: !!document.querySelector(".dr-drawer .dr-pill"),
+    }));
+    await page.click(".dr-drawer__close");
+    await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
+    const n2Ok = n2BlockedCol === BLOCKED_COL && n2Drawer.ticket === "G-7" && n2Drawer.hasPill === true;
+
     // Interactive org canvas: switch to the Team tab; assert the graph renders
     // (nodes, bezier edges, group legend).
     await page.click('.dr-tab[data-view="team"]');
@@ -322,6 +374,39 @@ async function main() {
       };
     });
 
+    // #N5 terminal connection-state transitions (여정6: connecting→live→
+    // reconnecting→error). The mirror above already drove connecting->live.
+    await page.waitForSelector(".dr-led.is-live", { timeout: 8000 });
+    const n5Live0 = await page.evaluate(() => !!document.querySelector(".dr-led.is-live"));
+    const termConnBefore = await page.evaluate(() => window.__MOCK__?.terminalWsConnects ?? 0);
+    // Abnormal close -> "reconnecting" LED -> auto-reconnect -> "live" again.
+    await page.evaluate(() => window.__MOCK__?.closeTerminal(1006));
+    await page.waitForSelector(".dr-led.is-reconnecting", { timeout: 6000 });
+    const n5Reconnecting = await page.evaluate(() => !!document.querySelector(".dr-led.is-reconnecting"));
+    await page.waitForSelector(".dr-led.is-live", { timeout: 8000 });
+    const n5Relive = await page.evaluate(() => !!document.querySelector(".dr-led.is-live"));
+    const n5TermReconnected = await page.evaluate(
+      (prev) => (window.__MOCK__?.terminalWsConnects ?? 0) > prev,
+      termConnBefore,
+    );
+    // 4401 (session/ticket rejected) -> terminal "error" end state, no reconnect.
+    const termConnBeforeErr = await page.evaluate(() => window.__MOCK__?.terminalWsConnects ?? 0);
+    await page.evaluate(() => window.__MOCK__?.closeTerminal(4401));
+    await page.waitForSelector(".dr-led.is-error", { timeout: 6000 });
+    const n5Error = await page.evaluate(() => !!document.querySelector(".dr-led.is-error"));
+    await new Promise((r) => setTimeout(r, 1200));
+    const n5NoReconnectOnAuth = await page.evaluate(
+      (prev) => (window.__MOCK__?.terminalWsConnects ?? 0) === prev,
+      termConnBeforeErr,
+    );
+    const n5Ok =
+      n5Live0 === true &&
+      n5Reconnecting === true &&
+      n5Relive === true &&
+      n5TermReconnected === true &&
+      n5Error === true &&
+      n5NoReconnectOnAuth === true;
+
     // Slack integration panel.
     await page.click('.dr-tab[data-view="integrations"]');
     await page.waitForSelector(".slack", { timeout: 8000 });
@@ -397,6 +482,71 @@ async function main() {
       cfHref.startsWith("http") &&
       authFetches >= 2;
 
+    // #N1 project switch re-scope + no residue (여정1/5): switching to an
+    // isolated project swaps org/board/nodes wholesale — none of the default
+    // project's nodes/cards may bleed through — and switching back restores it.
+    await page.click(".proj-switcher__btn");
+    await page.waitForSelector('.proj-item[data-project="solo-x"]', { timeout: 6000 });
+    await page.click('.proj-item[data-project="solo-x"]');
+    await page.waitForFunction(
+      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "solo-x",
+      { timeout: 6000 },
+    );
+    // node rail re-scoped to the single solo node.
+    await page.waitForFunction(() => document.querySelectorAll(".dr-node").length === 1, { timeout: 8000 });
+    const soloScope = await page.evaluate(() => {
+      const names = Array.from(document.querySelectorAll(".dr-node__name")).map((e) => (e.textContent ?? "").trim());
+      return { count: names.length, hasSolo: names.includes("solo"), hasRoot: names.includes("root") };
+    });
+    // org canvas re-scoped (one node, no default-project root residue).
+    await page.click('.dr-tab[data-view="team"]');
+    await page.waitForFunction(
+      () => document.querySelectorAll(".org-node").length === 1 && !!document.querySelector('[data-name="solo"]'),
+      { timeout: 8000 },
+    );
+    const soloOrg = await page.evaluate(() => ({
+      nodes: document.querySelectorAll(".org-node").length,
+      hasRoot: !!document.querySelector('[data-name="root"]'),
+    }));
+    // board re-scoped: the solo task shows, none of the default project's G- cards.
+    await page.click('.dr-tab[data-view="board"]');
+    await page.waitForFunction(
+      () => Array.from(document.querySelectorAll(".dr-card__title")).some((e) => (e.textContent ?? "").includes("solo task")),
+      { timeout: 8000 },
+    );
+    const soloBoard = await page.evaluate(() => ({
+      gResidue: Array.from(document.querySelectorAll(".dr-card__id")).some((e) =>
+        (e.textContent ?? "").trim().startsWith("G-"),
+      ),
+    }));
+    // switch back to dev10 -> default context returns (no permanent loss).
+    await page.click(".proj-switcher__btn");
+    await page.waitForSelector('.proj-item[data-project="dev10"]', { timeout: 6000 });
+    await page.click('.proj-item[data-project="dev10"]');
+    await page.waitForFunction(
+      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "dev10",
+      { timeout: 6000 },
+    );
+    await page.waitForFunction(() => document.querySelectorAll(".dr-node").length > 1, { timeout: 8000 });
+    await page.waitForFunction(
+      () => Array.from(document.querySelectorAll(".dr-card__id")).some((e) => (e.textContent ?? "").trim().startsWith("G-")),
+      { timeout: 8000 },
+    );
+    const backScope = await page.evaluate(() => {
+      const names = Array.from(document.querySelectorAll(".dr-node__name")).map((e) => (e.textContent ?? "").trim());
+      const ids = Array.from(document.querySelectorAll(".dr-card__id")).map((e) => (e.textContent ?? "").trim());
+      return { hasRoot: names.includes("root"), hasG: ids.some((id) => id.startsWith("G-")) };
+    });
+    const n1Ok =
+      soloScope.count === 1 &&
+      soloScope.hasSolo === true &&
+      soloScope.hasRoot === false &&
+      soloOrg.nodes === 1 &&
+      soloOrg.hasRoot === false &&
+      soloBoard.gResidue === false &&
+      backScope.hasRoot === true &&
+      backScope.hasG === true;
+
     // Project switcher: list, switch, new project, load project (integrity).
     const projName = () => page.$eval(".proj-switcher__name", (el) => (el.textContent ?? "").trim());
     await page.click(".proj-switcher__btn");
@@ -468,6 +618,7 @@ async function main() {
         ticketMethod: mock.ticketMethod ?? "",
         ticketHeader: mock.ticketHeader ?? "",
         terminalWsUrl: mock.terminalWsUrl ?? "",
+        terminalTicketKind: mock.terminalTicketKind ?? "",
         boardWsConnected: mock.boardWsConnected ?? false,
         boardWsTicket: mock.boardWsTicket ?? "",
         boardWsConnects: mock.boardWsConnects ?? 0,
@@ -478,6 +629,30 @@ async function main() {
 
     const shot = path.join(root, "mock", "verify-screenshot.png");
     await page.screenshot({ path: shot });
+
+    // ws-ticket kind/pane binding (negative path): a BOARD-bound ticket used on
+    // /ws/terminal must be rejected (1008) and stream nothing. This proves the
+    // mock enforces the contract — so the FE must request the right kind/pane.
+    // Run AFTER diag capture: this probe POSTs another ws-ticket and would
+    // otherwise clobber diag.wsTicketProject (used by wsBindOk).
+    const wsMismatch = await page.evaluate(async () => {
+      const tok = window.__GROVE_SESSION_TOKEN__ ?? "";
+      const res = await fetch("/api/ws-ticket", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Grove-Session-Token": tok, "X-Grove-Project": "dev10" },
+        body: JSON.stringify({ kind: "board" }),
+      });
+      const { ticket } = await res.json();
+      return await new Promise((resolve) => {
+        const ws = new WebSocket(`ws:///ws/terminal?ticket=${encodeURIComponent(ticket)}&pane_id=grove:0.0`);
+        let gotFrame = false;
+        ws.onmessage = () => {
+          gotFrame = true;
+        };
+        ws.onclose = (e) => resolve({ code: e.code, gotFrame });
+        setTimeout(() => resolve({ code: -1, gotFrame }), 1500);
+      });
+    });
 
     const wsOk =
       diag.ticketMethod === "POST" &&
@@ -492,6 +667,11 @@ async function main() {
       diag.boardWsTicket !== "" &&
       diag.wsTicketProject === "loaded-proj" &&
       diag.boardWsConnects >= 2;
+
+    // FE requests a terminal-bound ticket for /ws/terminal (positive), and a
+    // board ticket on /ws/terminal is rejected with 1008 (negative).
+    const wsKindOk =
+      diag.terminalTicketKind === "terminal" && wsMismatch.code === 1008 && wsMismatch.gotFrame === false;
 
     const i18nOk = i18n.ko === "개발실" && i18n.en === "Dev Room";
     const addOk = addTask.created === NEW_TITLE;
@@ -524,11 +704,16 @@ async function main() {
       addOk &&
       mirrorOk &&
       boardLiveOk &&
+      n4Ok &&
+      n5Ok &&
+      n1Ok &&
+      n2Ok &&
       teamOk &&
       slackOk &&
       authOk &&
       projectOk &&
       wsBindOk &&
+      wsKindOk &&
       diag.projectHeader === projAfterLoad &&
       errors.length === 0;
 
@@ -560,6 +745,23 @@ async function main() {
       claimColBefore,
       claimCol,
       completeCol,
+      n4Ok,
+      n4Reconnected,
+      n4CatchUpCol,
+      n4NoReconnect,
+      n4SparkOff,
+      n5Ok,
+      n5Reconnecting,
+      n5Relive,
+      n5TermReconnected,
+      n5Error,
+      n1Ok,
+      soloScope,
+      soloOrg,
+      soloBoard,
+      backScope,
+      n2Ok,
+      n2BlockedCol,
       teamOk,
       slackOk,
       authOk,
@@ -569,6 +771,9 @@ async function main() {
       plusDesc,
       orgDescs: orgView.descs,
       wsBindOk,
+      wsKindOk,
+      terminalTicketKind: diag.terminalTicketKind,
+      wsMismatchCode: wsMismatch.code,
       slackStatus0,
       slackCfg,
       statusAfterSave,
