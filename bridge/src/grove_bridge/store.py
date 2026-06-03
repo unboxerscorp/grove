@@ -884,6 +884,26 @@ class SQLiteBoardStore:
             ).fetchall()
         return [_run_from_row(row) for row in rows]
 
+    def list_runs_for_board(self, *, board: str, since: int | None = None) -> list[Run]:
+        board_id = self._board_id_for_slug(board)
+        if board_id is None:
+            return []
+        clauses = ["board_id = ?"]
+        params: list[object] = [board_id]
+        if since is not None:
+            clauses.append("started_at >= ?")
+            params.append(since)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM runs
+                WHERE {" AND ".join(clauses)}
+                ORDER BY started_at ASC, id ASC
+                """,
+                params,
+            ).fetchall()
+        return [_run_from_row(row) for row in rows]
+
     def list_runs_for_task(self, *, task_id: str) -> list[Run]:
         with self._connect() as conn:
             rows = conn.execute(

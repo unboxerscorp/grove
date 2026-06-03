@@ -55,12 +55,15 @@ POLL_INTERVAL_SECONDS = 1.0
 TMUX_TIMEOUT_SECONDS = 5.0
 GROVE_SPAWN_TIMEOUT_SECONDS = 30.0
 GROVE_PROJECT_TIMEOUT_SECONDS = 30.0
+TRANSCRIPT_MAX_BYTES = 2_000_000
+MAX_TIMESTAMP_SECONDS = 4_102_444_800
 TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?P<pane>[0-9]+)$")
 NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 PROJECT_NAME_RE = NODE_NAME_RE
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 STACK_TRACE_RE = re.compile(r"(?i)(traceback|\bfile \"|\bat .+\(.+:\d+:\d+\))")
 NODE_AGENTS = frozenset({"codex", "claude", "antigravity"})
+COST_AGENTS = ("codex", "claude", "agy")
 STATIC_SUFFIXES = {
     ".css",
     ".gif",
@@ -143,6 +146,26 @@ class TicketGrant:
     project: ProjectContext
     kind: str
     pane_id: str | None
+
+
+@dataclass(frozen=True)
+class CostUsage:
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    cost_usd: float | None
+    source: str
+    confidence: str
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CostNodeSnapshot:
+    name: str
+    agent: str
+    turns: int
+    usage: CostUsage
+    payload: dict[str, object]
 
 
 class CommentPayload(BaseModel):
@@ -365,6 +388,27 @@ def create_app(
             ],
             "next_cursor": events[-1].cursor if events else cursor,
         }
+
+    @app.get("/api/cost")
+    def cost_endpoint(
+        request: Request,
+        window: str = Query(default="24h"),
+        project_name: str | None = Query(default=None, alias="project"),
+        node: str | None = Query(default=None),
+        agent: str | None = Query(default=None),
+        include: str | None = Query(default=None),
+    ) -> dict[str, object]:
+        auth = _require_auth(request)
+        _require_cost_access(auth)
+        project = _cost_project_context(request, project_name)
+        return _cost_payload(
+            _store(request),
+            project=project,
+            window=window,
+            node_filter=node,
+            agent_filter=agent,
+            include=include,
+        )
 
     @app.get("/api/auth-status")
     def auth_status_endpoint(request: Request) -> list[dict[str, object]]:
@@ -910,14 +954,684 @@ def _node_status_reason(node: Mapping[str, object], *, fallback: str) -> str:
     return fallback
 
 
-def _node_last_seen(node: Mapping[str, object]) -> int | str | None:
+def _node_last_seen(node: Mapping[str, object]) -> int | None:
     for key in ("last_seen", "lastSeen", "last_heartbeat_at", "updated_at"):
-        value = node.get(key)
-        if isinstance(value, int):
-            return value
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+        timestamp = _valid_timestamp(node.get(key))
+        if timestamp is not None:
+            return timestamp
     return None
+
+
+def _valid_timestamp(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and 0 <= value <= MAX_TIMESTAMP_SECONDS:
+        return value
+    if isinstance(value, str):
+        clean = value.strip()
+        if clean.isdigit():
+            parsed = int(clean)
+            if 0 <= parsed <= MAX_TIMESTAMP_SECONDS:
+                return parsed
+    return None
+
+
+def _cost_project_context(request: Request, project_name: str | None) -> ProjectContext:
+    header_project = request.headers.get(PROJECT_HEADER)
+    if header_project is not None and header_project.strip():
+        return resolve_project(request)
+    if project_name is None or not project_name.strip():
+        return resolve_project(request)
+    name = project_name.strip()
+    if PROJECT_NAME_RE.fullmatch(name) is None:
+        raise HTTPException(status_code=400, detail="invalid project")
+    base_config = _config(request)
+    project_config = replace(base_config, registry_session=name)
+    if not _registry_path(project_config).is_file():
+        raise HTTPException(status_code=404, detail="project not found")
+    return ProjectContext(config=project_config, name=name, board=name, from_header=True)
+
+
+def _cost_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    window: str,
+    node_filter: str | None,
+    agent_filter: str | None,
+    include: str | None,
+) -> dict[str, object]:
+    now = int(time.time())
+    window_payload, since = _cost_window(window, now=now)
+    clean_node = node_filter.strip() if node_filter is not None and node_filter.strip() else None
+    clean_agent = _cost_agent_filter(agent_filter)
+    runs = store.list_runs_for_board(board=project.board, since=since)
+    snapshots = _cost_node_snapshots(
+        project.config,
+        runs=runs,
+        node_filter=clean_node,
+        agent_filter=clean_agent,
+    )
+    usages = [snapshot.usage for snapshot in snapshots]
+    payload: dict[str, object] = {
+        "project": project.name,
+        "generated_at": _cost_metric(now, source="server", confidence="explicit"),
+        "window": window_payload,
+        "totals": _cost_totals(usages, turns=sum(snapshot.turns for snapshot in snapshots)),
+        "by_agent": _cost_by_agent(snapshots),
+        "nodes": [snapshot.payload for snapshot in snapshots],
+        "limitations": _cost_limitations(usages),
+    }
+    includes = _cost_includes(include)
+    if "runs" in includes:
+        payload["runs"] = [
+            _cost_run_payload(run)
+            for run in runs
+            if _cost_run_matches(run, node_filter=clean_node, agent_filter=clean_agent)
+        ]
+    if "sources" in includes:
+        payload["sources"] = {
+            "registry": "node agent, status, session, transcript hints",
+            "run_metadata": "completed board run metadata fields",
+            "transcript": "best-effort usage fields when a transcript is readable",
+            "estimate": "unknown cost without an explicit price source",
+        }
+    return payload
+
+
+def _cost_window(window: str, *, now: int) -> tuple[dict[str, object], int | None]:
+    clean = window.strip().lower()
+    if clean == "24h":
+        since = now - 86_400
+    elif clean == "7d":
+        since = now - (7 * 86_400)
+    elif clean == "all":
+        since = None
+    else:
+        raise HTTPException(status_code=400, detail="invalid cost window")
+    return (
+        {
+            "name": clean,
+            "since": _cost_metric(since, source="server", confidence="explicit"),
+            "until": _cost_metric(now, source="server", confidence="explicit"),
+        },
+        since,
+    )
+
+
+def _cost_agent_filter(agent_filter: str | None) -> str | None:
+    if agent_filter is None or not agent_filter.strip():
+        return None
+    clean = _normalized_cost_agent(agent_filter)
+    if clean not in COST_AGENTS:
+        raise HTTPException(status_code=400, detail="invalid cost agent")
+    return clean
+
+
+def _cost_includes(include: str | None) -> set[str]:
+    if include is None:
+        return set()
+    return {part.strip().lower() for part in include.split(",") if part.strip()}
+
+
+def _cost_node_snapshots(
+    config: WebAppConfig,
+    *,
+    runs: Sequence[Run],
+    node_filter: str | None,
+    agent_filter: str | None,
+) -> list[CostNodeSnapshot]:
+    runs_by_node = _runs_by_node(runs)
+    snapshots: list[CostNodeSnapshot] = []
+    for node in _cost_registry_node_records(config):
+        name = _cost_node_name(node)
+        agent = _cost_node_agent(node)
+        if node_filter is not None and name != node_filter:
+            continue
+        if agent_filter is not None and agent != agent_filter:
+            continue
+        node_runs = runs_by_node.get(name, [])
+        usage = _cost_usage_for_node(node, config=config, runs=node_runs)
+        warnings = [_safe_log_text(warning) for warning in usage.warnings]
+        last_seen = _node_last_seen(node)
+        payload: dict[str, object] = {
+            "node": name,
+            "agent": agent,
+            "status": _mapping_string(node, "_cost_status") or "idle",
+            "last_seen": _cost_metric(
+                last_seen,
+                source="registry",
+                confidence="explicit" if last_seen is not None else "unknown",
+                status_value="unknown" if last_seen is None else None,
+            ),
+            "turns": _cost_metric(len(node_runs), source="run_metadata", confidence="explicit"),
+            "input_tokens": _cost_metric(
+                usage.input_tokens,
+                source=usage.source,
+                confidence=usage.confidence,
+                status_value="unknown" if usage.input_tokens is None else None,
+            ),
+            "output_tokens": _cost_metric(
+                usage.output_tokens,
+                source=usage.source,
+                confidence=usage.confidence,
+                status_value="unknown" if usage.output_tokens is None else None,
+            ),
+            "total_tokens": _cost_metric(
+                usage.total_tokens,
+                source=usage.source,
+                confidence=usage.confidence,
+                status_value="unknown" if usage.total_tokens is None else None,
+            ),
+            "cost_usd_estimate": _cost_metric(
+                usage.cost_usd,
+                source=usage.source if usage.cost_usd is not None else "estimate",
+                confidence=usage.confidence if usage.cost_usd is not None else "unknown",
+                status_value="unknown" if usage.cost_usd is None else None,
+            ),
+            "source": usage.source,
+            "confidence": usage.confidence,
+            "warnings": warnings,
+        }
+        snapshots.append(
+            CostNodeSnapshot(
+                name=name,
+                agent=agent,
+                turns=len(node_runs),
+                usage=usage,
+                payload=payload,
+            )
+        )
+    return sorted(snapshots, key=lambda snapshot: snapshot.name)
+
+
+def _cost_registry_node_records(config: WebAppConfig) -> list[dict[str, object]]:
+    raw_nodes = _load_registry(config).get("nodes")
+    if not isinstance(raw_nodes, dict):
+        return []
+    nodes: list[dict[str, object]] = []
+    for key, raw_node in raw_nodes.items():
+        if not isinstance(key, str) or not isinstance(raw_node, dict):
+            continue
+        node = dict(_string_mapping(raw_node))
+        pane = _mapping_string(node, "tmux_pane")
+        if pane is None or not _valid_exposed_tmux_pane(pane, config=config):
+            continue
+        name = _mapping_string(node, "name") or key
+        node["_cost_name"] = name
+        node["_cost_agent"] = _normalized_cost_agent(_mapping_string(node, "agent") or "")
+        node["_cost_status"] = _node_status(node)
+        nodes.append(node)
+    return nodes
+
+
+def _cost_node_name(node: Mapping[str, object]) -> str:
+    value = _mapping_string(node, "_cost_name")
+    return value or "unknown"
+
+
+def _cost_node_agent(node: Mapping[str, object]) -> str:
+    value = _mapping_string(node, "_cost_agent")
+    return value if value in COST_AGENTS else "unknown"
+
+
+def _normalized_cost_agent(value: str) -> str:
+    clean = value.strip().lower()
+    if clean == "antigravity":
+        return "agy"
+    if clean in {"codex", "claude", "agy"}:
+        return clean
+    return "unknown"
+
+
+def _runs_by_node(runs: Sequence[Run]) -> dict[str, list[Run]]:
+    grouped: dict[str, list[Run]] = {}
+    for run in runs:
+        grouped.setdefault(_run_node_name(run), []).append(run)
+    return grouped
+
+
+def _run_node_name(run: Run) -> str:
+    metadata_node = _mapping_string(run.metadata, "node")
+    return metadata_node or run.node_id
+
+
+def _cost_usage_for_node(
+    node: Mapping[str, object],
+    *,
+    config: WebAppConfig,
+    runs: Sequence[Run],
+) -> CostUsage:
+    transcript = _usage_from_transcript(node, config=config)
+    if _usage_has_signal(transcript):
+        return transcript
+    run_usage = _usage_from_runs(runs)
+    if _usage_has_signal(run_usage):
+        return CostUsage(
+            input_tokens=run_usage.input_tokens,
+            output_tokens=run_usage.output_tokens,
+            total_tokens=run_usage.total_tokens,
+            cost_usd=run_usage.cost_usd,
+            source=run_usage.source,
+            confidence=run_usage.confidence,
+            warnings=transcript.warnings + run_usage.warnings,
+        )
+    warnings = transcript.warnings + run_usage.warnings
+    return CostUsage(
+        input_tokens=None,
+        output_tokens=None,
+        total_tokens=None,
+        cost_usd=None,
+        source="none",
+        confidence="unknown",
+        warnings=warnings,
+    )
+
+
+def _usage_from_runs(runs: Sequence[Run]) -> CostUsage:
+    totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    cost_total = 0.0
+    found = 0
+    cost_found = 0
+    for run in runs:
+        usage = _usage_from_mapping(run.metadata, source="run_metadata")
+        if not _usage_has_signal(usage):
+            continue
+        found += 1
+        if usage.input_tokens is not None:
+            totals["input_tokens"] += usage.input_tokens
+        if usage.output_tokens is not None:
+            totals["output_tokens"] += usage.output_tokens
+        if usage.total_tokens is not None:
+            totals["total_tokens"] += usage.total_tokens
+        if usage.cost_usd is not None:
+            cost_total += usage.cost_usd
+            cost_found += 1
+    if found == 0:
+        warning = ("run metadata has no token usage fields",) if runs else ()
+        return _unknown_usage(warnings=warning)
+    confidence = "explicit" if found == len(runs) else "partial"
+    return CostUsage(
+        input_tokens=totals["input_tokens"] if totals["input_tokens"] else None,
+        output_tokens=totals["output_tokens"] if totals["output_tokens"] else None,
+        total_tokens=totals["total_tokens"] if totals["total_tokens"] else None,
+        cost_usd=cost_total if cost_found else None,
+        source="run_metadata",
+        confidence=confidence,
+    )
+
+
+def _usage_from_transcript(
+    node: Mapping[str, object],
+    *,
+    config: WebAppConfig,
+) -> CostUsage:
+    transcript_path = _transcript_path_for_node(node, config=config)
+    if transcript_path is None:
+        return _unknown_usage()
+    try:
+        stat = transcript_path.stat()
+    except OSError:
+        return _unknown_usage(warnings=("transcript is not readable",))
+    if stat.st_size > TRANSCRIPT_MAX_BYTES:
+        return _unknown_usage(warnings=("transcript is too large for best-effort parsing",))
+    try:
+        text = transcript_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return _unknown_usage(warnings=("transcript is not readable",))
+    totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    cost_total = 0.0
+    found = 0
+    cost_found = 0
+    try:
+        mappings = _transcript_json_mappings(text)
+        for mapping in mappings:
+            usage = _usage_from_mapping(mapping, source="transcript")
+            if not _usage_has_signal(usage):
+                continue
+            found += 1
+            if usage.input_tokens is not None:
+                totals["input_tokens"] += usage.input_tokens
+            if usage.output_tokens is not None:
+                totals["output_tokens"] += usage.output_tokens
+            if usage.total_tokens is not None:
+                totals["total_tokens"] += usage.total_tokens
+            if usage.cost_usd is not None:
+                cost_total += usage.cost_usd
+                cost_found += 1
+    except Exception:
+        return _unknown_usage(warnings=("transcript parsing failed",))
+    if found == 0:
+        return _unknown_usage(warnings=("transcript has no token usage fields",))
+    return CostUsage(
+        input_tokens=totals["input_tokens"] if totals["input_tokens"] else None,
+        output_tokens=totals["output_tokens"] if totals["output_tokens"] else None,
+        total_tokens=totals["total_tokens"] if totals["total_tokens"] else None,
+        cost_usd=cost_total if cost_found else None,
+        source="transcript",
+        confidence="explicit",
+    )
+
+
+def _transcript_path_for_node(
+    node: Mapping[str, object],
+    *,
+    config: WebAppConfig,
+) -> Path | None:
+    for key in ("transcript_path", "transcriptPath", "transcript", "log_path", "logPath"):
+        value = _mapping_string(node, key)
+        if value is None:
+            continue
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = config.grove_home / config.registry_session / path
+        return path
+    return None
+
+
+def _transcript_json_mappings(text: str) -> list[Mapping[str, object]]:
+    stripped = text.strip()
+    if not stripped:
+        return []
+    parsed_mappings = _parsed_json_mappings(stripped)
+    if parsed_mappings:
+        return parsed_mappings
+    mappings: list[Mapping[str, object]] = []
+    for line in stripped.splitlines():
+        parsed = _parsed_json_mappings(line.strip())
+        mappings.extend(parsed)
+    return mappings
+
+
+def _parsed_json_mappings(text: str) -> list[Mapping[str, object]]:
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(parsed, dict):
+        return [_string_mapping(parsed)]
+    if isinstance(parsed, list):
+        return [_string_mapping(item) for item in parsed if isinstance(item, dict)]
+    return []
+
+
+def _usage_from_mapping(mapping: Mapping[str, object], *, source: str) -> CostUsage:
+    candidates = _usage_candidate_mappings(mapping)
+    input_tokens = _first_int(
+        candidates,
+        ("input_tokens", "inputTokens", "prompt_tokens", "promptTokens"),
+    )
+    output_tokens = _first_int(
+        candidates,
+        ("output_tokens", "outputTokens", "completion_tokens", "completionTokens"),
+    )
+    total_tokens = _first_int(candidates, ("total_tokens", "totalTokens", "tokens"))
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    cost_usd = _first_float(candidates, ("cost_usd", "costUsd", "cost", "usd"))
+    if input_tokens is None and output_tokens is None and total_tokens is None and cost_usd is None:
+        return _unknown_usage(source=source)
+    return CostUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        cost_usd=cost_usd,
+        source=source,
+        confidence="explicit",
+    )
+
+
+def _usage_candidate_mappings(mapping: Mapping[str, object]) -> list[Mapping[str, object]]:
+    candidates = [mapping]
+    for key in ("usage", "token_usage", "tokenUsage", "metrics"):
+        value = mapping.get(key)
+        if isinstance(value, Mapping):
+            candidates.append(_string_mapping(value))
+    return candidates
+
+
+def _first_int(mappings: Sequence[Mapping[str, object]], keys: Sequence[str]) -> int | None:
+    for mapping in mappings:
+        for key in keys:
+            value = _numeric_int(mapping.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _first_float(mappings: Sequence[Mapping[str, object]], keys: Sequence[str]) -> float | None:
+    for mapping in mappings:
+        for key in keys:
+            value = _numeric_float(mapping.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _numeric_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        clean = value.strip()
+        if clean.isdigit():
+            return int(clean)
+    return None
+
+
+def _numeric_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        clean = value.strip().removeprefix("$")
+        try:
+            return float(clean)
+        except ValueError:
+            return None
+    return None
+
+
+def _unknown_usage(
+    *,
+    source: str = "none",
+    warnings: tuple[str, ...] = (),
+) -> CostUsage:
+    return CostUsage(
+        input_tokens=None,
+        output_tokens=None,
+        total_tokens=None,
+        cost_usd=None,
+        source=source,
+        confidence="unknown",
+        warnings=warnings,
+    )
+
+
+def _usage_has_signal(usage: CostUsage) -> bool:
+    return (
+        usage.input_tokens is not None
+        or usage.output_tokens is not None
+        or usage.total_tokens is not None
+        or usage.cost_usd is not None
+    )
+
+
+def _cost_totals(usages: Sequence[CostUsage], *, turns: int) -> dict[str, object]:
+    return {
+        "turns": _cost_metric(turns, source="run_metadata", confidence="explicit"),
+        "input_tokens": _aggregate_int_metric(usages, "input_tokens"),
+        "output_tokens": _aggregate_int_metric(usages, "output_tokens"),
+        "total_tokens": _aggregate_int_metric(usages, "total_tokens"),
+        "cost_usd_estimate": _aggregate_float_metric(usages, "cost_usd"),
+        "confidence": _combined_confidence(usages),
+    }
+
+
+def _cost_by_agent(snapshots: Sequence[CostNodeSnapshot]) -> dict[str, object]:
+    by_agent: dict[str, object] = {}
+    for agent in COST_AGENTS:
+        agent_snapshots = [snapshot for snapshot in snapshots if snapshot.agent == agent]
+        usages = [snapshot.usage for snapshot in agent_snapshots]
+        item: dict[str, object] = {
+            "nodes": _cost_metric(len(agent_snapshots), source="registry", confidence="explicit"),
+            "turns": _cost_metric(
+                sum(snapshot.turns for snapshot in agent_snapshots),
+                source="run_metadata",
+                confidence="explicit",
+            ),
+            "input_tokens": _aggregate_int_metric(usages, "input_tokens"),
+            "output_tokens": _aggregate_int_metric(usages, "output_tokens"),
+            "total_tokens": _aggregate_int_metric(usages, "total_tokens"),
+            "cost_usd_estimate": _aggregate_float_metric(usages, "cost_usd"),
+            "confidence": _combined_confidence(usages),
+        }
+        if agent == "agy":
+            item["credit_remaining"] = _cost_metric(
+                None,
+                source="none",
+                confidence="unknown",
+                status_value="unknown",
+            )
+            item["credit_status"] = "unknown"
+            item["warnings"] = [
+                "agy credit is unknown because no reliable local credit source is configured"
+            ]
+        by_agent[agent] = item
+    return by_agent
+
+
+def _aggregate_int_metric(usages: Sequence[CostUsage], field: str) -> dict[str, object]:
+    values = [_usage_int_field(usage, field) for usage in usages]
+    present = [value for value in values if value is not None]
+    if not present:
+        return _cost_metric(None, source="none", confidence="unknown", status_value="unknown")
+    confidence = "explicit" if len(present) == len(values) else "partial"
+    return _cost_metric(
+        sum(present),
+        source=_aggregate_source(usages, field),
+        confidence=confidence,
+    )
+
+
+def _aggregate_float_metric(usages: Sequence[CostUsage], field: str) -> dict[str, object]:
+    values = [_usage_float_field(usage, field) for usage in usages]
+    present = [value for value in values if value is not None]
+    if not present:
+        return _cost_metric(None, source="estimate", confidence="unknown", status_value="unknown")
+    confidence = "explicit" if len(present) == len(values) else "partial"
+    return _cost_metric(
+        round(sum(present), 6),
+        source=_aggregate_source(usages, field),
+        confidence=confidence,
+    )
+
+
+def _usage_int_field(usage: CostUsage, field: str) -> int | None:
+    if field == "input_tokens":
+        return usage.input_tokens
+    if field == "output_tokens":
+        return usage.output_tokens
+    if field == "total_tokens":
+        return usage.total_tokens
+    raise ValueError(f"unknown usage int field: {field}")
+
+
+def _usage_float_field(usage: CostUsage, field: str) -> float | None:
+    if field == "cost_usd":
+        return usage.cost_usd
+    raise ValueError(f"unknown usage float field: {field}")
+
+
+def _aggregate_source(usages: Sequence[CostUsage], field: str) -> str:
+    sources: set[str] = set()
+    for usage in usages:
+        present = (
+            _usage_float_field(usage, field) is not None
+            if field == "cost_usd"
+            else _usage_int_field(usage, field) is not None
+        )
+        if present:
+            sources.add(usage.source)
+    if len(sources) == 1:
+        return next(iter(sources))
+    if len(sources) > 1:
+        return "mixed"
+    return "none"
+
+
+def _combined_confidence(usages: Sequence[CostUsage]) -> str:
+    if not usages or not any(_usage_has_signal(usage) for usage in usages):
+        return "unknown"
+    if all(usage.confidence == "explicit" and _usage_has_signal(usage) for usage in usages):
+        return "explicit"
+    return "partial"
+
+
+def _cost_metric(
+    value: int | float | None,
+    *,
+    source: str,
+    confidence: str,
+    status_value: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "value": value,
+        "source": source,
+        "confidence": confidence,
+    }
+    if status_value is not None:
+        payload["status"] = status_value
+    return payload
+
+
+def _cost_run_matches(
+    run: Run,
+    *,
+    node_filter: str | None,
+    agent_filter: str | None,
+) -> bool:
+    if node_filter is not None and _run_node_name(run) != node_filter:
+        return False
+    return agent_filter is None
+
+
+def _cost_run_payload(run: Run) -> dict[str, object]:
+    return {
+        "id": run.id,
+        "task_id": run.task_id,
+        "node": _run_node_name(run),
+        "status": run.status,
+        "started": _cost_metric(run.started_at, source="run_metadata", confidence="explicit"),
+        "ended": _cost_metric(run.ended_at, source="run_metadata", confidence="explicit")
+        if run.ended_at is not None
+        else _cost_metric(
+            None,
+            source="run_metadata",
+            confidence="unknown",
+            status_value="unknown",
+        ),
+    }
+
+
+def _cost_limitations(usages: Sequence[CostUsage]) -> list[str]:
+    limitations = [
+        "cost_usd_estimate is unknown unless a run or transcript records an explicit cost",
+        "no hard-coded model prices are applied",
+        "agy credit is unknown without a reliable local credit source",
+        "transcript parsing is best-effort and ignores unreadable or oversized files",
+    ]
+    if not any(_usage_has_signal(usage) for usage in usages):
+        limitations.append(
+            "no token usage signals were found in registry transcripts or run metadata"
+        )
+    return limitations
 
 
 def _log_web_request(
@@ -1018,6 +1732,12 @@ def _require_audit_access(auth: AuthContext) -> None:
     if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
         if auth.member.role == "viewer":
             raise HTTPException(status_code=403, detail="audit requires operator role")
+
+
+def _require_cost_access(auth: AuthContext) -> None:
+    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
+        if auth.member.role == "viewer":
+            raise HTTPException(status_code=403, detail="cost requires operator role")
 
 
 def _actor_payload(auth: AuthContext) -> dict[str, object]:

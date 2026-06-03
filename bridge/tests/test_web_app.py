@@ -565,6 +565,330 @@ def test_audit_endpoint_rejects_team_viewer_role(tmp_path: Path) -> None:
     assert response.status_code == 403
 
 
+def test_cost_endpoint_reports_best_effort_agent_usage_and_agy_unknown(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="dev10", title="Run usage", body=None, assignee="maker")
+    claim = store.claim_next(board="dev10", assignee="maker", node_id="maker", ttl_seconds=30)
+    assert claim is not None
+    assert store.complete(
+        board="dev10",
+        task_id=task.id,
+        run_id=claim.run_id,
+        claim_lock=claim.claim_lock,
+        result="done",
+        summary="done",
+        metadata={
+            "node": "maker",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+        },
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "maker": {
+                "name": "maker",
+                "agent": "codex",
+                "tmux_pane": "dev10:1.0",
+            },
+            "agy-node": {
+                "name": "agy-node",
+                "agent": "antigravity",
+                "tmux_pane": "dev10:1.1",
+            },
+        },
+    )
+    client = make_client(tmp_path, store)
+
+    missing = client.get("/api/cost")
+    response = client.get("/api/cost", headers=auth_headers(client))
+
+    assert missing.status_code == 401
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["project"] == "dev10"
+    maker = {node["node"]: node for node in payload["nodes"]}["maker"]
+    assert maker["input_tokens"] == {
+        "value": 100,
+        "source": "run_metadata",
+        "confidence": "explicit",
+    }
+    assert maker["total_tokens"] == {
+        "value": 150,
+        "source": "run_metadata",
+        "confidence": "explicit",
+    }
+    assert payload["by_agent"]["codex"]["total_tokens"]["value"] == 150
+    assert payload["by_agent"]["codex"]["total_tokens"]["source"] == "run_metadata"
+    agy = payload["by_agent"]["agy"]
+    assert agy["nodes"]["value"] == 1
+    assert agy["credit_remaining"] == {
+        "value": None,
+        "source": "none",
+        "confidence": "unknown",
+        "status": "unknown",
+    }
+    assert agy["credit_status"] == "unknown"
+    assert "credit is unknown" in agy["warnings"][0]
+
+
+def test_cost_endpoint_parses_transcript_usage_without_exposing_paths(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "private" / "codex-transcript.jsonl"
+    transcript.parent.mkdir()
+    transcript.write_text(
+        json.dumps({"usage": {"input_tokens": 7, "output_tokens": 3}}) + "\n",
+        encoding="utf-8",
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "maker": {
+                "name": "maker",
+                "agent": "codex",
+                "tmux_pane": "dev10:1.0",
+                "transcript_path": str(transcript),
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/cost", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    payload = response.json()
+    maker = payload["nodes"][0]
+    assert maker["input_tokens"] == {
+        "value": 7,
+        "source": "transcript",
+        "confidence": "explicit",
+    }
+    assert maker["total_tokens"] == {
+        "value": 10,
+        "source": "transcript",
+        "confidence": "explicit",
+    }
+    rendered = json.dumps(payload)
+    assert str(transcript) not in rendered
+    assert "/private/" not in rendered
+
+
+def test_cost_endpoint_handles_missing_usage_signals_gracefully(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "claude-node": {
+                "name": "claude-node",
+                "agent": "claude",
+                "tmux_pane": "dev10:1.0",
+            },
+            "agy-node": {
+                "name": "agy-node",
+                "agent": "agy",
+                "tmux_pane": "dev10:1.1",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/cost", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["totals"]["total_tokens"] == {
+        "value": None,
+        "source": "none",
+        "confidence": "unknown",
+        "status": "unknown",
+    }
+    assert payload["by_agent"]["claude"]["total_tokens"]["status"] == "unknown"
+    assert payload["by_agent"]["agy"]["credit_status"] == "unknown"
+    assert "no token usage signals" in payload["limitations"][-1]
+
+
+def test_cost_endpoint_rejects_team_viewer_role(tmp_path: Path) -> None:
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        auth_mode=AuthMode.TEAM_COOKIE,
+    )
+    login = client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+
+    response = client.get("/api/cost")
+
+    assert login.status_code == 200
+    assert response.status_code == 403
+
+
+def test_cost_endpoint_scopes_project_query_and_header(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    dev10_task = store.create_task(
+        board="dev10",
+        title="dev10 cost",
+        body=None,
+        assignee="maker10",
+    )
+    dev10_claim = store.claim_next(
+        board="dev10",
+        assignee="maker10",
+        node_id="maker10",
+        ttl_seconds=30,
+    )
+    assert dev10_claim is not None
+    assert store.complete(
+        board="dev10",
+        task_id=dev10_task.id,
+        run_id=dev10_claim.run_id,
+        claim_lock=dev10_claim.claim_lock,
+        result="done",
+        summary="done",
+        metadata={"node": "maker10", "total_tokens": 4321},
+    )
+    dev11_task = store.create_task(
+        board="dev11",
+        title="dev11 cost",
+        body=None,
+        assignee="maker11",
+    )
+    dev11_claim = store.claim_next(
+        board="dev11",
+        assignee="maker11",
+        node_id="maker11",
+        ttl_seconds=30,
+    )
+    assert dev11_claim is not None
+    assert store.complete(
+        board="dev11",
+        task_id=dev11_task.id,
+        run_id=dev11_claim.run_id,
+        claim_lock=dev11_claim.claim_lock,
+        result="done",
+        summary="done",
+        metadata={"node": "maker11", "total_tokens": 25},
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"maker10": {"name": "maker10", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"maker11": {"name": "maker11", "agent": "claude", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    by_query = client.get("/api/cost?project=dev11", headers=headers)
+    header_wins = client.get(
+        "/api/cost?project=dev10",
+        headers=headers | {"X-Grove-Project": "dev11"},
+    )
+    invalid = client.get("/api/cost?project=../dev11", headers=headers)
+    missing = client.get("/api/cost?project=missing", headers=headers)
+
+    assert by_query.status_code == 200
+    assert by_query.json()["project"] == "dev11"
+    assert by_query.json()["totals"]["total_tokens"]["value"] == 25
+    assert "maker10" not in json.dumps(by_query.json())
+    assert "4321" not in json.dumps(by_query.json())
+    assert header_wins.status_code == 200
+    assert header_wins.json()["project"] == "dev11"
+    assert invalid.status_code == 400
+    assert missing.status_code == 404
+
+
+def test_cost_endpoint_wraps_and_redacts_last_seen(tmp_path: Path) -> None:
+    secret = "xoxb-" + ("a" * 44)
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "safe": {
+                "name": "safe",
+                "agent": "codex",
+                "tmux_pane": "dev10:1.0",
+                "last_seen": "1700000000",
+            },
+            "unsafe": {
+                "name": "unsafe",
+                "agent": "claude",
+                "tmux_pane": "dev10:1.1",
+                "last_seen": f"/Users/chopin/.grove/token/{secret}",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/cost", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    by_node = {node["node"]: node for node in response.json()["nodes"]}
+    assert by_node["safe"]["last_seen"] == {
+        "value": 1700000000,
+        "source": "registry",
+        "confidence": "explicit",
+    }
+    assert by_node["unsafe"]["last_seen"] == {
+        "value": None,
+        "source": "registry",
+        "confidence": "unknown",
+        "status": "unknown",
+    }
+    rendered = json.dumps(response.json())
+    assert "/Users/chopin" not in rendered
+    assert secret not in rendered
+
+
+def test_cost_endpoint_handles_transcript_parser_failure_gracefully(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text('{"usage":{"total_tokens":10}}\n', encoding="utf-8")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "maker": {
+                "name": "maker",
+                "agent": "codex",
+                "tmux_pane": "dev10:1.0",
+                "transcript_path": str(transcript),
+            },
+        },
+    )
+
+    def fail_parse(_text: str) -> list[dict[str, object]]:
+        raise RuntimeError("parse failed at /etc/passwd with xoxb-" + ("a" * 44))
+
+    monkeypatch.setattr(web_app, "_transcript_json_mappings", fail_parse)
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/cost", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    node = response.json()["nodes"][0]
+    assert node["total_tokens"] == {
+        "value": None,
+        "source": "none",
+        "confidence": "unknown",
+        "status": "unknown",
+    }
+    assert node["warnings"] == ["transcript parsing failed"]
+    rendered = json.dumps(response.json())
+    assert "/etc/passwd" not in rendered
+    assert "xoxb-" not in rendered
+
+
 def test_state_change_rejects_disallowed_origin(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     client = make_client(tmp_path, store)
