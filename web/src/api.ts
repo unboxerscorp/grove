@@ -33,10 +33,14 @@ export interface AuthTool {
   login_hint?: string;
 }
 
+// Mirrors web_app.py _node_liveness_summary: the backend already classifies
+// every node, so `idle` and `error` are authoritative — never derive them.
 export interface NodeSummary {
-  running: number;
   total: number;
+  running: number;
   stale: number;
+  idle: number;
+  error: number;
 }
 
 // Mirrors web_app.py _node_status_details: source is always "registry"; the

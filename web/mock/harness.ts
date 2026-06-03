@@ -234,11 +234,15 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (p === "/api/status") {
     diag.statusFetches = ((diag.statusFetches as number) ?? 0) + 1;
     const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    // Mirrors web_app.py _node_liveness_summary: each node classified once into
+    // running/stale/error, everything else idle. error is NOT folded into stale.
     const running = ORG_NODES.filter((n) => n.status === "running").length;
-    const stale = ORG_NODES.filter((n) => n.status === "error").length;
+    const stale = ORG_NODES.filter((n) => n.status === "stale").length;
+    const error = ORG_NODES.filter((n) => n.status === "error").length;
+    const idle = ORG_NODES.length - running - stale - error;
     const body: Record<string, unknown> = {
       project: proj,
-      nodes: { running, total: ORG_NODES.length, stale },
+      nodes: { total: ORG_NODES.length, running, stale, idle, error },
     };
     if (u.searchParams.get("detail")) {
       // Mirrors web_app.py _node_status_details: field is `node_details`; source

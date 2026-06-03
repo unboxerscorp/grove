@@ -22,11 +22,12 @@ function detailClass(s: string): string {
 
 /**
  * Sub-header node-liveness heatmap for the active project. Reads the server's
- * authoritative summary from GET /api/status ({nodes:{running,total,stale}}),
- * derives idle = total - running - stale, and renders a proportion bar + chips.
- * The "Detail" toggle fetches GET /api/status?detail=1 for a per-node breakdown
- * (status, last-seen, and an "inferred" badge when source !== heartbeat).
- * Polls and re-runs on liveTick (board events) and projectTick (project switch).
+ * authoritative summary from GET /api/status ({total,running,stale,idle,error})
+ * and renders a proportion bar + chips. idle/error come straight from the
+ * backend (_node_liveness_summary) — NOT derived as total-running-stale, which
+ * miscounts error nodes as idle. The "Detail" toggle fetches ?detail=1 for a
+ * per-node breakdown (status, last-seen, inferred badge). Polls + re-runs on
+ * liveTick (board events) and projectTick (project switch).
  */
 export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; projectTick: number }) {
   const { t } = useI18n();
@@ -74,10 +75,13 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
     };
   }, [open, liveTick, projectTick]);
 
+  // Use the backend's authoritative counts directly (idle/error are classified
+  // server-side; deriving idle would fold error nodes into idle).
   const running = summary?.running ?? 0;
   const total = summary?.total ?? 0;
   const stale = summary?.stale ?? 0;
-  const idle = Math.max(0, total - running - stale);
+  const idle = summary?.idle ?? 0;
+  const error = summary?.error ?? 0;
 
   return (
     <div className="nodestat" role="status" aria-label={t("status.nodes")}>
@@ -86,6 +90,7 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
         <span className="nodestat__seg is-running" style={{ flexGrow: running }} />
         <span className="nodestat__seg is-idle" style={{ flexGrow: idle }} />
         <span className="nodestat__seg is-stale" style={{ flexGrow: stale }} />
+        <span className="nodestat__seg is-error" style={{ flexGrow: error }} />
       </div>
       <span className="nodestat__chip is-running">
         <span className="nodestat__led" />
@@ -98,6 +103,10 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
       <span className="nodestat__chip is-stale">
         <span className="nodestat__led" />
         {stale} {t("status.stale")}
+      </span>
+      <span className="nodestat__chip is-error">
+        <span className="nodestat__led" />
+        {error} {t("status.error")}
       </span>
       <span className="nodestat__total">
         {total} {t("status.total")}

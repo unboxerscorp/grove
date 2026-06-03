@@ -309,6 +309,9 @@ button {
   background: var(--slate);
 }
 .nodestat__seg.is-stale {
+  background: var(--amber);
+}
+.nodestat__seg.is-error {
   background: var(--coral);
 }
 
@@ -337,9 +340,15 @@ button {
   background: var(--slate);
 }
 .nodestat__chip.is-stale {
-  color: var(--coral);
+  color: var(--amber);
 }
 .nodestat__chip.is-stale .nodestat__led {
+  background: var(--amber);
+}
+.nodestat__chip.is-error {
+  color: var(--coral);
+}
+.nodestat__chip.is-error .nodestat__led {
   background: var(--coral);
 }
 

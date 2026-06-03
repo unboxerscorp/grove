@@ -57,7 +57,9 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
 
     // V2-W4 node status heatmap (from GET /api/status) + server health dot
-    // (GET /api/health). Mock summary: running=2, stale=1, total=5 (idle=2).
+    // (GET /api/health). Mock summary mirrors _node_liveness_summary:
+    // running=2, idle=2, stale=0, error=1, total=5 — error is its OWN bucket,
+    // NOT folded into stale, and idle is the backend's count (not derived).
     await page.waitForFunction(
       () => /\d/.test(document.querySelector(".nodestat__chip.is-running")?.textContent ?? ""),
       { timeout: 8000 },
@@ -66,14 +68,23 @@ async function main() {
     const statusBar = await page.evaluate(() => ({
       present: !!document.querySelector(".nodestat"),
       segs: document.querySelectorAll(".nodestat__seg").length,
+      errSeg: !!document.querySelector(".nodestat__seg.is-error"),
       running: (document.querySelector(".nodestat__chip.is-running")?.textContent ?? "").trim(),
+      idle: (document.querySelector(".nodestat__chip.is-idle")?.textContent ?? "").trim(),
+      stale: (document.querySelector(".nodestat__chip.is-stale")?.textContent ?? "").trim(),
+      error: (document.querySelector(".nodestat__chip.is-error")?.textContent ?? "").trim(),
       total: (document.querySelector(".nodestat__total")?.textContent ?? "").trim(),
       healthOk: !!document.querySelector(".health-dot.is-ok"),
     }));
+    const num = (s) => parseInt((s || "").trim(), 10);
     const statusBarOk =
       statusBar.present &&
-      statusBar.segs === 3 &&
-      /2/.test(statusBar.running) &&
+      statusBar.segs === 4 && // running/idle/stale/error
+      statusBar.errSeg && // dedicated error segment in the bar
+      num(statusBar.running) === 2 &&
+      num(statusBar.idle) === 2 && // backend idle, not folded from error
+      num(statusBar.error) === 1 && // error is its own bucket
+      num(statusBar.stale) === 0 &&
       /5/.test(statusBar.total) &&
       statusBar.healthOk;
 
