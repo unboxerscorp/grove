@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol, cast
 
 from grove_bridge.config import LaneConfig
+from grove_bridge.prepared_dispatch import ABORT_EXIT_CODE, ABORT_SENTINEL
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,7 @@ class GroveRunnerProtocol(Protocol):
         env: Mapping[str, str],
         lane: LaneConfig,
         heartbeat: Callable[[], bool],
+        dispatch_gate: Callable[[], bool] | None = None,
     ) -> GroveRunResult: ...
 
 
@@ -60,22 +63,38 @@ class SubprocessGroveRunner:
         env: Mapping[str, str],
         lane: LaneConfig,
         heartbeat: Callable[[], bool],
+        dispatch_gate: Callable[[], bool] | None = None,
     ) -> GroveRunResult:
+        cmd = self._prepared_dispatch_command(node=node, lane=lane)
+
+        if dispatch_gate is not None and not dispatch_gate():
+            return _lost_dispatch_result(node=node, stderr="dispatch gate blocked before start")
         merged_env = os.environ.copy()
         merged_env.update(env)
-        cmd = [self.grove_binary, "ask", node, prompt]
-        if lane.grove_config is not None:
-            cmd.extend(["--config", lane.grove_config])
-        cmd.extend(["--timeout", lane.timeout])
-
+        if dispatch_gate is not None:
+            merged_env["GROVE_PREPARED_DISPATCH_GUARDED"] = "1"
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             env=merged_env,
         )
+        self._release_prepared_dispatch(proc, prompt)
         stdout, stderr, lease_lost = self._communicate_with_heartbeat(proc, heartbeat)
+        if _prepared_dispatch_aborted(proc.returncode, stderr):
+            return GroveRunResult(
+                node=node,
+                returncode=proc.returncode if proc.returncode is not None else ABORT_EXIT_CODE,
+                stdout=stdout,
+                stderr=stderr,
+                session_id=None,
+                transcript_path=None,
+                turn_id=None,
+                tmux_pane=None,
+                lease_lost=True,
+            )
         if lease_lost:
             return GroveRunResult(
                 node=node,
@@ -161,6 +180,45 @@ class SubprocessGroveRunner:
             session_id if isinstance(session_id, str) else None,
             transcript if isinstance(transcript, str) else None,
         )
+
+    def _prepared_dispatch_command(self, *, node: str, lane: LaneConfig) -> list[str]:
+        return [
+            sys.executable,
+            "-m",
+            "grove_bridge.prepared_dispatch",
+            "--grove-binary",
+            self.grove_binary,
+            "--node",
+            node,
+            "--timeout",
+            lane.timeout,
+            *(["--config", lane.grove_config] if lane.grove_config is not None else []),
+        ]
+
+    def _release_prepared_dispatch(self, proc: subprocess.Popen[str], prompt: str) -> None:
+        if proc.stdin is None:
+            raise RuntimeError("prepared grove dispatch missing stdin pipe")
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+        proc.stdin = None
+
+
+def _lost_dispatch_result(*, node: str, stderr: str) -> GroveRunResult:
+    return GroveRunResult(
+        node=node,
+        returncode=1,
+        stdout="",
+        stderr=stderr,
+        session_id=None,
+        transcript_path=None,
+        turn_id=None,
+        tmux_pane=None,
+        lease_lost=True,
+    )
+
+
+def _prepared_dispatch_aborted(returncode: int | None, stderr: str) -> bool:
+    return returncode == ABORT_EXIT_CODE and ABORT_SENTINEL in stderr
 
 
 def grove_metadata(result: GroveRunResult) -> dict[str, object]:

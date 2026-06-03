@@ -244,6 +244,21 @@ class AutoPickupTogglePayload(BaseModel):
     enabled: bool
 
 
+class ExecutionTogglePayload(BaseModel):
+    enabled: bool
+
+
+class ExecutionAbortPayload(BaseModel):
+    reason: str = Field(default="aborted by operator", max_length=2000)
+
+
+class ExecutionGatePayload(BaseModel):
+    enabled: bool | None = None
+    kill_switch: bool | None = None
+    board_enabled: bool | None = None
+    board_kill_switch: bool | None = None
+
+
 class ProjectCreatePayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     template: str | None = Field(default=None, max_length=200)
@@ -774,6 +789,129 @@ def create_app(
             node=node_name,
             state=state,
         )
+
+    @app.get("/api/execution")
+    def execution_gate_endpoint(request: Request) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        return _execution_gate_payload(_store(request), project=project)
+
+    @app.post("/api/execution")
+    def set_execution_gate_endpoint(
+        request: Request,
+        payload: ExecutionGatePayload,
+    ) -> dict[str, object]:
+        auth = _require_state_change(request)
+        _require_execution_access(auth)
+        project = resolve_project(request)
+        state = _store(request).set_execution_global(
+            board=project.board,
+            enabled=payload.enabled,
+            kill_switch=payload.kill_switch,
+            board_enabled=payload.board_enabled,
+            board_kill_switch=payload.board_kill_switch,
+        )
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.execution.config",
+            actor=_actor_payload(auth),
+            action="execution-config",
+            target={"type": "board", "id": project.board},
+            payload={"project": project.name, **state},
+            summary="execution gate updated",
+        )
+        return _execution_gate_payload(_store(request), project=project, state=state)
+
+    @app.get("/api/nodes/{node}/execution")
+    def get_node_execution_endpoint(request: Request, node: str) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        node_name = _node_in_project(node, config=project.config)
+        return _node_execution_payload(_store(request), project=project, node=node_name)
+
+    @app.post("/api/nodes/{node}/execution")
+    def set_node_execution_endpoint(
+        request: Request,
+        node: str,
+        payload: ExecutionTogglePayload,
+    ) -> dict[str, object]:
+        auth = _require_state_change(request)
+        _require_execution_access(auth)
+        project = resolve_project(request)
+        node_name = _node_in_project(node, config=project.config)
+        state = _store(request).set_node_execution_enabled(
+            board=project.board,
+            node=node_name,
+            enabled=payload.enabled,
+        )
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.node.execution",
+            actor=_actor_payload(auth),
+            action="execution-toggle",
+            target={"type": "node", "id": node_name, "node": node_name},
+            payload={"project": project.name, "enabled": payload.enabled},
+            summary=f"{node_name} execution {'enabled' if payload.enabled else 'disabled'}",
+        )
+        return _node_execution_payload(
+            _store(request),
+            project=project,
+            node=node_name,
+            state=state,
+        )
+
+    @app.get("/api/tasks/{task_id}/execution")
+    def task_execution_endpoint(request: Request, task_id: str) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        task = _task_for_project(_store(request), task_id, project=project)
+        return _task_execution_payload(_store(request), project=project, task=task)
+
+    @app.post("/api/tasks/{task_id}/approve")
+    def approve_task_execution_endpoint(
+        request: Request,
+        task_id: str,
+    ) -> dict[str, object]:
+        auth = _require_state_change(request)
+        _require_execution_access(auth)
+        project = resolve_project(request)
+        task = _task_for_project(_store(request), task_id, project=project)
+        node = _execution_node_for_task(_store(request), project=project, task=task)
+        gate = _store(request).execution_gate_state(
+            board=project.board,
+            node=node,
+            task_id=task.id,
+        )
+        if not bool(gate["allowed"]):
+            raise HTTPException(status_code=409, detail="execution gate is blocked")
+        if not _store(request).approve_execution(
+            board=project.board,
+            task_id=task.id,
+            actor=_actor_payload(auth),
+        ):
+            raise HTTPException(status_code=409, detail="task is not awaiting approval")
+        task = _store(request).get_task(board=project.board, task_id=task_id)
+        return _task_execution_payload(_store(request), project=project, task=task)
+
+    @app.post("/api/tasks/{task_id}/abort")
+    def abort_task_execution_endpoint(
+        request: Request,
+        task_id: str,
+        payload: ExecutionAbortPayload,
+    ) -> dict[str, object]:
+        auth = _require_state_change(request)
+        _require_execution_access(auth)
+        project = resolve_project(request)
+        task = _task_for_project(_store(request), task_id, project=project)
+        if not _store(request).abort_execution(
+            board=project.board,
+            task_id=task.id,
+            actor=_actor_payload(auth),
+            reason=payload.reason,
+        ):
+            raise HTTPException(status_code=409, detail="task execution is already terminal")
+        task = _store(request).get_task(board=project.board, task_id=task_id)
+        return _task_execution_payload(_store(request), project=project, task=task)
 
     @app.get("/api/org")
     def org_endpoint(request: Request) -> dict[str, object]:
@@ -2487,6 +2625,12 @@ def _require_retro_access(auth: AuthContext) -> None:
             raise HTTPException(status_code=403, detail="retro requires operator role")
 
 
+def _require_execution_access(auth: AuthContext) -> None:
+    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
+        if auth.member.role == "viewer":
+            raise HTTPException(status_code=403, detail="execution requires operator role")
+
+
 def _require_node_mutation_access(auth: AuthContext) -> None:
     if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
         if auth.member.role == "viewer":
@@ -3159,6 +3303,85 @@ def _node_autopickup_payload(
         "global_enabled": bool(raw.get("global_enabled")),
         "global_kill_switch": bool(raw.get("global_kill_switch")),
     }
+
+
+def _node_execution_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    node: str,
+    state: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    raw = (
+        dict(state)
+        if state is not None
+        else store.node_execution_state(
+            board=project.board,
+            node=node,
+        )
+    )
+    return {
+        "project": project.name,
+        "node": _safe_log_text(node),
+        "enabled": bool(raw.get("enabled")),
+        "configured": bool(raw.get("configured")),
+        "kill_switch": bool(raw.get("kill_switch")),
+        "global_enabled": bool(raw.get("global_enabled")),
+        "global_kill_switch": bool(raw.get("global_kill_switch")),
+        "board_enabled": bool(raw.get("board_enabled")),
+        "board_kill_switch": bool(raw.get("board_kill_switch")),
+    }
+
+
+def _execution_gate_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    state: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    raw = dict(state) if state is not None else store.execution_global_state(board=project.board)
+    return {
+        "project": project.name,
+        "enabled": bool(raw.get("enabled")),
+        "kill_switch": bool(raw.get("kill_switch")),
+        "board_enabled": bool(raw.get("board_enabled")),
+        "board_kill_switch": bool(raw.get("board_kill_switch")),
+    }
+
+
+def _task_execution_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    task: Task,
+) -> dict[str, object]:
+    execution = store.task_execution_state(board=project.board, task_id=task.id)
+    node = _execution_node_for_task(store, project=project, task=task)
+    gate = store.execution_gate_state(board=project.board, node=node, task_id=task.id)
+    return {
+        "project": project.name,
+        "task_id": task.id,
+        "node": _safe_log_text(node),
+        "state": _safe_log_text(execution.get("state", "none")),
+        "approved": bool(execution.get("approved")),
+        "gate": gate,
+        "execution": execution,
+    }
+
+
+def _execution_node_for_task(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    task: Task,
+) -> str:
+    execution = store.task_execution_state(board=project.board, task_id=task.id)
+    raw_node = execution.get("node")
+    if isinstance(raw_node, str) and raw_node.strip():
+        return _validated_node_ref(raw_node, field_name="node")
+    if task.assignee is not None and task.assignee.strip():
+        return _validated_node_ref(task.assignee, field_name="node")
+    raise HTTPException(status_code=409, detail="task has no execution node")
 
 
 def _update_node_relationships(

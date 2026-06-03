@@ -2110,6 +2110,144 @@ def test_node_autopickup_toggle_rejects_team_viewer(tmp_path: Path) -> None:
     assert response.status_code == 403
 
 
+def test_execution_toggle_approval_status_and_abort_endpoints(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    task = store.create_task(board="dev10", title="Guarded", body=None, assignee="worker")
+    claimed = store.claim_next(
+        board="dev10",
+        assignee="worker",
+        node_id="worker",
+        ttl_seconds=300,
+        task_id=task.id,
+    )
+    assert claimed is not None
+    store.begin_guarded_execution(
+        board="dev10",
+        task_id=task.id,
+        run_id=claimed.run_id,
+        node="worker",
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    initial_gate = client.get("/api/execution", headers=headers)
+    initial_node = client.get("/api/nodes/worker/execution", headers=headers)
+    initial_task = client.get(f"/api/tasks/{task.id}/execution", headers=headers)
+    blocked_approve = client.post(f"/api/tasks/{task.id}/approve", headers=headers)
+    gate_enabled = client.post("/api/execution", headers=headers, json={"enabled": True})
+    enabled = client.post(
+        "/api/nodes/worker/execution",
+        headers=headers,
+        json={"enabled": True},
+    )
+    approved = client.post(f"/api/tasks/{task.id}/approve", headers=headers)
+    status_after = client.get(f"/api/tasks/{task.id}/execution", headers=headers)
+    aborted = client.post(
+        f"/api/tasks/{task.id}/abort",
+        headers=headers,
+        json={"reason": "operator stop"},
+    )
+    audits = store.list_audit_events(board="dev10", task_id=task.id, limit=20)
+    node_audits = store.list_audit_events(board="dev10", action="execution-toggle", node="worker")
+
+    assert initial_gate.status_code == 200
+    assert initial_gate.json()["enabled"] is False
+    assert initial_node.status_code == 200
+    assert initial_node.json()["enabled"] is False
+    assert initial_task.status_code == 200
+    assert initial_task.json()["state"] == "approval-pending"
+    assert blocked_approve.status_code == 409
+    assert gate_enabled.status_code == 200
+    assert gate_enabled.json()["enabled"] is True
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+    assert approved.status_code == 200
+    assert approved.json()["state"] == "approved"
+    assert status_after.json()["gate"]["allowed"] is True
+    assert aborted.status_code == 200
+    assert aborted.json()["state"] == "abort"
+    assert [event.payload["action"] for event in node_audits] == ["execution-toggle"]
+    assert "approve" in [event.payload["action"] for event in audits]
+    assert "abort" in [event.payload["action"] for event in audits]
+
+
+def test_execution_endpoints_reject_scope_viewer_and_invalid_node(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"other": {"name": "other", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+    )
+    task = store.create_task(board="dev10", title="Scoped", body=None, assignee="worker")
+    claimed = store.claim_next(
+        board="dev10",
+        assignee="worker",
+        node_id="worker",
+        ttl_seconds=300,
+        task_id=task.id,
+    )
+    assert claimed is not None
+    store.begin_guarded_execution(
+        board="dev10",
+        task_id=task.id,
+        run_id=claimed.run_id,
+        node="worker",
+    )
+    store.set_execution_global(board="dev10", enabled=True)
+    store.set_node_execution_enabled(board="dev10", node="worker", enabled=True)
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    wrong_project_node = client.post(
+        "/api/nodes/worker/execution",
+        headers=headers | {"X-Grove-Project": "dev11"},
+        json={"enabled": True},
+    )
+    wrong_project_task = client.post(
+        f"/api/tasks/{task.id}/approve",
+        headers=headers | {"X-Grove-Project": "dev11"},
+    )
+    invalid_node = client.post(
+        "/api/nodes/-bad/execution",
+        headers=headers,
+        json={"enabled": True},
+    )
+
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    viewer = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
+    login = viewer.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+    csrf = str(login.json()["csrf"])
+    viewer_toggle = viewer.post(
+        "/api/nodes/worker/execution",
+        headers={CSRF_HEADER: csrf},
+        json={"enabled": True},
+    )
+    viewer_gate = viewer.post(
+        "/api/execution",
+        headers={CSRF_HEADER: csrf},
+        json={"enabled": True},
+    )
+    viewer_approve = viewer.post(f"/api/tasks/{task.id}/approve", headers={CSRF_HEADER: csrf})
+
+    assert wrong_project_node.status_code == 404
+    assert wrong_project_task.status_code == 404
+    assert invalid_node.status_code == 400
+    assert login.status_code == 200
+    assert viewer_toggle.status_code == 403
+    assert viewer_gate.status_code == 403
+    assert viewer_approve.status_code == 403
+
+
 def test_create_node_invokes_spawn_with_literal_argv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

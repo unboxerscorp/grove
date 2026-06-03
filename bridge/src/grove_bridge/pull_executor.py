@@ -143,6 +143,79 @@ class BoardStoreProtocol(Protocol):
 
     def autopickup_global_state(self, *, board: str) -> Mapping[str, bool]: ...
 
+    def execution_gate_state(
+        self,
+        *,
+        board: str,
+        node: str,
+        task_id: str | None,
+    ) -> Mapping[str, object]: ...
+
+    def guarded_dispatch_gate_state(
+        self,
+        *,
+        board: str,
+        node: str,
+        task_id: str | None,
+    ) -> Mapping[str, object]: ...
+
+    def begin_guarded_execution(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+    ) -> Mapping[str, object]: ...
+
+    def abort_execution(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        actor: Mapping[str, object],
+        reason: str,
+    ) -> bool: ...
+
+    def hold_execution_for_gate(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        actor: Mapping[str, object],
+        reason: str,
+    ) -> bool: ...
+
+    def try_mark_execution_executing(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+    ) -> bool: ...
+
+    def issue_execution_dispatch_lease(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+        ttl_seconds: int = 30,
+    ) -> str | None: ...
+
+    def mark_execution_verify(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+        passed: bool,
+        summary: str | None = None,
+    ) -> bool: ...
+
 
 @dataclass
 class TickResult:
@@ -200,6 +273,11 @@ class PullExecutor:
             if remaining <= 0:
                 break
             result.stale_released += self.store.release_stale(board=board)
+            remaining = self._run_approved_guarded_executions(
+                board=board,
+                remaining=remaining,
+                tick=result,
+            )
             for lane in self.config.lanes.values():
                 if remaining <= 0:
                     break
@@ -225,12 +303,11 @@ class PullExecutor:
                         continue
                     result.claimed += 1
                     remaining -= 1
-                    self._execute_claimed(
+                    self.store.begin_guarded_execution(
                         board=board,
-                        lane=lane,
+                        task_id=claimed.task.id,
+                        run_id=claimed.run_id,
                         node=node,
-                        claimed=claimed,
-                        tick=result,
                     )
             remaining = self._run_autonomous_pickups(board=board, remaining=remaining, tick=result)
         return result
@@ -291,15 +368,111 @@ class PullExecutor:
                 tick.claimed += 1
                 tick.autopicked += 1
                 remaining -= 1
-                self._execute_claimed(
+                self.store.begin_guarded_execution(
                     board=board,
-                    lane=lane,
+                    task_id=claimed.task.id,
+                    run_id=claimed.run_id,
                     node=node,
-                    claimed=claimed,
-                    tick=tick,
                 )
                 break
         return remaining
+
+    def _run_approved_guarded_executions(
+        self,
+        *,
+        board: str,
+        remaining: int,
+        tick: TickResult,
+    ) -> int:
+        if remaining <= 0:
+            return remaining
+        for task in self.store.list_tasks(board=board, status="running"):
+            if remaining <= 0:
+                break
+            execution = _task_execution(task.metadata)
+            if execution.get("state") != "approved" or execution.get("approved") is not True:
+                continue
+            node = _execution_metadata_node(execution, fallback=task.assignee)
+            if node is None:
+                continue
+            lane = self.config.lanes.get(node)
+            if lane is None or task.current_run_id is None or task.claim_lock is None:
+                continue
+            if not self._dispatch_gate_clear(board=board, node=node, task=task):
+                continue
+            claimed = ClaimedTask(
+                task=task,
+                run_id=task.current_run_id,
+                claim_lock=task.claim_lock,
+            )
+            remaining -= 1
+            self._execute_claimed(
+                board=board,
+                lane=lane,
+                node=node,
+                claimed=claimed,
+                tick=tick,
+            )
+        return remaining
+
+    def _dispatch_gate_blockers(self, *, board: str, node: str, task: Task) -> list[str]:
+        gate = self.store.guarded_dispatch_gate_state(
+            board=board,
+            node=node,
+            task_id=task.id,
+        )
+        blocked_by = list(_config_autopickup_blockers(self.config, board=board, node=node))
+        raw_blocked = gate.get("blocked_by")
+        if isinstance(raw_blocked, Sequence) and not isinstance(raw_blocked, str):
+            blocked_by.extend(str(item) for item in raw_blocked)
+        return blocked_by
+
+    def _dispatch_gate_clear(self, *, board: str, node: str, task: Task) -> bool:
+        if not _guarded_task(task):
+            return True
+        blocked_by = self._dispatch_gate_blockers(board=board, node=node, task=task)
+        if not blocked_by:
+            return True
+        reason = "dispatch gate blocked: " + ",".join(blocked_by)
+        actor = {"kind": "node", "id": node, "login": node, "role": "none"}
+        if _blocked_by_kill_switch(blocked_by):
+            self.store.abort_execution(
+                board=board,
+                task_id=task.id,
+                actor=actor,
+                reason=reason,
+            )
+        else:
+            self.store.hold_execution_for_gate(
+                board=board,
+                task_id=task.id,
+                actor=actor,
+                reason=reason,
+            )
+        return False
+
+    def _dispatch_start_clear(
+        self,
+        *,
+        board: str,
+        node: str,
+        task: Task,
+        claimed: ClaimedTask,
+        env: dict[str, str],
+    ) -> bool:
+        if not self._dispatch_gate_clear(board=board, node=node, task=task):
+            return False
+        token = self.store.issue_execution_dispatch_lease(
+            board=board,
+            task_id=task.id,
+            run_id=claimed.run_id,
+            node=node,
+            ttl_seconds=max(1, min(30, self.config.claim_ttl_seconds)),
+        )
+        if token is None:
+            return False
+        env["GROVE_EXECUTION_DISPATCH_LEASE"] = token
+        return True
 
     def _autopickup_node_allowed(
         self,
@@ -352,16 +525,38 @@ class PullExecutor:
                 workspace=workspace,
             )
             prompt = build_task_prompt(task, board=board, workspace=workspace, env=env)
+            if not self._dispatch_gate_clear(board=board, node=node, task=task):
+                return
             run = self.grove_runner.run_task(
                 node=node,
                 prompt=prompt,
                 env=env,
                 lane=lane,
-                heartbeat=lambda: self._heartbeat(board=board, claimed=claimed),
+                heartbeat=lambda: self._heartbeat_guarded(
+                    board=board,
+                    node=node,
+                    claimed=claimed,
+                ),
+                dispatch_gate=lambda: self._dispatch_start_clear(
+                    board=board,
+                    node=node,
+                    task=task,
+                    claimed=claimed,
+                    env=env,
+                ),
             )
         except Exception as exc:
             tick.runner_errors += 1
             safe_error = redact_secret_text(str(exc))
+            if _guarded_task(task):
+                self.store.mark_execution_verify(
+                    board=board,
+                    task_id=task.id,
+                    run_id=claimed.run_id,
+                    node=node,
+                    passed=False,
+                    summary=safe_error,
+                )
             self._block_after_failure(
                 board=board,
                 claimed=claimed,
@@ -379,6 +574,15 @@ class PullExecutor:
         if run.returncode == 0:
             safe_stdout = redact_secret_text(run.stdout)
             summary = summarize_stdout(safe_stdout)
+            if _guarded_task(task):
+                self.store.mark_execution_verify(
+                    board=board,
+                    task_id=task.id,
+                    run_id=claimed.run_id,
+                    node=node,
+                    passed=True,
+                    summary=summary,
+                )
             completed = self.store.complete(
                 board=board,
                 task_id=task.id,
@@ -390,11 +594,31 @@ class PullExecutor:
             )
             if completed:
                 tick.completed += 1
+                if _guarded_task(task):
+                    self.store.add_audit_event(
+                        board=board,
+                        kind="audit.execution.complete",
+                        actor={"kind": "node", "id": node, "login": node, "role": "none"},
+                        action="complete",
+                        target={"type": "task", "id": task.id, "node": node},
+                        task_id=task.id,
+                        run_id=claimed.run_id,
+                        summary=summary,
+                    )
             else:
                 tick.terminal_conflicts += 1
             return
 
         failure_line = redact_secret_text(first_failure_line(run))
+        if _guarded_task(task):
+            self.store.mark_execution_verify(
+                board=board,
+                task_id=task.id,
+                run_id=claimed.run_id,
+                node=node,
+                passed=False,
+                summary=failure_line,
+            )
         self._block_after_failure(
             board=board,
             claimed=claimed,
@@ -452,6 +676,20 @@ class PullExecutor:
             claim_lock=claimed.claim_lock,
             ttl_seconds=self.config.claim_ttl_seconds,
         )
+
+    def _heartbeat_guarded(self, *, board: str, node: str, claimed: ClaimedTask) -> bool:
+        if _guarded_task(claimed.task):
+            blocked_by = self._dispatch_gate_blockers(board=board, node=node, task=claimed.task)
+            if blocked_by:
+                reason = "guarded heartbeat gate blocked: " + ",".join(blocked_by)
+                self.store.abort_execution(
+                    board=board,
+                    task_id=claimed.task.id,
+                    actor={"kind": "node", "id": node, "login": node, "role": "none"},
+                    reason=reason,
+                )
+                return False
+        return self._heartbeat(board=board, claimed=claimed)
 
     def _task_env(
         self,
@@ -517,6 +755,53 @@ def _autopickup_task_allowed(task: Task, rule: AutoPickupNodeConfig) -> bool:
     roles = _metadata_values(task.metadata, "role", "roles")
     capabilities = _metadata_values(task.metadata, "capability", "capabilities")
     return bool(set(rule.roles) & roles or set(rule.capabilities) & capabilities)
+
+
+def _task_execution(metadata: Mapping[str, object]) -> Mapping[str, object]:
+    raw = metadata.get("execution")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _guarded_task(task: Task) -> bool:
+    return bool(_task_execution(task.metadata))
+
+
+def _execution_metadata_node(
+    execution: Mapping[str, object],
+    *,
+    fallback: str | None,
+) -> str | None:
+    node = execution.get("node")
+    if isinstance(node, str) and node.strip():
+        return node.strip()
+    if fallback is not None and fallback.strip():
+        return fallback.strip()
+    return None
+
+
+def _config_autopickup_blockers(
+    config: BridgeConfig,
+    *,
+    board: str,
+    node: str,
+) -> tuple[str, ...]:
+    del board
+    pickup = config.autonomous_pickup
+    blocked: list[str] = []
+    if not pickup.enabled:
+        blocked.append("autopickup-config-disabled")
+    if pickup.kill_switch:
+        blocked.append("autopickup-config-kill-switch")
+    rule = pickup.nodes.get(node)
+    if rule is None:
+        blocked.append("autopickup-node-unconfigured")
+    elif rule.kill_switch:
+        blocked.append("autopickup-node-kill-switch")
+    return tuple(blocked)
+
+
+def _blocked_by_kill_switch(blocked_by: Sequence[str]) -> bool:
+    return any("kill-switch" in item for item in blocked_by)
 
 
 def _truthy_metadata(metadata: Mapping[str, object], key: str) -> bool:

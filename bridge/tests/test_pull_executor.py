@@ -34,8 +34,21 @@ class FakeRunner:
         env: Mapping[str, str],
         lane: LaneConfig,
         heartbeat: Callable[[], bool],
+        dispatch_gate: Callable[[], bool] | None = None,
     ) -> GroveRunResult:
         self.calls.append((node, prompt, env, lane))
+        if dispatch_gate is not None and not dispatch_gate():
+            return GroveRunResult(
+                node=node,
+                returncode=1,
+                stdout="",
+                stderr="dispatch blocked",
+                session_id=None,
+                transcript_path=None,
+                turn_id=None,
+                tmux_pane=None,
+                lease_lost=True,
+            )
         heartbeat()
         return self.result
 
@@ -52,9 +65,13 @@ class LeaseLossRunner:
         env: Mapping[str, str],
         lane: LaneConfig,
         heartbeat: Callable[[], bool],
+        dispatch_gate: Callable[[], bool] | None = None,
     ) -> GroveRunResult:
         self.calls.append(node)
-        lease_lost = not heartbeat()
+        if dispatch_gate is not None and not dispatch_gate():
+            lease_lost = True
+        else:
+            lease_lost = not heartbeat()
         return GroveRunResult(
             node=node,
             returncode=0,
@@ -247,12 +264,108 @@ class ClaimConflictStore:
     def autopickup_global_state(self, *, board: str) -> Mapping[str, bool]:
         return {"enabled": True, "kill_switch": False}
 
+    def execution_gate_state(
+        self,
+        *,
+        board: str,
+        node: str,
+        task_id: str | None,
+    ) -> Mapping[str, object]:
+        return {"allowed": True, "blocked_by": []}
+
+    def guarded_dispatch_gate_state(
+        self,
+        *,
+        board: str,
+        node: str,
+        task_id: str | None,
+    ) -> Mapping[str, object]:
+        return {"allowed": True, "blocked_by": []}
+
+    def begin_guarded_execution(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+    ) -> Mapping[str, object]:
+        return {"state": "approval-pending", "node": node, "run_id": run_id}
+
+    def abort_execution(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        actor: Mapping[str, object],
+        reason: str,
+    ) -> bool:
+        return True
+
+    def hold_execution_for_gate(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        actor: Mapping[str, object],
+        reason: str,
+    ) -> bool:
+        return True
+
+    def try_mark_execution_executing(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+    ) -> bool:
+        return True
+
+    def issue_execution_dispatch_lease(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+        ttl_seconds: int = 30,
+    ) -> str | None:
+        return f"{run_id}:stub"
+
+    def mark_execution_verify(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+        passed: bool,
+        summary: str | None = None,
+    ) -> bool:
+        return True
+
+
+class FakeProcessStdin:
+    def __init__(self) -> None:
+        self.value = ""
+        self.closed = False
+
+    def write(self, value: str) -> int:
+        self.value += value
+        return len(value)
+
+    def close(self) -> None:
+        self.closed = True
+
 
 class FakeProcess:
     def __init__(self) -> None:
         self.returncode: int | None = None
         self.terminated = False
         self.communicate_calls = 0
+        self.prepared_stdin = FakeProcessStdin()
+        self.stdin: FakeProcessStdin | None = self.prepared_stdin
 
     def communicate(self, timeout: float | None = None) -> tuple[str, str]:
         self.communicate_calls += 1
@@ -394,11 +507,27 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
         heartbeat_interval_seconds=60,
         poll_interval_seconds=5,
         max_tasks_per_tick=1,
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=True)},
+        ),
     )
 
-    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+    executor = PullExecutor(config=config, store=store, grove_runner=runner)
+    claimed_result = executor.run_once()
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="main", node="codex-a", enabled=True)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="codex-a", enabled=True)
+    assert store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    result = executor.run_once()
 
-    assert result.claimed == 1
+    assert claimed_result.claimed == 1
+    assert claimed_result.completed == 0
     assert result.completed == 1
     assert runner.calls[0][0] == "codex-a"
     prompt = runner.calls[0][1]
@@ -420,6 +549,55 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
     assert completed.metadata["transcript_path"] == "/tmp/transcript.jsonl"
     assert completed.metadata["transcript"] == "/tmp/transcript.jsonl"
     assert completed.metadata["node"] == "codex-a"
+    execution = completed.metadata["execution"]
+    assert isinstance(execution, dict)
+    assert execution["state"] == "complete"
+
+
+def test_approved_execution_requires_autopickup_gate(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Autopickup must be on",
+        body=None,
+        assignee="codex-a",
+    )
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="should not run",
+            stderr="",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        max_tasks_per_tick=1,
+    )
+    executor = PullExecutor(config=config, store=store, grove_runner=runner)
+
+    claimed = executor.run_once()
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="codex-a", enabled=True)
+    assert store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    executed = executor.run_once()
+    task_after = store.get_task(board="main", task_id=task.id)
+
+    assert claimed.claimed == 1
+    assert executed.completed == 0
+    assert runner.calls == []
+    assert task_after.status == "running"
+    assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approval-pending"
 
 
 def test_run_once_blocks_failed_task_and_notifies_after_block(tmp_path: Path) -> None:
@@ -452,18 +630,38 @@ def test_run_once_blocks_failed_task_and_notifies_after_block(tmp_path: Path) ->
         heartbeat_interval_seconds=60,
         poll_interval_seconds=5,
         max_tasks_per_tick=1,
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            nodes={"claude-a": AutoPickupNodeConfig(enabled=True)},
+        ),
     )
 
-    result = PullExecutor(
+    executor = PullExecutor(
         config=config,
         store=store,
         grove_runner=runner,
         notifier=notifier,
-    ).run_once()
+    )
+    claimed_result = executor.run_once()
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="main", node="claude-a", enabled=True)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="claude-a", enabled=True)
+    assert store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    result = executor.run_once()
 
-    assert result.claimed == 1
+    assert claimed_result.claimed == 1
+    assert claimed_result.blocked == 0
     assert result.blocked == 1
-    assert store.get_task(board="main", task_id=task.id).status == "blocked"
+    blocked = store.get_task(board="main", task_id=task.id)
+    assert blocked.status == "blocked"
+    execution = blocked.metadata["execution"]
+    assert isinstance(execution, dict)
+    assert execution["state"] == "rollback"
     assert store.list_comments(board="main", task_id=task.id)[0].author == "grove-bridge"
     assert "missing input" in store.list_comments(board="main", task_id=task.id)[0].body
     subs = store.list_notify_subs(board="main", task_id=task.id)
@@ -505,11 +703,26 @@ def test_run_once_skips_terminal_writes_when_heartbeat_loses_lease(
         heartbeat_interval_seconds=60,
         poll_interval_seconds=5,
         max_tasks_per_tick=1,
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=True)},
+        ),
     )
 
-    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+    executor = PullExecutor(config=config, store=store, grove_runner=runner)
+    claimed_result = executor.run_once()
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="main", node="codex-a", enabled=True)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="codex-a", enabled=True)
+    assert store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    result = executor.run_once()
 
-    assert result.claimed == 1
+    assert claimed_result.claimed == 1
     assert result.terminal_conflicts == 1
     assert result.completed == 0
     assert result.blocked == 0
@@ -545,7 +758,7 @@ def test_run_once_claims_node_assignee_without_consuming_other_nodes_on_conflict
     assert result.claim_conflicts == 1
     assert result.claimed == 1
     assert store.node_ids == ["codex-a", "codex-a"]
-    assert runner.calls[0][0] == "codex-a"
+    assert runner.calls == []
 
 
 def test_autonomous_pickup_default_off_leaves_unassigned_ready_task(tmp_path: Path) -> None:
@@ -623,11 +836,12 @@ def test_autonomous_pickup_claims_matching_unassigned_task_and_audits(
 
     assert result.claimed == 1
     assert result.autopicked == 1
-    assert result.completed == 1
-    assert runner.calls[0][0] == "codex-a"
-    completed = store.get_task(board="main", task_id=task.id)
-    assert completed.status == "done"
-    assert completed.assignee == "codex-a"
+    assert result.completed == 0
+    assert runner.calls == []
+    claimed = store.get_task(board="main", task_id=task.id)
+    assert claimed.status == "running"
+    assert claimed.assignee == "codex-a"
+    assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approval-pending"
     assert len(audits) == 1
     assert audits[0].kind == "audit.task.autopickup"
     assert audits[0].payload["actor"] == {
@@ -637,6 +851,82 @@ def test_autonomous_pickup_claims_matching_unassigned_task_and_audits(
         "role": "none",
     }
     assert audits[0].payload["target"] == {"type": "task", "id": task.id, "node": "codex-a"}
+    execution_audits = store.list_audit_events(board="main", task_id=task.id, limit=10)
+    actions = [event.payload["action"] for event in execution_audits]
+    assert "claim" in actions
+    assert "preflight" in actions
+    assert "approval-pending" in actions
+
+
+def test_guarded_execution_requires_approval_then_dispatches(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Guarded work",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="main", node="codex-a", enabled=True)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="codex-a", enabled=True)
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="guarded done",
+            stderr="",
+            session_id="session-1",
+            transcript_path="/tmp/transcript.jsonl",
+            turn_id="turn-1",
+            tmux_pane="dev10:1.0",
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=True, roles=("maker",))},
+        ),
+    )
+    executor = PullExecutor(config=config, store=store, grove_runner=runner)
+
+    first = executor.run_once()
+    blocked = executor.run_once()
+    approved = store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    executed = executor.run_once()
+    completed = store.get_task(board="main", task_id=task.id)
+    audits = store.list_audit_events(board="main", task_id=task.id, limit=20)
+    actions = [event.payload["action"] for event in audits]
+
+    assert first.autopicked == 1
+    assert blocked.completed == 0
+    assert approved is True
+    assert executed.completed == 1
+    assert runner.calls[0][0] == "codex-a"
+    assert completed.status == "done"
+    execution = completed.metadata["execution"]
+    assert isinstance(execution, dict)
+    assert execution["state"] == "complete"
+    assert actions == [
+        "claim",
+        "autopickup",
+        "claim",
+        "preflight",
+        "approval-pending",
+        "approve",
+        "execute",
+        "verify",
+        "complete",
+        "complete",
+    ]
 
 
 def test_autonomous_pickup_cooldown_limits_repeated_claims(
@@ -686,18 +976,42 @@ def test_autonomous_pickup_cooldown_limits_repeated_claims(
     executor = PullExecutor(config=config, store=store, grove_runner=runner)
 
     first_result = executor.run_once()
+    picked = next(
+        task
+        for task in (first, second)
+        if store.get_task(board="main", task_id=task.id).status == "running"
+    )
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="main", node="codex-a", enabled=True)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="codex-a", enabled=True)
+    assert store.approve_execution(
+        board="main",
+        task_id=picked.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    execution_result = executor.run_once()
     second_result = executor.run_once()
     now = 1400.0
     third_result = executor.run_once()
 
     assert first_result.autopicked == 1
+    assert execution_result.completed == 1
     assert second_result.autopicked == 0
     assert third_result.autopicked == 1
     statuses = {
         store.get_task(board="main", task_id=first.id).status,
         store.get_task(board="main", task_id=second.id).status,
     }
-    assert statuses == {"done"}
+    pending = next(
+        task
+        for task in (first, second)
+        if store.get_task(board="main", task_id=task.id).status == "running"
+    )
+    assert statuses == {"done", "running"}
+    assert store.task_execution_state(board="main", task_id=pending.id)["state"] == (
+        "approval-pending"
+    )
 
 
 def test_autonomous_pickup_cooldown_persists_across_executor_restart(
@@ -746,16 +1060,35 @@ def test_autonomous_pickup_cooldown_persists_across_executor_restart(
     )
 
     first_result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+    picked = next(
+        task
+        for task in (first, second)
+        if store.get_task(board="main", task_id=task.id).status == "running"
+    )
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="main", node="codex-a", enabled=True)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="codex-a", enabled=True)
+    assert store.approve_execution(
+        board="main",
+        task_id=picked.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    execution_result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
     now = 1001.0
     second_result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
     now = 1400.0
     third_result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
 
     assert first_result.autopicked == 1
+    assert execution_result.completed == 1
     assert second_result.autopicked == 0
     assert third_result.autopicked == 1
-    assert store.get_task(board="main", task_id=first.id).status == "done"
-    assert store.get_task(board="main", task_id=second.id).status == "done"
+    statuses = {
+        store.get_task(board="main", task_id=first.id).status,
+        store.get_task(board="main", task_id=second.id).status,
+    }
+    assert statuses == {"done", "running"}
 
 
 def test_autonomous_pickup_uses_persisted_node_toggle(tmp_path: Path) -> None:
@@ -793,7 +1126,387 @@ def test_autonomous_pickup_uses_persisted_node_toggle(tmp_path: Path) -> None:
     result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
 
     assert result.autopicked == 1
-    assert store.get_task(board="main", task_id=task.id).status == "done"
+    assert runner.calls == []
+    assert store.get_task(board="main", task_id=task.id).status == "running"
+    assert store.task_execution_state(board="main", task_id=task.id)["state"] == (
+        "approval-pending"
+    )
+
+
+def _approved_guarded_claim(
+    store: SQLiteBoardStore,
+    *,
+    title: str = "Guarded",
+    node: str = "codex-a",
+) -> ClaimedTask:
+    task = store.create_task(board="main", title=title, body=None, assignee=node)
+    claimed = store.claim_next(
+        board="main",
+        assignee=node,
+        node_id=node,
+        ttl_seconds=300,
+        task_id=task.id,
+    )
+    assert claimed is not None
+    store.begin_guarded_execution(
+        board="main",
+        task_id=task.id,
+        run_id=claimed.run_id,
+        node=node,
+    )
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="main", node=node, enabled=True)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node=node, enabled=True)
+    assert store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    return claimed
+
+
+def test_guarded_execution_rejects_second_concurrent_task(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    first = _approved_guarded_claim(store, title="First")
+    second = _approved_guarded_claim(store, title="Second")
+
+    assert store.try_mark_execution_executing(
+        board="main",
+        task_id=first.task.id,
+        run_id=first.run_id,
+        node="codex-a",
+    )
+    assert not store.try_mark_execution_executing(
+        board="main",
+        task_id=second.task.id,
+        run_id=second.run_id,
+        node="codex-a",
+    )
+    assert store.task_execution_state(board="main", task_id=second.task.id)["state"] == "approved"
+
+
+def test_store_execution_transition_requires_autopickup_node_gate(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="main", title="No node gate", body=None, assignee="codex-a")
+    claimed = store.claim_next(
+        board="main",
+        assignee="codex-a",
+        node_id="codex-a",
+        ttl_seconds=300,
+        task_id=task.id,
+    )
+    assert claimed is not None
+    store.begin_guarded_execution(
+        board="main",
+        task_id=task.id,
+        run_id=claimed.run_id,
+        node="codex-a",
+    )
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="codex-a", enabled=True)
+    assert store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+
+    assert not store.try_mark_execution_executing(
+        board="main",
+        task_id=task.id,
+        run_id=claimed.run_id,
+        node="codex-a",
+    )
+    state = store.task_execution_state(board="main", task_id=task.id)
+    assert state["state"] == "approval-pending"
+    assert state["approved"] is False
+
+
+@pytest.mark.parametrize(
+    ("level", "kwargs"),
+    [
+        ("global", {}),
+        ("board", {}),
+        ("node", {"node": "codex-a"}),
+        ("task", {"task_id": "TASK"}),
+    ],
+)
+def test_guarded_execution_kill_switch_blocks_every_level(
+    tmp_path: Path,
+    level: str,
+    kwargs: dict[str, str],
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    claimed = _approved_guarded_claim(store)
+    if kwargs.get("task_id") == "TASK":
+        kwargs = {"task_id": claimed.task.id}
+    store.set_execution_kill_switch(board="main", level=level, enabled=True, **kwargs)
+
+    assert not store.try_mark_execution_executing(
+        board="main",
+        task_id=claimed.task.id,
+        run_id=claimed.run_id,
+        node="codex-a",
+    )
+    assert store.task_execution_state(board="main", task_id=claimed.task.id)["state"] == "abort"
+    abort_audits = store.list_audit_events(board="main", action="abort", task_id=claimed.task.id)
+    assert abort_audits
+
+
+def test_guarded_execution_approval_bypass_and_rollback(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    ready = store.create_task(board="main", title="Ready", body=None, assignee="codex-a")
+
+    assert not store.approve_execution(
+        board="main",
+        task_id=ready.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+
+    claimed = _approved_guarded_claim(store, title="Verify failure")
+    assert store.try_mark_execution_executing(
+        board="main",
+        task_id=claimed.task.id,
+        run_id=claimed.run_id,
+        node="codex-a",
+    )
+    assert store.mark_execution_verify(
+        board="main",
+        task_id=claimed.task.id,
+        run_id=claimed.run_id,
+        node="codex-a",
+        passed=False,
+        summary="verify failed",
+    )
+    assert store.task_execution_state(board="main", task_id=claimed.task.id)["state"] == "rollback"
+    actions = [
+        event.payload["action"]
+        for event in store.list_audit_events(board="main", task_id=claimed.task.id)
+    ]
+    assert "verify" in actions
+    assert "rollback" in actions
+
+
+def test_guarded_dispatch_pre_start_kill_aborts_without_start(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Kill before start",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="main", node="codex-a", enabled=True)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="codex-a", enabled=True)
+
+    class PreStartKillRunner:
+        def __init__(self) -> None:
+            self.started = False
+
+        def run_task(
+            self,
+            *,
+            node: str,
+            prompt: str,
+            env: Mapping[str, str],
+            lane: LaneConfig,
+            heartbeat: Callable[[], bool],
+            dispatch_gate: Callable[[], bool] | None = None,
+        ) -> GroveRunResult:
+            store.set_execution_kill_switch(board="main", level="global", enabled=True)
+            if dispatch_gate is not None and not dispatch_gate():
+                return GroveRunResult(
+                    node=node,
+                    returncode=1,
+                    stdout="",
+                    stderr="dispatch blocked",
+                    session_id=None,
+                    transcript_path=None,
+                    turn_id=None,
+                    tmux_pane=None,
+                    lease_lost=True,
+                )
+            self.started = True
+            return GroveRunResult(
+                node=node,
+                returncode=0,
+                stdout="should not run",
+                stderr="",
+                session_id=None,
+                transcript_path=None,
+                turn_id=None,
+                tmux_pane=None,
+            )
+
+    runner = PreStartKillRunner()
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=True, roles=("maker",))},
+        ),
+    )
+    executor = PullExecutor(config=config, store=store, grove_runner=runner)
+
+    executor.run_once()
+    assert store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    result = executor.run_once()
+
+    assert runner.started is False
+    assert result.terminal_conflicts == 1
+    assert store.task_execution_state(board="main", task_id=task.id)["state"] == "abort"
+    assert store.list_audit_events(board="main", action="execute", task_id=task.id) == []
+
+
+def test_guarded_execution_kill_switch_flip_mid_flight_aborts(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Kill mid flight",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="main", node="codex-a", enabled=True)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="codex-a", enabled=True)
+
+    class MidFlightKillRunner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run_task(
+            self,
+            *,
+            node: str,
+            prompt: str,
+            env: Mapping[str, str],
+            lane: LaneConfig,
+            heartbeat: Callable[[], bool],
+            dispatch_gate: Callable[[], bool] | None = None,
+        ) -> GroveRunResult:
+            self.calls += 1
+            store.set_execution_kill_switch(board="main", level="global", enabled=True)
+            lease_lost = not dispatch_gate() if dispatch_gate is not None else not heartbeat()
+            return GroveRunResult(
+                node=node,
+                returncode=0,
+                stdout="should not complete",
+                stderr="",
+                session_id=None,
+                transcript_path=None,
+                turn_id=None,
+                tmux_pane=None,
+                lease_lost=lease_lost,
+            )
+
+    runner = MidFlightKillRunner()
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=True, roles=("maker",))},
+        ),
+    )
+    executor = PullExecutor(config=config, store=store, grove_runner=runner)
+
+    executor.run_once()
+    assert store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    result = executor.run_once()
+
+    assert runner.calls == 1
+    assert result.terminal_conflicts == 1
+    assert store.task_execution_state(board="main", task_id=task.id)["state"] == "abort"
+
+
+def test_guarded_heartbeat_autopickup_kill_flip_aborts(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Autopickup kill during heartbeat",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="main", node="codex-a", enabled=True)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="codex-a", enabled=True)
+
+    class HeartbeatAutopickupKillRunner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run_task(
+            self,
+            *,
+            node: str,
+            prompt: str,
+            env: Mapping[str, str],
+            lane: LaneConfig,
+            heartbeat: Callable[[], bool],
+            dispatch_gate: Callable[[], bool] | None = None,
+        ) -> GroveRunResult:
+            _ = (prompt, env, lane)
+            self.calls += 1
+            assert dispatch_gate is None or dispatch_gate()
+            store.set_autopickup_global(board="main", enabled=True, kill_switch=True)
+            lease_lost = not heartbeat()
+            return GroveRunResult(
+                node=node,
+                returncode=0,
+                stdout="should not complete",
+                stderr="",
+                session_id=None,
+                transcript_path=None,
+                turn_id=None,
+                tmux_pane=None,
+                lease_lost=lease_lost,
+            )
+
+    runner = HeartbeatAutopickupKillRunner()
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=True, roles=("maker",))},
+        ),
+    )
+    executor = PullExecutor(config=config, store=store, grove_runner=runner)
+
+    executor.run_once()
+    assert store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    result = executor.run_once()
+
+    assert runner.calls == 1
+    assert result.terminal_conflicts == 1
+    state = store.task_execution_state(board="main", task_id=task.id)
+    assert state["state"] == "abort"
+    abort_reason = state["abort_reason"]
+    assert isinstance(abort_reason, str)
+    assert "autopickup-global-kill-switch" in abort_reason
 
 
 @pytest.mark.parametrize(

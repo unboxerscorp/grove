@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import sqlite3
 import time
 import uuid
@@ -18,6 +19,8 @@ from grove_bridge.auth_status import redact_secret_text
 DONE_STATUSES = ("done", "archived")
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
+EXECUTION_TERMINAL_STATES = frozenset({"complete", "abort", "rollback"})
+EXECUTION_DISPATCH_LEASE_TTL_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -427,6 +430,25 @@ class SQLiteBoardStore:
         now = _now()
         board_id = self._ensure_board(board)
         with self._connect(immediate=True) as conn:
+            task_row = conn.execute(
+                """
+                SELECT metadata_json FROM tasks
+                WHERE board_id = ?
+                  AND id = ?
+                  AND status = 'running'
+                  AND current_run_id = ?
+                  AND claim_lock = ?
+                """,
+                (board_id, task_id, run_id, claim_lock),
+            ).fetchone()
+            if task_row is None:
+                return False
+            final_metadata = _metadata_preserving_execution(
+                task_row,
+                metadata,
+                state="complete",
+                now=now,
+            )
             updated = conn.execute(
                 """
                 UPDATE tasks
@@ -443,7 +465,15 @@ class SQLiteBoardStore:
                   AND current_run_id = ?
                   AND claim_lock = ?
                 """,
-                (_clean(result), _json(metadata), now, board_id, task_id, run_id, claim_lock),
+                (
+                    _clean(result),
+                    _json(final_metadata),
+                    now,
+                    board_id,
+                    task_id,
+                    run_id,
+                    claim_lock,
+                ),
             )
             if updated.rowcount != 1:
                 return False
@@ -454,10 +484,18 @@ class SQLiteBoardStore:
                     ended_at = ?,
                     outcome = 'complete',
                     summary = ?,
-                    metadata_json = ?
+                metadata_json = ?
                 WHERE board_id = ? AND id = ? AND task_id = ? AND claim_lock = ?
                 """,
-                (now, _clean(summary), _json(metadata), board_id, run_id, task_id, claim_lock),
+                (
+                    now,
+                    _clean(summary),
+                    _json(final_metadata),
+                    board_id,
+                    run_id,
+                    task_id,
+                    claim_lock,
+                ),
             )
             run_row = conn.execute(
                 "SELECT node_id FROM runs WHERE board_id = ? AND id = ?",
@@ -510,6 +548,25 @@ class SQLiteBoardStore:
         if needs_human:
             run_metadata["needs_human"] = True
         with self._connect(immediate=True) as conn:
+            task_row = conn.execute(
+                """
+                SELECT metadata_json FROM tasks
+                WHERE board_id = ?
+                  AND id = ?
+                  AND status = 'running'
+                  AND current_run_id = ?
+                  AND claim_lock = ?
+                """,
+                (board_id, task_id, run_id, claim_lock),
+            ).fetchone()
+            if task_row is None:
+                return False
+            run_metadata = _metadata_preserving_execution(
+                task_row,
+                run_metadata,
+                state=None,
+                now=now,
+            )
             updated = conn.execute(
                 """
                 UPDATE tasks
@@ -1073,6 +1130,727 @@ class SQLiteBoardStore:
             "global_kill_switch": global_state["kill_switch"],
         }
 
+    def execution_global_state(self, *, board: str) -> dict[str, bool]:
+        settings = self._board_settings(board) or {}
+        raw = _execution_settings(settings)
+        return {
+            "enabled": _setting_bool(raw.get("enabled"), default=False),
+            "kill_switch": _setting_bool(raw.get("kill_switch"), default=False),
+            "board_enabled": _setting_bool(raw.get("board_enabled"), default=True),
+            "board_kill_switch": _setting_bool(raw.get("board_kill_switch"), default=False),
+        }
+
+    def set_execution_global(
+        self,
+        *,
+        board: str,
+        enabled: bool | None = None,
+        kill_switch: bool | None = None,
+        board_enabled: bool | None = None,
+        board_kill_switch: bool | None = None,
+    ) -> dict[str, bool]:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            raw = _mutable_execution_settings(settings)
+            if enabled is not None:
+                raw["enabled"] = enabled
+            if kill_switch is not None:
+                raw["kill_switch"] = kill_switch
+            if board_enabled is not None:
+                raw["board_enabled"] = board_enabled
+            if board_kill_switch is not None:
+                raw["board_kill_switch"] = board_kill_switch
+            self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
+        return self.execution_global_state(board=board)
+
+    def node_execution_enabled(self, *, board: str, node: str) -> bool | None:
+        settings = self._board_settings(board)
+        if settings is None:
+            return None
+        raw = _execution_nodes(settings).get(node)
+        if not isinstance(raw, Mapping):
+            return None
+        value = raw.get("enabled")
+        return value if isinstance(value, bool) else None
+
+    def set_node_execution_enabled(
+        self,
+        *,
+        board: str,
+        node: str,
+        enabled: bool,
+    ) -> dict[str, object]:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            nodes = _mutable_execution_nodes(settings)
+            raw = nodes.get(node)
+            node_state = dict(raw) if isinstance(raw, Mapping) else {}
+            node_state["enabled"] = enabled
+            node_state["updated_at"] = now
+            nodes[node] = node_state
+            self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
+        return self.node_execution_state(board=board, node=node)
+
+    def set_execution_kill_switch(
+        self,
+        *,
+        board: str,
+        level: str,
+        enabled: bool,
+        node: str | None = None,
+        task_id: str | None = None,
+    ) -> dict[str, object]:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            raw = _mutable_execution_settings(settings)
+            if level == "global":
+                raw["kill_switch"] = enabled
+            elif level == "board":
+                raw["board_kill_switch"] = enabled
+            elif level == "node":
+                if node is None:
+                    raise ValueError("node is required for node execution kill switch")
+                nodes = _mutable_execution_nodes(settings)
+                node_raw = nodes.get(node)
+                node_state = dict(node_raw) if isinstance(node_raw, Mapping) else {}
+                node_state["kill_switch"] = enabled
+                node_state["updated_at"] = now
+                nodes[node] = node_state
+            elif level == "task":
+                if task_id is None:
+                    raise ValueError("task_id is required for task execution kill switch")
+                tasks = _mutable_execution_tasks(settings)
+                task_raw = tasks.get(task_id)
+                task_state = dict(task_raw) if isinstance(task_raw, Mapping) else {}
+                task_state["kill_switch"] = enabled
+                task_state["updated_at"] = now
+                tasks[task_id] = task_state
+            else:
+                raise ValueError("execution kill switch level must be global, board, node, or task")
+            self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
+        return self.execution_gate_state(board=board, node=node or "", task_id=task_id)
+
+    def node_execution_state(self, *, board: str, node: str) -> dict[str, object]:
+        settings = self._board_settings(board) or {}
+        raw = _execution_nodes(settings).get(node)
+        node_state = raw if isinstance(raw, Mapping) else {}
+        global_state = self.execution_global_state(board=board)
+        return {
+            "enabled": _setting_bool(node_state.get("enabled"), default=False),
+            "configured": isinstance(raw, Mapping) and isinstance(raw.get("enabled"), bool),
+            "kill_switch": _setting_bool(node_state.get("kill_switch"), default=False),
+            "global_enabled": global_state["enabled"],
+            "global_kill_switch": global_state["kill_switch"],
+            "board_enabled": global_state["board_enabled"],
+            "board_kill_switch": global_state["board_kill_switch"],
+        }
+
+    def execution_gate_state(
+        self,
+        *,
+        board: str,
+        node: str,
+        task_id: str | None,
+    ) -> dict[str, object]:
+        settings = self._board_settings(board) or {}
+        raw = _execution_settings(settings)
+        node_raw = _execution_nodes(settings).get(node)
+        node_state = node_raw if isinstance(node_raw, Mapping) else {}
+        task_raw = _execution_tasks(settings).get(task_id or "")
+        task_setting = task_raw if isinstance(task_raw, Mapping) else {}
+        task_execution: Mapping[str, object] = {}
+        if task_id is not None:
+            try:
+                task = self.get_task(board=board, task_id=task_id)
+                task_execution = _task_execution(task.metadata)
+            except KeyError:
+                task_execution = {}
+        task_kill = _setting_bool(task_setting.get("kill_switch"), default=False) or _setting_bool(
+            task_execution.get("kill_switch"),
+            default=False,
+        )
+        global_enabled = _setting_bool(raw.get("enabled"), default=False)
+        global_kill = _setting_bool(raw.get("kill_switch"), default=False)
+        board_enabled = _setting_bool(raw.get("board_enabled"), default=True)
+        board_kill = _setting_bool(raw.get("board_kill_switch"), default=False)
+        node_enabled = _setting_bool(node_state.get("enabled"), default=False)
+        node_kill = _setting_bool(node_state.get("kill_switch"), default=False)
+        blocked_by: list[str] = []
+        if not global_enabled:
+            blocked_by.append("global-disabled")
+        if global_kill:
+            blocked_by.append("global-kill-switch")
+        if not board_enabled:
+            blocked_by.append("board-disabled")
+        if board_kill:
+            blocked_by.append("board-kill-switch")
+        if not node_enabled:
+            blocked_by.append("node-disabled")
+        if node_kill:
+            blocked_by.append("node-kill-switch")
+        if task_kill:
+            blocked_by.append("task-kill-switch")
+        return {
+            "allowed": not blocked_by,
+            "blocked_by": blocked_by,
+            "global_enabled": global_enabled,
+            "global_kill_switch": global_kill,
+            "board_enabled": board_enabled,
+            "board_kill_switch": board_kill,
+            "node_enabled": node_enabled,
+            "node_kill_switch": node_kill,
+            "task_kill_switch": task_kill,
+        }
+
+    def autopickup_gate_state(self, *, board: str, node: str) -> dict[str, object]:
+        global_state = self.autopickup_global_state(board=board)
+        node_enabled = self.node_autopickup_enabled(board=board, node=node)
+        blocked_by: list[str] = []
+        if not global_state["enabled"]:
+            blocked_by.append("autopickup-global-disabled")
+        if global_state["kill_switch"]:
+            blocked_by.append("autopickup-global-kill-switch")
+        if node_enabled is not True:
+            blocked_by.append("autopickup-node-disabled")
+        return {
+            "allowed": not blocked_by,
+            "blocked_by": blocked_by,
+            "global_enabled": global_state["enabled"],
+            "global_kill_switch": global_state["kill_switch"],
+            "node_enabled": node_enabled is True,
+        }
+
+    def guarded_dispatch_gate_state(
+        self,
+        *,
+        board: str,
+        node: str,
+        task_id: str | None,
+    ) -> dict[str, object]:
+        execution = self.execution_gate_state(board=board, node=node, task_id=task_id)
+        autopickup = self.autopickup_gate_state(board=board, node=node)
+        blocked_by = [
+            *cast(list[str], execution["blocked_by"]),
+            *cast(list[str], autopickup["blocked_by"]),
+        ]
+        return {
+            "allowed": not blocked_by,
+            "blocked_by": blocked_by,
+            "execution": execution,
+            "autopickup": autopickup,
+        }
+
+    def task_execution_state(self, *, board: str, task_id: str) -> dict[str, object]:
+        task = self.get_task(board=board, task_id=task_id)
+        execution = dict(_task_execution(task.metadata))
+        state = execution.get("state")
+        if not isinstance(state, str):
+            execution["state"] = "none"
+        return execution
+
+    def begin_guarded_execution(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+    ) -> dict[str, object]:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE board_id = ? AND id = ? AND status = 'running' AND current_run_id = ?
+                """,
+                (board_id, task_id, run_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            metadata = _json_dict(row["metadata_json"])
+            execution = _mutable_task_execution(metadata)
+            state = execution.get("state")
+            if not isinstance(state, str) or state == "none":
+                execution.update(
+                    {
+                        "state": "claimed",
+                        "node": node,
+                        "run_id": run_id,
+                        "approved": False,
+                        "updated_at": now,
+                    }
+                )
+                self._add_execution_audit(
+                    conn,
+                    board_id=board_id,
+                    board=board,
+                    task_id=task_id,
+                    run_id=run_id,
+                    node=node,
+                    action="claim",
+                    state="claimed",
+                    now=now,
+                )
+                execution["state"] = "preflight"
+                execution["updated_at"] = now
+                self._add_execution_audit(
+                    conn,
+                    board_id=board_id,
+                    board=board,
+                    task_id=task_id,
+                    run_id=run_id,
+                    node=node,
+                    action="preflight",
+                    state="preflight",
+                    now=now,
+                )
+                execution["state"] = "approval-pending"
+                execution["updated_at"] = now
+                self._add_execution_audit(
+                    conn,
+                    board_id=board_id,
+                    board=board,
+                    task_id=task_id,
+                    run_id=run_id,
+                    node=node,
+                    action="approval-pending",
+                    state="approval-pending",
+                    now=now,
+                )
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET metadata_json = ?, updated_at = ?
+                    WHERE board_id = ? AND id = ?
+                    """,
+                    (_json(metadata), now, board_id, task_id),
+                )
+            return dict(execution)
+
+    def approve_execution(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        actor: Mapping[str, object],
+    ) -> bool:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            metadata = _json_dict(row["metadata_json"])
+            execution = _mutable_task_execution(metadata)
+            if execution.get("state") != "approval-pending":
+                return False
+            node = _execution_node_from_metadata(
+                execution,
+                fallback=_row_optional_str(row, "assignee"),
+            )
+            run_id = _row_optional_str(row, "current_run_id")
+            execution["state"] = "approved"
+            execution["approved"] = True
+            execution["approved_at"] = now
+            execution["approved_by"] = _safe_text(
+                str(actor.get("login") or actor.get("id") or "actor")
+            )
+            execution["updated_at"] = now
+            conn.execute(
+                "UPDATE tasks SET metadata_json = ?, updated_at = ? WHERE board_id = ? AND id = ?",
+                (_json(metadata), now, board_id, task_id),
+            )
+            self._add_execution_audit(
+                conn,
+                board_id=board_id,
+                board=board,
+                task_id=task_id,
+                run_id=run_id,
+                node=node,
+                action="approve",
+                state="approved",
+                now=now,
+                actor=actor,
+            )
+        return True
+
+    def abort_execution(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        actor: Mapping[str, object],
+        reason: str,
+    ) -> bool:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            metadata = _json_dict(row["metadata_json"])
+            execution = _mutable_task_execution(metadata)
+            state = execution.get("state")
+            if isinstance(state, str) and state in EXECUTION_TERMINAL_STATES:
+                return False
+            node = _execution_node_from_metadata(
+                execution,
+                fallback=_row_optional_str(row, "assignee"),
+            )
+            run_id = _row_optional_str(row, "current_run_id")
+            execution["state"] = "abort"
+            execution["abort_reason"] = _safe_text(reason)
+            execution["updated_at"] = now
+            conn.execute(
+                "UPDATE tasks SET metadata_json = ?, updated_at = ? WHERE board_id = ? AND id = ?",
+                (_json(metadata), now, board_id, task_id),
+            )
+            self._add_execution_audit(
+                conn,
+                board_id=board_id,
+                board=board,
+                task_id=task_id,
+                run_id=run_id,
+                node=node,
+                action="abort",
+                state="abort",
+                now=now,
+                actor=actor,
+                summary=reason,
+            )
+        return True
+
+    def hold_execution_for_gate(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        actor: Mapping[str, object],
+        reason: str,
+    ) -> bool:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            metadata = _json_dict(row["metadata_json"])
+            execution = _mutable_task_execution(metadata)
+            state = execution.get("state")
+            if isinstance(state, str) and state in EXECUTION_TERMINAL_STATES:
+                return False
+            node = _execution_node_from_metadata(
+                execution,
+                fallback=_row_optional_str(row, "assignee"),
+            )
+            run_id = _row_optional_str(row, "current_run_id")
+            execution["state"] = "approval-pending"
+            execution["approved"] = False
+            execution.pop("approved_at", None)
+            execution.pop("approved_by", None)
+            execution["hold_reason"] = _safe_text(reason)
+            execution["updated_at"] = now
+            conn.execute(
+                "UPDATE tasks SET metadata_json = ?, updated_at = ? WHERE board_id = ? AND id = ?",
+                (_json(metadata), now, board_id, task_id),
+            )
+            self._add_execution_audit(
+                conn,
+                board_id=board_id,
+                board=board,
+                task_id=task_id,
+                run_id=run_id,
+                node=node,
+                action="approval-pending",
+                state="approval-pending",
+                now=now,
+                actor=actor,
+                status="blocked",
+                summary=reason,
+            )
+        return True
+
+    def try_mark_execution_executing(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+    ) -> bool:
+        return (
+            self.issue_execution_dispatch_lease(
+                board=board,
+                task_id=task_id,
+                run_id=run_id,
+                node=node,
+            )
+            is not None
+        )
+
+    def issue_execution_dispatch_lease(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+        ttl_seconds: int = EXECUTION_DISPATCH_LEASE_TTL_SECONDS,
+    ) -> str | None:
+        now = _now()
+        board_id = self._ensure_board(board)
+        gate = self.guarded_dispatch_gate_state(board=board, node=node, task_id=task_id)
+        if not bool(gate["allowed"]):
+            blocked_by = cast(list[str], gate["blocked_by"])
+            reason = "dispatch gate blocked: " + ",".join(blocked_by)
+            if not _gate_blocked_by_kill_switch(blocked_by):
+                self.hold_execution_for_gate(
+                    board=board,
+                    task_id=task_id,
+                    actor=_node_actor(node),
+                    reason=reason,
+                )
+                return None
+            self.abort_execution(
+                board=board,
+                task_id=task_id,
+                actor=_node_actor(node),
+                reason=reason,
+            )
+            return None
+        with self._connect(immediate=True) as conn:
+            concurrent = conn.execute(
+                """
+                SELECT id FROM tasks
+                WHERE board_id = ?
+                  AND assignee = ?
+                  AND status = 'running'
+                  AND id != ?
+                  AND json_extract(metadata_json, '$.execution.state') = 'executing'
+                LIMIT 1
+                """,
+                (board_id, node, task_id),
+            ).fetchone()
+            if concurrent is not None:
+                return None
+            row = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE board_id = ? AND id = ? AND status = 'running' AND current_run_id = ?
+                """,
+                (board_id, task_id, run_id),
+            ).fetchone()
+            if row is None:
+                return None
+            metadata = _json_dict(row["metadata_json"])
+            execution = _mutable_task_execution(metadata)
+            if execution.get("state") != "approved" or execution.get("approved") is not True:
+                return None
+            token = f"{run_id}:{secrets.token_urlsafe(18)}"
+            execution["state"] = "executing"
+            execution["dispatch_lease"] = {
+                "token": token,
+                "run_id": run_id,
+                "node": node,
+                "expires_at": now + max(0, ttl_seconds),
+                "issued_at": now,
+            }
+            execution["updated_at"] = now
+            conn.execute(
+                "UPDATE tasks SET metadata_json = ?, updated_at = ? WHERE board_id = ? AND id = ?",
+                (_json(metadata), now, board_id, task_id),
+            )
+            self._add_execution_audit(
+                conn,
+                board_id=board_id,
+                board=board,
+                task_id=task_id,
+                run_id=run_id,
+                node=node,
+                action="execute",
+                state="executing",
+                now=now,
+            )
+        return token
+
+    def consume_execution_dispatch_lease(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+        token: str,
+    ) -> bool:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            row = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE board_id = ? AND id = ? AND status = 'running' AND current_run_id = ?
+                """,
+                (board_id, task_id, run_id),
+            ).fetchone()
+            if row is None:
+                return False
+            metadata = _json_dict(row["metadata_json"])
+            execution = _mutable_task_execution(metadata)
+            blocked_by = _guarded_dispatch_blockers_from_settings(
+                settings=settings,
+                node=node,
+                task_id=task_id,
+                task_execution=execution,
+            )
+            lease = execution.get("dispatch_lease")
+            lease_map = lease if isinstance(lease, Mapping) else {}
+            state = execution.get("state")
+            if state != "executing":
+                blocked_by.append("dispatch-state-not-executing")
+            if execution.get("approved") is not True:
+                blocked_by.append("dispatch-not-approved")
+            if execution.get("run_id") != run_id:
+                blocked_by.append("dispatch-run-mismatch")
+            if lease_map.get("token") != token:
+                blocked_by.append("dispatch-lease-token-mismatch")
+            if lease_map.get("run_id") != run_id:
+                blocked_by.append("dispatch-lease-run-mismatch")
+            if lease_map.get("node") != node:
+                blocked_by.append("dispatch-lease-node-mismatch")
+            expires_at = lease_map.get("expires_at")
+            if not isinstance(expires_at, int) or expires_at <= now:
+                blocked_by.append("dispatch-lease-expired")
+            if lease_map.get("consumed_at") is not None:
+                blocked_by.append("dispatch-lease-consumed")
+            if not blocked_by:
+                next_lease = dict(lease_map)
+                next_lease["consumed_at"] = now
+                execution["dispatch_lease"] = next_lease
+                execution["updated_at"] = now
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET metadata_json = ?, updated_at = ?
+                    WHERE board_id = ? AND id = ?
+                    """,
+                    (_json(metadata), now, board_id, task_id),
+                )
+                return True
+            reason = "prepared dispatch blocked: " + ",".join(blocked_by)
+            if isinstance(state, str) and state in EXECUTION_TERMINAL_STATES:
+                return False
+            execution["state"] = "abort"
+            execution["abort_reason"] = _safe_text(reason)
+            execution["updated_at"] = now
+            conn.execute(
+                "UPDATE tasks SET metadata_json = ?, updated_at = ? WHERE board_id = ? AND id = ?",
+                (_json(metadata), now, board_id, task_id),
+            )
+            self._add_execution_audit(
+                conn,
+                board_id=board_id,
+                board=board,
+                task_id=task_id,
+                run_id=run_id,
+                node=node,
+                action="abort",
+                state="abort",
+                now=now,
+                actor=_node_actor(node),
+                summary=reason,
+            )
+        return False
+
+    def mark_execution_verify(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        node: str,
+        passed: bool,
+        summary: str | None = None,
+    ) -> bool:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE board_id = ? AND id = ? AND current_run_id = ?
+                """,
+                (board_id, task_id, run_id),
+            ).fetchone()
+            if row is None:
+                return False
+            metadata = _json_dict(row["metadata_json"])
+            execution = _mutable_task_execution(metadata)
+            if execution.get("state") != "executing":
+                return False
+            execution["state"] = "verify"
+            execution["verify_passed"] = passed
+            execution["updated_at"] = now
+            conn.execute(
+                "UPDATE tasks SET metadata_json = ?, updated_at = ? WHERE board_id = ? AND id = ?",
+                (_json(metadata), now, board_id, task_id),
+            )
+            self._add_execution_audit(
+                conn,
+                board_id=board_id,
+                board=board,
+                task_id=task_id,
+                run_id=run_id,
+                node=node,
+                action="verify",
+                state="verify",
+                now=now,
+                status="ok" if passed else "failed",
+                summary=summary,
+            )
+            if not passed:
+                execution["state"] = "rollback"
+                execution["rollback_reason"] = _safe_text(summary or "verify failed")
+                execution["updated_at"] = now
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET metadata_json = ?, updated_at = ?
+                    WHERE board_id = ? AND id = ?
+                    """,
+                    (_json(metadata), now, board_id, task_id),
+                )
+                self._add_execution_audit(
+                    conn,
+                    board_id=board_id,
+                    board=board,
+                    task_id=task_id,
+                    run_id=run_id,
+                    node=node,
+                    action="rollback",
+                    state="rollback",
+                    now=now,
+                    status="failed",
+                    summary=summary,
+                )
+        return True
+
     def add_audit_event(
         self,
         *,
@@ -1127,7 +1905,7 @@ class SQLiteBoardStore:
         ts = _now() if now is None else now
         board_id = self._ensure_board(board)
         sql = """
-            SELECT id, current_run_id, claim_lock FROM tasks
+            SELECT id, assignee, current_run_id, claim_lock, metadata_json FROM tasks
             WHERE board_id = ?
               AND status = 'running'
               AND claim_expires IS NOT NULL
@@ -1145,6 +1923,8 @@ class SQLiteBoardStore:
                 task_id = _row_str(row, "id")
                 run_id = _row_optional_str(row, "current_run_id")
                 claim_lock = _row_optional_str(row, "claim_lock")
+                assignee = _row_optional_str(row, "assignee")
+                metadata = _released_execution_metadata(row, run_id=run_id, now=ts)
                 conn.execute(
                     """
                     UPDATE tasks
@@ -1152,10 +1932,11 @@ class SQLiteBoardStore:
                         claim_lock = NULL,
                         claim_expires = NULL,
                         current_run_id = NULL,
+                        metadata_json = ?,
                         updated_at = ?
                     WHERE board_id = ? AND id = ?
                     """,
-                    (ts, board_id, task_id),
+                    (_json(metadata), ts, board_id, task_id),
                 )
                 if run_id is not None and claim_lock is not None:
                     conn.execute(
@@ -1178,6 +1959,22 @@ class SQLiteBoardStore:
                     payload={"reason": "claim expired"},
                     now=ts,
                 )
+                execution = _task_execution(_json_dict(row["metadata_json"]))
+                if execution:
+                    node = _execution_node_from_metadata(execution, fallback=assignee)
+                    self._add_execution_audit(
+                        conn,
+                        board_id=board_id,
+                        board=board,
+                        task_id=task_id,
+                        run_id=run_id,
+                        node=node,
+                        action="release-stale",
+                        state="none",
+                        now=ts,
+                        status="released",
+                        summary="claim expired",
+                    )
                 released += 1
         return released
 
@@ -1508,6 +2305,41 @@ class SQLiteBoardStore:
         )
         return event_id
 
+    def _add_execution_audit(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        board_id: str,
+        board: str,
+        task_id: str,
+        run_id: str | None,
+        node: str,
+        action: str,
+        state: str,
+        now: int,
+        actor: Mapping[str, object] | None = None,
+        status: str = "ok",
+        summary: str | None = None,
+    ) -> None:
+        self._add_event(
+            conn,
+            board_id=board_id,
+            task_id=task_id,
+            run_id=run_id,
+            kind=f"audit.execution.{action}",
+            payload=_audit_payload(
+                actor=actor or _node_actor(node),
+                action=action,
+                target={"type": "task", "id": task_id, "node": node},
+                board=board,
+                status=status,
+                summary=summary,
+                ts=now,
+                extra={"state": state},
+            ),
+            now=now,
+        )
+
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
@@ -1535,6 +2367,21 @@ def _autopickup_nodes(settings: Mapping[str, object]) -> Mapping[str, object]:
     return raw if isinstance(raw, Mapping) else {}
 
 
+def _execution_settings(settings: Mapping[str, object]) -> Mapping[str, object]:
+    raw = settings.get("execution")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _execution_nodes(settings: Mapping[str, object]) -> Mapping[str, object]:
+    raw = _execution_settings(settings).get("nodes")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _execution_tasks(settings: Mapping[str, object]) -> Mapping[str, object]:
+    raw = _execution_settings(settings).get("tasks")
+    return raw if isinstance(raw, Mapping) else {}
+
+
 def _mutable_autopickup_settings(settings: dict[str, object]) -> dict[str, object]:
     raw = settings.get("autopickup")
     if not isinstance(raw, dict):
@@ -1550,6 +2397,172 @@ def _mutable_autopickup_nodes(settings: dict[str, object]) -> dict[str, object]:
         nodes = {}
         raw["nodes"] = nodes
     return cast(dict[str, object], nodes)
+
+
+def _mutable_execution_settings(settings: dict[str, object]) -> dict[str, object]:
+    raw = settings.get("execution")
+    if not isinstance(raw, dict):
+        raw = {}
+        settings["execution"] = raw
+    return cast(dict[str, object], raw)
+
+
+def _mutable_execution_nodes(settings: dict[str, object]) -> dict[str, object]:
+    raw = _mutable_execution_settings(settings)
+    nodes = raw.get("nodes")
+    if not isinstance(nodes, dict):
+        nodes = {}
+        raw["nodes"] = nodes
+    return cast(dict[str, object], nodes)
+
+
+def _mutable_execution_tasks(settings: dict[str, object]) -> dict[str, object]:
+    raw = _mutable_execution_settings(settings)
+    tasks = raw.get("tasks")
+    if not isinstance(tasks, dict):
+        tasks = {}
+        raw["tasks"] = tasks
+    return cast(dict[str, object], tasks)
+
+
+def _guarded_dispatch_blockers_from_settings(
+    *,
+    settings: Mapping[str, object],
+    node: str,
+    task_id: str,
+    task_execution: Mapping[str, object],
+) -> list[str]:
+    return [
+        *_execution_blockers_from_settings(
+            settings=settings,
+            node=node,
+            task_id=task_id,
+            task_execution=task_execution,
+        ),
+        *_autopickup_blockers_from_settings(settings=settings, node=node),
+    ]
+
+
+def _execution_blockers_from_settings(
+    *,
+    settings: Mapping[str, object],
+    node: str,
+    task_id: str,
+    task_execution: Mapping[str, object],
+) -> list[str]:
+    raw = _execution_settings(settings)
+    node_raw = _execution_nodes(settings).get(node)
+    node_state = node_raw if isinstance(node_raw, Mapping) else {}
+    task_raw = _execution_tasks(settings).get(task_id)
+    task_setting = task_raw if isinstance(task_raw, Mapping) else {}
+    blocked_by: list[str] = []
+    if not _setting_bool(raw.get("enabled"), default=False):
+        blocked_by.append("global-disabled")
+    if _setting_bool(raw.get("kill_switch"), default=False):
+        blocked_by.append("global-kill-switch")
+    if not _setting_bool(raw.get("board_enabled"), default=True):
+        blocked_by.append("board-disabled")
+    if _setting_bool(raw.get("board_kill_switch"), default=False):
+        blocked_by.append("board-kill-switch")
+    if not _setting_bool(node_state.get("enabled"), default=False):
+        blocked_by.append("node-disabled")
+    if _setting_bool(node_state.get("kill_switch"), default=False):
+        blocked_by.append("node-kill-switch")
+    task_kill = _setting_bool(task_setting.get("kill_switch"), default=False) or _setting_bool(
+        task_execution.get("kill_switch"),
+        default=False,
+    )
+    if task_kill:
+        blocked_by.append("task-kill-switch")
+    return blocked_by
+
+
+def _autopickup_blockers_from_settings(
+    *,
+    settings: Mapping[str, object],
+    node: str,
+) -> list[str]:
+    raw = _autopickup_settings(settings)
+    nodes = _autopickup_nodes(settings)
+    node_raw = nodes.get(node)
+    node_state = node_raw if isinstance(node_raw, Mapping) else {}
+    blocked_by: list[str] = []
+    if not _setting_bool(raw.get("enabled"), default=True):
+        blocked_by.append("autopickup-global-disabled")
+    if _setting_bool(raw.get("kill_switch"), default=False):
+        blocked_by.append("autopickup-global-kill-switch")
+    if node_state.get("enabled") is not True:
+        blocked_by.append("autopickup-node-disabled")
+    return blocked_by
+
+
+def _task_execution(metadata: Mapping[str, object]) -> Mapping[str, object]:
+    raw = metadata.get("execution")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _mutable_task_execution(metadata: dict[str, object]) -> dict[str, object]:
+    raw = metadata.get("execution")
+    if not isinstance(raw, dict):
+        raw = {}
+        metadata["execution"] = raw
+    return cast(dict[str, object], raw)
+
+
+def _metadata_preserving_execution(
+    row: sqlite3.Row,
+    metadata: Mapping[str, object],
+    *,
+    state: str | None,
+    now: int,
+) -> dict[str, object]:
+    final_metadata = dict(metadata)
+    existing = _json_dict(row["metadata_json"])
+    execution = _task_execution(existing)
+    if execution and "execution" not in final_metadata:
+        execution_copy = dict(execution)
+        if state is not None:
+            execution_copy["state"] = state
+        execution_copy["updated_at"] = now
+        final_metadata["execution"] = execution_copy
+    return final_metadata
+
+
+def _released_execution_metadata(
+    row: sqlite3.Row,
+    *,
+    run_id: str | None,
+    now: int,
+) -> dict[str, object]:
+    metadata = _json_dict(row["metadata_json"])
+    execution = _task_execution(metadata)
+    if execution:
+        reset = {
+            "state": "none",
+            "approved": False,
+            "run_id": None,
+            "released_run_id": run_id,
+            "updated_at": now,
+        }
+        metadata["execution"] = reset
+    return metadata
+
+
+def _gate_blocked_by_kill_switch(blocked_by: list[str]) -> bool:
+    return any("kill-switch" in item for item in blocked_by)
+
+
+def _execution_node_from_metadata(
+    execution: Mapping[str, object],
+    *,
+    fallback: str | None,
+) -> str:
+    node = execution.get("node")
+    if isinstance(node, str) and node.strip():
+        return node.strip()
+    if fallback is not None and fallback.strip():
+        return fallback.strip()
+    return "unknown"
 
 
 def _setting_bool(value: object, *, default: bool) -> bool:

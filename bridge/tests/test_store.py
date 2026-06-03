@@ -297,6 +297,17 @@ def test_release_stale_returns_running_tasks_to_ready(tmp_path: Path) -> None:
     )
     assert claimed is not None
     assert claimed.task.claim_expires is not None
+    store.begin_guarded_execution(
+        board="main",
+        task_id=task.id,
+        run_id=claimed.run_id,
+        node="codex-a",
+    )
+    assert store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
 
     released = store.release_stale(board="main", now=claimed.task.claim_expires + 1)
 
@@ -305,6 +316,13 @@ def test_release_stale_returns_running_tasks_to_ready(tmp_path: Path) -> None:
     assert ready.status == "ready"
     assert ready.claim_lock is None
     assert ready.current_run_id is None
+    execution = store.task_execution_state(board="main", task_id=task.id)
+    assert execution["state"] == "none"
+    assert execution["approved"] is False
+    assert execution["run_id"] is None
+    assert execution["released_run_id"] == claimed.run_id
+    audits = store.list_audit_events(board="main", action="release-stale", task_id=task.id)
+    assert len(audits) == 1
     run = store.list_runs(board="main", task_id=task.id)[0]
     assert run.status == "released"
     assert run.outcome == "released"
