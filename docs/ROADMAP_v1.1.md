@@ -21,7 +21,7 @@
    new-project / load-project / spawn --description; documented install reproduces it.
 5. **Resilience**: server survives node crash, tmux pane loss, WS disconnect, malformed
    input; documented graceful-degradation behavior; no unhandled 500s on bad input.
-6. **Docs**: USER_GUIDE + CHANGELOG + release checklist current; `grep hermes` 0 everywhere.
+6. **Docs**: USER_GUIDE + CHANGELOG + release checklist current; legacy-name grep 0 everywhere.
 
 ---
 
@@ -97,7 +97,7 @@ Add `/api/health` depth + structured server logs (no secrets/abs-paths).
 
 USER_GUIDE polish from review feedback, **CHANGELOG.md** (v1.0 → v1.1), a v1.1 **release
 checklist**, final integration smoke report, version bump to 0.1.1 (or 1.1.0) in package
-manifests. Confirm `grep -ric hermes` 0 across the tree.
+manifests. Confirm legacy-name grep 0 across the tree.
 
 ---
 

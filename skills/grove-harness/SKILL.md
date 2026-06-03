@@ -50,3 +50,7 @@ create_task -> claim -> block -> unblock -> claim
 ```
 
 Workspace assignment belongs in task metadata. Do not rely on hidden local state for workspace routing.
+
+## Surface parity
+
+The generated targets `skills/`, `.codex-plugin/`, and `.agents/skills/` carry the same grove protocol. For `agy`/`antigravity` nodes, use the `.agents/skills` surface and apply the same harness, org, delegate, and orchestrator rules as `codex` and `claude` nodes.

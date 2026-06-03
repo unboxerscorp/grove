@@ -49,3 +49,10 @@ grove rebind <name>
 ```
 
 Do not assign durable work until the node is visible in org output or rebind has repaired the binding.
+
+## Agy and antigravity notes
+
+- Use `--agent antigravity` for nodes backed by the `agy` CLI.
+- Durable grove work should run in a visible interactive pane. Headless mode is for explicit one-shot checks only.
+- The interactive launch may include `--dangerously-skip-permissions` under local operator control. The flag only changes CLI permission prompts; it does not relax `AGENTS.md`, skill, board, or handoff rules.
+- The interactive submit sequence is paste, Enter, Enter. The lead owns live parity verification.

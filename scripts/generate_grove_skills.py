@@ -13,7 +13,9 @@ from pathlib import Path
 
 SKILL_FILE = "SKILL.md"
 PLUGIN_SKILLS_DIR = Path("skills")
-AGENT_SKILLS_DIR = Path(".agents") / "skills"
+AGENT_ROOT_DIR = Path(".agents")
+AGENT_SKILLS_DIR = AGENT_ROOT_DIR / "skills"
+AGENT_INSTRUCTIONS_PATH = AGENT_ROOT_DIR / "AGENTS.md"
 MANIFESTS = {
     Path(".runner-plugin") / "plugin.json": {
         "name": "grove-runner-skills",
@@ -26,6 +28,25 @@ MANIFESTS = {
         "skills": "./skills/",
     },
 }
+AGENT_INSTRUCTIONS = """# grove Agent Surface
+
+This directory mirrors grove skills for agent runtimes that read `.agents/skills`.
+
+## Startup
+
+1. Read the project-root `AGENTS.md`.
+2. Load the relevant skill from `.agents/skills/*/SKILL.md` before acting.
+3. Start with `grove:harness` for delegation, node creation, group work, org lookup, board actions, or routing.
+
+## Runtime parity
+
+- The six grove skills in this tree must stay byte-for-byte aligned with `skills-src/` and `skills/`.
+- `agy` nodes use grove's `antigravity` agent type and follow the same board delegation protocol as `codex` and `claude`.
+- Interactive grove nodes run in a visible pane; headless mode is only for explicit one-shot checks.
+- grove may launch the interactive CLI with `--dangerously-skip-permissions`; that flag does not change repo, board, skill, or handoff rules.
+- Interactive submit is paste, Enter, Enter. Live parity verification stays with the lead.
+- Nodes with children coordinate and delegate instead of doing leaf implementation directly.
+"""
 
 
 @dataclass(frozen=True)
@@ -109,6 +130,7 @@ def write_targets(root: Path, sources: list[SkillSource]) -> None:
         copy_skill(source, root / AGENT_SKILLS_DIR / source.name / SKILL_FILE)
     for relative_path, manifest in MANIFESTS.items():
         write_json(root / relative_path, manifest)
+    write_text(root / AGENT_INSTRUCTIONS_PATH, AGENT_INSTRUCTIONS)
 
 
 def copy_skill(source: SkillSource, target: Path) -> None:
@@ -119,6 +141,11 @@ def copy_skill(source: SkillSource, target: Path) -> None:
 def write_json(path: Path, value: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+def write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value, encoding="utf-8")
 
 
 def check_targets(root: Path, sources: list[SkillSource]) -> int:
@@ -143,6 +170,11 @@ def check_targets(root: Path, sources: list[SkillSource]) -> int:
             continue
         if loaded != manifest:
             failures.append(f"stale manifest: {target}")
+    instructions = root / AGENT_INSTRUCTIONS_PATH
+    if not instructions.is_file():
+        failures.append(f"missing agent instructions: {instructions}")
+    elif instructions.read_text(encoding="utf-8") != AGENT_INSTRUCTIONS:
+        failures.append(f"stale agent instructions: {instructions}")
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)
