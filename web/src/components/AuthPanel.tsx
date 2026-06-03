@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import type { AuthTool } from "../api";
@@ -28,6 +28,11 @@ export function AuthPanel() {
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState<string | null>(null);
 
+  // Keep the translator in a ref so `load` is stable — a language toggle must
+  // NOT re-trigger /api/auth-status (same pattern as TerminalPane's tRef).
+  const tRef = useRef(t);
+  tRef.current = t;
+
   const load = useCallback(() => {
     setLoading(true);
     api
@@ -36,9 +41,9 @@ export function AuthPanel() {
         setTools(Array.isArray(list) ? list : []);
         setError(null);
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : t("auth.loadError")))
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : tRef.current("auth.loadError")))
       .finally(() => setLoading(false));
-  }, [t]);
+  }, []);
 
   useEffect(() => {
     load();
@@ -55,6 +60,8 @@ export function AuthPanel() {
   const copy = (tool: string, hint: string) => {
     void navigator.clipboard?.writeText(hint).catch(() => {});
     setCopied(tool);
+    // Reset the "copied" affordance so it doesn't stick permanently.
+    window.setTimeout(() => setCopied((c) => (c === tool ? null : c)), 1500);
   };
 
   return (

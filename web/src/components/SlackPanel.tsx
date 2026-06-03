@@ -26,7 +26,7 @@ function last4(token: string): string {
   return token.length >= 4 ? token.slice(-4) : token;
 }
 
-export function SlackPanel() {
+export function SlackPanel({ projectTick = 0 }: { projectTick?: number }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<SlackStatus | null>(null);
   const [nodes, setNodes] = useState<GroveNode[]>([]);
@@ -61,13 +61,27 @@ export function SlackPanel() {
       })
       .catch(() => setStatus({ status: "not_configured" }));
 
+  // Slack config/status is server-global → load once.
   useEffect(() => {
     void refreshStatus();
+  }, []);
+
+  // The channel↔node mapping is project-scoped, so reload the node list whenever
+  // the active project changes (projectTick), not just on mount.
+  useEffect(() => {
+    let alive = true;
     void api
       .listNodes()
-      .then((n) => setNodes(Array.isArray(n) ? n : []))
-      .catch(() => setNodes([]));
-  }, []);
+      .then((n) => {
+        if (alive) setNodes(Array.isArray(n) ? n : []);
+      })
+      .catch(() => {
+        if (alive) setNodes([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectTick]);
 
   const downloadManifest = () => {
     setManifestBusy(true);

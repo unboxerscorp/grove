@@ -420,27 +420,29 @@ export function OrgChart(props: {
   const dragRef = useRef<DragState | null>(drag);
   const rafRef = useRef(0);
   const firstRef = useRef(true);
-  const aliveRef = useRef(true);
   curRef.current = cur;
   dragRef.current = drag;
 
   // --- load -----------------------------------------------------------------
+  // Per-run `alive` flag (closure-scoped, NOT a shared ref) so an in-flight
+  // fetch from a previous project/tick can't apply stale data after a switch —
+  // its cleanup sets its own `alive=false` before the new run starts.
   useEffect(() => {
-    aliveRef.current = true;
+    let alive = true;
     api
       .getOrg()
       .then((o) => {
-        if (!aliveRef.current) return;
+        if (!alive) return;
         setNodes(o.nodes ?? []);
         setRootList(o.roots ?? []);
         setChildrenMap(o.children ?? {});
         setError(null);
       })
       .catch((e: unknown) => {
-        if (aliveRef.current) setError(e instanceof Error ? e.message : t("org.loadError"));
+        if (alive) setError(e instanceof Error ? e.message : t("org.loadError"));
       });
     return () => {
-      aliveRef.current = false;
+      alive = false;
     };
   }, [liveTick, reloadKey, t]);
 

@@ -164,6 +164,18 @@ export function BoardView(props: {
     return map;
   }, [tasks]);
 
+  // Render the known COLUMNS plus a fallback column for any task whose status
+  // isn't in COLUMNS — otherwise those tasks vanish from the board yet still
+  // count in the total (a confusing mismatch).
+  const columns = useMemo(() => {
+    const known = new Set<string>(COLUMNS.map((c) => c.key));
+    const extra = Object.keys(byColumn)
+      .filter((k) => !known.has(k) && (byColumn[k]?.length ?? 0) > 0)
+      .sort()
+      .map((k) => ({ key: k }));
+    return [...COLUMNS.map((c) => ({ key: c.key })), ...extra];
+  }, [byColumn]);
+
   return (
     <section className="dr-board">
       <div className="dr-board__toolbar">
@@ -215,7 +227,7 @@ export function BoardView(props: {
       {error && <div className="dr-board__msg is-error">{error}</div>}
 
       <div className="dr-board__cols">
-        {COLUMNS.map((col) => {
+        {columns.map((col) => {
           const items = byColumn[col.key] ?? [];
           return (
             <div key={col.key} className="dr-col">

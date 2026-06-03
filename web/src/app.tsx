@@ -116,17 +116,28 @@ export function App() {
   }, [projectTick]);
 
   // Board event-tail: a single-use ws-ticket (carrying the current project via
-  // the X-Grove-Token/X-Grove-Project headers) is minted, then the socket
-  // connects with ?ticket= so the backend can bind it to the active project.
-  // Re-runs on projectTick too, so switching project (and initial adoption,
-  // where boardId is unchanged) reconnects with a fresh project-bound ticket.
+  // the X-Grove-Session-Token/X-Grove-Project headers) is minted, then the
+  // socket connects with ?ticket= so the backend can bind it to the active
+  // project. Re-runs on projectTick too, so switching project (and initial
+  // adoption, where boardId is unchanged) reconnects with a fresh project-bound
+  // ticket. Reconnects use exponential backoff (capped); a 4401 close (auth
+  // rejected) stops the loop — a reload is needed, not a retry storm.
   useEffect(() => {
     if (!boardId) return;
     let disposed = false;
     let ws: WebSocket | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let backoff = 1000;
+
+    const scheduleReconnect = () => {
+      if (disposed) return;
+      const delay = Math.min(backoff, 15000);
+      backoff = Math.min(backoff * 2, 15000);
+      timer = setTimeout(connect, delay);
+    };
 
     function connect() {
+      if (disposed) return;
       api
         .wsTicket()
         .then(({ ticket }) => {
@@ -134,14 +145,21 @@ export function App() {
           try {
             ws = new WebSocket(wsUrl("/ws/board", { ticket }));
           } catch {
-            timer = setTimeout(connect, 3000);
+            scheduleReconnect();
             return;
           }
-          ws.onopen = () => setBoardLive(true);
+          ws.onopen = () => {
+            backoff = 1000; // reset on a successful connect
+            setBoardLive(true);
+          };
           ws.onmessage = () => setLiveTick((x) => x + 1);
-          ws.onclose = () => {
+          ws.onclose = (ev: CloseEvent) => {
+            if (disposed) return; // normal close from our own teardown (switch/unmount)
             setBoardLive(false);
-            if (!disposed) timer = setTimeout(connect, 3000);
+            // 4401 = ws-ticket/auth rejected: reconnecting can't fix it (needs a
+            // fresh session/reload), so stop the loop instead of hammering.
+            if (ev.code === 4401) return;
+            scheduleReconnect();
           };
           ws.onerror = () => {
             try {
@@ -152,7 +170,7 @@ export function App() {
           };
         })
         .catch(() => {
-          if (!disposed) timer = setTimeout(connect, 3000);
+          scheduleReconnect();
         });
     }
     connect();
@@ -295,7 +313,7 @@ export function App() {
           ) : view === "team" ? (
             <OrgChart boardId={boardId} liveTick={liveTick} onOpenTerminal={pickNode} />
           ) : view === "integrations" ? (
-            <SlackPanel />
+            <SlackPanel projectTick={projectTick} />
           ) : view === "auth" ? (
             <AuthPanel />
           ) : (
