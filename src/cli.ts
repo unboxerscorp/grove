@@ -7,6 +7,7 @@ import { cmdGather } from "./commands/gather.js";
 import { cmdInit } from "./commands/init.js";
 import { cmdRebind } from "./commands/rebind.js";
 import { cmdSend } from "./commands/send.js";
+import { cmdServe } from "./commands/serve.js";
 import { cmdSession } from "./commands/session.js";
 import { cmdStatus } from "./commands/status.js";
 import { cmdTail } from "./commands/tail.js";
@@ -127,6 +128,17 @@ program
   .option("-c, --config <file>", "path to grove.yaml")
   .option("--dry-run", "show planned registry changes without writing")
   .action(run((opts: Record<string, unknown>) => cmdRebind(withConfig(opts))));
+
+program
+  .command("serve [nodes...]")
+  .description("serve an OpenAI-compatible chat completions SSE facade backed by grove nodes")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .option("--host <host>", "host to bind", "127.0.0.1")
+  .option("-p, --port <port>", "port to bind", "8787")
+  .option("-t, --timeout <dur>", "max grove turn wait, e.g. 30s 20m 1h", "30m")
+  .action(
+    run((nodes: string[], opts: Record<string, unknown>) => cmdServe(nodes, withConfig(opts))),
+  );
 
 program
   .command("init")

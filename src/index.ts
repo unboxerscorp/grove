@@ -8,4 +8,5 @@ export * from "./context.js";
 export * from "./ops.js";
 export * from "./rebind.js";
 export * from "./registry.js";
+export * from "./serve.js";
 export { parseDuration, poll, sleep } from "./util/time.js";
