@@ -4,6 +4,42 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.13.0] — v1.12 (2026-06-04)
+
+Act on the recommendations — explicit, human-initiated actions. Auto-started after v1.11.0.
+No new autonomous behavior (the guarded execution loop is designed in docs/V1_13_BRAINSTORM.md,
+gated to v1.13).
+
+### Control the autonomy
+
+- **Pickup-enable toggle** — GET/POST /api/nodes/{node}/autopickup flips a node's autonomous-
+  pickup opt-in (token + project-scoped, strict node name, team viewers rejected, persisted in
+  board settings_json, audited as audit.node.autopickup). The **global gate is authoritative**:
+  POST returns 409 when global is OFF / kill-switch ON, AND pull_executor re-reads the DB global
+  state at runtime before every pickup — a per-node ON can never bypass a global OFF / kill-switch.
+- **Toggle in the dashboard** — node-status detail shows the toggle (real config), kept distinct
+  from the v1.11 ⚡ 자율(추론) inferred badge. When global is OFF / kill-switch ON the toggle is
+  disabled with a reason; a viewer (403) locks it; errors render a fixed string.
+
+### Delegate from a recommendation
+
+- **Planner→delegate one-click** — the read-only planner panel gains an explicit, two-step
+  "delegate to this node" per candidate (button → confirm → POST the existing delegate path,
+  assignee + status:ready). Recommendation stays read-only by default; nothing is delegated
+  without a button + confirm. Errors render a fixed string (no raw/secret leak).
+
+### Quality
+
+- Reviewer gates: kill-switch runtime-bypass (P0, executor ignored DB global state) + mock/backend
+  contract drift (node validation, trim normalization) + verify coverage (kill-switch case) —
+  each caught and fixed before commit. 204 py tests; web e2e 164/164 (+29 for the new endpoint).
+
+### Deferred (→ v1.13)
+
+- Guarded autonomous execution loop (risk-gated: preflight/approval/execute/verify/complete,
+  concurrency 1, rollback, multi-level kill-switch), Slack command surface v1, mobile actions,
+  multi-machine read-only aggregation (see docs/V1_13_BRAINSTORM.md).
+
 ## [0.12.0] — v1.11 (2026-06-04)
 
 Smarter delegation + visible autonomy. Auto-started after v1.10.0.
