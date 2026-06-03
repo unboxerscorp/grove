@@ -1,4 +1,4 @@
-"""Configuration for the Legacy kanban to grove bridge."""
+"""Configuration for the grove board pull executor."""
 
 from __future__ import annotations
 
@@ -8,12 +8,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
-from grove_bridge.ask_human import AskHumanConfig
+from grove_bridge.notifier import NotifierConfig
+
+
+def default_board_db_path() -> Path:
+    return Path("~/.grove/boards/board.db").expanduser()
 
 
 @dataclass(frozen=True)
 class LaneConfig:
-    """Mapping from one Legacy assignee lane to a grove node pool."""
+    """Mapping from one board assignee lane to a grove node pool."""
 
     assignee: str
     nodes: tuple[str, ...]
@@ -36,12 +40,13 @@ class BridgeConfig:
 
     boards: tuple[str, ...]
     lanes: Mapping[str, LaneConfig]
+    board_db_path: Path = field(default_factory=default_board_db_path)
     claim_ttl_seconds: int = 15 * 60
     heartbeat_interval_seconds: int = 60
     poll_interval_seconds: float = 5.0
     max_tasks_per_tick: int = 1
     grove_binary: str = "grove"
-    ask_human: AskHumanConfig = field(default_factory=AskHumanConfig)
+    notifier: NotifierConfig = field(default_factory=NotifierConfig)
 
     def __post_init__(self) -> None:
         if not self.boards:
@@ -58,6 +63,7 @@ class BridgeConfig:
             raise ValueError("max_tasks_per_tick must be positive")
         if not self.grove_binary.strip():
             raise ValueError("grove_binary is required")
+        object.__setattr__(self, "board_db_path", self.board_db_path.expanduser())
 
 
 def load_bridge_config(path: str | Path) -> BridgeConfig:
@@ -73,6 +79,10 @@ def load_bridge_config(path: str | Path) -> BridgeConfig:
     return BridgeConfig(
         boards=boards,
         lanes=lanes,
+        board_db_path=_path(
+            raw.get("board_db_path", default_board_db_path()),
+            field="board_db_path",
+        ),
         claim_ttl_seconds=_positive_int(
             raw.get("claim_ttl_seconds", BridgeConfig.claim_ttl_seconds),
             field="claim_ttl_seconds",
@@ -93,7 +103,7 @@ def load_bridge_config(path: str | Path) -> BridgeConfig:
             raw.get("grove_binary", BridgeConfig.grove_binary),
             field="grove_binary",
         ),
-        ask_human=_ask_human_config(raw.get("ask_human")),
+        notifier=_notifier_config(raw.get("notifier")),
     )
 
 
@@ -118,16 +128,20 @@ def _lane_configs(value: object) -> dict[str, LaneConfig]:
     return lanes
 
 
-def _ask_human_config(value: object) -> AskHumanConfig:
+def _notifier_config(value: object) -> NotifierConfig:
     if value is None:
-        return AskHumanConfig()
+        return NotifierConfig()
     if not isinstance(value, dict):
-        raise ValueError("ask_human must be a table")
+        raise ValueError("notifier must be a table")
     raw = cast(Mapping[str, object], value)
-    return AskHumanConfig(
-        enabled=_bool(raw.get("enabled", AskHumanConfig.enabled), field="ask_human.enabled"),
-        dry_run=_bool(raw.get("dry_run", AskHumanConfig.dry_run), field="ask_human.dry_run"),
-        channel=_optional_string(raw.get("channel"), field="ask_human.channel"),
+    return NotifierConfig(
+        enabled=_bool(raw.get("enabled", NotifierConfig.enabled), field="notifier.enabled"),
+        dry_run=_bool(raw.get("dry_run", NotifierConfig.dry_run), field="notifier.dry_run"),
+        channel_kind=_string(
+            raw.get("channel_kind", NotifierConfig.channel_kind),
+            field="notifier.channel_kind",
+        ),
+        room_id=_optional_string(raw.get("room_id"), field="notifier.room_id"),
     )
 
 
@@ -154,6 +168,14 @@ def _optional_string(value: object, *, field: str) -> str | None:
     if value is None:
         return None
     return _string(value, field=field)
+
+
+def _path(value: object, *, field: str) -> Path:
+    if isinstance(value, Path):
+        return value.expanduser()
+    if isinstance(value, str) and value.strip():
+        return Path(value).expanduser()
+    raise ValueError(f"{field} must be a non-empty path")
 
 
 def _positive_int(value: object, *, field: str) -> int:

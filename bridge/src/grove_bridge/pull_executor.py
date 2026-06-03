@@ -1,17 +1,14 @@
-"""Pull ready Legacy kanban tasks into grove node pools."""
+"""Pull ready grove board tasks into grove node pools."""
 
 from __future__ import annotations
 
 import argparse
-import os
 import time
-from collections.abc import Callable, Generator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast, runtime_checkable
+from typing import Protocol
 
-from grove_bridge.ask_human import AskHumanNotifierProtocol, build_ask_human_notifier
 from grove_bridge.config import BridgeConfig, LaneConfig, load_bridge_config
 from grove_bridge.grove import (
     GroveRunnerProtocol,
@@ -21,12 +18,95 @@ from grove_bridge.grove import (
     grove_metadata,
     summarize_stdout,
 )
-from grove_bridge.legacy import KanbanDbProtocol, KanbanTask, load_kanban_db
+from grove_bridge.notifier import NotifierProtocol, build_notifier
+from grove_bridge.store import ClaimedTask, NotifySub, SQLiteBoardStore, Task
 
 
-@runtime_checkable
-class Closeable(Protocol):
-    def close(self) -> None: ...
+class BoardStoreProtocol(Protocol):
+    def release_stale(
+        self,
+        *,
+        board: str,
+        now: int | None = None,
+        limit: int | None = None,
+    ) -> int: ...
+
+    def list_tasks(
+        self,
+        *,
+        board: str,
+        status: str | None = None,
+        assignee: str | None = None,
+        limit: int | None = None,
+    ) -> list[Task]: ...
+
+    def claim_next(
+        self,
+        *,
+        board: str,
+        assignee: str,
+        node_id: str,
+        ttl_seconds: int,
+    ) -> ClaimedTask | None: ...
+
+    def resolve_workspace(self, *, board: str, task: Task) -> Path: ...
+
+    def db_path(self) -> Path: ...
+
+    def heartbeat(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        claim_lock: str,
+        ttl_seconds: int,
+    ) -> bool: ...
+
+    def complete(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        claim_lock: str,
+        result: str,
+        summary: str,
+        metadata: Mapping[str, object],
+    ) -> bool: ...
+
+    def block(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        claim_lock: str,
+        reason: str,
+        metadata: Mapping[str, object] | None = None,
+        needs_human: bool = False,
+    ) -> bool: ...
+
+    def add_comment(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        author: str,
+        body: str,
+        metadata: Mapping[str, object] | None = None,
+    ) -> object: ...
+
+    def add_notify_sub(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        channel_kind: str,
+        room_id: str,
+        thread_id: str = "",
+        user_id: str | None = None,
+    ) -> NotifySub: ...
 
 
 @dataclass
@@ -48,32 +128,33 @@ class NodePool:
         self._lanes = lanes
         self._next_index = {assignee: 0 for assignee in lanes}
 
-    def acquire(self, lane: LaneConfig) -> str:
+    def peek(self, lane: LaneConfig) -> str:
+        index = self._next_index[lane.assignee] % len(lane.nodes)
+        return lane.nodes[index]
+
+    def advance(self, lane: LaneConfig) -> None:
         index = self._next_index[lane.assignee] % len(lane.nodes)
         self._next_index[lane.assignee] = index + 1
-        return lane.nodes[index]
 
 
 class PullExecutor:
-    """Single-process pull executor for grove-owned Legacy kanban lanes."""
+    """Single-process pull executor for grove-owned board lanes."""
 
     def __init__(
         self,
         *,
         config: BridgeConfig,
-        kanban_db: object | None = None,
+        store: BoardStoreProtocol | None = None,
         grove_runner: GroveRunnerProtocol | None = None,
-        ask_human_notifier: AskHumanNotifierProtocol | None = None,
+        notifier: NotifierProtocol | None = None,
     ) -> None:
         self.config = config
-        self.kanban_db = (
-            load_kanban_db() if kanban_db is None else cast(KanbanDbProtocol, kanban_db)
-        )
+        self.store: BoardStoreProtocol = store or SQLiteBoardStore(config.board_db_path)
         self.grove_runner = grove_runner or SubprocessGroveRunner(
             grove_binary=config.grove_binary,
             heartbeat_interval_seconds=config.heartbeat_interval_seconds,
         )
-        self.ask_human_notifier = ask_human_notifier
+        self.notifier = notifier or build_notifier(config.notifier)
         self.node_pool = NodePool(config.lanes)
 
     def run_once(self) -> TickResult:
@@ -82,41 +163,40 @@ class PullExecutor:
         for board in self.config.boards:
             if remaining <= 0:
                 break
-            with self._connect(board) as conn:
-                result.stale_released += self.kanban_db.release_stale_claims(conn)
-                for lane in self.config.lanes.values():
+            result.stale_released += self.store.release_stale(board=board)
+            for lane in self.config.lanes.values():
+                if remaining <= 0:
+                    break
+                candidates = self.store.list_tasks(
+                    board=board,
+                    assignee=lane.assignee,
+                    status="ready",
+                    limit=remaining,
+                )
+                result.scanned += len(candidates)
+                for _candidate in candidates:
                     if remaining <= 0:
                         break
-                    candidates = self.kanban_db.list_tasks(
-                        conn,
+                    node = self.node_pool.peek(lane)
+                    claimed = self.store.claim_next(
+                        board=board,
                         assignee=lane.assignee,
-                        status="ready",
-                        limit=remaining,
+                        node_id=node,
+                        ttl_seconds=self.config.claim_ttl_seconds,
                     )
-                    result.scanned += len(candidates)
-                    for candidate in candidates:
-                        if remaining <= 0:
-                            break
-                        claimed = self.kanban_db.claim_task(
-                            conn,
-                            candidate.id,
-                            ttl_seconds=self.config.claim_ttl_seconds,
-                            claimer=self._claimer(task_id=candidate.id),
-                        )
-                        if claimed is None:
-                            result.claim_conflicts += 1
-                            continue
-                        node = self.node_pool.acquire(lane)
-                        result.claimed += 1
-                        remaining -= 1
-                        self._execute_claimed(
-                            conn=conn,
-                            board=board,
-                            lane=lane,
-                            node=node,
-                            task=claimed,
-                            tick=result,
-                        )
+                    if claimed is None:
+                        result.claim_conflicts += 1
+                        continue
+                    self.node_pool.advance(lane)
+                    result.claimed += 1
+                    remaining -= 1
+                    self._execute_claimed(
+                        board=board,
+                        lane=lane,
+                        node=node,
+                        claimed=claimed,
+                        tick=result,
+                    )
         return result
 
     def run_forever(self, stop: Callable[[], bool] | None = None) -> None:
@@ -125,43 +205,41 @@ class PullExecutor:
             self.run_once()
             time.sleep(self.config.poll_interval_seconds)
 
-    @contextmanager
-    def _connect(self, board: str) -> Generator[object, None, None]:
-        conn = self.kanban_db.connect(board=board)
-        try:
-            yield conn
-        finally:
-            if isinstance(conn, Closeable):
-                conn.close()
-
     def _execute_claimed(
         self,
         *,
-        conn: object,
         board: str,
         lane: LaneConfig,
         node: str,
-        task: KanbanTask,
+        claimed: ClaimedTask,
         tick: TickResult,
     ) -> None:
+        task = claimed.task
         try:
-            workspace = self._resolve_workspace(task, board=board)
-            env = self._task_env(task, board=board, workspace=workspace)
+            workspace = self.store.resolve_workspace(board=board, task=task)
+            env = self._task_env(
+                board=board,
+                task=task,
+                run_id=claimed.run_id,
+                claim_lock=claimed.claim_lock,
+                workspace=workspace,
+            )
             prompt = build_task_prompt(task, board=board, workspace=workspace, env=env)
             run = self.grove_runner.run_task(
                 node=node,
                 prompt=prompt,
                 env=env,
                 lane=lane,
-                heartbeat=lambda: self._heartbeat(conn, task=task, node=node),
+                heartbeat=lambda: self._heartbeat(board=board, claimed=claimed),
             )
         except Exception as exc:
             tick.runner_errors += 1
             self._block_after_failure(
-                conn=conn,
-                task=task,
-                reason=f"grove bridge runner error for {node}: {exc}",
+                board=board,
+                claimed=claimed,
+                reason=f"grove runner error for {node}: {exc}",
                 comment=str(exc),
+                metadata={"node": node, "error": str(exc)},
                 tick=tick,
             )
             return
@@ -172,13 +250,14 @@ class PullExecutor:
 
         if run.returncode == 0:
             summary = summarize_stdout(run.stdout)
-            completed = self.kanban_db.complete_task(
-                conn,
-                task.id,
+            completed = self.store.complete(
+                board=board,
+                task_id=task.id,
+                run_id=claimed.run_id,
+                claim_lock=claimed.claim_lock,
                 result=run.stdout,
                 summary=summary,
                 metadata=grove_metadata(run),
-                expected_run_id=task.current_run_id,
             )
             if completed:
                 tick.completed += 1
@@ -188,99 +267,86 @@ class PullExecutor:
 
         failure_line = first_failure_line(run)
         self._block_after_failure(
-            conn=conn,
-            task=task,
+            board=board,
+            claimed=claimed,
             reason=f"grove ask failed for {node}: {failure_line}",
             comment=_failure_comment(run),
+            metadata=grove_metadata(run),
             tick=tick,
         )
 
     def _block_after_failure(
         self,
         *,
-        conn: object,
-        task: KanbanTask,
+        board: str,
+        claimed: ClaimedTask,
         reason: str,
         comment: str,
+        metadata: Mapping[str, object],
         tick: TickResult,
     ) -> None:
-        blocked = self.kanban_db.block_task(
-            conn,
-            task.id,
+        task = claimed.task
+        needs_human = self.notifier.enabled
+        blocked = self.store.block(
+            board=board,
+            task_id=task.id,
+            run_id=claimed.run_id,
+            claim_lock=claimed.claim_lock,
             reason=reason,
-            expected_run_id=task.current_run_id,
+            metadata=metadata,
+            needs_human=needs_human,
         )
         if blocked:
-            self.kanban_db.add_comment(conn, task.id, "grove-bridge", comment)
-            if self.ask_human_notifier is not None:
-                self.ask_human_notifier.notify_blocked(
-                    conn=conn,
-                    task=task,
-                    reason=reason,
-                    comment=comment,
+            self.store.add_comment(
+                board=board,
+                task_id=task.id,
+                author="grove-bridge",
+                body=comment,
+            )
+            if needs_human:
+                sub = self.store.add_notify_sub(
+                    board=board,
+                    task_id=task.id,
+                    channel_kind=self.notifier.channel_kind,
+                    room_id=self.notifier.room_id,
                 )
+                self.notifier.notify_blocked(task=task, sub=sub)
             tick.blocked += 1
         else:
             tick.terminal_conflicts += 1
 
-    def _heartbeat(self, conn: object, *, task: KanbanTask, node: str) -> bool:
-        claim_ok = self.kanban_db.heartbeat_claim(
-            conn,
-            task.id,
+    def _heartbeat(self, *, board: str, claimed: ClaimedTask) -> bool:
+        return self.store.heartbeat(
+            board=board,
+            task_id=claimed.task.id,
+            run_id=claimed.run_id,
+            claim_lock=claimed.claim_lock,
             ttl_seconds=self.config.claim_ttl_seconds,
-            claimer=task.claim_lock,
         )
-        worker_ok = self.kanban_db.heartbeat_worker(
-            conn,
-            task.id,
-            note=f"grove bridge running {node}",
-            expected_run_id=task.current_run_id,
-        )
-        return claim_ok and worker_ok
 
-    def _resolve_workspace(self, task: KanbanTask, *, board: str) -> Path:
-        resolver = getattr(self.kanban_db, "resolve_workspace", None)
-        if callable(resolver):
-            resolved = cast(Callable[..., object], resolver)(task, board=board)
-            if isinstance(resolved, Path):
-                return resolved
-            if isinstance(resolved, str):
-                return Path(resolved)
-            raise TypeError("resolve_workspace must return str or Path")
-        if task.workspace_path is not None:
-            return Path(task.workspace_path)
-        return Path.cwd() / ".worktrees" / task.id
-
-    def _task_env(self, task: KanbanTask, *, board: str, workspace: Path) -> dict[str, str]:
-        env = {
-            "LEGACY_KANBAN_TASK": task.id,
-            "LEGACY_KANBAN_BOARD": board,
-            "LEGACY_KANBAN_WORKSPACE": str(workspace),
-            "LEGACY_KANBAN_ASSIGNEE": task.assignee or "",
-            "LEGACY_KANBAN_WORKSPACE_KIND": task.workspace_kind,
+    def _task_env(
+        self,
+        *,
+        board: str,
+        task: Task,
+        run_id: str,
+        claim_lock: str,
+        workspace: Path,
+    ) -> dict[str, str]:
+        return {
+            "GROVE_BOARD_TASK": task.id,
+            "GROVE_BOARD_RUN_ID": run_id,
+            "GROVE_BOARD_BOARD": board,
+            "GROVE_BOARD_WORKSPACE": str(workspace),
+            "GROVE_BOARD_ASSIGNEE": task.assignee or "",
+            "GROVE_BOARD_WORKSPACE_KIND": task.workspace_kind,
+            "GROVE_BOARD_CLAIM_LOCK": claim_lock,
+            "GROVE_BOARD_DB": str(self.store.db_path()),
         }
-        if task.current_run_id is not None:
-            env["LEGACY_KANBAN_RUN_ID"] = str(task.current_run_id)
-        if task.claim_lock is not None:
-            env["LEGACY_KANBAN_CLAIM_LOCK"] = task.claim_lock
-        db_path = self._kanban_db_path(board)
-        if db_path is not None:
-            env["LEGACY_KANBAN_DB"] = db_path
-        return env
-
-    def _kanban_db_path(self, board: str) -> str | None:
-        path_fn = getattr(self.kanban_db, "kanban_db_path", None)
-        if not callable(path_fn):
-            return None
-        path = cast(Callable[..., object], path_fn)(board=board)
-        return str(path)
-
-    def _claimer(self, *, task_id: str) -> str:
-        return f"grove-bridge:{os.getpid()}:{task_id}"
 
 
 def build_task_prompt(
-    task: KanbanTask,
+    task: Task,
     *,
     board: str,
     workspace: Path,
@@ -289,14 +355,14 @@ def build_task_prompt(
     env_lines = "\n".join(f"{key}={value}" for key, value in sorted(env.items()))
     body = task.body.strip() if task.body else "(no body)"
     return (
-        "You are executing a Legacy kanban task through grove.\n\n"
+        "You are executing a grove board task.\n\n"
         f"Task: {task.id}\n"
         f"Board: {board}\n"
         f"Assignee lane: {task.assignee or '(unassigned)'}\n"
         f"Workspace: {workspace}\n\n"
         f"Title:\n{task.title}\n\n"
         f"Body:\n{body}\n\n"
-        "Legacy environment values for this task:\n"
+        "Environment values for this task:\n"
         f"{env_lines}\n\n"
         "Work in the resolved workspace when applicable. Return a concise handoff summary "
         "including changed files, verification commands, and remaining risks."
@@ -313,22 +379,14 @@ def _failure_comment(run: GroveRunResult) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the grove Legacy kanban pull executor.")
+    parser = argparse.ArgumentParser(description="Run the grove board pull executor.")
     parser.add_argument("--config", required=True, help="path to bridge TOML config")
     parser.add_argument("--once", action="store_true", help="run one polling tick and exit")
-    parser.add_argument(
-        "--legacy-agent-path",
-        help="optional path that contains legacy_cli/kanban_db.py",
-    )
     args = parser.parse_args(argv)
 
     config = load_bridge_config(args.config)
-    kanban_db = load_kanban_db(args.legacy_agent_path)
-    executor = PullExecutor(
-        config=config,
-        kanban_db=kanban_db,
-        ask_human_notifier=build_ask_human_notifier(config=config, kanban_db=kanban_db),
-    )
+    store = SQLiteBoardStore(config.board_db_path)
+    executor = PullExecutor(config=config, store=store, notifier=build_notifier(config.notifier))
     if args.once:
         executor.run_once()
     else:

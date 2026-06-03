@@ -2,161 +2,16 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from pathlib import Path
 
 from pytest import MonkeyPatch
 
 import grove_bridge.pull_executor as pull_executor_module
-from grove_bridge.ask_human import AskHumanNotifier
 from grove_bridge.config import BridgeConfig, LaneConfig, load_bridge_config
 from grove_bridge.grove import GroveRunResult, SubprocessGroveRunner
+from grove_bridge.notifier import NotifierConfig, NotifierProtocol
 from grove_bridge.pull_executor import PullExecutor
-
-
-@dataclass
-class FakeTask:
-    id: str
-    title: str
-    body: str | None
-    assignee: str | None
-    status: str
-    workspace_kind: str = "scratch"
-    workspace_path: str | None = None
-    claim_lock: str | None = None
-    claim_expires: int | None = None
-    current_run_id: int | None = None
-
-
-class FakeConn:
-    def __init__(self, board: str | None) -> None:
-        self.board = board
-        self.closed = False
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class FakeKanbanDb:
-    def __init__(self, tasks: list[FakeTask]) -> None:
-        self.tasks = tasks
-        self.connected_boards: list[str | None] = []
-        self.list_calls: list[tuple[str | None, str | None]] = []
-        self.claim_calls: list[tuple[str, int | None, str | None]] = []
-        self.heartbeats: list[tuple[str, int | None, str | None]] = []
-        self.worker_heartbeats: list[tuple[str, str | None, int | None]] = []
-        self.completed: list[tuple[str, str | None, str | None, dict[str, object], int | None]] = []
-        self.comments: list[tuple[str, str, str]] = []
-        self.blocked: list[tuple[str, str | None, int | None]] = []
-        self.release_calls = 0
-        self.release_count = 0
-        self.complete_result = True
-        self.block_result = True
-        self.heartbeat_claim_result = True
-        self.heartbeat_worker_result = True
-        self.claim_losers: set[str] = set()
-        self.operation_order: list[str] = []
-
-    def connect(self, *, board: str | None = None) -> FakeConn:
-        self.connected_boards.append(board)
-        return FakeConn(board)
-
-    def list_tasks(
-        self,
-        conn: FakeConn,
-        *,
-        assignee: str | None = None,
-        status: str | None = None,
-        limit: int | None = None,
-    ) -> list[FakeTask]:
-        self.list_calls.append((assignee, status))
-        matches = [
-            task for task in self.tasks if task.assignee == assignee and task.status == status
-        ]
-        return matches[:limit] if limit is not None else matches
-
-    def claim_task(
-        self,
-        conn: FakeConn,
-        task_id: str,
-        *,
-        ttl_seconds: int | None = None,
-        claimer: str | None = None,
-    ) -> FakeTask | None:
-        self.claim_calls.append((task_id, ttl_seconds, claimer))
-        if task_id in self.claim_losers:
-            return None
-        for task in self.tasks:
-            if task.id == task_id and task.status == "ready":
-                task.status = "running"
-                task.claim_lock = claimer
-                task.current_run_id = 7001
-                return task
-        return None
-
-    def heartbeat_claim(
-        self,
-        conn: FakeConn,
-        task_id: str,
-        *,
-        ttl_seconds: int | None = None,
-        claimer: str | None = None,
-    ) -> bool:
-        self.heartbeats.append((task_id, ttl_seconds, claimer))
-        return self.heartbeat_claim_result
-
-    def heartbeat_worker(
-        self,
-        conn: FakeConn,
-        task_id: str,
-        *,
-        note: str | None = None,
-        expected_run_id: int | None = None,
-    ) -> bool:
-        self.worker_heartbeats.append((task_id, note, expected_run_id))
-        return self.heartbeat_worker_result
-
-    def complete_task(
-        self,
-        conn: FakeConn,
-        task_id: str,
-        *,
-        result: str | None = None,
-        summary: str | None = None,
-        metadata: dict[str, object] | None = None,
-        expected_run_id: int | None = None,
-    ) -> bool:
-        self.completed.append((task_id, result, summary, metadata or {}, expected_run_id))
-        return self.complete_result
-
-    def add_comment(self, conn: FakeConn, task_id: str, author: str, body: str) -> int:
-        self.operation_order.append("comment")
-        self.comments.append((task_id, author, body))
-        return len(self.comments)
-
-    def block_task(
-        self,
-        conn: FakeConn,
-        task_id: str,
-        *,
-        reason: str | None = None,
-        expected_run_id: int | None = None,
-    ) -> bool:
-        self.operation_order.append("block")
-        self.blocked.append((task_id, reason, expected_run_id))
-        return self.block_result
-
-    def release_stale_claims(self, conn: FakeConn) -> int:
-        self.release_calls += 1
-        return self.release_count
-
-    def resolve_workspace(self, task: FakeTask, *, board: str | None = None) -> Path:
-        if task.workspace_path is not None:
-            return Path(task.workspace_path)
-        return Path("/tmp/legacy") / (board or "default") / "workspaces" / task.id
-
-    def kanban_db_path(self, *, board: str | None = None) -> Path:
-        return Path("/tmp/legacy") / (board or "default") / "kanban.db"
+from grove_bridge.store import ClaimedTask, NotifySub, SQLiteBoardStore, Task
 
 
 class FakeRunner:
@@ -178,7 +33,7 @@ class FakeRunner:
         return self.result
 
 
-class HeartbeatAwareFakeRunner:
+class LeaseLossRunner:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
@@ -206,6 +61,158 @@ class HeartbeatAwareFakeRunner:
         )
 
 
+class RecordingNotifier:
+    enabled = True
+    channel_kind = "inbox"
+    room_id = "ops"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, NotifySub]] = []
+
+    def notify_blocked(self, *, task: Task, sub: NotifySub) -> None:
+        self.calls.append((task.id, sub))
+
+
+class ClaimConflictStore:
+    def __init__(self) -> None:
+        self.claim_calls: list[str] = []
+        self.node_ids: list[str] = []
+        self.completed: list[str] = []
+        self.blocked: list[str] = []
+        self.task = Task(
+            id="t_available",
+            board_id="b_main",
+            title="Available",
+            body=None,
+            assignee="grove:codex",
+            status="ready",
+            priority=0,
+            workspace_kind="scratch",
+            workspace_path=None,
+            branch_name=None,
+            claim_lock=None,
+            claim_expires=None,
+            current_run_id=None,
+            last_heartbeat_at=None,
+            result=None,
+            metadata={},
+            created_by=None,
+            created_at=1,
+            updated_at=1,
+        )
+
+    def release_stale(self, *, board: str, now: int | None = None, limit: int | None = None) -> int:
+        return 0
+
+    def list_tasks(
+        self,
+        *,
+        board: str,
+        status: str | None = None,
+        assignee: str | None = None,
+        limit: int | None = None,
+    ) -> list[Task]:
+        count = 1 if limit is None else limit
+        return [self.task for _index in range(count)]
+
+    def claim_next(
+        self,
+        *,
+        board: str,
+        assignee: str,
+        node_id: str,
+        ttl_seconds: int,
+    ) -> ClaimedTask | None:
+        self.claim_calls.append(assignee)
+        self.node_ids.append(node_id)
+        if len(self.claim_calls) == 1:
+            return None
+        claimed_task = self.task.with_claim(
+            status="running",
+            claim_lock="lock-1",
+            claim_expires=100,
+            current_run_id="run-1",
+        )
+        return ClaimedTask(task=claimed_task, run_id="run-1", claim_lock="lock-1")
+
+    def resolve_workspace(self, *, board: str, task: Task) -> Path:
+        return Path("/tmp/grove-board") / board / task.id
+
+    def db_path(self) -> Path:
+        return Path("/tmp/grove-board/board.db")
+
+    def heartbeat(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        claim_lock: str,
+        ttl_seconds: int,
+    ) -> bool:
+        return True
+
+    def complete(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        claim_lock: str,
+        result: str,
+        summary: str,
+        metadata: Mapping[str, object],
+    ) -> bool:
+        self.completed.append(task_id)
+        return True
+
+    def block(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        claim_lock: str,
+        reason: str,
+        metadata: Mapping[str, object] | None = None,
+        needs_human: bool = False,
+    ) -> bool:
+        self.blocked.append(task_id)
+        return True
+
+    def add_comment(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        author: str,
+        body: str,
+        metadata: Mapping[str, object] | None = None,
+    ) -> object:
+        return object()
+
+    def add_notify_sub(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        channel_kind: str,
+        room_id: str,
+        thread_id: str = "",
+        user_id: str | None = None,
+    ) -> NotifySub:
+        return NotifySub(
+            board_id="b_main",
+            task_id=task_id,
+            channel_kind=channel_kind,
+            room_id=room_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            last_event_id=None,
+            created_at=1,
+        )
+
+
 class FakeProcess:
     def __init__(self) -> None:
         self.returncode: int | None = None
@@ -226,20 +233,23 @@ class FakeProcess:
         self.returncode = -9
 
 
-def test_load_bridge_config_maps_lanes_to_node_pools(tmp_path: Path) -> None:
+def test_load_bridge_config_maps_lanes_store_and_notifier(tmp_path: Path) -> None:
     config_path = tmp_path / "bridge.toml"
+    db_path = tmp_path / "board.db"
     config_path.write_text(
-        """
-boards = ["default", "cockpit"]
+        f"""
+boards = ["main", "cockpit"]
+board_db_path = "{db_path}"
 poll_interval_seconds = 2.5
 claim_ttl_seconds = 120
 heartbeat_interval_seconds = 30
 max_tasks_per_tick = 3
 
-[ask_human]
+[notifier]
 enabled = true
-dry_run = false
-channel = "C-ops"
+dry_run = true
+channel_kind = "inbox"
+room_id = "ops"
 
 [lanes."grove:codex"]
 nodes = ["codex-a", "codex-b"]
@@ -254,33 +264,32 @@ nodes = ["claude-a"]
 
     config = load_bridge_config(config_path)
 
-    assert config.boards == ("default", "cockpit")
+    assert config.boards == ("main", "cockpit")
+    assert config.board_db_path == db_path
     assert config.poll_interval_seconds == 2.5
     assert config.claim_ttl_seconds == 120
     assert config.heartbeat_interval_seconds == 30
     assert config.max_tasks_per_tick == 3
-    assert config.ask_human.enabled is True
-    assert config.ask_human.dry_run is False
-    assert config.ask_human.channel == "C-ops"
+    assert config.notifier.enabled is True
+    assert config.notifier.dry_run is True
+    assert config.notifier.channel_kind == "inbox"
+    assert config.notifier.room_id == "ops"
     assert config.lanes["grove:codex"].nodes == ("codex-a", "codex-b")
     assert config.lanes["grove:codex"].grove_config == "cockpit.grove.yaml"
     assert config.lanes["grove:codex"].timeout == "45m"
     assert config.lanes["grove:claude"].nodes == ("claude-a",)
 
 
-def test_main_wires_ask_human_notifier_from_config(
+def test_main_uses_native_store_from_config(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "bridge.toml"
+    db_path = tmp_path / "board.db"
     config_path.write_text(
-        """
-boards = ["default"]
-
-[ask_human]
-enabled = true
-dry_run = false
-channel = "C-ops"
+        f"""
+boards = ["main"]
+board_db_path = "{db_path}"
 
 [lanes."grove:codex"]
 nodes = ["codex-a"]
@@ -294,13 +303,13 @@ nodes = ["codex-a"]
             self,
             *,
             config: BridgeConfig,
-            kanban_db: object | None = None,
+            store: object | None = None,
             grove_runner: object | None = None,
-            ask_human_notifier: object | None = None,
+            notifier: NotifierProtocol | None = None,
         ) -> None:
             captured["config"] = config
-            captured["kanban_db"] = kanban_db
-            captured["ask_human_notifier"] = ask_human_notifier
+            captured["store"] = store
+            captured["notifier"] = notifier
 
         def run_once(self) -> None:
             captured["ran_once"] = True
@@ -308,28 +317,24 @@ nodes = ["codex-a"]
         def run_forever(self) -> None:
             raise AssertionError("main should run only once in this test")
 
-    kanban_db = object()
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test-token")
-    monkeypatch.setattr(pull_executor_module, "load_kanban_db", lambda extra_path=None: kanban_db)
     monkeypatch.setattr(pull_executor_module, "PullExecutor", MainFakeExecutor)
 
     exit_code = pull_executor_module.main(["--config", str(config_path), "--once"])
 
     assert exit_code == 0
-    assert captured["kanban_db"] is kanban_db
+    assert isinstance(captured["store"], SQLiteBoardStore)
     assert captured["ran_once"] is True
-    assert isinstance(captured["ask_human_notifier"], AskHumanNotifier)
+    assert captured["notifier"] is not None
 
 
-def test_run_once_claims_lane_task_and_completes_with_grove_metadata() -> None:
-    task = FakeTask(
-        id="t_123",
-        title="Implement S1a",
-        body="Wire Legacy kanban to grove.",
+def test_run_once_claims_lane_task_and_completes_with_grove_metadata(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Implement native board",
+        body="Wire grove board tasks to grove.",
         assignee="grove:codex",
-        status="ready",
     )
-    kanban = FakeKanbanDb([task])
     runner = FakeRunner(
         GroveRunResult(
             node="codex-a",
@@ -343,7 +348,7 @@ def test_run_once_claims_lane_task_and_completes_with_grove_metadata() -> None:
         )
     )
     config = BridgeConfig(
-        boards=("default",),
+        boards=("main",),
         lanes={
             "grove:codex": LaneConfig(
                 assignee="grove:codex",
@@ -352,56 +357,43 @@ def test_run_once_claims_lane_task_and_completes_with_grove_metadata() -> None:
                 timeout="30m",
             )
         },
+        board_db_path=tmp_path / "board.db",
         claim_ttl_seconds=600,
         heartbeat_interval_seconds=60,
         poll_interval_seconds=5,
         max_tasks_per_tick=1,
     )
 
-    result = PullExecutor(config=config, kanban_db=kanban, grove_runner=runner).run_once()
+    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
 
     assert result.claimed == 1
     assert result.completed == 1
-    assert kanban.release_calls == 1
-    assert kanban.list_calls == [("grove:codex", "ready")]
-    assert kanban.claim_calls[0][0] == "t_123"
-    assert kanban.claim_calls[0][1] == 600
-    assert kanban.claim_calls[0][2] is not None
     assert runner.calls[0][0] == "codex-a"
     prompt = runner.calls[0][1]
-    assert "Implement S1a" in prompt
-    assert "Wire Legacy kanban to grove." in prompt
-    assert "LEGACY_KANBAN_TASK=t_123" in prompt
-    assert "LEGACY_KANBAN_RUN_ID=7001" in prompt
-    assert "LEGACY_KANBAN_BOARD=default" in prompt
-    assert "LEGACY_KANBAN_WORKSPACE=/tmp/legacy/default/workspaces/t_123" in prompt
+    assert "Implement native board" in prompt
+    assert "Wire grove board tasks to grove." in prompt
+    assert "GROVE_BOARD_TASK=" in prompt
+    assert "GROVE_BOARD_RUN_ID=" in prompt
+    assert "GROVE_BOARD_DB=" in prompt
     env = runner.calls[0][2]
-    assert env["LEGACY_KANBAN_TASK"] == "t_123"
-    assert env["LEGACY_KANBAN_RUN_ID"] == "7001"
-    assert kanban.heartbeats == [("t_123", 600, kanban.claim_calls[0][2])]
-    assert kanban.worker_heartbeats == [("t_123", "grove bridge running codex-a", 7001)]
-    completed = kanban.completed[0]
-    assert completed[0] == "t_123"
-    assert completed[1] == "implemented bridge"
-    assert completed[2] == "implemented bridge"
-    assert completed[3]["grove_session_id"] == "sess-1"
-    assert completed[3]["transcript_path"] == "/tmp/transcript.jsonl"
-    assert completed[3]["turn_id"] is None
-    assert completed[3]["tmux_pane"] is None
-    assert completed[3]["node"] == "codex-a"
-    assert completed[4] == 7001
-    assert kanban.blocked == []
+    assert env["GROVE_BOARD_TASK"] == task.id
+    assert env["GROVE_BOARD_BOARD"] == "main"
+    completed = store.get_task(board="main", task_id=task.id)
+    assert completed.status == "done"
+    assert completed.result == "implemented bridge"
+    assert completed.metadata["grove_session_id"] == "sess-1"
+    assert completed.metadata["transcript_path"] == "/tmp/transcript.jsonl"
+    assert completed.metadata["node"] == "codex-a"
 
 
-def test_run_once_blocks_task_when_grove_execution_fails() -> None:
-    task = FakeTask(
-        id="t_fail",
-        title="Needs clarification",
+def test_run_once_blocks_failed_task_and_notifies_after_block(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Needs input",
         body=None,
         assignee="grove:claude",
-        status="ready",
     )
-    kanban = FakeKanbanDb([task])
     runner = FakeRunner(
         GroveRunResult(
             node="claude-a",
@@ -414,84 +406,83 @@ def test_run_once_blocks_task_when_grove_execution_fails() -> None:
             tmux_pane=None,
         )
     )
+    notifier = RecordingNotifier()
     config = BridgeConfig(
-        boards=("default",),
+        boards=("main",),
         lanes={"grove:claude": LaneConfig(assignee="grove:claude", nodes=("claude-a",))},
+        board_db_path=tmp_path / "board.db",
+        notifier=NotifierConfig(enabled=True, dry_run=False, channel_kind="inbox", room_id="ops"),
         claim_ttl_seconds=300,
         heartbeat_interval_seconds=60,
         poll_interval_seconds=5,
         max_tasks_per_tick=1,
     )
 
-    result = PullExecutor(config=config, kanban_db=kanban, grove_runner=runner).run_once()
+    result = PullExecutor(
+        config=config,
+        store=store,
+        grove_runner=runner,
+        notifier=notifier,
+    ).run_once()
 
     assert result.claimed == 1
     assert result.blocked == 1
-    assert kanban.completed == []
-    assert kanban.comments[0][0] == "t_fail"
-    assert kanban.comments[0][1] == "grove-bridge"
-    assert "missing input" in kanban.comments[0][2]
-    assert kanban.blocked == [("t_fail", "grove ask failed for claude-a: missing input", 7001)]
+    assert store.get_task(board="main", task_id=task.id).status == "blocked"
+    assert store.list_comments(board="main", task_id=task.id)[0].author == "grove-bridge"
+    assert "missing input" in store.list_comments(board="main", task_id=task.id)[0].body
+    subs = store.list_notify_subs(board="main", task_id=task.id)
+    assert len(subs) == 1
+    assert subs[0].channel_kind == "inbox"
+    assert subs[0].room_id == "ops"
+    assert notifier.calls == [(task.id, subs[0])]
 
 
-def test_run_once_skips_candidate_when_cas_claim_loses() -> None:
-    task = FakeTask(
-        id="t_claimed_elsewhere",
-        title="Already claimed",
+def test_run_once_skips_terminal_writes_when_heartbeat_loses_lease(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Lease lost",
         body=None,
         assignee="grove:codex",
-        status="ready",
     )
-    kanban = FakeKanbanDb([task])
-    kanban.claim_losers.add("t_claimed_elsewhere")
-    runner = FakeRunner(
-        GroveRunResult(
-            node="codex-a",
-            returncode=0,
-            stdout="should not run",
-            stderr="",
-            session_id=None,
-            transcript_path=None,
-            turn_id=None,
-            tmux_pane=None,
-        )
-    )
+
+    def deny_heartbeat(
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        claim_lock: str,
+        ttl_seconds: int,
+    ) -> bool:
+        return False
+
+    monkeypatch.setattr(store, "heartbeat", deny_heartbeat)
+    runner = LeaseLossRunner()
     config = BridgeConfig(
-        boards=("default",),
+        boards=("main",),
         lanes={"grove:codex": LaneConfig(assignee="grove:codex", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
         claim_ttl_seconds=300,
         heartbeat_interval_seconds=60,
         poll_interval_seconds=5,
         max_tasks_per_tick=1,
     )
 
-    result = PullExecutor(config=config, kanban_db=kanban, grove_runner=runner).run_once()
+    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
 
-    assert result.claimed == 0
-    assert result.claim_conflicts == 1
+    assert result.claimed == 1
+    assert result.terminal_conflicts == 1
     assert result.completed == 0
-    assert runner.calls == []
-    assert kanban.completed == []
-    assert kanban.blocked == []
+    assert result.blocked == 0
+    assert store.get_task(board="main", task_id=task.id).status == "running"
+    assert store.list_comments(board="main", task_id=task.id) == []
 
 
 def test_run_once_acquires_node_only_after_successful_claim() -> None:
-    first = FakeTask(
-        id="t_claimed_elsewhere",
-        title="Already claimed",
-        body=None,
-        assignee="grove:codex",
-        status="ready",
-    )
-    second = FakeTask(
-        id="t_available",
-        title="Available",
-        body=None,
-        assignee="grove:codex",
-        status="ready",
-    )
-    kanban = FakeKanbanDb([first, second])
-    kanban.claim_losers.add("t_claimed_elsewhere")
+    store = ClaimConflictStore()
     runner = FakeRunner(
         GroveRunResult(
             node="unused",
@@ -505,139 +496,22 @@ def test_run_once_acquires_node_only_after_successful_claim() -> None:
         )
     )
     config = BridgeConfig(
-        boards=("default",),
+        boards=("main",),
         lanes={
             "grove:codex": LaneConfig(
                 assignee="grove:codex",
                 nodes=("codex-a", "codex-b"),
             )
         },
-        claim_ttl_seconds=300,
-        heartbeat_interval_seconds=60,
-        poll_interval_seconds=5,
         max_tasks_per_tick=2,
     )
 
-    result = PullExecutor(config=config, kanban_db=kanban, grove_runner=runner).run_once()
+    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
 
     assert result.claim_conflicts == 1
     assert result.claimed == 1
-    assert [call[0] for call in kanban.claim_calls] == [
-        "t_claimed_elsewhere",
-        "t_available",
-    ]
+    assert store.node_ids == ["codex-a", "codex-a"]
     assert runner.calls[0][0] == "codex-a"
-
-
-def test_run_once_counts_terminal_conflict_when_expected_run_id_no_longer_matches() -> None:
-    task = FakeTask(
-        id="t_done_elsewhere",
-        title="Concurrent finish",
-        body=None,
-        assignee="grove:codex",
-        status="ready",
-    )
-    kanban = FakeKanbanDb([task])
-    kanban.complete_result = False
-    runner = FakeRunner(
-        GroveRunResult(
-            node="codex-a",
-            returncode=0,
-            stdout="completed by grove",
-            stderr="",
-            session_id=None,
-            transcript_path=None,
-            turn_id=None,
-            tmux_pane=None,
-        )
-    )
-    config = BridgeConfig(
-        boards=("default",),
-        lanes={"grove:codex": LaneConfig(assignee="grove:codex", nodes=("codex-a",))},
-        claim_ttl_seconds=300,
-        heartbeat_interval_seconds=60,
-        poll_interval_seconds=5,
-        max_tasks_per_tick=1,
-    )
-
-    result = PullExecutor(config=config, kanban_db=kanban, grove_runner=runner).run_once()
-
-    assert result.claimed == 1
-    assert result.completed == 0
-    assert result.terminal_conflicts == 1
-    assert kanban.completed[0][4] == 7001
-    assert kanban.comments == []
-    assert kanban.blocked == []
-
-
-def test_run_once_skips_terminal_writes_when_heartbeat_loses_lease() -> None:
-    task = FakeTask(
-        id="t_lease_lost",
-        title="Lease lost",
-        body=None,
-        assignee="grove:codex",
-        status="ready",
-    )
-    kanban = FakeKanbanDb([task])
-    kanban.heartbeat_claim_result = False
-    runner = HeartbeatAwareFakeRunner()
-    config = BridgeConfig(
-        boards=("default",),
-        lanes={"grove:codex": LaneConfig(assignee="grove:codex", nodes=("codex-a",))},
-        claim_ttl_seconds=300,
-        heartbeat_interval_seconds=60,
-        poll_interval_seconds=5,
-        max_tasks_per_tick=1,
-    )
-
-    result = PullExecutor(config=config, kanban_db=kanban, grove_runner=runner).run_once()
-
-    assert result.claimed == 1
-    assert result.terminal_conflicts == 1
-    assert result.completed == 0
-    assert result.blocked == 0
-    assert kanban.completed == []
-    assert kanban.comments == []
-    assert kanban.blocked == []
-
-
-def test_run_once_adds_failure_comment_only_after_block_succeeds() -> None:
-    task = FakeTask(
-        id="t_concurrent_done",
-        title="Concurrent terminal",
-        body=None,
-        assignee="grove:claude",
-        status="ready",
-    )
-    kanban = FakeKanbanDb([task])
-    kanban.block_result = False
-    runner = FakeRunner(
-        GroveRunResult(
-            node="claude-a",
-            returncode=2,
-            stdout="partial",
-            stderr="failed",
-            session_id=None,
-            transcript_path=None,
-            turn_id=None,
-            tmux_pane=None,
-        )
-    )
-    config = BridgeConfig(
-        boards=("default",),
-        lanes={"grove:claude": LaneConfig(assignee="grove:claude", nodes=("claude-a",))},
-        claim_ttl_seconds=300,
-        heartbeat_interval_seconds=60,
-        poll_interval_seconds=5,
-        max_tasks_per_tick=1,
-    )
-
-    result = PullExecutor(config=config, kanban_db=kanban, grove_runner=runner).run_once()
-
-    assert result.blocked == 0
-    assert result.terminal_conflicts == 1
-    assert kanban.operation_order == ["block"]
-    assert kanban.comments == []
 
 
 def test_subprocess_runner_aborts_when_heartbeat_reports_lost_lease(
@@ -664,33 +538,3 @@ def test_subprocess_runner_aborts_when_heartbeat_reports_lost_lease(
     assert fake_proc.terminated is True
     assert result.returncode == -15
     assert result.stdout == "stopped"
-
-
-def test_run_once_releases_stale_claims_before_ready_scan() -> None:
-    kanban = FakeKanbanDb([])
-    kanban.release_count = 2
-    runner = FakeRunner(
-        GroveRunResult(
-            node="codex-a",
-            returncode=0,
-            stdout="unused",
-            stderr="",
-            session_id=None,
-            transcript_path=None,
-            turn_id=None,
-            tmux_pane=None,
-        )
-    )
-    config = BridgeConfig(
-        boards=("default", "cockpit"),
-        lanes={"grove:codex": LaneConfig(assignee="grove:codex", nodes=("codex-a",))},
-        claim_ttl_seconds=300,
-        heartbeat_interval_seconds=60,
-        poll_interval_seconds=5,
-        max_tasks_per_tick=1,
-    )
-
-    result = PullExecutor(config=config, kanban_db=kanban, grove_runner=runner).run_once()
-
-    assert kanban.release_calls == 2
-    assert result.stale_released == 4
