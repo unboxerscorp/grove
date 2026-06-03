@@ -2,6 +2,7 @@
 import { Command } from "commander";
 
 import { cmdAsk } from "./commands/ask.js";
+import { cmdDelegate } from "./commands/delegate.js";
 import { cmdDespawn } from "./commands/despawn.js";
 import { cmdDown } from "./commands/down.js";
 import { cmdGather } from "./commands/gather.js";
@@ -118,6 +119,20 @@ program
   .action(
     run((node: string | undefined, opts: Record<string, unknown>) =>
       cmdDespawn(node, withConfig(opts)),
+    ),
+  );
+
+program
+  .command("delegate <node> <title...>")
+  .description("create a ready board task assigned to a grove node")
+  .option("--body <text>", "task body")
+  .option("--board <board>", "target board slug", "default")
+  .option("--session <session>", "target grove session/project")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .option("--json", "print the created task as JSON")
+  .action(
+    run((node: string, title: string[], opts: Record<string, unknown>) =>
+      cmdDelegate(node, rawVariadicMessage("delegate", node, title), withConfig(opts)),
     ),
   );
 

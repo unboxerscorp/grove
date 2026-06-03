@@ -12,4 +12,11 @@ describe("CLI help text", () => {
 
     expect(source).toContain("first terminal event among listed nodes");
   });
+
+  test("delegate command creates assigned board tasks", () => {
+    const source = readFileSync(join(here, "cli.ts"), "utf8");
+
+    expect(source).toContain("delegate <node> <title...>");
+    expect(source).toContain("create a ready board task assigned to a grove node");
+  });
 });
