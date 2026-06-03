@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -256,6 +257,28 @@ def test_audit_filters_apply_before_limit_for_pagination(tmp_path: Path) -> None
     assert done_page == []
     assert [event.id for event in node_page] == [first_assign.id]
     assert first_page[0].cursor < second_page[0].cursor
+
+
+def test_audit_event_sanitizes_extra_payload_strings(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    secret = "xoxb-" + ("a" * 44)
+    event = store.add_audit_event(
+        board="main",
+        kind="audit.task.retro",
+        actor={"kind": "node", "id": f"/Users/chopin/{secret}", "login": "maker"},
+        action="retro",
+        target={"type": "task", "id": "task-a", "node": f"/etc/{secret}"},
+        payload={"node": f"/Applications/{secret}", "nested": {"path": "/usr/local/bin"}},
+        summary=f"retro from /Users/chopin/project {secret}",
+    )
+
+    encoded = json.dumps(event.payload)
+    assert secret not in encoded
+    assert "/Users/chopin" not in encoded
+    assert "/Applications" not in encoded
+    assert "/usr/local/bin" not in encoded
+    assert event.payload["summary"] == "retro from [path] [redacted]"
+    assert event.payload["node"] == "[path]"
 
 
 def test_release_stale_returns_running_tasks_to_ready(tmp_path: Path) -> None:

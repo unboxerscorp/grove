@@ -7,7 +7,13 @@ from pathlib import Path
 from pytest import MonkeyPatch
 
 import grove_bridge.pull_executor as pull_executor_module
-from grove_bridge.config import BridgeConfig, LaneConfig, load_bridge_config
+from grove_bridge.config import (
+    AutonomousPickupConfig,
+    AutoPickupNodeConfig,
+    BridgeConfig,
+    LaneConfig,
+    load_bridge_config,
+)
 from grove_bridge.grove import GroveRunResult, SubprocessGroveRunner
 from grove_bridge.notifier import NotifierConfig, NotifierProtocol
 from grove_bridge.pull_executor import PullExecutor
@@ -75,7 +81,7 @@ class RecordingNotifier:
 
 class ClaimConflictStore:
     def __init__(self) -> None:
-        self.claim_calls: list[str] = []
+        self.claim_calls: list[str | None] = []
         self.node_ids: list[str] = []
         self.completed: list[str] = []
         self.blocked: list[str] = []
@@ -121,9 +127,10 @@ class ClaimConflictStore:
         self,
         *,
         board: str,
-        assignee: str,
+        assignee: str | None,
         node_id: str,
         ttl_seconds: int,
+        task_id: str | None = None,
     ) -> ClaimedTask | None:
         self.claim_calls.append(assignee)
         self.node_ids.append(node_id)
@@ -213,6 +220,25 @@ class ClaimConflictStore:
             last_event_id=None,
             created_at=1,
         )
+
+    def add_audit_event(
+        self,
+        *,
+        board: str,
+        kind: str,
+        actor: Mapping[str, object],
+        action: str,
+        target: Mapping[str, object],
+        task_id: str | None = None,
+        run_id: str | None = None,
+        status: str = "ok",
+        summary: str | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> object:
+        return object()
+
+    def last_autopickup_at(self, *, board: str, node: str) -> int | None:
+        return None
 
 
 class FakeProcess:
@@ -513,6 +539,369 @@ def test_run_once_claims_node_assignee_without_consuming_other_nodes_on_conflict
     assert result.claimed == 1
     assert store.node_ids == ["codex-a", "codex-a"]
     assert runner.calls[0][0] == "codex-a"
+
+
+def test_autonomous_pickup_default_off_leaves_unassigned_ready_task(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Unassigned",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="done",
+            stderr="",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+    )
+
+    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+
+    assert result.claimed == 0
+    assert result.autopicked == 0
+    assert runner.calls == []
+    assert store.get_task(board="main", task_id=task.id).status == "ready"
+    assert store.get_task(board="main", task_id=task.id).assignee is None
+
+
+def test_autonomous_pickup_claims_matching_unassigned_task_and_audits(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Pick me up",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="done",
+            stderr="",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            cooldown_seconds=300,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=True, roles=("maker",))},
+        ),
+    )
+
+    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+    audits = store.list_audit_events(board="main", action="autopickup", limit=10)
+
+    assert result.claimed == 1
+    assert result.autopicked == 1
+    assert result.completed == 1
+    assert runner.calls[0][0] == "codex-a"
+    completed = store.get_task(board="main", task_id=task.id)
+    assert completed.status == "done"
+    assert completed.assignee == "codex-a"
+    assert len(audits) == 1
+    assert audits[0].kind == "audit.task.autopickup"
+    assert audits[0].payload["actor"] == {
+        "kind": "node",
+        "id": "codex-a",
+        "login": "codex-a",
+        "role": "none",
+    }
+    assert audits[0].payload["target"] == {"type": "task", "id": task.id, "node": "codex-a"}
+
+
+def test_autonomous_pickup_cooldown_limits_repeated_claims(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    first = store.create_task(
+        board="main",
+        title="First",
+        body=None,
+        assignee=None,
+        metadata={"capability": "python"},
+    )
+    second = store.create_task(
+        board="main",
+        title="Second",
+        body=None,
+        assignee=None,
+        metadata={"capability": "python"},
+    )
+    now = 1000.0
+    monkeypatch.setattr("time.time", lambda: now)
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="done",
+            stderr="",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        max_tasks_per_tick=2,
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            cooldown_seconds=300,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=True, capabilities=("python",))},
+        ),
+    )
+    executor = PullExecutor(config=config, store=store, grove_runner=runner)
+
+    first_result = executor.run_once()
+    second_result = executor.run_once()
+    now = 1400.0
+    third_result = executor.run_once()
+
+    assert first_result.autopicked == 1
+    assert second_result.autopicked == 0
+    assert third_result.autopicked == 1
+    statuses = {
+        store.get_task(board="main", task_id=first.id).status,
+        store.get_task(board="main", task_id=second.id).status,
+    }
+    assert statuses == {"done"}
+
+
+def test_autonomous_pickup_cooldown_persists_across_executor_restart(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    first = store.create_task(
+        board="main",
+        title="First",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    second = store.create_task(
+        board="main",
+        title="Second",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    now = 1000.0
+    monkeypatch.setattr("time.time", lambda: now)
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="done",
+            stderr="",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        max_tasks_per_tick=2,
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            cooldown_seconds=300,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=True, roles=("maker",))},
+        ),
+    )
+
+    first_result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+    now = 1001.0
+    second_result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+    now = 1400.0
+    third_result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+
+    assert first_result.autopicked == 1
+    assert second_result.autopicked == 0
+    assert third_result.autopicked == 1
+    assert store.get_task(board="main", task_id=first.id).status == "done"
+    assert store.get_task(board="main", task_id=second.id).status == "done"
+
+
+def test_autonomous_pickup_respects_inflight_and_kill_switches(tmp_path: Path) -> None:
+    inflight_store = SQLiteBoardStore(tmp_path / "inflight.db")
+    running = inflight_store.create_task(
+        board="main",
+        title="Already running",
+        body=None,
+        assignee="codex-a",
+    )
+    assert inflight_store.claim_next(
+        board="main",
+        assignee="codex-a",
+        node_id="codex-a",
+        ttl_seconds=300,
+        task_id=running.id,
+    )
+    ready = inflight_store.create_task(
+        board="main",
+        title="Ready unassigned",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="done",
+            stderr="",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            kill_switch=False,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=True, roles=("maker",))},
+        ),
+    )
+
+    inflight = PullExecutor(config=config, store=inflight_store, grove_runner=runner).run_once()
+    assert inflight.autopicked == 0
+    assert inflight_store.get_task(board="main", task_id=ready.id).status == "ready"
+
+    global_store = SQLiteBoardStore(tmp_path / "global-kill.db")
+    global_ready = global_store.create_task(
+        board="main",
+        title="Global kill",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    global_kill = PullExecutor(
+        config=BridgeConfig(
+            boards=("main",),
+            lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+            board_db_path=tmp_path / "board.db",
+            autonomous_pickup=AutonomousPickupConfig(
+                enabled=True,
+                kill_switch=True,
+                nodes={"codex-a": AutoPickupNodeConfig(enabled=True, roles=("maker",))},
+            ),
+        ),
+        store=global_store,
+        grove_runner=runner,
+    ).run_once()
+
+    node_store = SQLiteBoardStore(tmp_path / "node-kill.db")
+    node_ready = node_store.create_task(
+        board="main",
+        title="Node kill",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker"},
+    )
+    node_kill = PullExecutor(
+        config=BridgeConfig(
+            boards=("main",),
+            lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+            board_db_path=tmp_path / "board.db",
+            autonomous_pickup=AutonomousPickupConfig(
+                enabled=True,
+                nodes={
+                    "codex-a": AutoPickupNodeConfig(
+                        enabled=True,
+                        kill_switch=True,
+                        roles=("maker",),
+                    )
+                },
+            ),
+        ),
+        store=node_store,
+        grove_runner=runner,
+    ).run_once()
+
+    assert global_kill.autopicked == 0
+    assert node_kill.autopicked == 0
+    assert global_store.get_task(board="main", task_id=global_ready.id).status == "ready"
+    assert node_store.get_task(board="main", task_id=node_ready.id).status == "ready"
+    assert runner.calls == []
+
+
+def test_autonomous_pickup_ignores_rule_mismatch_and_repair_tasks(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    mismatch = store.create_task(
+        board="main",
+        title="Mismatch",
+        body=None,
+        assignee=None,
+        metadata={"role": "reviewer"},
+    )
+    repair = store.create_task(
+        board="main",
+        title="Repair",
+        body=None,
+        assignee=None,
+        metadata={"role": "maker", "repair": True},
+    )
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="done",
+            stderr="",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            nodes={"codex-a": AutoPickupNodeConfig(enabled=True, roles=("maker",))},
+        ),
+    )
+
+    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+
+    assert result.autopicked == 0
+    assert store.get_task(board="main", task_id=mismatch.id).status == "ready"
+    assert store.get_task(board="main", task_id=repair.id).status == "ready"
+    assert runner.calls == []
 
 
 def test_main_builds_session_board_config_from_registry(

@@ -35,6 +35,26 @@ class LaneConfig:
 
 
 @dataclass(frozen=True)
+class AutoPickupNodeConfig:
+    enabled: bool = False
+    kill_switch: bool = False
+    roles: tuple[str, ...] = ()
+    capabilities: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class AutonomousPickupConfig:
+    enabled: bool = False
+    kill_switch: bool = False
+    cooldown_seconds: int = 300
+    nodes: Mapping[str, AutoPickupNodeConfig] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.cooldown_seconds < 0:
+            raise ValueError("autonomous_pickup.cooldown_seconds must be non-negative")
+
+
+@dataclass(frozen=True)
 class BridgeConfig:
     """Runtime settings for one pull-executor daemon."""
 
@@ -47,6 +67,7 @@ class BridgeConfig:
     max_tasks_per_tick: int = 1
     grove_binary: str = "grove"
     notifier: NotifierConfig = field(default_factory=NotifierConfig)
+    autonomous_pickup: AutonomousPickupConfig = field(default_factory=AutonomousPickupConfig)
 
     def __post_init__(self) -> None:
         if not self.boards:
@@ -104,6 +125,7 @@ def load_bridge_config(path: str | Path) -> BridgeConfig:
             field="grove_binary",
         ),
         notifier=_notifier_config(raw.get("notifier")),
+        autonomous_pickup=_autonomous_pickup_config(raw.get("autonomous_pickup")),
     )
 
 
@@ -179,6 +201,58 @@ def _notifier_config(value: object) -> NotifierConfig:
     )
 
 
+def _autonomous_pickup_config(value: object) -> AutonomousPickupConfig:
+    if value is None:
+        return AutonomousPickupConfig()
+    if not isinstance(value, dict):
+        raise ValueError("autonomous_pickup must be a table")
+    raw = cast(Mapping[str, object], value)
+    return AutonomousPickupConfig(
+        enabled=_bool(
+            raw.get("enabled", AutonomousPickupConfig.enabled),
+            field="autonomous_pickup.enabled",
+        ),
+        kill_switch=_bool(
+            raw.get("kill_switch", AutonomousPickupConfig.kill_switch),
+            field="autonomous_pickup.kill_switch",
+        ),
+        cooldown_seconds=_non_negative_int(
+            raw.get("cooldown_seconds", AutonomousPickupConfig.cooldown_seconds),
+            field="autonomous_pickup.cooldown_seconds",
+        ),
+        nodes=_autonomous_node_configs(raw.get("nodes")),
+    )
+
+
+def _autonomous_node_configs(value: object) -> dict[str, AutoPickupNodeConfig]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("autonomous_pickup.nodes must be a table")
+    raw_nodes = cast(Mapping[str, object], value)
+    nodes: dict[str, AutoPickupNodeConfig] = {}
+    for node, raw_config in raw_nodes.items():
+        if not isinstance(raw_config, dict):
+            raise ValueError(f"autonomous_pickup.nodes.{node} must be a table")
+        raw = cast(Mapping[str, object], raw_config)
+        nodes[node] = AutoPickupNodeConfig(
+            enabled=_bool(
+                raw.get("enabled", AutoPickupNodeConfig.enabled),
+                field=f"{node}.enabled",
+            ),
+            kill_switch=_bool(
+                raw.get("kill_switch", AutoPickupNodeConfig.kill_switch),
+                field=f"{node}.kill_switch",
+            ),
+            roles=_optional_string_tuple(raw.get("roles"), field=f"{node}.roles"),
+            capabilities=_optional_string_tuple(
+                raw.get("capabilities"),
+                field=f"{node}.capabilities",
+            ),
+        )
+    return nodes
+
+
 def _string_tuple(value: object, *, field: str) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ValueError(f"{field} must be a string array")
@@ -190,6 +264,12 @@ def _string_tuple(value: object, *, field: str) -> tuple[str, ...]:
     if not items:
         raise ValueError(f"{field} must not be empty")
     return tuple(items)
+
+
+def _optional_string_tuple(value: object, *, field: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    return _string_tuple(value, field=field)
 
 
 def _string(value: object, *, field: str) -> str:
@@ -215,6 +295,12 @@ def _path(value: object, *, field: str) -> Path:
 def _positive_int(value: object, *, field: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ValueError(f"{field} must be a positive integer")
+    return value
+
+
+def _non_negative_int(value: object, *, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{field} must be a non-negative integer")
     return value
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -16,6 +17,7 @@ from grove_bridge.auth_status import redact_secret_text
 
 DONE_STATUSES = ("done", "archived")
 SQLITE_BUSY_TIMEOUT_MS = 5_000
+ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 
 
 @dataclass(frozen=True)
@@ -276,27 +278,37 @@ class SQLiteBoardStore:
         self,
         *,
         board: str,
-        assignee: str,
+        assignee: str | None,
         node_id: str,
         ttl_seconds: int,
+        task_id: str | None = None,
     ) -> ClaimedTask | None:
         now = _now()
         expires = now + ttl_seconds
         board_id = self._ensure_board(board)
         claim_lock = _new_id("claim")
         run_id = _new_id("run")
+        clauses = [
+            "board_id = ?",
+            "status = 'ready'",
+            "claim_lock IS NULL",
+            "assignee IS NULL" if assignee is None else "assignee = ?",
+        ]
+        params: list[object] = [board_id]
+        if assignee is not None:
+            params.append(assignee)
+        if task_id is not None:
+            clauses.append("id = ?")
+            params.append(task_id)
         with self._connect(immediate=True) as conn:
             candidate = conn.execute(
-                """
+                f"""
                 SELECT id FROM tasks
-                WHERE board_id = ?
-                  AND assignee = ?
-                  AND status = 'ready'
-                  AND claim_lock IS NULL
+                WHERE {" AND ".join(clauses)}
                 ORDER BY priority DESC, created_at ASC, id ASC
                 LIMIT 1
                 """,
-                (board_id, assignee),
+                params,
             ).fetchone()
             if candidate is None:
                 return None
@@ -305,6 +317,7 @@ class SQLiteBoardStore:
                 """
                 UPDATE tasks
                 SET status = 'running',
+                    assignee = COALESCE(assignee, ?),
                     claim_lock = ?,
                     claim_expires = ?,
                     current_run_id = ?,
@@ -315,7 +328,7 @@ class SQLiteBoardStore:
                   AND status = 'ready'
                   AND claim_lock IS NULL
                 """,
-                (claim_lock, expires, run_id, now, now, task_id, board_id),
+                (node_id, claim_lock, expires, run_id, now, now, task_id, board_id),
             )
             if updated.rowcount != 1:
                 return None
@@ -346,7 +359,7 @@ class SQLiteBoardStore:
                 payload=_audit_payload(
                     actor=_node_actor(node_id),
                     action="claim",
-                    target={"type": "task", "id": task_id, "node": assignee},
+                    target={"type": "task", "id": task_id, "node": assignee or node_id},
                     board=board,
                     status="ok",
                     ts=now,
@@ -972,6 +985,30 @@ class SQLiteBoardStore:
             rows = conn.execute(sql, params).fetchall()
         return [_event_from_row(row) for row in rows]
 
+    def last_autopickup_at(self, *, board: str, node: str) -> int | None:
+        board_id = self._board_id_for_slug(board)
+        if board_id is None:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT ts FROM events
+                WHERE board_id = ?
+                  AND kind = 'audit.task.autopickup'
+                  AND json_extract(payload_json, '$.action') = 'autopickup'
+                  AND (
+                      json_extract(payload_json, '$.actor.id') = ?
+                      OR json_extract(payload_json, '$.target.node') = ?
+                  )
+                ORDER BY ts DESC, rowid DESC
+                LIMIT 1
+                """,
+                (board_id, node, node),
+            ).fetchone()
+        if row is None:
+            return None
+        return _row_int(row, "ts")
+
     def add_audit_event(
         self,
         *,
@@ -1396,9 +1433,9 @@ def _audit_payload(
     extra: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
-        "actor": dict(actor),
+        "actor": _sanitize_audit_mapping(actor),
         "action": action,
-        "target": dict(target),
+        "target": _sanitize_audit_mapping(target),
         "board": board,
         "status": status,
         "ts": ts,
@@ -1406,14 +1443,39 @@ def _audit_payload(
     if summary is not None:
         payload["summary"] = _safe_summary(summary)
     if extra is not None:
-        payload.update(dict(extra))
+        payload.update(_sanitize_audit_mapping(extra))
     return payload
 
 
 def _safe_summary(value: str) -> str:
-    redacted = redact_secret_text(value.replace("\r", "\n"))
+    redacted = _safe_text(value.replace("\r", "\n"))
     first_line = next((line.strip() for line in redacted.splitlines() if line.strip()), "")
     return first_line[:500]
+
+
+def _safe_text(value: str) -> str:
+    redacted = redact_secret_text(value)
+    return ABSOLUTE_PATH_RE.sub("[path]", redacted)
+
+
+def _sanitize_audit_mapping(value: Mapping[str, object]) -> dict[str, object]:
+    sanitized = _sanitize_audit_value(dict(value))
+    return cast(dict[str, object], sanitized)
+
+
+def _sanitize_audit_value(value: object) -> object:
+    if isinstance(value, str):
+        return _safe_text(value)
+    if isinstance(value, Mapping):
+        return {
+            _safe_text(key) if isinstance(key, str) else str(key): _sanitize_audit_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_audit_value(item) for item in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _safe_text(str(value))
 
 
 def _json(value: Mapping[str, object]) -> str:

@@ -194,6 +194,11 @@ class AnswerPayload(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
 
 
+class RetroPayload(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+    node: str | None = Field(default=None, max_length=200)
+
+
 class TaskCreatePayload(BaseModel):
     title: str = Field(max_length=500)
     body: str | None = Field(default=None, max_length=20_000)
@@ -608,6 +613,49 @@ def create_app(
             "task": _task_payload(_store(request).get_task_by_id(task_id)),
             "comment": _comment_payload(comment),
         }
+
+    @app.post("/api/tasks/{task_id}/retro")
+    def retro_task_endpoint(
+        request: Request,
+        task_id: str,
+        payload: RetroPayload,
+    ) -> dict[str, object]:
+        auth = _require_state_change(request)
+        _require_retro_access(auth)
+        project = resolve_project(request)
+        task = _task_for_project(_store(request), task_id, project=project)
+        if task.status != "done":
+            raise HTTPException(status_code=409, detail="task is not complete")
+        if not _retro_enabled(task):
+            raise HTTPException(status_code=403, detail="retro is not enabled")
+        text = _safe_log_text(payload.text)
+        node = _optional_node_ref(payload.node, field_name="node")
+        safe_node = node
+        author = (
+            f"retro:{safe_node}" if safe_node is not None else _answer_author(_actor_payload(auth))
+        )
+        comment = _store(request).add_comment_to_task(
+            task_id=task_id,
+            author=author,
+            body=text,
+            metadata={"kind": "retro", "node": node or ""},
+        )
+        actor = (
+            {"kind": "node", "id": safe_node, "login": safe_node, "role": "none"}
+            if safe_node is not None
+            else _actor_payload(auth)
+        )
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.task.retro",
+            actor=actor,
+            action="retro",
+            target={"type": "task", "id": task_id, "node": node or task.assignee or ""},
+            task_id=task_id,
+            summary=text,
+            payload={"project": project.name, "node": node or ""},
+        )
+        return {"ok": True, "comment": _comment_payload(comment)}
 
     @app.get("/api/nodes")
     def nodes_endpoint(request: Request) -> list[dict[str, str]]:
@@ -2017,6 +2065,12 @@ def _require_answer_access(auth: AuthContext) -> None:
             raise HTTPException(status_code=403, detail="answer requires operator role")
 
 
+def _require_retro_access(auth: AuthContext) -> None:
+    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
+        if auth.member.role == "viewer":
+            raise HTTPException(status_code=403, detail="retro requires operator role")
+
+
 def _actor_payload(auth: AuthContext) -> dict[str, object]:
     if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
         return {
@@ -2040,6 +2094,14 @@ def _answer_author(actor: Mapping[str, object]) -> str:
         return f"{kind}:{login.strip()}"
     actor_id = _actor_id(actor)
     return f"actor:{actor_id}"
+
+
+def _retro_enabled(task: Task) -> bool:
+    for key in ("self_retro", "retro_enabled", "self_retro_enabled"):
+        value = task.metadata.get(key)
+        if isinstance(value, bool) and value:
+            return True
+    return False
 
 
 def _member_registry(config: WebAppConfig) -> MemberRegistry:

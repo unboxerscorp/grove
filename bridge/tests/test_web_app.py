@@ -856,6 +856,109 @@ def test_inbox_answer_respects_project_scope(tmp_path: Path) -> None:
     assert store.get_task(board="dev11", task_id=dev11.id).status == "ready"
 
 
+def test_task_retro_appends_comment_and_audit_when_opted_in(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    secret = "xoxb-" + ("a" * 44)
+    task = store.create_task(
+        board="dev10",
+        title="Done task",
+        body=None,
+        assignee="maker",
+        status="done",
+        metadata={"self_retro": True},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    response = client.post(
+        f"/api/tasks/{task.id}/retro",
+        headers=headers,
+        json={"text": f"Learned from /Users/chopin/secrets {secret}", "node": "maker"},
+    )
+    comments = store.list_comments(board="dev10", task_id=task.id)
+    audits = store.list_audit_events(board="dev10", action="retro", task_id=task.id)
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert comments[0].author == "retro:maker"
+    assert comments[0].body == "Learned from [path] [redacted]"
+    assert comments[0].metadata == {"kind": "retro", "node": "maker"}
+    assert store.get_task(board="dev10", task_id=task.id).status == "done"
+    assert len(audits) == 1
+    assert audits[0].kind == "audit.task.retro"
+    assert audits[0].payload["actor"] == {
+        "kind": "node",
+        "id": "maker",
+        "login": "maker",
+        "role": "none",
+    }
+    assert audits[0].payload["summary"] == "Learned from [path] [redacted]"
+
+
+def test_task_retro_requires_opt_in_and_completed_task(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    ready = store.create_task(
+        board="dev10",
+        title="Ready",
+        body=None,
+        assignee="maker",
+        status="ready",
+        metadata={"self_retro": True},
+    )
+    done = store.create_task(
+        board="dev10",
+        title="Done without opt in",
+        body=None,
+        assignee="maker",
+        status="done",
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    ready_response = client.post(
+        f"/api/tasks/{ready.id}/retro",
+        headers=headers,
+        json={"text": "too early"},
+    )
+    opted_out = client.post(
+        f"/api/tasks/{done.id}/retro",
+        headers=headers,
+        json={"text": "not enabled"},
+    )
+
+    assert ready_response.status_code == 409
+    assert opted_out.status_code == 403
+    assert store.list_comments(board="dev10", task_id=ready.id) == []
+    assert store.list_comments(board="dev10", task_id=done.id) == []
+
+
+def test_task_retro_rejects_unsafe_node_name(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    secret = "xoxb-" + ("a" * 44)
+    task = store.create_task(
+        board="dev10",
+        title="Done task",
+        body=None,
+        assignee="maker",
+        status="done",
+        metadata={"self_retro": True},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    response = client.post(
+        f"/api/tasks/{task.id}/retro",
+        headers=headers,
+        json={"text": "retro", "node": f"/Users/chopin/{secret}"},
+    )
+
+    assert response.status_code == 400
+    assert secret not in response.text
+    assert "/Users/chopin" not in response.text
+    assert store.list_comments(board="dev10", task_id=task.id) == []
+    assert store.list_audit_events(board="dev10", action="retro", task_id=task.id) == []
+
+
 def test_cost_endpoint_reports_best_effort_agent_usage_and_agy_unknown(
     tmp_path: Path,
 ) -> None:

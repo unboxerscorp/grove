@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Protocol
 
 from grove_bridge.auth_status import redact_secret_text
-from grove_bridge.config import BridgeConfig, LaneConfig, default_board_db_path, load_bridge_config
+from grove_bridge.config import (
+    AutoPickupNodeConfig,
+    BridgeConfig,
+    LaneConfig,
+    default_board_db_path,
+    load_bridge_config,
+)
 from grove_bridge.grove import (
     GroveRunnerProtocol,
     GroveRunResult,
@@ -51,9 +57,10 @@ class BoardStoreProtocol(Protocol):
         self,
         *,
         board: str,
-        assignee: str,
+        assignee: str | None,
         node_id: str,
         ttl_seconds: int,
+        task_id: str | None = None,
     ) -> ClaimedTask | None: ...
 
     def resolve_workspace(self, *, board: str, task: Task) -> Path: ...
@@ -115,6 +122,23 @@ class BoardStoreProtocol(Protocol):
         user_id: str | None = None,
     ) -> NotifySub: ...
 
+    def add_audit_event(
+        self,
+        *,
+        board: str,
+        kind: str,
+        actor: Mapping[str, object],
+        action: str,
+        target: Mapping[str, object],
+        task_id: str | None = None,
+        run_id: str | None = None,
+        status: str = "ok",
+        summary: str | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> object: ...
+
+    def last_autopickup_at(self, *, board: str, node: str) -> int | None: ...
+
 
 @dataclass
 class TickResult:
@@ -126,6 +150,7 @@ class TickResult:
     blocked: int = 0
     terminal_conflicts: int = 0
     runner_errors: int = 0
+    autopicked: int = 0
 
 
 class NodePool:
@@ -162,6 +187,7 @@ class PullExecutor:
             heartbeat_interval_seconds=config.heartbeat_interval_seconds,
         )
         self.notifier = notifier or build_notifier(config.notifier)
+        self._autopickup_last_at: dict[tuple[str, str], float] = {}
 
     def run_once(self) -> TickResult:
         result = TickResult()
@@ -202,7 +228,94 @@ class PullExecutor:
                         claimed=claimed,
                         tick=result,
                     )
+            remaining = self._run_autonomous_pickups(board=board, remaining=remaining, tick=result)
         return result
+
+    def _run_autonomous_pickups(
+        self,
+        *,
+        board: str,
+        remaining: int,
+        tick: TickResult,
+    ) -> int:
+        pickup = self.config.autonomous_pickup
+        if remaining <= 0 or not pickup.enabled or pickup.kill_switch:
+            return remaining
+        now = time.time()
+        ready_tasks = self.store.list_tasks(board=board, status="ready")
+        for node, rule in pickup.nodes.items():
+            if remaining <= 0:
+                break
+            lane = self.config.lanes.get(node)
+            if lane is None:
+                continue
+            if not self._autopickup_node_allowed(board=board, node=node, rule=rule, now=now):
+                continue
+            for task in ready_tasks:
+                if task.assignee is not None:
+                    continue
+                if not _autopickup_task_allowed(task, rule):
+                    continue
+                claimed = self.store.claim_next(
+                    board=board,
+                    assignee=None,
+                    node_id=node,
+                    ttl_seconds=self.config.claim_ttl_seconds,
+                    task_id=task.id,
+                )
+                if claimed is None:
+                    tick.claim_conflicts += 1
+                    continue
+                self.store.add_audit_event(
+                    board=board,
+                    kind="audit.task.autopickup",
+                    actor={"kind": "node", "id": node, "login": node, "role": "none"},
+                    action="autopickup",
+                    target={"type": "task", "id": task.id, "node": node},
+                    task_id=task.id,
+                    run_id=claimed.run_id,
+                    payload={
+                        "roles": list(rule.roles),
+                        "capabilities": list(rule.capabilities),
+                    },
+                    summary=task.title,
+                )
+                self._autopickup_last_at[(board, node)] = now
+                tick.claimed += 1
+                tick.autopicked += 1
+                remaining -= 1
+                self._execute_claimed(
+                    board=board,
+                    lane=lane,
+                    node=node,
+                    claimed=claimed,
+                    tick=tick,
+                )
+                break
+        return remaining
+
+    def _autopickup_node_allowed(
+        self,
+        *,
+        board: str,
+        node: str,
+        rule: AutoPickupNodeConfig,
+        now: float,
+    ) -> bool:
+        if not rule.enabled or rule.kill_switch:
+            return False
+        if not rule.roles and not rule.capabilities:
+            return False
+        key = (board, node)
+        last = self._autopickup_last_at.get(key)
+        persisted = self.store.last_autopickup_at(board=board, node=node)
+        if persisted is not None and (last is None or persisted > last):
+            last = float(persisted)
+            self._autopickup_last_at[key] = last
+        if last is not None and now - last < self.config.autonomous_pickup.cooldown_seconds:
+            return False
+        running = self.store.list_tasks(board=board, status="running", assignee=node, limit=1)
+        return not running
 
     def run_forever(self, stop: Callable[[], bool] | None = None) -> None:
         should_stop = stop or (lambda: False)
@@ -387,6 +500,32 @@ def _failure_comment(run: GroveRunResult) -> str:
 
 def _execution_node(lane: LaneConfig) -> str:
     return lane.nodes[0]
+
+
+def _autopickup_task_allowed(task: Task, rule: AutoPickupNodeConfig) -> bool:
+    if _truthy_metadata(task.metadata, "despawn") or _truthy_metadata(task.metadata, "repair"):
+        return False
+    roles = _metadata_values(task.metadata, "role", "roles")
+    capabilities = _metadata_values(task.metadata, "capability", "capabilities")
+    return bool(set(rule.roles) & roles or set(rule.capabilities) & capabilities)
+
+
+def _truthy_metadata(metadata: Mapping[str, object], key: str) -> bool:
+    value = metadata.get(key)
+    return isinstance(value, bool) and value
+
+
+def _metadata_values(metadata: Mapping[str, object], *keys: str) -> set[str]:
+    values: set[str] = set()
+    for key in keys:
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            values.add(value.strip())
+        elif isinstance(value, Sequence) and not isinstance(value, str):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    values.add(item.strip())
+    return values
 
 
 def build_session_config(
