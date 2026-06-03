@@ -1,6 +1,8 @@
 import { loadContext, nodeOf } from "../context.js";
+import { eventLogSize } from "../events.js";
 import { recordPending, resolveTranscript, submitMessage } from "../ops.js";
 import { color, info, warn } from "../util/log.js";
+import { eventsDir } from "../util/paths.js";
 import { poll } from "../util/time.js";
 
 const SUBMISSION_WRITE_TIMEOUT_MS = 8000;
@@ -18,6 +20,8 @@ export async function cmdSend(
   const before = nc.adapter.snapshot(nc.node.cwd);
   const transcript = resolveTranscript(ctx, nc);
   const fromOffset = transcript ? nc.adapter.size(transcript) : 0;
+  const eventLogDir = eventsDir(ctx.config.session);
+  const eventLogOffset = eventLogSize(eventLogDir);
   await submitMessage(nc, message);
 
   const submitted = await poll(
@@ -53,7 +57,10 @@ export async function cmdSend(
     return;
   }
 
-  recordPending(ctx, nc, pending.transcript, pending.fromOffset);
+  recordPending(ctx, nc, pending.transcript, pending.fromOffset, {
+    eventLogDir,
+    eventLogOffset,
+  });
   if (!submitted.value) {
     info(`${name}: submission unconfirmed; pending recorded`);
   }

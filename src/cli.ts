@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { cmdAsk } from "./commands/ask.js";
 import { cmdDown } from "./commands/down.js";
+import { cmdGather } from "./commands/gather.js";
 import { cmdInit } from "./commands/init.js";
 import { cmdRebind } from "./commands/rebind.js";
 import { cmdSend } from "./commands/send.js";
@@ -9,7 +10,8 @@ import { cmdSession } from "./commands/session.js";
 import { cmdStatus } from "./commands/status.js";
 import { cmdTail } from "./commands/tail.js";
 import { cmdUp } from "./commands/up.js";
-import { cmdWait } from "./commands/wait.js";
+import { cmdWaitCommand } from "./commands/wait.js";
+import { cmdWatch } from "./commands/watch.js";
 import { err } from "./util/log.js";
 
 type AnyFn = (...args: never[]) => Promise<void>;
@@ -67,11 +69,17 @@ program
   );
 
 program
-  .command("wait <node>")
-  .description("block until the node finishes its current turn, print the result")
+  .command("wait [nodes...]")
+  .description("block until one node finishes, or fan in several nodes with --any/--all")
   .option("-c, --config <file>", "path to grove.yaml")
   .option("-t, --timeout <dur>", "max wait, e.g. 30s 20m 1h", "30m")
-  .action(run((node: string, opts: Record<string, unknown>) => cmdWait(node, withConfig(opts))));
+  .option("--any", "return on the first terminal event among listed nodes")
+  .option("--all", "return after all listed nodes reach terminal events or the deadline")
+  .action(
+    run((nodes: string[], opts: Record<string, unknown>) =>
+      cmdWaitCommand(nodes, withConfig(opts)),
+    ),
+  );
 
 program
   .command("ask <node> <message...>")
@@ -81,6 +89,24 @@ program
   .action(
     run((node: string, message: string[], opts: Record<string, unknown>) =>
       cmdAsk(node, message.join(" "), withConfig(opts)),
+    ),
+  );
+
+program
+  .command("watch")
+  .description("append durable turn completion events for all configured node transcripts")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .action(run((opts: Record<string, unknown>) => cmdWatch(withConfig(opts))));
+
+program
+  .command("gather <nodes...>")
+  .description("wait --all alias with a human summary, or machine JSON via --json")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .option("-t, --timeout <dur>", "max wait, e.g. 30s 20m 1h", "30m")
+  .option("--json", "print the fixed fan-in result schema as JSON")
+  .action(
+    run((nodes: string[], opts: Record<string, unknown>) =>
+      cmdGather(nodes, withConfig(opts)),
     ),
   );
 

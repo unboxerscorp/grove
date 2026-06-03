@@ -12,7 +12,12 @@ export interface NodeRuntime {
   /** Baseline for the in-flight turn, recorded at submit time so a later
    *  `wait` scans from before the response (fixes the send→wait race).
    *  Set by send/ask, cleared on completion. */
-  pending?: { transcript: string; fromOffset: number; submittedAt: string };
+  pending?: {
+    transcript: string;
+    fromOffset: number;
+    submittedAt: string;
+    eventLogOffset?: number;
+  };
 }
 
 export interface Registry {

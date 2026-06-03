@@ -1,4 +1,5 @@
 import type { Context, NodeCtx } from "./context.js";
+import { eventLogSize, readTurnEventsSince } from "./events.js";
 import { saveRegistry } from "./registry.js";
 import {
   capturePane,
@@ -13,6 +14,7 @@ import {
   sendText,
 } from "./tmux.js";
 import { color, info, step, warn } from "./util/log.js";
+import { eventsDir } from "./util/paths.js";
 import { poll, sleep, waitForChangeOrTimeout } from "./util/time.js";
 
 const READY_TIMEOUT_MS = 30_000;
@@ -40,14 +42,21 @@ export function recordPending(
   nc: NodeCtx,
   transcript: string,
   fromOffset: number,
+  opts: { eventLogDir?: string; eventLogOffset?: number } = {},
 ): void {
   const prev = ctx.registry.nodes[nc.node.name] ?? {
     name: nc.node.name,
     agent: nc.node.agent,
   };
+  const eventLogDir = opts.eventLogDir ?? eventsDir(ctx.config.session);
   ctx.registry.nodes[nc.node.name] = {
     ...prev,
-    pending: { transcript, fromOffset, submittedAt: new Date().toISOString() },
+    pending: {
+      transcript,
+      fromOffset,
+      submittedAt: new Date().toISOString(),
+      eventLogOffset: opts.eventLogOffset ?? eventLogSize(eventLogDir),
+    },
   };
   saveRegistry(ctx.registry);
 }
@@ -81,7 +90,40 @@ export interface WaitOptions {
   fromOffset?: number;
   /** transcript captured when the turn was submitted */
   transcript?: string;
+  /** byte offset in grove's durable event log captured at submit time */
+  eventLogOffset?: number;
+  /** test seam; production defaults to util/paths eventsDir(session) */
+  eventLogDir?: string;
   intervalMs?: number;
+}
+
+function transcriptIdOf(ctx: Context, nc: NodeCtx, transcript: string): string {
+  return (
+    nc.adapter.sessionIdFromPath(transcript) ??
+    ctx.registry.nodes[nc.node.name]?.sessionId ??
+    ""
+  );
+}
+
+function completionFromEvents(
+  ctx: Context,
+  nc: NodeCtx,
+  opts: {
+    eventLogDir: string;
+    eventLogOffset: number;
+    transcriptId: string;
+    fromOffset: number;
+  },
+): { text: string | null; nextOffset: number } {
+  const read = readTurnEventsSince(opts.eventLogDir, opts.eventLogOffset);
+  for (const event of read.events) {
+    if (event.node !== nc.node.name) continue;
+    if (event.transcriptId !== opts.transcriptId) continue;
+    if (event.transcriptOffset <= opts.fromOffset) continue;
+    if (event.type !== "turn.done" && event.type !== "turn.failed") continue;
+    return { text: event.summary ?? "", nextOffset: read.nextOffset };
+  }
+  return { text: null, nextOffset: read.nextOffset };
 }
 
 /** Block until the node finishes a turn after the baseline offset. */
@@ -104,8 +146,22 @@ export async function waitForCompletion(
   }
 
   let offset = opts.fromOffset ?? nc.adapter.size(transcript);
+  const transcriptId = transcriptIdOf(ctx, nc, transcript);
+  const eventLogDir = opts.eventLogDir ?? eventsDir(ctx.config.session);
+  let eventLogOffset = opts.eventLogOffset ?? eventLogSize(eventLogDir);
   const deadline = Date.now() + opts.timeoutMs;
   for (;;) {
+    if (transcriptId) {
+      const eventCompletion = completionFromEvents(ctx, nc, {
+        eventLogDir,
+        eventLogOffset,
+        transcriptId,
+        fromOffset: offset,
+      });
+      eventLogOffset = eventCompletion.nextOffset;
+      if (eventCompletion.text !== null) return eventCompletion.text;
+    }
+
     const comp = nc.adapter.readCompletionSince(transcript, offset);
     if (comp.done) return comp.text ?? "";
     offset = comp.offset;
@@ -121,16 +177,26 @@ export async function ask(
   nc: NodeCtx,
   message: string,
   timeoutMs: number,
+  opts: { eventLogDir?: string } = {},
 ): Promise<string | null> {
   const transcript = resolveTranscript(ctx, nc);
   const haveBaseline = Boolean(transcript) && nc.adapter.size(transcript) > 0;
   const fromOffset = haveBaseline ? nc.adapter.size(transcript) : undefined;
-  if (transcript) recordPending(ctx, nc, transcript, fromOffset ?? 0);
+  const eventLogDir = opts.eventLogDir ?? eventsDir(ctx.config.session);
+  const eventLogOffset = eventLogSize(eventLogDir);
+  if (transcript) {
+    recordPending(ctx, nc, transcript, fromOffset ?? 0, {
+      eventLogDir,
+      eventLogOffset,
+    });
+  }
   await submitMessage(nc, message);
   const res = await waitForCompletion(ctx, nc, {
     timeoutMs,
     fromOffset,
     transcript: transcript || undefined,
+    eventLogDir,
+    eventLogOffset,
   });
   if (res !== null) clearPending(ctx, nc);
   return res;

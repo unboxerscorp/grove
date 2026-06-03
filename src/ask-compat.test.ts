@@ -1,11 +1,17 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentAdapter } from "./adapters/types.js";
 import type { Context, NodeCtx } from "./context.js";
 import { appendTurnEvent } from "./events.js";
-import { waitForCompletion } from "./ops.js";
+import { ask } from "./ops.js";
+import { sendLiteral } from "./tmux.js";
+
+vi.mock("./tmux.js", () => ({
+  sendEnter: vi.fn(async () => undefined),
+  sendLiteral: vi.fn(async () => undefined),
+}));
 
 let tempDirs: string[] = [];
 
@@ -15,7 +21,7 @@ afterEach(() => {
 });
 
 function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "grove-ops-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "grove-ask-test-"));
   tempDirs.push(dir);
   return dir;
 }
@@ -34,7 +40,7 @@ function makeNodeCtx(currentTranscript: string): { ctx: Context; nc: NodeCtx } {
     size: (path: string) => (path === currentTranscript ? 10 : 0),
     readCompletionSince: (path: string, offset: number) => ({
       done: true,
-      text: `read ${path}`,
+      text: `read ${path} from ${offset}`,
       offset,
     }),
     readLast: () => null,
@@ -75,11 +81,6 @@ function makeNodeCtx(currentTranscript: string): { ctx: Context; nc: NodeCtx } {
           name: "worker",
           agent: "codex",
           transcript: currentTranscript,
-          pending: {
-            transcript: "/tmp/grove-test/old.jsonl",
-            fromOffset: 0,
-            submittedAt: "2026-06-03T00:00:00.000Z",
-          },
         },
       },
     },
@@ -88,46 +89,48 @@ function makeNodeCtx(currentTranscript: string): { ctx: Context; nc: NodeCtx } {
   return { ctx, nc };
 }
 
-describe("waitForCompletion", () => {
-  test("rejects a pending transcript when the resolved transcript moved", async () => {
-    const { ctx, nc } = makeNodeCtx("/tmp/grove-test/current.jsonl");
-    const opts = {
-      timeoutMs: 10,
-      fromOffset: 0,
-      transcript: "/tmp/grove-test/old.jsonl",
-    };
-
-    await expect(waitForCompletion(ctx, nc, opts)).rejects.toThrow(
-      "transcript stale — run fleet repair",
-    );
+describe("ask compatibility", () => {
+  afterEach(() => {
+    vi.mocked(sendLiteral).mockReset();
   });
 
-  test("returns a durable completion event that was appended before wait started", async () => {
+  test("falls back to transcript scanning when no durable event exists", async () => {
     const { ctx, nc } = makeNodeCtx("/tmp/grove-test/current.jsonl");
+
+    const result = await ask(ctx, nc, "hello", 10, {
+      eventLogDir: tempDir(),
+    });
+
+    expect(result).toBe("read /tmp/grove-test/current.jsonl from 10");
+    expect(ctx.registry.nodes.worker?.pending).toBeUndefined();
+  });
+
+  test("captures event log offset before submit so ask catches fast durable completions", async () => {
     const eventLogDir = tempDir();
-    appendTurnEvent(eventLogDir, {
-      schema: 1,
-      type: "turn.done",
-      node: "worker",
-      turnId: "worker:session-current:42",
-      transcriptId: "session-current",
-      transcriptOffset: 42,
-      marker: "completion@42",
-      ts: 1_781_000_000_000,
-      nonce: "worker-session-current-42",
-      status: "done",
-      summary: "durable result",
+    const { ctx, nc } = makeNodeCtx("/tmp/grove-test/current.jsonl");
+    nc.adapter.readCompletionSince = (_path: string, offset: number) => ({
+      done: false,
+      offset,
+    });
+    vi.mocked(sendLiteral).mockImplementation(async () => {
+      appendTurnEvent(eventLogDir, {
+        schema: 1,
+        type: "turn.done",
+        node: "worker",
+        turnId: "worker:session-current:22",
+        transcriptId: "session-current",
+        transcriptOffset: 22,
+        marker: "completion@22",
+        ts: 1_781_000_000_000,
+        nonce: "worker-session-current-22",
+        status: "done",
+        summary: "fast durable completion",
+      });
     });
 
-    const result = await waitForCompletion(ctx, nc, {
-      timeoutMs: 10,
-      fromOffset: 10,
-      transcript: "/tmp/grove-test/current.jsonl",
-      eventLogOffset: 0,
-      eventLogDir,
-    });
+    const result = await ask(ctx, nc, "hello", 0, { eventLogDir });
 
-    expect(result).toBe("durable result");
+    expect(result).toBe("fast durable completion");
+    expect(ctx.registry.nodes.worker?.pending).toBeUndefined();
   });
-
 });
