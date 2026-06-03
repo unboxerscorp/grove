@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import cast
 
 DONE_STATUSES = ("done", "archived")
+SQLITE_BUSY_TIMEOUT_MS = 5_000
 
 
 @dataclass(frozen=True)
@@ -919,7 +920,9 @@ class SQLiteBoardStore:
         conn = sqlite3.connect(self._path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
         if immediate:
             conn.execute("BEGIN IMMEDIATE")
         try:

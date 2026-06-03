@@ -1,9 +1,24 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from grove_bridge.store import SQLiteBoardStore
+from grove_bridge.store import SQLITE_BUSY_TIMEOUT_MS, SQLiteBoardStore
+
+
+def test_connections_enable_wal_busy_timeout_and_normal_sync(tmp_path: Path) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+
+    with store._connect() as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        synchronous = conn.execute("PRAGMA synchronous").fetchone()[0]
+
+    assert str(journal_mode).lower() == "wal"
+    assert busy_timeout == SQLITE_BUSY_TIMEOUT_MS
+    assert synchronous == 1
 
 
 def test_claim_next_has_one_cas_winner_for_concurrent_claims(tmp_path: Path) -> None:
@@ -41,6 +56,41 @@ def test_claim_next_has_one_cas_winner_for_concurrent_claims(tmp_path: Path) -> 
         )
         is None
     )
+
+
+def test_busy_timeout_serializes_many_concurrent_claim_attempts_without_busy(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    task = store.create_task(
+        board="main",
+        title="Busy race",
+        body=None,
+        assignee="grove:codex",
+    )
+
+    def claim(index: int) -> tuple[str | None, str | None]:
+        try:
+            claimed = SQLiteBoardStore(db_path).claim_next(
+                board="main",
+                assignee="grove:codex",
+                node_id=f"codex-{index}",
+                ttl_seconds=60,
+            )
+        except sqlite3.OperationalError as exc:
+            return None, str(exc)
+        return (claimed.run_id if claimed is not None else None), None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(claim, range(16)))
+
+    errors = [error for _run_id, error in results if error is not None]
+    run_ids = [run_id for run_id, error in results if error is None and run_id is not None]
+    assert errors == []
+    assert len(run_ids) == 1
+    assert store.get_task(board="main", task_id=task.id).status == "running"
+    assert len(store.list_runs(board="main", task_id=task.id)) == 1
 
 
 def test_heartbeat_complete_and_block_require_current_run_and_claim(
