@@ -1,7 +1,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+
+vi.mock("node:child_process", () => ({
+  execFile: vi.fn(),
+}));
 
 import {
   capturePane,
@@ -20,6 +24,31 @@ import {
 const TARGET_FORMAT = "#{session_name}:#{window_index}.#{pane_id}";
 const pexec = promisify(execFile);
 
+type ExecFileCallback = (
+  error: NodeJS.ErrnoException | null,
+  stdout: string,
+  stderr: string,
+) => void;
+
+interface FakePane {
+  id: number;
+}
+
+interface FakeWindow {
+  index: number;
+  name: string;
+  panes: FakePane[];
+}
+
+interface FakeSession {
+  activeWindow: number;
+  name: string;
+  windows: FakeWindow[];
+}
+
+let nextPaneId = 1;
+let sessions = new Map<string, FakeSession>();
+
 async function tmux(args: string[]): Promise<string> {
   const { stdout } = await pexec("tmux", args);
   return stdout.trim();
@@ -37,6 +66,165 @@ async function tmuxAvailable(): Promise<boolean> {
 async function activeWindow(session: string): Promise<string> {
   return tmux(["display-message", "-p", "-t", session, "#{window_index}:#{window_name}"]);
 }
+
+function callbackFrom(optionsOrCallback: unknown, callback: unknown): ExecFileCallback {
+  if (typeof optionsOrCallback === "function") return optionsOrCallback as ExecFileCallback;
+  if (typeof callback === "function") return callback as ExecFileCallback;
+  throw new Error("fake execFile requires a callback");
+}
+
+function fail(message: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(message), { code: "1" });
+}
+
+function argAfter(args: string[], flag: string): string | null {
+  const index = args.indexOf(flag);
+  return index >= 0 ? (args[index + 1] ?? null) : null;
+}
+
+function cleanSessionTarget(target: string): string {
+  return target.startsWith("=") ? target.slice(1) : target;
+}
+
+function sessionByName(name: string): FakeSession {
+  const session = sessions.get(cleanSessionTarget(name));
+  if (!session) throw fail(`no such session: ${name}`);
+  return session;
+}
+
+function addWindow(session: FakeSession, name: string): FakeWindow {
+  const window = {
+    index: session.windows.length,
+    name,
+    panes: [{ id: nextPaneId++ }],
+  };
+  session.windows.push(window);
+  return window;
+}
+
+function resolveWindow(session: FakeSession, spec?: string): FakeWindow {
+  if (!spec) return session.windows[session.activeWindow]!;
+  const normalized = spec.replace(/\..*$/, "");
+  const byIndex = Number.parseInt(normalized, 10);
+  const window = Number.isNaN(byIndex)
+    ? session.windows.find((candidate) => candidate.name === normalized)
+    : session.windows.find((candidate) => candidate.index === byIndex);
+  if (!window) throw fail(`no such window: ${session.name}:${spec}`);
+  return window;
+}
+
+function resolveTarget(targetValue: string): { session: FakeSession; window: FakeWindow } {
+  const [sessionName, windowSpec] = cleanSessionTarget(targetValue).split(":", 2);
+  const session = sessionByName(sessionName ?? "");
+  return { session, window: resolveWindow(session, windowSpec) };
+}
+
+function formatPaneTarget(
+  session: FakeSession,
+  window: FakeWindow,
+  pane = window.panes[0]!,
+): string {
+  return `${session.name}:${window.index}.%${pane.id}`;
+}
+
+function listWindowNames(session: FakeSession): string {
+  return `${session.windows.map((window) => window.name).join("\n")}\n`;
+}
+
+function runFakeTmux(args: string[]): string {
+  const command = args[0];
+  if (command === "-V") return "tmux 3.5\n";
+
+  if (command === "has-session") {
+    const sessionName = cleanSessionTarget(argAfter(args, "-t") ?? "");
+    if (!sessions.has(sessionName)) throw fail(`no such session: ${sessionName}`);
+    return "";
+  }
+
+  if (command === "new-session") {
+    const name = argAfter(args, "-s") ?? "";
+    const windowName = argAfter(args, "-n") ?? "0";
+    if (!name) throw fail("session name is required");
+    const session: FakeSession = { activeWindow: 0, name, windows: [] };
+    addWindow(session, windowName);
+    sessions.set(name, session);
+    return "";
+  }
+
+  if (command === "new-window") {
+    const session = sessionByName(argAfter(args, "-t") ?? "");
+    const window = addWindow(session, argAfter(args, "-n") ?? String(session.windows.length));
+    if (!args.includes("-d")) session.activeWindow = window.index;
+    return args.includes("-P") ? `${formatPaneTarget(session, window)}\n` : "";
+  }
+
+  if (command === "split-window") {
+    const { session, window } = resolveTarget(argAfter(args, "-t") ?? "");
+    const pane = { id: nextPaneId++ };
+    window.panes.push(pane);
+    if (!args.includes("-d")) session.activeWindow = window.index;
+    return args.includes("-P") ? `${formatPaneTarget(session, window, pane)}\n` : "";
+  }
+
+  if (command === "select-window") {
+    const { session, window } = resolveTarget(argAfter(args, "-t") ?? "");
+    session.activeWindow = window.index;
+    return "";
+  }
+
+  if (command === "select-layout" || command === "send-keys" || command === "capture-pane") {
+    return "";
+  }
+
+  if (command === "display-message") {
+    const targetValue = argAfter(args, "-t") ?? "";
+    const { session, window } = resolveTarget(targetValue);
+    const format = args[args.length - 1];
+    if (format === "#{window_index}:#{window_name}") return `${window.index}:${window.name}\n`;
+    if (format === "#{session_name}:#{window_index}") return `${session.name}:${window.index}\n`;
+    if (format === TARGET_FORMAT) return `${formatPaneTarget(session, window)}\n`;
+    throw fail(`unsupported display format: ${format ?? ""}`);
+  }
+
+  if (command === "list-windows") {
+    return listWindowNames(sessionByName(argAfter(args, "-t") ?? ""));
+  }
+
+  if (command === "kill-session") {
+    sessions.delete(cleanSessionTarget(argAfter(args, "-t") ?? ""));
+    return "";
+  }
+
+  if (command === "kill-pane") {
+    return "";
+  }
+
+  throw fail(`unsupported tmux command: ${command ?? ""}`);
+}
+
+function fakeExecFile(
+  command: string,
+  argsOrOptions?: unknown,
+  optionsOrCallback?: unknown,
+  callback?: unknown,
+): ReturnType<typeof execFile> {
+  const cb = callbackFrom(optionsOrCallback, callback);
+  const args = Array.isArray(argsOrOptions) ? argsOrOptions.map(String) : [];
+  queueMicrotask(() => {
+    try {
+      cb(null, command === "tmux" ? runFakeTmux(args) : "", "");
+    } catch (error) {
+      cb(error instanceof Error ? error : fail(String(error)), "", "");
+    }
+  });
+  return {} as ReturnType<typeof execFile>;
+}
+
+beforeEach(() => {
+  nextPaneId = 1;
+  sessions = new Map<string, FakeSession>();
+  vi.mocked(execFile).mockImplementation(fakeExecFile);
+});
 
 describe("tmux detached pane commands", () => {
   test("validates single-pane targets before kill-pane", async () => {
