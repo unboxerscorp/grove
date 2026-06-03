@@ -1,5 +1,5 @@
 node_modules/
-.venv/
+dist/
 mock/harness.js
 mock/harness.js.map
 mock/verify-screenshot.png

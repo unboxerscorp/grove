@@ -10,6 +10,8 @@ bridge/.venv/
 bridge/.pytest_cache/
 # Dashboard plugins are self-formatted (own build/lint), not the root's.
 plugins/
+# The Dev Room web SPA is self-formatted (own build/lint), not the root's.
+web/
 cockpit.grove.yaml
 fleet.yaml
 grove.yaml

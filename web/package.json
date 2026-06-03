@@ -1,8 +1,8 @@
 {
-  "name": "@grove/grove-viewer-dashboard",
+  "name": "@grove/dev-room-web",
   "private": true,
   "version": "0.1.0",
-  "description": "Frontend for the grove-viewer Legacy dashboard plugin (Dev Room). Self-contained build/check — intentionally NOT part of grove's root pnpm workspace or `pnpm check`.",
+  "description": "Grove Dev Room — standalone single-page app served by the grove web server at /. No external plugin host.",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
@@ -10,15 +10,17 @@
     "verify": "node verify.mjs",
     "check": "npm run typecheck && npm run build && npm run verify"
   },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
   "devDependencies": {
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@xterm/addon-fit": "^0.10.0",
-    "@xterm/xterm": "^5.5.0",
     "esbuild": "^0.27.7",
     "puppeteer-core": "^23.11.1",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
     "typescript": "^5.7.3"
   }
 }

@@ -1,0 +1,8 @@
+# Marks this directory as its own pnpm workspace root, fully isolated from
+# grove's root workspace (pnpm stops walking up here). Approves esbuild's build
+# script (pnpm 11 `allowBuilds` map) so `pnpm exec`/`pnpm run` don't abort with
+# ERR_PNPM_IGNORED_BUILDS. No `packages:` glob — single self-contained package.
+allowBuilds:
+  esbuild: true
+onlyBuiltDependencies:
+  - esbuild

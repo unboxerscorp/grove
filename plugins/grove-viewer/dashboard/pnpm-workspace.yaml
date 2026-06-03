@@ -1,9 +1,0 @@
-# Marks this plugin directory as its own pnpm workspace root, fully isolated
-# from grove's root workspace (pnpm stops walking up here). Approves esbuild's
-# install build script (pnpm 11 `allowBuilds` map) so `pnpm exec`/`pnpm run`
-# don't abort with ERR_PNPM_IGNORED_BUILDS. No `packages:` glob — single
-# self-contained package. (`onlyBuiltDependencies` kept for older pnpm.)
-allowBuilds:
-  esbuild: true
-onlyBuiltDependencies:
-  - esbuild
