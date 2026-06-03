@@ -12,6 +12,7 @@
 //   - slack status  (not_configured, empty tokens, no secrets)
 //   - ws-ticket     (issuance, ttl, project binding, single-use over real WS)
 //   - plan          (read-only ranked candidates, redaction, project/task scope)
+//   - autopickup    (node toggle auth, global gate, scope, team viewer denial)
 //
 // Each check asserts the CORRECT contract. A failing check is a real defect to
 // report as `# BUG(Pn)` — never relax the assertion to match a bug.
@@ -19,7 +20,8 @@
 // Setup/teardown is self-contained: spawn -> wait-ready -> assert -> kill +
 // remove the temp tree. Headless: `npm run e2e` (or `pnpm run e2e`) from web/.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { pbkdf2Sync } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -35,6 +37,8 @@ const PROJECT_HEADER = "X-Grove-Project";
 const ALPHA = "qae2e_alpha"; // default --session project (unlikely tmux collision)
 const BETA = "qae2e_beta"; // second registry, used to prove header binding/scope
 const EMPTY = "qae2e_empty"; // created during the plan checks to prove empty-registry behavior
+const SCOPE = "qae2e_scope"; // created during the autopickup checks to prove node scope
+const TEAM = "qae2e_team"; // created during the autopickup checks for team-auth viewer denial
 const READY_TIMEOUT_MS = 25_000;
 const NODE_LAST_SEEN = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
 
@@ -68,6 +72,45 @@ function isTaggedMetric(value) {
     typeof value.source === "string" &&
     typeof value.confidence === "string"
   );
+}
+function b64Url(bytes) {
+  return Buffer.from(bytes).toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+function teamSecretHash(secret) {
+  const salt = Buffer.alloc(16, 0x31);
+  const digest = pbkdf2Sync(secret, salt, 200_000, 32, "sha256");
+  return `pbkdf2_sha256$200000$${b64Url(salt)}$${b64Url(digest)}`;
+}
+function writeRegistry(session, nodes) {
+  const dir = path.join(groveHome, session);
+  mkdirSync(dir, { recursive: true });
+  const regPath = path.join(dir, "registry.json");
+  writeFileSync(regPath, JSON.stringify({ workspace: `/tmp/${session}`, nodes }, null, 2));
+  chmodSync(regPath, 0o444);
+}
+function writeTeamViewer(session, { name, secret }) {
+  const dir = path.join(groveHome, session);
+  mkdirSync(dir, { recursive: true });
+  const membersPath = path.join(dir, "members.json");
+  writeFileSync(
+    membersPath,
+    JSON.stringify(
+      {
+        members: [
+          {
+            id: "viewer-1",
+            name,
+            role: "viewer",
+            enabled: true,
+            secret_hash: teamSecretHash(secret),
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+  chmodSync(membersPath, 0o600);
 }
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -106,7 +149,28 @@ async function req(method, pathname, { token, project, body, origin } = {}) {
   } catch {
     json = undefined;
   }
-  return { status: resp.status, json, text };
+  return { status: resp.status, json, text, headers: resp.headers };
+}
+
+async function reqAt(base, method, pathname, { cookie, csrf, body, origin } = {}) {
+  const headers = {};
+  if (cookie) headers.Cookie = cookie;
+  if (csrf) headers["X-Grove-CSRF"] = csrf;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (origin !== false) headers["Origin"] = origin ?? base;
+  const resp = await fetch(base + pathname, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const text = await resp.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = undefined;
+  }
+  return { status: resp.status, json, text, headers: resp.headers };
 }
 
 // Resolve open-vs-rejected for a websocket upgrade. A valid ticket -> 'open';
@@ -140,6 +204,29 @@ const dbPath = path.join(tmp, "board.db");
 let child = null;
 let exited = false;
 let serverLog = "";
+let teamChild = null;
+let teamExited = true;
+let teamServerLog = "";
+let teamBaseUrl = "";
+
+function setAutopickupGlobal(board, { enabled, killSwitch }) {
+  const boolArg = (value) => (value === undefined ? "none" : value ? "true" : "false");
+  const code = [
+    "import sys",
+    "from pathlib import Path",
+    "from grove_bridge.store import SQLiteBoardStore",
+    "def value(raw): return None if raw == 'none' else raw == 'true'",
+    "SQLiteBoardStore(Path(sys.argv[1])).set_autopickup_global(board=sys.argv[2], enabled=value(sys.argv[3]), kill_switch=value(sys.argv[4]))",
+  ].join("\n");
+  const result = spawnSync(
+    python,
+    ["-c", code, dbPath, board, boolArg(enabled), boolArg(killSwitch)],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  if (result.status !== 0) {
+    throw new Error(`failed to set autopickup global gate:\n${result.stderr || result.stdout}`);
+  }
+}
 
 function scaffold() {
   mkdirSync(homeDir, { recursive: true });
@@ -237,7 +324,68 @@ async function startServer() {
   throw new Error(`server not ready within ${READY_TIMEOUT_MS}ms:\n${serverLog}`);
 }
 
+async function startTeamServer(session, teamDbPath) {
+  const port = await freePort();
+  teamBaseUrl = `http://127.0.0.1:${port}`;
+  teamServerLog = "";
+  teamExited = false;
+  const env = { ...process.env, GROVE_HOME: groveHome, HOME: homeDir, GROVE_VIEWER_SESSION: session };
+  teamChild = spawn(
+    python,
+    [
+      "-m",
+      "grove_bridge.web_app",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "--dist-dir",
+      distDir,
+      "--board-db-path",
+      teamDbPath,
+      "--session",
+      session,
+      "--team-auth",
+    ],
+    { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  teamChild.stdout.on("data", (d) => (teamServerLog += d));
+  teamChild.stderr.on("data", (d) => (teamServerLog += d));
+  teamChild.on("exit", () => (teamExited = true));
+
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (teamExited) throw new Error(`team server exited before ready:\n${teamServerLog}`);
+    try {
+      const r = await fetch(teamBaseUrl + "/api/health");
+      await r.text();
+      if (r.status === 200) return port;
+    } catch {
+      /* not up yet */
+    }
+    await sleep(150);
+  }
+  throw new Error(`team server not ready within ${READY_TIMEOUT_MS}ms:\n${teamServerLog}`);
+}
+
+async function stopTeamServer() {
+  try {
+    if (teamChild && !teamExited) {
+      teamChild.kill("SIGTERM");
+      const grace = Date.now() + 5000;
+      while (!teamExited && Date.now() < grace) await sleep(50);
+      if (!teamExited) teamChild.kill("SIGKILL");
+    }
+  } catch {
+    /* ignore */
+  } finally {
+    teamChild = null;
+    teamExited = true;
+  }
+}
+
 async function teardown() {
+  await stopTeamServer();
   try {
     if (child && !exited) {
       child.kill("SIGTERM");
@@ -538,6 +686,129 @@ async function run() {
     "plan empty registry returns candidates:[] gracefully",
     Boolean(emptyPlan.json) && Array.isArray(emptyPlan.json.candidates) && emptyPlan.json.candidates.length === 0,
   );
+
+  // --- /api/nodes/{node}/autopickup: real-server toggle + auth/scope gates ---
+  const autopickupPath = (node) => `/api/nodes/${encodeURIComponent(node)}/autopickup`;
+  writeRegistry(SCOPE, {
+    other: {
+      name: "other",
+      agent: "codex",
+      tmux_pane: `${SCOPE}:1.0`,
+      session_id: "scope-session",
+      status: "idle",
+    },
+  });
+
+  eq("autopickup GET 401 without token", (await req("GET", autopickupPath("worker"))).status, 401);
+  eq(
+    "autopickup GET 401 with wrong token",
+    (await req("GET", autopickupPath("worker"), { token: "wrong-token" })).status,
+    401,
+  );
+  eq(
+    "autopickup POST 401 with wrong token",
+    (await req("POST", autopickupPath("worker"), { token: "wrong-token", body: { enabled: true } })).status,
+    401,
+  );
+  const autopickupInitial = await req("GET", autopickupPath("worker"), { token, project: ALPHA });
+  eq("autopickup GET 200 with token", autopickupInitial.status, 200);
+  eq("autopickup payload project == alpha", autopickupInitial.json && autopickupInitial.json.project, ALPHA);
+  eq("autopickup payload node == worker", autopickupInitial.json && autopickupInitial.json.node, "worker");
+  eq("autopickup initially disabled", autopickupInitial.json && autopickupInitial.json.enabled, false);
+  eq("autopickup initially unconfigured", autopickupInitial.json && autopickupInitial.json.configured, false);
+  eq("autopickup global gate initially enabled", autopickupInitial.json && autopickupInitial.json.global_enabled, true);
+  eq("autopickup global kill-switch initially off", autopickupInitial.json && autopickupInitial.json.global_kill_switch, false);
+
+  const autopickupEnabled = await req("POST", autopickupPath("worker"), {
+    token,
+    project: ALPHA,
+    body: { enabled: true },
+  });
+  eq("autopickup POST enabled:true -> 200", autopickupEnabled.status, 200);
+  eq("autopickup POST enabled:true reflected", autopickupEnabled.json && autopickupEnabled.json.enabled, true);
+  eq("autopickup POST enabled:true configured", autopickupEnabled.json && autopickupEnabled.json.configured, true);
+  const autopickupEnabledRead = await req("GET", autopickupPath("worker"), { token, project: ALPHA });
+  eq("autopickup GET after enable returns enabled:true", autopickupEnabledRead.json && autopickupEnabledRead.json.enabled, true);
+  const autopickupDisabled = await req("POST", autopickupPath("worker"), {
+    token,
+    project: ALPHA,
+    body: { enabled: false },
+  });
+  eq("autopickup POST enabled:false -> 200", autopickupDisabled.status, 200);
+  eq("autopickup POST enabled:false reflected", autopickupDisabled.json && autopickupDisabled.json.enabled, false);
+  const autopickupDisabledRead = await req("GET", autopickupPath("worker"), { token, project: ALPHA });
+  eq("autopickup GET after disable returns enabled:false", autopickupDisabledRead.json && autopickupDisabledRead.json.enabled, false);
+
+  setAutopickupGlobal(ALPHA, { enabled: false, killSwitch: false });
+  const globalOff = await req("POST", autopickupPath("worker"), {
+    token,
+    project: ALPHA,
+    body: { enabled: true },
+  });
+  eq("autopickup POST enable with global gate off -> 409", globalOff.status, 409);
+  check("autopickup global-off rejection mentions global gate", /global/i.test(globalOff.text), globalOff.text);
+  setAutopickupGlobal(ALPHA, { enabled: true, killSwitch: true });
+  const killSwitchOn = await req("POST", autopickupPath("worker"), {
+    token,
+    project: ALPHA,
+    body: { enabled: true },
+  });
+  eq("autopickup POST enable with kill-switch on -> 409", killSwitchOn.status, 409);
+  check("autopickup kill-switch rejection mentions global gate", /global/i.test(killSwitchOn.text), killSwitchOn.text);
+  setAutopickupGlobal(ALPHA, { enabled: true, killSwitch: false });
+
+  const scopedGet = await req("GET", autopickupPath("worker"), { token, project: SCOPE });
+  check("autopickup GET rejects node outside project scope", [400, 404].includes(scopedGet.status), scopedGet.status);
+  const scopedPost = await req("POST", autopickupPath("worker"), {
+    token,
+    project: SCOPE,
+    body: { enabled: false },
+  });
+  check("autopickup POST rejects node outside project scope", [400, 404].includes(scopedPost.status), scopedPost.status);
+  const badNode = "@sk-test-1234567890abcdef012345";
+  const badNodeResp = await req("GET", autopickupPath(badNode), { token, project: ALPHA });
+  eq("autopickup invalid node name -> 400", badNodeResp.status, 400);
+  check(
+    "autopickup rejection responses leak no secrets or paths",
+    !hasSecret([globalOff.json, killSwitchOn.json, scopedGet.json, scopedPost.json, badNodeResp.json]) &&
+      ![globalOff.text, killSwitchOn.text, scopedGet.text, scopedPost.text, badNodeResp.text].some(
+        (text) => text.includes(badNode) || text.includes("/tmp/") || text.includes(groveHome) || text.includes(dbPath),
+      ),
+  );
+
+  writeRegistry(TEAM, {
+    worker: {
+      name: "worker",
+      agent: "codex",
+      tmux_pane: `${TEAM}:1.0`,
+      session_id: "team-session",
+      status: "idle",
+    },
+  });
+  writeTeamViewer(TEAM, { name: "viewer", secret: "viewer-secret" });
+  const teamDbPath = path.join(tmp, "team-board.db");
+  await startTeamServer(TEAM, teamDbPath);
+  try {
+    const viewerLogin = await reqAt(teamBaseUrl, "POST", "/api/login", {
+      body: { name: "viewer", secret: "viewer-secret" },
+    });
+    eq("autopickup team viewer login 200", viewerLogin.status, 200);
+    const viewerCookie = String(viewerLogin.headers.get("set-cookie") || "").split(";")[0];
+    const viewerCsrf = viewerLogin.json && viewerLogin.json.csrf;
+    check(
+      "autopickup team viewer has cookie+csrf",
+      viewerCookie.startsWith("grove_team_session=") && typeof viewerCsrf === "string" && viewerCsrf.length > 0,
+    );
+    const viewerPost = await reqAt(teamBaseUrl, "POST", autopickupPath("worker"), {
+      cookie: viewerCookie,
+      csrf: viewerCsrf,
+      body: { enabled: true },
+    });
+    eq("autopickup team viewer POST denied", viewerPost.status, 403);
+    check("autopickup team viewer denial leaks no secrets", !hasSecret(viewerPost.json));
+  } finally {
+    await stopTeamServer();
+  }
 
   // --- slack status ---
   const slack = await req("GET", "/api/slack/config/status", { token });

@@ -186,6 +186,117 @@ async function main() {
     await page.click(".nodestat__more"); // collapse
     const detailOk = detail.rows >= 1 && detail.inferred >= 1 && detail.seen && detail.detailFetched;
 
+    // V12-W2b autopickup toggle (real config, distinct from the ⚡ inferred
+    // badge): GET shows enabled state; POST flips it; global gate OFF disables
+    // the toggle with a reason; a team-viewer 403 locks the toggles.
+    const reopenDetail = async () => {
+      await page.click(".nodestat__more"); // open
+      await page.waitForSelector(".nodestat-detail .pickup-toggle", { timeout: 6000 });
+    };
+    const closeDetail = async () => {
+      await page.click(".nodestat__more");
+      await page.waitForFunction(() => !document.querySelector(".nodestat-detail"), { timeout: 5000 });
+    };
+    await reopenDetail();
+    // Native el.click() for the toggles: the detail dropdown's absolute position
+    // can foil page.click() coordinate targeting (same pattern as the org actions).
+    const clickToggle = (n) => page.$eval(`.pickup-toggle[data-node="${n}"]`, (el) => el.click());
+    const pickInit = await page.evaluate(() => {
+      const tg = Array.from(document.querySelectorAll(".pickup-toggle"));
+      return { count: tg.length, anyOn: tg.some((t) => t.getAttribute("data-enabled") === "1") };
+    });
+    const pNode = await page.evaluate(() => document.querySelector(".pickup-toggle")?.getAttribute("data-node"));
+    // enable via POST
+    await clickToggle(pNode);
+    await page.waitForFunction(
+      (n) => document.querySelector(`.pickup-toggle[data-node="${n}"]`)?.getAttribute("data-enabled") === "1",
+      { timeout: 6000 },
+      pNode,
+    );
+    const afterEnable = await page.evaluate(() => window.__MOCK__?.autopickupPost ?? null);
+    // disable via POST
+    await clickToggle(pNode);
+    await page.waitForFunction(
+      (n) => document.querySelector(`.pickup-toggle[data-node="${n}"]`)?.getAttribute("data-enabled") === "0",
+      { timeout: 6000 },
+      pNode,
+    );
+    const afterDisable = await page.evaluate(() => window.__MOCK__?.autopickupPost ?? null);
+
+    // global gate OFF -> toggle disabled + reason (no enable possible). Reopen
+    // refetches fresh state (pickup is cleared on close, so no stale toggle).
+    await page.evaluate(() => window.__MOCK__.setAutopickupGlobal(false, false));
+    await closeDetail();
+    await reopenDetail();
+    const globalOffState = await page.evaluate(() => {
+      const tg = document.querySelector(".pickup-toggle");
+      return {
+        disabled: !!tg && tg.disabled === true,
+        locked: !!tg && tg.classList.contains("is-locked"),
+        reason: (document.querySelector(".pickup-toggle__reason")?.textContent ?? "").trim(),
+      };
+    });
+
+    // kill-switch ON (gate enabled=true, kill_switch=true) -> toggle disabled
+    // with the dedicated kill-switch reason (distinct from the gate-off reason).
+    await page.evaluate(() => window.__MOCK__.setAutopickupGlobal(true, true));
+    await closeDetail();
+    await reopenDetail();
+    const killSwitchState = await page.evaluate(() => {
+      const tg = document.querySelector(".pickup-toggle");
+      return {
+        disabled: !!tg && tg.disabled === true,
+        reason: (document.querySelector(".pickup-toggle__reason")?.textContent ?? "").trim(),
+      };
+    });
+
+    // team viewer -> POST 403 -> toggles locked + reason (gate restored first).
+    await page.evaluate(() => window.__MOCK__.setAutopickupGlobal(true, false));
+    await page.evaluate(() => (window.__MOCK__.denyAutopickup = true));
+    await closeDetail();
+    await reopenDetail();
+    const vNode = await page.evaluate(() => document.querySelector(".pickup-toggle")?.getAttribute("data-node"));
+    await clickToggle(vNode);
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".pickup-toggle[disabled]").length >= 1 &&
+        /권한|operator/.test(document.querySelector(".pickup-toggle__reason")?.textContent ?? ""),
+      { timeout: 6000 },
+    );
+    const viewerState = await page.evaluate(() => ({
+      disabled: document.querySelectorAll(".pickup-toggle[disabled]").length >= 1,
+      reason: (document.querySelector(".pickup-toggle__reason")?.textContent ?? "").trim(),
+      denials: window.__MOCK__?.autopickupDenied ?? 0,
+    }));
+    await page.evaluate(() => (window.__MOCK__.denyAutopickup = false));
+    await closeDetail();
+
+    // P2-1: mock mirrors backend node validation — invalid name 400, unknown
+    // node 404, known node 200 (applies to GET + POST via _node_in_project).
+    const nodeReject = await page.evaluate(async () => {
+      const status = async (n) => (await fetch(`/api/nodes/${n}/autopickup`)).status;
+      return { invalid: await status("bad%20name"), unknown: await status("ghostnode"), known: await status("root") };
+    });
+
+    const pickupToggleOk =
+      pickInit.count >= 1 &&
+      !pickInit.anyOn && // initially all off
+      Boolean(afterEnable) &&
+      afterEnable.enabled === true && // enable POST
+      Boolean(afterDisable) &&
+      afterDisable.enabled === false && // disable POST
+      globalOffState.disabled &&
+      globalOffState.locked &&
+      /게이트|gate/.test(globalOffState.reason) && // global off -> disabled + reason
+      killSwitchState.disabled &&
+      /킬 스위치|kill-switch/.test(killSwitchState.reason) && // kill-switch on -> disabled + reason
+      viewerState.disabled &&
+      /권한|operator/.test(viewerState.reason) &&
+      viewerState.denials >= 1 && // viewer 403 -> locked + reason
+      nodeReject.invalid === 400 && // mock node validation (mirrors backend)
+      nodeReject.unknown === 404 &&
+      nodeReject.known === 200;
+
     // V4-W1 audit drawer (GET /api/audit): events render, cursor paging, filter.
     await page.click(".dr-audit-btn");
     await page.waitForSelector(".audit-drawer", { timeout: 5000 });
@@ -1275,6 +1386,7 @@ async function main() {
       wizardOk &&
       autonomyVisOk &&
       plannerSurfaceOk &&
+      pickupToggleOk &&
       delegationEdgesOk &&
       delegateOk &&
       diag.projectHeader === projAfterLoad &&
@@ -1353,6 +1465,8 @@ async function main() {
       wizard: { s0: wizStep0, s1: wizStep1, last: wizLast, flag: wizFlag, afterReload: wizAfterReload },
       autonomyVisOk,
       autonomy: { pick: autoPick, retro: autoRetro, node: autoNode },
+      pickupToggleOk,
+      pickup: { init: pickInit, enable: afterEnable, disable: afterDisable, globalOff: globalOffState, killSwitch: killSwitchState, viewer: viewerState, nodeReject },
       plannerSurfaceOk,
       planner: {
         ...planner,

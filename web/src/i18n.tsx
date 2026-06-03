@@ -245,6 +245,14 @@ const KO: Dict = {
   "autonomy.auto": "자율(추론)",
   "autonomy.inferredHint": "최근 자가 claim(autopickup) 기록으로 추정 — 자율 작업 픽업",
 
+  "pickup.label": "autopickup 사용",
+  "pickup.hint": "노드별 자율 픽업 사용 설정 (실제 config — 추론 배지와 다름)",
+  "pickup.aria": "{node} autopickup 토글",
+  "pickup.globalOff": "전역 게이트 OFF — 사용 불가",
+  "pickup.killSwitch": "킬 스위치 ON — 사용 불가",
+  "pickup.denied": "권한 없음 — operator 필요",
+  "pickup.error": "변경에 실패했습니다.",
+
   "plan.title": "노드 추천",
   "plan.rolePh": "역할(role) 입력 — 예: 백엔드",
   "plan.recommend": "추천 보기",
@@ -579,6 +587,14 @@ const EN: Dict = {
   "audit.action.retro": "retro",
   "autonomy.auto": "auto (inferred)",
   "autonomy.inferredHint": "inferred from a recent self-claim (autopickup) — autonomous pickup",
+
+  "pickup.label": "autopickup",
+  "pickup.hint": "per-node autonomous-pickup setting (real config — distinct from the inferred badge)",
+  "pickup.aria": "toggle {node} autopickup",
+  "pickup.globalOff": "global gate off — can't enable",
+  "pickup.killSwitch": "kill-switch on — can't enable",
+  "pickup.denied": "no access — operator required",
+  "pickup.error": "couldn't change it.",
 
   "plan.title": "Recommend nodes",
   "plan.rolePh": "role — e.g. backend",

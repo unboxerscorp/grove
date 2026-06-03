@@ -4046,3 +4046,76 @@ button {
   font-weight: 600;
   color: var(--teal);
 }
+
+/* ── autopickup toggle (real config, not the inferred badge) ─────────────── */
+.nodestat-row__pickup {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: 6px;
+}
+
+.pickup-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.pickup-toggle:disabled,
+.pickup-toggle.is-locked {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.pickup-toggle__track {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  transition: background 0.16s ease;
+}
+
+.pickup-toggle.is-on .pickup-toggle__track {
+  background: var(--teal);
+  border-color: var(--teal);
+}
+
+.pickup-toggle__thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--panel);
+  transition: transform 0.16s ease;
+}
+
+.pickup-toggle.is-on .pickup-toggle__thumb {
+  transform: translateX(12px);
+  background: var(--ink);
+}
+
+.pickup-toggle__label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.pickup-toggle.is-on .pickup-toggle__label {
+  color: var(--teal);
+}
+
+.pickup-toggle__reason {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--amber);
+}

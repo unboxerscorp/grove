@@ -60,6 +60,18 @@ export interface StatusSummary {
   node_details?: NodeDetail[]; // present when ?detail=1
 }
 
+// web_app.py _node_autopickup_payload: the REAL per-node autonomous-pickup
+// config (distinct from the audit-inferred ⚡ badge). Enabling is gated by the
+// global switch — POST returns 409 when global_enabled is false / kill-switch on.
+export interface AutopickupState {
+  project?: string;
+  node: string;
+  enabled: boolean;
+  configured?: boolean;
+  global_enabled: boolean;
+  global_kill_switch: boolean;
+}
+
 // web_app.py _audit_event_payload returns `actor` and `target` as objects
 // (store.py _node_actor / target dicts). Both may also be a bare string in
 // other event sources, so the FE accepts the union and labels defensively.
@@ -399,6 +411,22 @@ export const api = {
 
   // Live status: project + node liveness summary; detail=1 adds per-node rows.
   getStatus: (detail = false) => getJSON<StatusSummary>(`/api/status${detail ? "?detail=1" : ""}`),
+
+  // Per-node autonomous-pickup config (real state, not the inferred badge).
+  getAutopickup: (node: string) => getJSON<AutopickupState>(`/api/nodes/${enc(node)}/autopickup`),
+
+  // Toggle a node's autopickup. 409 when the global gate is off / kill-switch on;
+  // 403 for team viewers. The caller surfaces a FIXED message (no raw leak).
+  async setAutopickup(node: string, enabled: boolean): Promise<AutopickupState> {
+    const res = await fetch(`/api/nodes/${enc(node)}/autopickup`, {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) throw new Error(`autopickup: HTTP ${res.status}`);
+    return (await res.json()) as AutopickupState;
+  },
 
   // Read-only audit log (cursor-paged; filter by action/node/task_id).
   getAudit: (params: { cursor?: string | number; limit?: number; action?: string; node?: string; task_id?: string } = {}) => {

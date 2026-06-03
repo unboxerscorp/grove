@@ -263,6 +263,14 @@ diag.setPresenceMode = (m: "team" | "local"): void => {
   presenceMode = m;
 };
 
+// Autopickup config mirror: global gate/kill-switch + per-node enabled. Verify
+// can flip the global gate (disabled+reason) and deny POST (viewer 403).
+let autopickupGlobal = { enabled: true, kill_switch: false };
+const autopickupNodes: Record<string, boolean> = {};
+diag.setAutopickupGlobal = (enabled: boolean, killSwitch: boolean): void => {
+  autopickupGlobal = { enabled, kill_switch: killSwitch };
+};
+
 interface ProjectMock {
   name: string;
   workspace: string;
@@ -730,6 +738,60 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"];
     if (proj === SOLO_PROJECT) return Promise.resolve(json(SOLO_NODES.map(basicNode)));
     return Promise.resolve(json(ORG_NODES.map(basicNode)));
+  }
+
+  m = p.match(/^\/api\/nodes\/([^/]+)\/autopickup$/);
+  if (m) {
+    // Mirrors web_app.py _node_autopickup_payload + _node_in_project: validate
+    // the node name (400) and require it to exist in THIS project (404) before
+    // GET or POST; only a known node returns 200. + the 409 global-gate rule.
+    // Normalize like backend _validated_node_ref (trim) ONCE, then use the
+    // canonical name everywhere — payload `node`, store key, and diag.
+    const node = decodeURIComponent(m[1]!).trim();
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(node)) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ detail: "node must contain only letters, digits, hyphen, or underscore" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+    const projNodes = proj === SOLO_PROJECT ? SOLO_NODES : ORG_NODES;
+    if (!projNodes.some((n) => n.name === node)) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ detail: "node not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }
+    const apPayload = () => ({
+      project: proj,
+      node,
+      enabled: !!autopickupNodes[node],
+      configured: node in autopickupNodes,
+      global_enabled: autopickupGlobal.enabled,
+      global_kill_switch: autopickupGlobal.kill_switch,
+    });
+    if (method === "POST") {
+      if (diag.denyAutopickup) {
+        diag.autopickupDenied = ((diag.autopickupDenied as number) ?? 0) + 1;
+        return Promise.resolve(new Response(JSON.stringify({ detail: "node mutation requires operator role" }), { status: 403 }));
+      }
+      const body = (init?.body ? JSON.parse(init.body as string) : {}) as { enabled?: boolean };
+      const wantEnable = !!body.enabled;
+      if (wantEnable && (!autopickupGlobal.enabled || autopickupGlobal.kill_switch)) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: "global autopickup gate is disabled" }), { status: 409 }),
+        );
+      }
+      autopickupNodes[node] = wantEnable;
+      diag.autopickupPost = { node, enabled: wantEnable };
+      return Promise.resolve(json(apPayload()));
+    }
+    diag.autopickupFetches = ((diag.autopickupFetches as number) ?? 0) + 1;
+    return Promise.resolve(json(apPayload()));
   }
 
   m = p.match(/^\/api\/nodes\/([^/]+)$/);
