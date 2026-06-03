@@ -84,13 +84,19 @@ function makeContext(nodes: ResolvedNode[]): Context {
   };
 }
 
-function node(name: string, tmux?: string): ResolvedNode {
+function node(
+  name: string,
+  opts: Partial<Pick<ResolvedNode, "children" | "group" | "parent" | "role" | "tmux">> = {},
+): ResolvedNode {
   return {
     agent: "codex",
-    children: [],
+    children: opts.children ?? [],
     cwd: "/tmp/grove",
+    group: opts.group,
     name,
-    tmux,
+    parent: opts.parent,
+    role: opts.role,
+    tmux: opts.tmux,
   };
 }
 
@@ -103,7 +109,7 @@ describe("bringUp registry tmux pane metadata", () => {
 
   test("records the canonical tmux pane for adopted explicit tmux nodes", async () => {
     vi.mocked(paneCommand).mockResolvedValue("codex");
-    const ctx = makeContext([node("viewer", "1.2")]);
+    const ctx = makeContext([node("viewer", { tmux: "1.2" })]);
 
     await bringUp(ctx);
 
@@ -116,7 +122,7 @@ describe("bringUp registry tmux pane metadata", () => {
 
   test("records the canonical tmux pane for launched explicit tmux nodes", async () => {
     vi.mocked(paneCommand).mockResolvedValue("zsh");
-    const ctx = makeContext([node("viewer", "1.2")]);
+    const ctx = makeContext([node("viewer", { tmux: "1.2" })]);
 
     await bringUp(ctx);
 
@@ -135,5 +141,41 @@ describe("bringUp registry tmux pane metadata", () => {
     await bringUp(ctx);
 
     expect(ctx.registry.nodes.worker?.tmux_pane).toBeUndefined();
+  });
+
+  test("persists team graph fields for adopted and launched nodes", async () => {
+    vi.mocked(paneCommand).mockResolvedValue("codex");
+    const ctx = makeContext([
+      node("lead", {
+        children: ["maker"],
+        group: "core",
+        role: "Lead",
+        tmux: "1.1",
+      }),
+      node("maker", {
+        group: "core",
+        parent: "lead",
+        role: "Builder",
+      }),
+    ]);
+
+    await bringUp(ctx);
+
+    expect(ctx.registry.nodes.lead).toEqual(
+      expect.objectContaining({
+        children: ["maker"],
+        group: "core",
+        role: "Lead",
+        tmux_pane: "dev10:1.1",
+      }),
+    );
+    expect(ctx.registry.nodes.maker).toEqual(
+      expect.objectContaining({
+        children: [],
+        group: "core",
+        parent: "lead",
+        role: "Builder",
+      }),
+    );
   });
 });

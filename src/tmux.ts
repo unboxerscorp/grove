@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const pexec = promisify(execFile);
+const PANE_TARGET_FORMAT = "#{session_name}:#{window_index}.#{pane_index}";
 
 export interface TmuxError extends Error {
   stderr?: string;
@@ -28,6 +29,101 @@ export function target(session: string, window: string): string {
   return `${session}:${window}`;
 }
 
+export interface DetachedPaneRequest {
+  session: string;
+  window: string;
+  cwd?: string;
+}
+
+export interface CreateDetachedPaneRequest {
+  session: string;
+  name: string;
+  cwd?: string;
+  window?: string;
+}
+
+export function detachedNewWindowPaneArgs(req: DetachedPaneRequest): string[] {
+  const args = [
+    "new-window",
+    "-d",
+    "-P",
+    "-F",
+    PANE_TARGET_FORMAT,
+    "-t",
+    req.session,
+    "-n",
+    req.window,
+  ];
+  if (req.cwd) args.push("-c", req.cwd);
+  return args;
+}
+
+export function detachedSplitPaneArgs(req: DetachedPaneRequest): string[] {
+  const args = [
+    "split-window",
+    "-d",
+    "-P",
+    "-F",
+    PANE_TARGET_FORMAT,
+    "-t",
+    target(req.session, req.window),
+  ];
+  if (req.cwd) args.push("-c", req.cwd);
+  return args;
+}
+
+export function tiledLayoutArgs(session: string, window: string): string[] {
+  return ["select-layout", "-t", target(session, window), "tiled"];
+}
+
+export function newWindowArgs(session: string, window: string, cwd?: string): string[] {
+  const args = ["new-window", "-d", "-t", session, "-n", window];
+  if (cwd) args.push("-c", cwd);
+  return args;
+}
+
+export async function activeWindowTarget(session: string): Promise<string> {
+  return (
+    await tmux(["display-message", "-p", "-t", session, "#{session_name}:#{window_index}"])
+  ).trim();
+}
+
+export interface PreserveActiveWindowOptions {
+  intervalMs?: number;
+}
+
+export async function preserveActiveWindow<T>(
+  session: string,
+  fn: () => Promise<T>,
+  opts: PreserveActiveWindowOptions = {},
+): Promise<T> {
+  const original = await activeWindowTarget(session);
+  let restoring = false;
+  const restore = async (): Promise<void> => {
+    if (restoring) return;
+    restoring = true;
+    try {
+      const current = await activeWindowTarget(session);
+      if (current !== original) {
+        await tmuxOk(["select-window", "-t", original]);
+      }
+    } catch {
+      /* session disappeared while preserving focus */
+    } finally {
+      restoring = false;
+    }
+  };
+  const timer = setInterval(() => {
+    void restore();
+  }, opts.intervalMs ?? 50);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
+    await restore();
+  }
+}
+
 export async function isAvailable(): Promise<boolean> {
   return tmuxOk(["-V"]);
 }
@@ -47,6 +143,32 @@ export async function newSession(
   await tmux(args);
 }
 
+export async function paneTarget(addr: string): Promise<string> {
+  return (await tmux(["display-message", "-t", addr, "-p", PANE_TARGET_FORMAT])).trim();
+}
+
+export async function createDetachedPane(req: CreateDetachedPaneRequest): Promise<string> {
+  const window = req.window ?? req.name;
+  if (!(await hasSession(req.session))) {
+    await newSession(req.session, { cwd: req.cwd, windowName: window });
+    if (!req.window) return paneTarget(target(req.session, window));
+  } else if (req.window && !(await hasWindow(req.session, req.window))) {
+    await tmux(detachedNewWindowPaneArgs({ cwd: req.cwd, session: req.session, window }));
+  }
+
+  if (req.window) {
+    const pane = (
+      await tmux(detachedSplitPaneArgs({ cwd: req.cwd, session: req.session, window }))
+    ).trim();
+    await tmux(tiledLayoutArgs(req.session, window));
+    return pane;
+  }
+
+  return (
+    await tmux(detachedNewWindowPaneArgs({ cwd: req.cwd, session: req.session, window }))
+  ).trim();
+}
+
 export async function listWindows(session: string): Promise<string[]> {
   if (!(await hasSession(session))) return [];
   const out = await tmux(["list-windows", "-t", session, "-F", "#{window_name}"]);
@@ -62,9 +184,7 @@ export async function hasWindow(session: string, window: string): Promise<boolea
 }
 
 export async function newWindow(session: string, window: string, cwd?: string): Promise<void> {
-  const args = ["new-window", "-t", session, "-n", window];
-  if (cwd) args.push("-c", cwd);
-  await tmux(args);
+  await tmux(newWindowArgs(session, window, cwd));
 }
 
 /** Send text to a pane interpreting key names (no submit). */

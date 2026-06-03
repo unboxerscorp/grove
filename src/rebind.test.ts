@@ -169,4 +169,60 @@ describe("planTranscriptRebinds", () => {
     expect(plan.updates).toEqual([]);
     expect(plan.skipped).toEqual([expect.objectContaining({ node: "docs", reason: "ambiguous" })]);
   });
+
+  test("plans a rebind for registry-only spawned nodes", () => {
+    const dir = tempDir();
+    const role = '너는 "spawned" 노드이고, lead가 grove로 작업을 배정한다.';
+    const transcript = writeCodexTranscript(dir, "session-spawned", "/repo", `handoff\n${role}`);
+    const adapter = {
+      name: "codex",
+      label: "codex",
+      submit: "enter",
+      readyPattern: /ready/,
+      launchCommand: () => "codex",
+      transcriptForSession: () => "",
+      snapshot: () => new Map([[transcript, statSync(transcript).mtimeMs]]),
+      detectNew: () => null,
+      sessionIdFromPath: (path: string) =>
+        path.match(/rollout-(session-[^.]+)\.jsonl$/)?.[1] ?? null,
+      size: () => 1,
+      readCompletionSince: () => ({ done: false, offset: 0 }),
+      readLast: () => null,
+    } satisfies AgentAdapter;
+    const ctx: Context = {
+      byName: new Map(),
+      config: {
+        cwd: "/repo",
+        defaults: { agent: "codex" },
+        nodes: {},
+        session: "dev10",
+      },
+      configPath: "/repo/grove.yaml",
+      nodes: [],
+      registry: {
+        cwd: "/repo",
+        nodes: {
+          spawned: {
+            agent: "codex",
+            children: [],
+            name: "spawned",
+            role,
+            tmux_pane: "dev10:2.0",
+          },
+        },
+        session: "dev10",
+        updatedAt: "2026-06-03T00:00:00.000Z",
+      },
+    };
+
+    const plan = planTranscriptRebinds(ctx, { getAdapter: () => adapter });
+
+    expect(plan.updates).toEqual([
+      expect.objectContaining({
+        afterSessionId: "session-spawned",
+        afterTranscript: transcript,
+        node: "spawned",
+      }),
+    ]);
+  });
 });

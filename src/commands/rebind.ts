@@ -1,10 +1,22 @@
 import { loadContext } from "../context.js";
 import { applyTranscriptRebinds, planTranscriptRebinds } from "../rebind.js";
-import { saveRegistry } from "../registry.js";
+import { loadOrInit, saveRegistry } from "../registry.js";
 import { color, info, warn } from "../util/log.js";
 
-export async function cmdRebind(opts: { config?: string; dryRun?: boolean }): Promise<void> {
-  const ctx = loadContext(opts.config);
+export async function cmdRebind(opts: {
+  config?: string;
+  dryRun?: boolean;
+  session?: string;
+}): Promise<void> {
+  const loaded = loadContext(opts.config);
+  const session = opts.session?.trim();
+  const ctx = session
+    ? {
+        ...loaded,
+        config: { ...loaded.config, session },
+        registry: loadOrInit(session, loaded.config.cwd),
+      }
+    : loaded;
   const plan = planTranscriptRebinds(ctx);
 
   for (const update of plan.updates) {

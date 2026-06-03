@@ -6,6 +6,10 @@ import { registryPath, sessionDir } from "./util/paths.js";
 export interface NodeRuntime {
   name: string;
   agent: AgentType;
+  role?: string;
+  parent?: string;
+  children?: string[];
+  group?: string;
   /** agent-native session id (codex/claude UUID), once detected */
   sessionId?: string;
   /** resolved transcript path, once detected */

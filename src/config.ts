@@ -25,6 +25,7 @@ export const NodeConfigSchema = z
     tmux: z.string().optional(),
     children: z.array(z.string()).default([]),
     parent: z.string().optional(),
+    group: z.string().optional(),
   })
   .strict();
 export type NodeConfig = z.infer<typeof NodeConfigSchema>;
@@ -55,6 +56,7 @@ export interface ResolvedNode {
   tmux?: string;
   children: string[];
   parent?: string;
+  group?: string;
 }
 
 const CONFIG_NAMES = ["grove.yaml", "grove.yml", ".grove.yaml"];
@@ -94,6 +96,7 @@ export function resolveNodes(config: GroveConfig): ResolvedNode[] {
       tmux: n.tmux,
       children: n.children,
       parent: n.parent,
+      group: n.group,
     });
   }
   // Infer parent from declared children when not explicitly set.

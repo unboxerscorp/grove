@@ -1,6 +1,6 @@
 import type { Context, NodeCtx } from "./context.js";
 import { eventLogSize, readTurnEventsSince } from "./events.js";
-import { saveRegistry } from "./registry.js";
+import { type NodeRuntime, saveRegistry } from "./registry.js";
 import {
   capturePane,
   hasSession,
@@ -210,6 +210,7 @@ function registerExisting(ctx: Context, nc: NodeCtx): void {
     agent: nc.node.agent,
     sessionId: sid,
     transcript: transcript || prev?.transcript,
+    ...teamRuntime(nc),
     ...tmuxPaneRuntime(ctx, nc),
   };
 }
@@ -218,7 +219,17 @@ function tmuxPaneRuntime(ctx: Context, nc: NodeCtx): { tmux_pane?: string } {
   return nc.node.tmux ? { tmux_pane: `${ctx.config.session}:${nc.node.tmux}` } : {};
 }
 
-async function launch(ctx: Context, nc: NodeCtx): Promise<void> {
+function teamRuntime(nc: NodeCtx): Pick<NodeRuntime, "children" | "group" | "parent" | "role"> {
+  const runtime: Pick<NodeRuntime, "children" | "group" | "parent" | "role"> = {
+    children: [...nc.node.children],
+  };
+  if (nc.node.role) runtime.role = nc.node.role;
+  if (nc.node.parent) runtime.parent = nc.node.parent;
+  if (nc.node.group) runtime.group = nc.node.group;
+  return runtime;
+}
+
+export async function launchNode(ctx: Context, nc: NodeCtx): Promise<void> {
   const { node, adapter, addr } = nc;
   const resumeId = node.resume ?? ctx.registry.nodes[node.name]?.sessionId;
   const before = adapter.snapshot(node.cwd);
@@ -272,6 +283,7 @@ async function launch(ctx: Context, nc: NodeCtx): Promise<void> {
     agent: node.agent,
     sessionId,
     transcript: transcript || undefined,
+    ...teamRuntime(nc),
     ...tmuxPaneRuntime(ctx, nc),
   };
 }
@@ -313,7 +325,7 @@ export async function bringUp(ctx: Context): Promise<BringUpResult> {
       await sendText(nc.addr, `cd ${node.cwd}`);
       await sendEnter(nc.addr);
       await sleep(300);
-      await launch(ctx, nc);
+      await launchNode(ctx, nc);
       result.launched.push(node.name);
       continue;
     }
@@ -327,7 +339,7 @@ export async function bringUp(ctx: Context): Promise<BringUpResult> {
     if (!(await hasWindow(session, node.name))) {
       await newWindow(session, node.name, node.cwd);
     }
-    await launch(ctx, nc);
+    await launchNode(ctx, nc);
     result.launched.push(node.name);
   }
 

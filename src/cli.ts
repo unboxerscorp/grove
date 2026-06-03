@@ -5,10 +5,12 @@ import { cmdAsk } from "./commands/ask.js";
 import { cmdDown } from "./commands/down.js";
 import { cmdGather } from "./commands/gather.js";
 import { cmdInit } from "./commands/init.js";
+import { cmdOrg } from "./commands/org.js";
 import { cmdRebind } from "./commands/rebind.js";
 import { cmdSend } from "./commands/send.js";
 import { cmdServe } from "./commands/serve.js";
 import { cmdSession } from "./commands/session.js";
+import { cmdSpawn } from "./commands/spawn.js";
 import { cmdStatus } from "./commands/status.js";
 import { cmdTail } from "./commands/tail.js";
 import { cmdUp } from "./commands/up.js";
@@ -59,6 +61,28 @@ program
   .description("show the tree: every node, its agent, tmux state, last output")
   .option("-c, --config <file>", "path to grove.yaml")
   .action(run((opts: Record<string, unknown>) => cmdStatus(withConfig(opts))));
+
+program
+  .command("org")
+  .description("print the current grove team graph from the session registry")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .option("--json", "print the team graph as JSON")
+  .action(run((opts: Record<string, unknown>) => cmdOrg(withConfig(opts))));
+
+program
+  .command("spawn")
+  .description("create a detached tmux pane and launch a new grove node")
+  .requiredOption("--name <name>", "new node name")
+  .requiredOption("--agent <agent>", "agent adapter: codex, claude, or antigravity")
+  .option("--role <role>", "role / initial prompt for the new node")
+  .option("--parent <node>", "parent node name")
+  .option("--group <group>", "team group")
+  .option("--session <session>", "target tmux/grove session")
+  .option("--window <window>", "split this existing window instead of creating a new window")
+  .option("--cwd <dir>", "working directory for the new node")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .option("--json", "print the spawn result as JSON")
+  .action(run((opts: Record<string, unknown>) => cmdSpawn(withConfig(opts))));
 
 program
   .command("send <node> <message...>")
@@ -126,6 +150,7 @@ program
   .command("rebind")
   .description("repair registry session/transcript bindings using node startup markers")
   .option("-c, --config <file>", "path to grove.yaml")
+  .option("--session <session>", "target grove registry session")
   .option("--dry-run", "show planned registry changes without writing")
   .action(run((opts: Record<string, unknown>) => cmdRebind(withConfig(opts))));
 

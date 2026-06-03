@@ -1,7 +1,9 @@
 import { readFileSync, statSync } from "node:fs";
 
+import { type AgentAdapter, getAdapter } from "./adapters/index.js";
 import type { ResolvedNode } from "./config.js";
 import type { Context, NodeCtx } from "./context.js";
+import { target } from "./tmux.js";
 
 const MAX_EARLY_LINES = 120;
 
@@ -29,6 +31,10 @@ interface Candidate {
   sessionId: string;
   transcript: string;
   mtimeMs: number;
+}
+
+export interface RebindOptions {
+  getAdapter?: (agent: ResolvedNode["agent"]) => AgentAdapter;
 }
 
 function normalizeText(text: string): string {
@@ -153,13 +159,49 @@ function findCandidates(nc: NodeCtx): Candidate[] {
   return candidates;
 }
 
-export function planTranscriptRebinds(ctx: Context): TranscriptRebindPlan {
+function registryNodeCtxs(
+  ctx: Context,
+  adapterFor: (agent: ResolvedNode["agent"]) => AgentAdapter,
+): NodeCtx[] {
+  const out = [...ctx.byName.values()];
+  const known = new Set(out.map((nc) => nc.node.name));
+  for (const runtime of Object.values(ctx.registry.nodes)) {
+    if (known.has(runtime.name)) continue;
+    const node: ResolvedNode = {
+      agent: runtime.agent,
+      children: runtime.children ?? [],
+      cwd: ctx.registry.cwd || ctx.config.cwd,
+      group: runtime.group,
+      name: runtime.name,
+      parent: runtime.parent,
+      role: runtime.role,
+    };
+    out.push({
+      addr: runtime.tmux_pane ?? target(ctx.registry.session, runtime.name),
+      adapter: adapterFor(runtime.agent),
+      node,
+    });
+  }
+  return out;
+}
+
+function rebindNodeCtxByName(
+  ctx: Context,
+  adapterFor: (agent: ResolvedNode["agent"]) => AgentAdapter,
+): Map<string, NodeCtx> {
+  return new Map(registryNodeCtxs(ctx, adapterFor).map((nc) => [nc.node.name, nc]));
+}
+
+export function planTranscriptRebinds(
+  ctx: Context,
+  opts: RebindOptions = {},
+): TranscriptRebindPlan {
   const skipped: TranscriptRebindSkip[] = [];
   const selected = new Map<string, Candidate>();
+  const nodeCtxs = registryNodeCtxs(ctx, opts.getAdapter ?? getAdapter);
 
-  for (const node of ctx.nodes) {
-    const nc = ctx.byName.get(node.name);
-    if (!nc) continue;
+  for (const nc of nodeCtxs) {
+    const node = nc.node;
     if (!node.role) {
       skipped.push({ node: node.name, reason: "no-marker" });
       continue;
@@ -221,9 +263,14 @@ export function planTranscriptRebinds(ctx: Context): TranscriptRebindPlan {
   return { updates, skipped };
 }
 
-export function applyTranscriptRebinds(ctx: Context, plan: TranscriptRebindPlan): void {
+export function applyTranscriptRebinds(
+  ctx: Context,
+  plan: TranscriptRebindPlan,
+  opts: RebindOptions = {},
+): void {
+  const byName = rebindNodeCtxByName(ctx, opts.getAdapter ?? getAdapter);
   for (const update of plan.updates) {
-    const nc = ctx.byName.get(update.node);
+    const nc = byName.get(update.node);
     if (!nc) continue;
     const current = ctx.registry.nodes[update.node] ?? {
       name: update.node,
