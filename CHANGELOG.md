@@ -4,6 +4,26 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.11.0] — v1.10 (2026-06-04)
+
+Safe self-direction. Auto-started after v1.9.0.
+
+### Autonomy (guarded)
+
+- **Guarded autonomous pickup** (default OFF) — an idle, opt-in node can CAS-claim one
+  ready, unassigned board task matching its role/capability rules (via claim_next, no
+  CAS/lease bypass): at most one in-flight, a cooldown persisted across restarts/--once,
+  global + per-node kill-switch, despawn/repair respected. Each pickup is audited
+  (audit.task.autopickup, actor=node). No runaway.
+- **Self-retro lane** — POST /api/tasks/{id}/retro appends a short retro on a done task
+  (opt-in; team viewers rejected; status untouched) → audit.task.retro. The node field is
+  strict-validated and audit payloads are recursively sanitized (token/path masked).
+
+### Deferred (→ v1.11)
+
+- Routing/cost-aware planner, Slack command surface, mobile actions, FE surfacing of
+  autopickup/retro (see docs/V1_11_BRAINSTORM.md).
+
 ## [0.10.0] — v1.9 (2026-06-04)
 
 Portable, easy-to-start team room. Auto-started after v1.8.0.
