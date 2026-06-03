@@ -4,6 +4,45 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.5.0] — v1.4 (2026-06-04)
+
+Team-facing surfaces for the v1.3 backend. Auto-started after v1.3.0.
+
+### Dashboard
+
+- **Audit drawer** — read-only audit lane over /api/audit (action/node filters +
+  cursor paging; actor/action/target/time).
+- **OrgChart delegation-edge overlay** — toggle-able who-delegated-to-whom edges
+  (from audit assign/delegate), distinct from parent/group edges, width by frequency.
+- **Node-status detail** — per-node idle/error/blocked/dead + last-seen, with an
+  inferred/confidence badge.
+- **Cost/credit panel** — per-agent (codex/claude/agy) tokens + cost; estimates clearly
+  marked (badge + provenance); agy credit shows unknown + warning when there's no local
+  source (never fabricated).
+
+### Backend
+
+- **/api/cost** — best-effort per-agent cost from registry + run metadata + transcript
+  parsing; every number tagged source/confidence; last_seen validated (no path/token
+  leak); transcript failures graceful (no 500); viewer 403 + project-scoped.
+
+### Safety
+
+- `grove delegate` refuses sending the bearer token to a non-loopback URL by default
+  (`--allow-remote` opt-in).
+
+### Quality
+
+- Aligned all v1.4 surfaces to the **real** backend contracts and made the web mock
+  mirror the real backend, so `verify` now catches FE↔backend drift (the gap that let
+  the assumed-shape panels pass). Stabilized the flaky tmux focus-restore test.
+
+### Deferred (→ v1.5)
+
+- Real-server e2e (api.mjs) coverage for /api/audit, /api/status?detail=1, /api/cost
+  (close the mock-only gap systemically); node-status using backend idle/error directly;
+  board event cursor replay.
+
 ## [0.4.0] — v1.3 (2026-06-04)
 
 The multi-orchestrator team OS made real — delegation as a command + real team
