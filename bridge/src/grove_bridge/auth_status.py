@@ -16,7 +16,7 @@ CF_KEYCHAIN_SERVICE = "base-voca"
 CF_KEYCHAIN_ACCOUNT = "cloudflare-api-token"
 TOKEN_RE = re.compile(
     r"(?i)\b(?:"
-    r"xox[baprs]-[A-Za-z0-9-]+|"
+    r"(?:xox[baprs]|xapp)-[A-Za-z0-9-]+|"
     r"gh[pousr]_[A-Za-z0-9_]+|"
     r"sk-[A-Za-z0-9_-]+|"
     r"[A-Za-z0-9_-]{40,}"
@@ -281,6 +281,10 @@ def collect_auth_status() -> list[ToolAuthStatus]:
     return AuthStatusChecker().check_all()
 
 
+def redact_secret_text(value: str) -> str:
+    return TOKEN_RE.sub("[redacted]", value)
+
+
 def keychain_cloudflare_token_exists() -> bool:
     try:
         proc = subprocess.run(
@@ -334,7 +338,7 @@ def _outcome_detail(outcome: CommandOutcome, *, fallback: str) -> str:
 def _sanitize_detail(value: str) -> str:
     lines = [line.strip() for line in value.replace("\r", "\n").splitlines() if line.strip()]
     clean = re.sub(r"\s+", " ", "; ".join(lines))
-    clean = TOKEN_RE.sub("[redacted]", clean)
+    clean = redact_secret_text(clean)
     return clean[:300]
 
 

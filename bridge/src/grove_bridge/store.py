@@ -759,6 +759,32 @@ class SQLiteBoardStore:
             raise RuntimeError("created slack thread disappeared")
         return _slack_thread_from_row(row)
 
+    def delete_slack_thread(
+        self,
+        *,
+        board: str,
+        task_id: str | None,
+        team_id: str,
+        channel_id: str,
+        thread_ts: str,
+        mode: str,
+    ) -> bool:
+        board_id = self._ensure_board(board)
+        with self._connect() as conn:
+            deleted = conn.execute(
+                """
+                DELETE FROM slack_threads
+                WHERE board_id = ?
+                  AND team_id = ?
+                  AND channel_id = ?
+                  AND thread_ts = ?
+                  AND mode = ?
+                  AND (task_id = ? OR (task_id IS NULL AND ? IS NULL))
+                """,
+                (board_id, team_id, channel_id, thread_ts, mode, task_id, task_id),
+            )
+        return deleted.rowcount > 0
+
     def list_slack_threads(
         self,
         *,
@@ -910,19 +936,24 @@ class SQLiteBoardStore:
         if not clean:
             raise ValueError("board slug is required")
         now = _now()
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             row = conn.execute("SELECT id FROM boards WHERE slug = ?", (clean,)).fetchone()
             if row is not None:
                 return _row_str(row, "id")
             board_id = _new_id("board")
             conn.execute(
                 """
-                INSERT INTO boards (id, slug, title, state, settings_json, created_at, updated_at)
+                INSERT OR IGNORE INTO boards (
+                    id, slug, title, state, settings_json, created_at, updated_at
+                )
                 VALUES (?, ?, ?, 'active', ?, ?, ?)
                 """,
                 (board_id, clean, clean, _json({}), now, now),
             )
-        return board_id
+            row = conn.execute("SELECT id FROM boards WHERE slug = ?", (clean,)).fetchone()
+        if row is None:
+            raise RuntimeError("created board disappeared")
+        return _row_str(row, "id")
 
     def _board_slug(self, board_id: str) -> str:
         with self._connect() as conn:

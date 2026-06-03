@@ -35,8 +35,8 @@ TMUX_TIMEOUT_SECONDS = 5.0
 GROVE_SPAWN_TIMEOUT_SECONDS = 30.0
 GROVE_PROJECT_TIMEOUT_SECONDS = 30.0
 TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?P<pane>[0-9]+)$")
-NODE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+PROJECT_NAME_RE = NODE_NAME_RE
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 STACK_TRACE_RE = re.compile(r"(?i)(traceback|\bfile \"|\bat .+\(.+:\d+:\d+\))")
 NODE_AGENTS = frozenset({"codex", "claude", "antigravity"})
@@ -265,14 +265,14 @@ def create_app(
     @app.get("/api/tasks/{task_id}")
     def task_endpoint(request: Request, task_id: str) -> dict[str, object]:
         _require_token(request)
-        try:
-            return _task_payload(_store(request).get_task_by_id(task_id))
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="task not found") from exc
+        project = resolve_project(request)
+        return _task_payload(_task_for_project(_store(request), task_id, project=project))
 
     @app.get("/api/tasks/{task_id}/comments")
     def comments_endpoint(request: Request, task_id: str) -> list[dict[str, object]]:
         _require_token(request)
+        project = resolve_project(request)
+        _task_for_project(_store(request), task_id, project=project)
         return [
             _comment_payload(comment)
             for comment in _store(request).list_comments_for_task(task_id=task_id)
@@ -281,6 +281,8 @@ def create_app(
     @app.get("/api/tasks/{task_id}/runs")
     def runs_endpoint(request: Request, task_id: str) -> list[dict[str, object]]:
         _require_token(request)
+        project = resolve_project(request)
+        _task_for_project(_store(request), task_id, project=project)
         return [_run_payload(run) for run in _store(request).list_runs_for_task(task_id=task_id)]
 
     @app.post("/api/tasks/{task_id}/comments")
@@ -290,6 +292,8 @@ def create_app(
         payload: CommentPayload,
     ) -> dict[str, object]:
         _require_token(request)
+        project = resolve_project(request)
+        _task_for_project(_store(request), task_id, project=project)
         try:
             comment = _store(request).add_comment_to_task(
                 task_id=task_id,
@@ -370,6 +374,8 @@ def create_app(
         task_id: str = Query(...),
     ) -> list[dict[str, object]]:
         _require_token(request)
+        project = resolve_project(request)
+        _task_for_project(_store(request), task_id, project=project)
         return [
             _slack_thread_payload(thread)
             for thread in _store(request).list_slack_threads(task_id=task_id)
@@ -405,6 +411,9 @@ def create_app(
         last_payload: bytes | None = None
         try:
             while True:
+                if not _pane_allowed(pane_id, config=project.config):
+                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                    return
                 payload = await asyncio.to_thread(_tmux_capture, pane_id)
                 if seq == 0 or payload != last_payload:
                     seq += 1
@@ -536,6 +545,23 @@ def _event_in_project(
         return store.board_slug_for_id(event.board_id) == project.board
     except KeyError:
         return False
+
+
+def _task_for_project(store: SQLiteBoardStore, task_id: str, *, project: ProjectContext) -> Task:
+    try:
+        task = store.get_task_by_id(task_id)
+        board_slug = store.board_slug_for_id(task.board_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc
+    if not _task_board_visible(board_slug, project=project):
+        raise HTTPException(status_code=404, detail="task not found")
+    return task
+
+
+def _task_board_visible(board_slug: str, *, project: ProjectContext) -> bool:
+    if board_slug == project.board:
+        return True
+    return not project.from_header and board_slug in {"main", "default"}
 
 
 def _index_response(config: WebAppConfig) -> HTMLResponse:
@@ -1018,8 +1044,20 @@ def _set_node_children(node: dict[str, object], children: list[str]) -> None:
 def _write_registry_atomic(path: Path, registry: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
-    temp_path.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
-    os.replace(temp_path, path)
+    fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(json.dumps(registry, indent=2) + "\n")
+        os.replace(temp_path, path)
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _validated_node_ref(value: str, *, field_name: str) -> str:

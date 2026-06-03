@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -16,19 +17,57 @@ from grove_bridge.slack import (
     SlackConfigStore,
     SlackConnector,
     SlackEvent,
+    SlackSdkClient,
     mask_token,
 )
-from grove_bridge.store import SQLiteBoardStore
+from grove_bridge.store import SQLiteBoardStore, Task
 
 
 class FakeSlackClient:
     def __init__(self) -> None:
         self.posts: list[tuple[str, str, str | None]] = []
+        self.messages: dict[str, dict[str, object]] = {}
+        self.history_failures = 0
+        self.raise_after_post = False
 
-    def post_message(self, *, channel: str, text: str, thread_ts: str | None = None) -> str:
+    def post_message(
+        self,
+        *,
+        channel: str,
+        text: str,
+        thread_ts: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> str:
         ts = f"ts-{len(self.posts) + 1}"
         self.posts.append((channel, text, thread_ts))
+        if metadata is not None:
+            self.messages[ts] = {"channel": channel, "metadata": dict(metadata)}
+        if self.raise_after_post:
+            raise RuntimeError("accepted but client failed")
         return ts
+
+    def find_message_by_metadata(
+        self,
+        *,
+        channel: str,
+        event_type: str,
+        dedup_key: str,
+        oldest: str | None = None,
+    ) -> str | None:
+        _ = oldest
+        if self.history_failures > 0:
+            self.history_failures -= 1
+            raise RuntimeError("history temporarily unavailable")
+        for ts, message in self.messages.items():
+            if message.get("channel") != channel:
+                continue
+            metadata = message.get("metadata")
+            if not isinstance(metadata, Mapping) or metadata.get("event_type") != event_type:
+                continue
+            payload = metadata.get("event_payload")
+            if isinstance(payload, Mapping) and payload.get("dedup_key") == dedup_key:
+                return ts
+        return None
 
 
 class FakeChatFacade:
@@ -136,6 +175,324 @@ def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Pa
     )
     assert len(store.list_comments(board=board, task_id=task.id)) == len(comments)
     assert chat.calls == []
+
+
+def test_human_gate_stale_pending_before_post_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("grove_bridge.slack.HUMAN_GATE_PENDING_TTL_SECONDS", -1)
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board=board)
+    pending_key = f"pending:{task.id}"
+    store.upsert_slack_thread(
+        board=board,
+        task_id=task.id,
+        team_id="",
+        channel_id="C123",
+        thread_ts=pending_key,
+        mode="human_gate_pending",
+        node=task.assignee,
+    )
+    slack = FakeSlackClient()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+
+    assert connector.poll_human_gates() == 1
+
+    assert slack.posts[0][0] == "C123"
+    assert store.list_notify_subs(board=board, task_id=task.id)[0].thread_id == "ts-1"
+    threads = store.list_slack_threads(task_id=task.id)
+    assert [(thread.mode, thread.thread_ts) for thread in threads] == [("human_gate", "ts-1")]
+
+
+def test_human_gate_stale_pending_after_post_reconciles_without_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("grove_bridge.slack.HUMAN_GATE_PENDING_TTL_SECONDS", -1)
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board=board)
+    pending_key = f"pending:{task.id}"
+    store.upsert_slack_thread(
+        board=board,
+        task_id=task.id,
+        team_id="",
+        channel_id="C123",
+        thread_ts=pending_key,
+        mode="human_gate_pending",
+        node=task.assignee,
+    )
+    slack = FakeSlackClient()
+    slack.messages["ts-orphan"] = {
+        "channel": "C123",
+        "metadata": {
+            "event_type": "grove_human_gate",
+            "event_payload": {"task_id": task.id, "dedup_key": pending_key},
+        },
+    }
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+
+    assert connector.poll_human_gates() == 0
+
+    assert slack.posts == []
+    assert store.list_notify_subs(board=board, task_id=task.id)[0].thread_id == "ts-orphan"
+    threads = store.list_slack_threads(task_id=task.id)
+    assert [(thread.mode, thread.thread_ts) for thread in threads] == [("human_gate", "ts-orphan")]
+
+
+def test_human_gate_history_failure_keeps_pending_without_duplicate_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("grove_bridge.slack.HUMAN_GATE_PENDING_TTL_SECONDS", -1)
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board=board)
+    pending_key = record_human_gate_pending(store, board=board, task=task)
+    slack = FakeSlackClient()
+    slack.history_failures = 1
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+
+    assert connector.poll_human_gates() == 0
+
+    assert slack.posts == []
+    assert slack_thread_modes(store, task=task) == [("human_gate_pending", pending_key)]
+
+
+def test_human_gate_malformed_history_pagination_keeps_pending_without_repost(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("grove_bridge.slack.HUMAN_GATE_PENDING_TTL_SECONDS", -1)
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board=board)
+    pending_key = record_human_gate_pending(store, board=board, task=task)
+
+    class MalformedHistorySlackClient(FakeSlackClient):
+        def find_message_by_metadata(
+            self,
+            *,
+            channel: str,
+            event_type: str,
+            dedup_key: str,
+            oldest: str | None = None,
+        ) -> str | None:
+            class MalformedWebClient:
+                def chat_postMessage(
+                    self,
+                    *,
+                    channel: str,
+                    text: str,
+                    thread_ts: str | None = None,
+                    metadata: Mapping[str, object] | None = None,
+                ) -> Mapping[str, object]:
+                    _ = (channel, text, thread_ts, metadata)
+                    return {"ts": "unused"}
+
+                def conversations_history(
+                    self,
+                    *,
+                    channel: str,
+                    limit: int,
+                    oldest: str | None = None,
+                    inclusive: bool = True,
+                    cursor: str | None = None,
+                ) -> Mapping[str, object]:
+                    _ = (channel, limit, oldest, inclusive, cursor)
+                    return {"messages": [], "has_more": True, "response_metadata": {}}
+
+            sdk = object.__new__(SlackSdkClient)
+            sdk._client = MalformedWebClient()
+            return sdk.find_message_by_metadata(
+                channel=channel,
+                event_type=event_type,
+                dedup_key=dedup_key,
+                oldest=oldest,
+            )
+
+    slack = MalformedHistorySlackClient()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+
+    assert connector.poll_human_gates() == 0
+
+    assert slack.posts == []
+    assert slack_thread_modes(store, task=task) == [("human_gate_pending", pending_key)]
+
+
+def test_human_gate_accepted_but_exception_reconciles_next_poll_without_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("grove_bridge.slack.HUMAN_GATE_PENDING_TTL_SECONDS", -1)
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board=board)
+    slack = FakeSlackClient()
+    slack.raise_after_post = True
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+
+    assert connector.poll_human_gates() == 0
+    slack.raise_after_post = False
+    assert connector.poll_human_gates() == 0
+
+    assert len(slack.posts) == 1
+    assert slack.posts[0][0] == "C123"
+    assert slack.posts[0][2] is None
+    assert store.list_notify_subs(board=board, task_id=task.id)[0].thread_id == "ts-1"
+    assert slack_thread_modes(store, task=task) == [("human_gate", "ts-1")]
+
+
+def test_human_gate_notify_sub_only_restores_thread_and_cleans_pending(
+    tmp_path: Path,
+) -> None:
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board=board)
+    record_human_gate_pending(store, board=board, task=task)
+    store.add_notify_sub(
+        board=board,
+        task_id=task.id,
+        channel_kind="slack",
+        room_id="C123",
+        thread_id="ts-existing",
+    )
+    slack = FakeSlackClient()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+
+    assert connector.poll_human_gates() == 0
+
+    assert slack.posts == []
+    assert slack_thread_modes(store, task=task) == [("human_gate", "ts-existing")]
+
+
+def test_human_gate_completed_thread_cleans_pending(
+    tmp_path: Path,
+) -> None:
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board=board)
+    record_human_gate_pending(store, board=board, task=task)
+    store.upsert_slack_thread(
+        board=board,
+        task_id=task.id,
+        team_id="",
+        channel_id="C123",
+        thread_ts="ts-complete",
+        mode="human_gate",
+        node=task.assignee,
+    )
+    slack = FakeSlackClient()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+
+    assert connector.poll_human_gates() == 0
+
+    assert slack.posts == []
+    assert slack_thread_modes(store, task=task) == [("human_gate", "ts-complete")]
+
+
+def test_slack_sdk_history_lookup_scans_all_pages() -> None:
+    class FakePaginatedWebClient:
+        def __init__(self) -> None:
+            self.cursors: list[str | None] = []
+
+        def chat_postMessage(
+            self,
+            *,
+            channel: str,
+            text: str,
+            thread_ts: str | None = None,
+            metadata: Mapping[str, object] | None = None,
+        ) -> Mapping[str, object]:
+            _ = (channel, text, thread_ts, metadata)
+            return {"ts": "unused"}
+
+        def conversations_history(
+            self,
+            *,
+            channel: str,
+            limit: int,
+            oldest: str | None = None,
+            inclusive: bool = True,
+            cursor: str | None = None,
+        ) -> Mapping[str, object]:
+            _ = (channel, limit, oldest, inclusive)
+            self.cursors.append(cursor)
+            if cursor is None:
+                return {
+                    "messages": [],
+                    "response_metadata": {"next_cursor": "next-page"},
+                }
+            return {
+                "messages": [
+                    {
+                        "ts": "ts-page-2",
+                        "metadata": {
+                            "event_type": "grove_human_gate",
+                            "event_payload": {"dedup_key": "pending:task-1"},
+                        },
+                    }
+                ],
+                "response_metadata": {"next_cursor": ""},
+            }
+
+    web_client = FakePaginatedWebClient()
+    slack = object.__new__(SlackSdkClient)
+    slack._client = web_client
+
+    assert (
+        slack.find_message_by_metadata(
+            channel="C123",
+            event_type="grove_human_gate",
+            dedup_key="pending:task-1",
+        )
+        == "ts-page-2"
+    )
+    assert web_client.cursors == [None, "next-page"]
 
 
 def test_chat_routing_uses_thread_session_and_posts_response(tmp_path: Path) -> None:
@@ -260,3 +617,42 @@ def test_grove_chat_facade_uses_timeout_and_literal_argv(monkeypatch: pytest.Mon
             "check": False,
         }
     ]
+
+
+def blocked_human_task(store: SQLiteBoardStore, *, board: str) -> Task:
+    task = store.create_task(
+        board=board,
+        title="Need human",
+        body="What branch should I use?",
+        assignee="grove-qa",
+    )
+    claimed = store.claim_next(board=board, assignee="grove-qa", node_id="grove-qa", ttl_seconds=60)
+    assert claimed is not None
+    assert store.block(
+        board=board,
+        task_id=task.id,
+        run_id=claimed.run_id,
+        claim_lock=claimed.claim_lock,
+        reason="Need a branch decision",
+        metadata={"question": "Which branch?"},
+        needs_human=True,
+    )
+    return task
+
+
+def record_human_gate_pending(store: SQLiteBoardStore, *, board: str, task: Task) -> str:
+    pending_key = f"pending:{task.id}"
+    store.upsert_slack_thread(
+        board=board,
+        task_id=task.id,
+        team_id="",
+        channel_id="C123",
+        thread_ts=pending_key,
+        mode="human_gate_pending",
+        node=task.assignee,
+    )
+    return pending_key
+
+
+def slack_thread_modes(store: SQLiteBoardStore, *, task: Task) -> list[tuple[str, str]]:
+    return [(thread.mode, thread.thread_ts) for thread in store.list_slack_threads(task_id=task.id)]

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.config import BridgeConfig, LaneConfig, default_board_db_path, load_bridge_config
 from grove_bridge.grove import (
     GroveRunnerProtocol,
@@ -238,12 +239,13 @@ class PullExecutor:
             )
         except Exception as exc:
             tick.runner_errors += 1
+            safe_error = redact_secret_text(str(exc))
             self._block_after_failure(
                 board=board,
                 claimed=claimed,
-                reason=f"grove runner error for {node}: {exc}",
-                comment=str(exc),
-                metadata={"node": node, "error": str(exc)},
+                reason=f"grove runner error for {node}: {safe_error}",
+                comment=safe_error,
+                metadata={"node": node, "error": safe_error},
                 tick=tick,
             )
             return
@@ -253,13 +255,14 @@ class PullExecutor:
             return
 
         if run.returncode == 0:
-            summary = summarize_stdout(run.stdout)
+            safe_stdout = redact_secret_text(run.stdout)
+            summary = summarize_stdout(safe_stdout)
             completed = self.store.complete(
                 board=board,
                 task_id=task.id,
                 run_id=claimed.run_id,
                 claim_lock=claimed.claim_lock,
-                result=run.stdout,
+                result=safe_stdout,
                 summary=summary,
                 metadata=grove_metadata(run),
             )
@@ -269,7 +272,7 @@ class PullExecutor:
                 tick.terminal_conflicts += 1
             return
 
-        failure_line = first_failure_line(run)
+        failure_line = redact_secret_text(first_failure_line(run))
         self._block_after_failure(
             board=board,
             claimed=claimed,
@@ -376,9 +379,9 @@ def build_task_prompt(
 def _failure_comment(run: GroveRunResult) -> str:
     parts = [f"grove node: {run.node}", f"exit code: {run.returncode}"]
     if run.stdout.strip():
-        parts.append(f"stdout:\n{run.stdout.strip()}")
+        parts.append(f"stdout:\n{redact_secret_text(run.stdout.strip())}")
     if run.stderr.strip():
-        parts.append(f"stderr:\n{run.stderr.strip()}")
+        parts.append(f"stderr:\n{redact_secret_text(run.stderr.strip())}")
     return "\n\n".join(parts)
 
 

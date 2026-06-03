@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import logging
 import os
 import re
+import secrets
 import subprocess
 import threading
 import time
@@ -15,11 +17,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast
 
+from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.config import default_board_db_path
-from grove_bridge.store import SQLiteBoardStore, Task
+from grove_bridge.store import SlackThread, SQLiteBoardStore, Task
 
+LOGGER = logging.getLogger(__name__)
 SLACK_CONFIG_PATH = Path("~/.grove/slack.json").expanduser()
 GROVE_CHAT_TIMEOUT_SECONDS = 120.0
+HUMAN_GATE_PENDING_TTL_SECONDS = 60
+HUMAN_GATE_MODE = "human_gate"
+HUMAN_GATE_PENDING_MODE = "human_gate_pending"
+HUMAN_GATE_METADATA_EVENT_TYPE = "grove_human_gate"
 SLACK_SCOPES = (
     "app_mentions:read",
     "channels:history",
@@ -32,7 +40,23 @@ NODE_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_-])@(?P<node>[A-Za-z0-9_-]+)")
 
 
 class SlackClientProtocol(Protocol):
-    def post_message(self, *, channel: str, text: str, thread_ts: str | None = None) -> str: ...
+    def post_message(
+        self,
+        *,
+        channel: str,
+        text: str,
+        thread_ts: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> str: ...
+
+    def find_message_by_metadata(
+        self,
+        *,
+        channel: str,
+        event_type: str,
+        dedup_key: str,
+        oldest: str | None = None,
+    ) -> str | None: ...
 
 
 class ChatFacadeProtocol(Protocol):
@@ -46,6 +70,17 @@ class SlackWebClientProtocol(Protocol):
         channel: str,
         text: str,
         thread_ts: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> Mapping[str, object]: ...
+
+    def conversations_history(
+        self,
+        *,
+        channel: str,
+        limit: int,
+        oldest: str | None = None,
+        inclusive: bool = True,
+        cursor: str | None = None,
     ) -> Mapping[str, object]: ...
 
 
@@ -152,11 +187,21 @@ class SlackConfigStore:
             "default_channel": config.default_channel,
             "default_node": config.default_node,
         }
-        temp_path = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
-        temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        temp_path.chmod(0o600)
-        os.replace(temp_path, self.path)
-        self.path.chmod(0o600)
+        temp_path = self.path.with_name(f".{self.path.name}.{secrets.token_hex(8)}.tmp")
+        fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = -1
+                handle.write(json.dumps(payload, indent=2) + "\n")
+            os.replace(temp_path, self.path)
+        except Exception:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
 
 
 class FakeStatusProbe:
@@ -203,12 +248,63 @@ class SlackSdkClient:
         web_client = cast(SlackWebClientFactory, web_module.WebClient)
         self._client = web_client(token=bot_token)
 
-    def post_message(self, *, channel: str, text: str, thread_ts: str | None = None) -> str:
-        response = self._client.chat_postMessage(channel=channel, text=text, thread_ts=thread_ts)
+    def post_message(
+        self,
+        *,
+        channel: str,
+        text: str,
+        thread_ts: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> str:
+        response = self._client.chat_postMessage(
+            channel=channel,
+            text=text,
+            thread_ts=thread_ts,
+            metadata=metadata,
+        )
         ts = response.get("ts") if isinstance(response, dict) else None
         if not isinstance(ts, str):
             raise RuntimeError("Slack response did not include ts")
         return ts
+
+    def find_message_by_metadata(
+        self,
+        *,
+        channel: str,
+        event_type: str,
+        dedup_key: str,
+        oldest: str | None = None,
+    ) -> str | None:
+        cursor: str | None = None
+        while True:
+            response = self._client.conversations_history(
+                channel=channel,
+                limit=100,
+                oldest=oldest,
+                inclusive=True,
+                cursor=cursor,
+            )
+            messages = response.get("messages")
+            if not isinstance(messages, Sequence) or isinstance(messages, str | bytes):
+                raise RuntimeError("Slack history response missing messages")
+            for raw_message in messages:
+                if not isinstance(raw_message, Mapping):
+                    continue
+                metadata = raw_message.get("metadata")
+                if not isinstance(metadata, Mapping):
+                    continue
+                if not _message_metadata_matches(
+                    metadata,
+                    event_type=event_type,
+                    dedup_key=dedup_key,
+                ):
+                    continue
+                ts = raw_message.get("ts")
+                if isinstance(ts, str) and ts.strip():
+                    return ts
+            cursor = _next_history_cursor(response)
+            if cursor is None:
+                return None
 
 
 class GroveServeChatFacade:
@@ -262,28 +358,117 @@ class SlackConnector:
         for task in self.store.list_tasks(board=self.human_gate.board, status="blocked"):
             if not _needs_human(task):
                 continue
-            if _has_slack_thread(self.store, task):
+            pending = _pending_human_gate_thread(self.store, task, channel=channel)
+            if self._existing_human_gate_thread(task=task, channel=channel) is not None:
+                if pending is not None:
+                    self._delete_pending_human_gate(task=task, channel=channel)
+                continue
+            if pending is not None and self._recover_pending_human_gate(
+                task=task,
+                channel=channel,
+                pending=pending,
+            ):
                 continue
             text = _human_gate_text(task)
-            thread_ts = self.slack_client.post_message(channel=channel, text=text)
-            self.store.add_notify_sub(
-                board=self.human_gate.board,
-                task_id=task.id,
-                channel_kind="slack",
-                room_id=channel,
-                thread_id=thread_ts,
-            )
+            pending_thread_ts = _pending_thread_key(task)
             self.store.upsert_slack_thread(
                 board=self.human_gate.board,
                 task_id=task.id,
                 team_id="",
                 channel_id=channel,
-                thread_ts=thread_ts,
-                mode="human_gate",
+                thread_ts=pending_thread_ts,
+                mode=HUMAN_GATE_PENDING_MODE,
                 node=task.assignee,
             )
+            try:
+                thread_ts = self.slack_client.post_message(
+                    channel=channel,
+                    text=text,
+                    metadata=_human_gate_metadata(task),
+                )
+            except Exception as exc:
+                LOGGER.warning("Slack human gate post failed: %s", _safe_log_error(exc))
+                continue
+            self._record_human_gate_thread(task=task, channel=channel, thread_ts=thread_ts)
+            self._delete_pending_human_gate(task=task, channel=channel)
             posted += 1
         return posted
+
+    def _recover_pending_human_gate(
+        self,
+        *,
+        task: Task,
+        channel: str,
+        pending: SlackThread,
+    ) -> bool:
+        if self._existing_human_gate_thread(task=task, channel=channel) is not None:
+            self._delete_pending_human_gate(task=task, channel=channel)
+            return True
+        if not _pending_stale(pending):
+            return True
+        try:
+            thread_ts = self.slack_client.find_message_by_metadata(
+                channel=channel,
+                event_type=HUMAN_GATE_METADATA_EVENT_TYPE,
+                dedup_key=_pending_thread_key(task),
+                oldest=str(max(0, _pending_created_at(pending) - HUMAN_GATE_PENDING_TTL_SECONDS)),
+            )
+        except Exception as exc:
+            LOGGER.warning("Slack human gate reconciliation failed: %s", _safe_log_error(exc))
+            return True
+        if thread_ts is not None:
+            self._record_human_gate_thread(task=task, channel=channel, thread_ts=thread_ts)
+            self._delete_pending_human_gate(task=task, channel=channel)
+            return True
+        self._delete_pending_human_gate(task=task, channel=channel)
+        return False
+
+    def _existing_human_gate_thread(self, *, task: Task, channel: str) -> str | None:
+        for thread in self.store.list_slack_threads(task_id=task.id, mode=HUMAN_GATE_MODE):
+            if thread.channel_id == channel:
+                return thread.thread_ts
+        for sub in self.store.list_notify_subs(board=self.human_gate.board, task_id=task.id):
+            if sub.channel_kind != "slack" or sub.room_id != channel or not sub.thread_id:
+                continue
+            self.store.upsert_slack_thread(
+                board=self.human_gate.board,
+                task_id=task.id,
+                team_id="",
+                channel_id=channel,
+                thread_ts=sub.thread_id,
+                mode=HUMAN_GATE_MODE,
+                node=task.assignee,
+            )
+            return sub.thread_id
+        return None
+
+    def _record_human_gate_thread(self, *, task: Task, channel: str, thread_ts: str) -> None:
+        self.store.add_notify_sub(
+            board=self.human_gate.board,
+            task_id=task.id,
+            channel_kind="slack",
+            room_id=channel,
+            thread_id=thread_ts,
+        )
+        self.store.upsert_slack_thread(
+            board=self.human_gate.board,
+            task_id=task.id,
+            team_id="",
+            channel_id=channel,
+            thread_ts=thread_ts,
+            mode=HUMAN_GATE_MODE,
+            node=task.assignee,
+        )
+
+    def _delete_pending_human_gate(self, *, task: Task, channel: str) -> None:
+        self.store.delete_slack_thread(
+            board=self.human_gate.board,
+            task_id=task.id,
+            team_id="",
+            channel_id=channel,
+            thread_ts=_pending_thread_key(task),
+            mode=HUMAN_GATE_PENDING_MODE,
+        )
 
     def handle_event(self, event: SlackEvent) -> bool:
         if event.event_type not in {"app_mention", "message"}:
@@ -319,8 +504,23 @@ class SlackConnector:
         session_id = f"slack:{event.team}:{event.channel}:{thread_ts}"
         text = _normalize_slack_text(event.text)
         lock = self._locks.setdefault(session_id, threading.Lock())
-        with lock:
-            response = self.chat_facade.send(session_id=session_id, node=node, text=text)
+        try:
+            with lock:
+                response = self.chat_facade.send(session_id=session_id, node=node, text=text)
+        except Exception as exc:
+            LOGGER.warning("Slack chat facade failed: %s", _safe_log_error(exc))
+            try:
+                self.slack_client.post_message(
+                    channel=event.channel,
+                    text="I could not complete that request safely. Check grove logs for details.",
+                    thread_ts=thread_ts,
+                )
+            except Exception as post_exc:
+                LOGGER.warning(
+                    "Slack failure notice could not be posted: %s",
+                    _safe_log_error(post_exc),
+                )
+            return True
         self.store.upsert_slack_thread(
             board=self.human_gate.board,
             task_id=None,
@@ -460,8 +660,82 @@ def _needs_human(task: Task) -> bool:
     return bool(task.metadata.get("needs_human"))
 
 
+def _pending_human_gate_thread(
+    store: SQLiteBoardStore,
+    task: Task,
+    *,
+    channel: str,
+) -> SlackThread | None:
+    for thread in store.list_slack_threads(task_id=task.id, mode=HUMAN_GATE_PENDING_MODE):
+        if thread.channel_id == channel and thread.thread_ts == _pending_thread_key(task):
+            return thread
+    return None
+
+
+def _pending_thread_key(task: Task) -> str:
+    return f"pending:{task.id}"
+
+
+def _pending_stale(pending: SlackThread) -> bool:
+    return _pending_created_at(pending) + HUMAN_GATE_PENDING_TTL_SECONDS <= int(time.time())
+
+
+def _pending_created_at(pending: SlackThread) -> int:
+    return pending.created_at or pending.updated_at
+
+
+def _human_gate_metadata(task: Task) -> dict[str, object]:
+    return {
+        "event_type": HUMAN_GATE_METADATA_EVENT_TYPE,
+        "event_payload": {
+            "task_id": task.id,
+            "dedup_key": _pending_thread_key(task),
+        },
+    }
+
+
+def _message_metadata_matches(
+    metadata: Mapping[object, object],
+    *,
+    event_type: str,
+    dedup_key: str,
+) -> bool:
+    if metadata.get("event_type") != event_type:
+        return False
+    payload = metadata.get("event_payload")
+    return isinstance(payload, Mapping) and payload.get("dedup_key") == dedup_key
+
+
+def _next_history_cursor(response: Mapping[str, object]) -> str | None:
+    raw_metadata = response.get("response_metadata")
+    if raw_metadata is None:
+        if response.get("has_more") is True:
+            raise RuntimeError("Slack history response missing cursor")
+        return None
+    if not isinstance(raw_metadata, Mapping):
+        raise RuntimeError("Slack history response has invalid pagination metadata")
+    raw_cursor = raw_metadata.get("next_cursor")
+    if raw_cursor is None:
+        if response.get("has_more") is True:
+            raise RuntimeError("Slack history response missing cursor")
+        return None
+    if not isinstance(raw_cursor, str):
+        raise RuntimeError("Slack history response has invalid cursor")
+    cursor = raw_cursor.strip()
+    if not cursor and response.get("has_more") is True:
+        raise RuntimeError("Slack history response missing cursor")
+    return cursor or None
+
+
 def _has_slack_thread(store: SQLiteBoardStore, task: Task) -> bool:
-    return bool(store.list_slack_threads(task_id=task.id, mode="human_gate"))
+    return bool(store.list_slack_threads(task_id=task.id, mode=HUMAN_GATE_MODE)) or bool(
+        store.list_slack_threads(task_id=task.id, mode=HUMAN_GATE_PENDING_MODE)
+    )
+
+
+def _safe_log_error(exc: Exception) -> str:
+    clean = " ".join(str(exc).replace("\r", "\n").split())
+    return redact_secret_text(clean)[:300] or exc.__class__.__name__
 
 
 def _human_gate_text(task: Task) -> str:
