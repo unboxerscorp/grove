@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -12,6 +12,8 @@ import type { Context } from "../context.js";
 import { type GroveProjectFile, PROJECT_FILE_NAME } from "../project-file.js";
 import { emptyRegistry } from "../registry.js";
 import { hasSession, newSession } from "../tmux.js";
+import { writeFileAtomic } from "../util/atomic.js";
+import { validateGroveName } from "../util/names.js";
 import { expandHome } from "../util/paths.js";
 import { type SpawnInput, spawnNode, type SpawnResult } from "./spawn.js";
 
@@ -87,7 +89,7 @@ const defaultDeps: NewProjectDeps = {
     }
   },
   spawnNode,
-  writeFile: async (file, text) => writeFile(file, text),
+  writeFile: async (file, text) => writeFileAtomic(file, text),
 };
 
 const NodeBodySchema = z
@@ -251,7 +253,7 @@ export async function createNewProject(
   opts: NewProjectOptions = {},
   deps: NewProjectDeps = defaultDeps,
 ): Promise<NewProjectResult> {
-  const name = required(rawName, "project name");
+  const name = validateGroveName(required(rawName, "project name"), "project name");
   if (await deps.hasSession(name)) throw new Error(`tmux session already exists: ${name}`);
 
   const dir = workspaceDir(name, opts, deps);

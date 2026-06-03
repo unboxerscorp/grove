@@ -6,7 +6,7 @@ import { target } from "./tmux.js";
 export interface NodeCtx {
   node: ResolvedNode;
   adapter: AgentAdapter;
-  /** tmux address "session:window" */
+  /** tmux target, preferably the stable "session:window.%pane_id" form. */
   addr: string;
 }
 
@@ -21,15 +21,16 @@ export interface Context {
 export function loadContext(configOpt?: string): Context {
   const { path: configPath, config } = loadConfig(configOpt);
   const nodes = resolveNodes(config);
+  const registry = loadOrInit(config.session, config.cwd);
   const byName = new Map<string, NodeCtx>();
   for (const node of nodes) {
+    const runtime = registry.nodes[node.name];
     byName.set(node.name, {
       node,
       adapter: getAdapter(node.agent),
-      addr: target(config.session, node.tmux ?? node.name),
+      addr: runtime?.tmux_pane ?? target(config.session, node.tmux ?? node.name),
     });
   }
-  const registry = loadOrInit(config.session, config.cwd);
   return { configPath, config, nodes, byName, registry };
 }
 

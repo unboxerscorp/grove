@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { cwdSlug, homedir } from "../util/paths.js";
+import { shellQuote } from "../util/shell.js";
 import { fileSize, jsonLines, newestChanged, readFrom, snapshotMtimes } from "./jsonl.js";
 import type { AgentAdapter, Completion, DetectedSession, LaunchSpec } from "./types.js";
 
@@ -44,8 +45,8 @@ export const claudeAdapter: AgentAdapter = {
 
   launchCommand(spec: LaunchSpec): string {
     const parts = ["claude"];
-    if (spec.resumeId) parts.push("--resume", spec.resumeId);
-    if (spec.model) parts.push("--model", spec.model);
+    if (spec.resumeId) parts.push("--resume", shellQuote(spec.resumeId));
+    if (spec.model) parts.push("--model", shellQuote(spec.model));
     return parts.join(" ");
   },
 

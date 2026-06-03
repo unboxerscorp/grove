@@ -79,6 +79,7 @@ function deps(
           windowName: sessionOpts.windowName ?? "",
         });
       },
+      realpath: async (file) => file,
       readFile: async () => projectFile(opts.workspace),
       sessionFileExists: async (agent, cwd, sessionId) => {
         sessionChecks.push({ agent, cwd, sessionId });
@@ -161,7 +162,6 @@ describe("loadProject", () => {
   test.each([
     { existing: "/etc", workspace: "../../etc" },
     { existing: "/projects", workspace: ".." },
-    { existing: "/tmp/outside", workspace: "/tmp/outside" },
   ])(
     "rejects project workspace outside the project root: $workspace",
     async ({ existing, workspace }) => {
@@ -177,6 +177,42 @@ describe("loadProject", () => {
       expect(state.spawnInputs).toEqual([]);
     },
   );
+
+  test("rejects absolute project workspace paths", async () => {
+    const state = deps({
+      existingPaths: ["/tmp/outside"],
+      workspace: "/tmp/outside",
+    });
+
+    await expect(loadProject("/projects/alpha", {}, state.deps)).rejects.toThrow(
+      "invalid grove project file",
+    );
+    expect(state.newSessions).toEqual([]);
+    expect(state.spawnInputs).toEqual([]);
+  });
+
+  test("rejects real workspace paths that escape through symlinks", async () => {
+    const state = deps({
+      existingPaths: ["/projects/alpha/link"],
+      workspace: "link",
+    });
+    state.deps.realpath = async (file) =>
+      file === "/projects/alpha/link" ? "/private/outside" : file;
+
+    await expect(loadProject("/projects/alpha", {}, state.deps)).rejects.toThrow(
+      "project workspace must stay inside the project root",
+    );
+    expect(state.newSessions).toEqual([]);
+  });
+
+  test("reports malformed project JSON with a friendly error", async () => {
+    const state = deps();
+    state.deps.readFile = async () => "{";
+
+    await expect(loadProject("/projects/alpha", {}, state.deps)).rejects.toThrow(
+      "invalid grove project file JSON",
+    );
+  });
 
   test("rejects when tmux session already exists", async () => {
     const state = deps({ sessionExists: true });

@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { getAdapter } from "../adapters/index.js";
@@ -43,6 +43,7 @@ export interface LoadProjectResult {
 export interface LoadProjectDeps {
   exists(file: string): Promise<boolean>;
   readFile(file: string): Promise<string>;
+  realpath(file: string): Promise<string>;
   hasSession(session: string): Promise<boolean>;
   newSession(name: string, opts: { cwd?: string; windowName?: string }): Promise<void>;
   sessionFileExists(agent: AgentType, cwd: string, sessionId: string): Promise<boolean>;
@@ -60,6 +61,7 @@ const defaultDeps: LoadProjectDeps = {
   },
   hasSession,
   newSession,
+  realpath: async (file) => realpath(file),
   readFile: async (file) => readFile(file, "utf8"),
   sessionFileExists: async (agent, cwd, sessionId) => {
     const adapter = getAdapter(agent);
@@ -77,16 +79,49 @@ function resolveProjectFile(input: string): { projectFile: string; root: string 
   return { projectFile: path.join(resolved, PROJECT_FILE_NAME), root: resolved };
 }
 
+function ensureContained(root: string, resolved: string, label: string, value: string): void {
+  const rel = path.relative(root, resolved);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error(`${label} must stay inside the project root: ${value}`);
+  }
+}
+
 function resolveProjectRelativePath(root: string, value: string, label: string): string {
   if (path.isAbsolute(value)) {
     throw new Error(`${label} must stay inside the project root and be relative: ${value}`);
   }
   const resolved = path.resolve(root, value);
-  const rel = path.relative(root, resolved);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
-    throw new Error(`${label} must stay inside the project root: ${value}`);
-  }
+  ensureContained(root, resolved, label, value);
   return resolved;
+}
+
+async function assertRealContained(
+  deps: LoadProjectDeps,
+  root: string,
+  resolved: string,
+  label: string,
+  value: string,
+): Promise<void> {
+  const realRoot = await deps.realpath(root);
+  const realResolved = await deps.realpath(resolved);
+  ensureContained(realRoot, realResolved, label, value);
+}
+
+function parseProjectFile(
+  raw: string,
+  projectFile: string,
+): ReturnType<typeof GroveProjectFileSchema.parse> {
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error(`invalid grove project file JSON: ${projectFile}`);
+  }
+  const parsed = GroveProjectFileSchema.safeParse(parsedJson);
+  if (!parsed.success) {
+    throw new Error(`invalid grove project file: ${projectFile}`);
+  }
+  return parsed.data;
 }
 
 function contextForLoad(session: string, workspace: string): Context {
@@ -130,10 +165,11 @@ export async function loadProject(
   const { projectFile, root } = resolveProjectFile(input);
   if (!(await deps.exists(projectFile))) throw new Error(`project file not found: ${projectFile}`);
 
-  const project = GroveProjectFileSchema.parse(JSON.parse(await deps.readFile(projectFile)));
+  const project = parseProjectFile(await deps.readFile(projectFile), projectFile);
   const workspace = resolveProjectRelativePath(root, project.workspace, "project workspace");
   const workspaceExists = await deps.exists(workspace);
   if (!workspaceExists) throw new Error(`workspace folder missing: ${workspace}`);
+  await assertRealContained(deps, root, workspace, "project workspace", project.workspace);
   if (await deps.hasSession(project.name)) {
     throw new Error(`tmux session already exists: ${project.name}`);
   }

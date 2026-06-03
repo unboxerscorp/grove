@@ -250,7 +250,7 @@ describe("grove chat completions facade", () => {
   test("streams an OpenAI-compatible error and closes cleanly when the grove turn fails", async () => {
     const runtime: GroveFacadeRuntime = {
       async runTurn() {
-        throw new Error("agent crashed");
+        throw new Error("/Users/chopin/dev/grove/secret internal state");
       },
     };
     const baseUrl = await listen(runtime, ["maker-a"]);
@@ -273,7 +273,8 @@ describe("grove chat completions facade", () => {
     expect(payloads.at(-1)).toBe("[DONE]");
     expect(parsePayload(payloads[1]!)).toEqual({
       error: {
-        message: "agent crashed",
+        code: "grove_turn_failed",
+        message: "grove turn failed",
         type: "grove_error",
       },
     });
@@ -282,6 +283,32 @@ describe("grove chat completions facade", () => {
         choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
       }),
     );
+  });
+
+  test("sanitizes non-stream runtime failures", async () => {
+    const runtime: GroveFacadeRuntime = {
+      async runTurn() {
+        throw new Error("/private/internal/path leaked");
+      },
+    };
+    const baseUrl = await listen(runtime, ["maker-a"]);
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        stream: false,
+        messages: [{ role: "user", content: "fail" }],
+      }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "grove_internal_error",
+        message: "grove internal error",
+      },
+    });
   });
 
   test("propagates client aborts to the grove runtime and stops writing stream chunks", async () => {

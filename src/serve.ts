@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { loadContext, nodeOf } from "./context.js";
 import { ask } from "./ops.js";
+import { logRawError, safeError } from "./util/errors.js";
 
 const DEFAULT_MODEL = "grove";
 const DEFAULT_STICKY_SESSION_TTL_MS = 60 * 60 * 1000;
@@ -155,10 +156,9 @@ export function createGroveChatServer(options: GroveChatServerOptions): Server {
   const facade = new GroveChatFacade(options);
   return createServer((req, res) => {
     facade.handle(req, res).catch((error: unknown) => {
+      logRawError("serve request failed", error);
       if (!res.headersSent) {
-        writeJson(res, 500, {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        writeJson(res, 500, { error: safeError("grove_internal_error", "grove internal error") });
         return;
       }
       res.end();
@@ -305,12 +305,10 @@ class GroveChatFacade {
       writeSse(res, chunk(context, {}, text === null ? "length" : "stop"));
       writeSse(res, "[DONE]");
     } catch (error) {
+      logRawError("serve stream turn failed", error);
       if (abortController.signal.aborted || !canWrite(res)) return;
       writeSse(res, {
-        error: {
-          message: error instanceof Error ? error.message : String(error),
-          type: "grove_error",
-        },
+        error: { ...safeError("grove_turn_failed", "grove turn failed"), type: "grove_error" },
       });
       writeSse(res, chunk(context, {}, "stop"));
       writeSse(res, "[DONE]");

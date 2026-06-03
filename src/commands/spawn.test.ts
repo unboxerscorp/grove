@@ -143,6 +143,12 @@ describe("spawn agent launch commands", () => {
     try {
       expect(codexAdapter.launchCommand({ cwd, initialPrompt: "Role" })).toBe("codex");
       expect(claudeAdapter.launchCommand({ cwd, initialPrompt: "Role" })).toBe("claude");
+      expect(codexAdapter.launchCommand({ cwd, model: "gpt;rm", resumeId: "abc$(x)" })).toBe(
+        "codex resume 'abc$(x)'",
+      );
+      expect(claudeAdapter.launchCommand({ cwd, model: "sonnet;rm", resumeId: "abc$(x)" })).toBe(
+        "claude --resume 'abc$(x)' --model 'sonnet;rm'",
+      );
       expect(antigravityAdapter.launchCommand({ cwd, initialPrompt: "Role" })).toContain(
         "agy -i 'Role'",
       );

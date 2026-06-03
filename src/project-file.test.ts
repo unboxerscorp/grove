@@ -32,7 +32,7 @@ describe("GroveProjectFileSchema", () => {
     expect(() => GroveProjectFileSchema.parse(invalid)).toThrow();
   });
 
-  test("allows relative and absolute paths for workspace", () => {
+  test("allows relative workspaces and rejects absolute workspace paths", () => {
     const base = {
       name: "test-project",
       created_at: "2026-06-03T00:00:00.000Z",
@@ -45,8 +45,24 @@ describe("GroveProjectFileSchema", () => {
     expect(GroveProjectFileSchema.parse({ ...base, workspace: "../relative" }).workspace).toBe(
       "../relative",
     );
-    expect(GroveProjectFileSchema.parse({ ...base, workspace: "/absolute" }).workspace).toBe(
-      "/absolute",
-    );
+    expect(() => GroveProjectFileSchema.parse({ ...base, workspace: "/absolute" })).toThrow();
+  });
+
+  test("rejects unsafe names", () => {
+    const base = {
+      created_at: "2026-06-03T00:00:00.000Z",
+      updated_at: "2026-06-03T00:00:00.000Z",
+      workspace: ".",
+      nodes: [],
+    };
+
+    expect(() => GroveProjectFileSchema.parse({ ...base, name: "../escape" })).toThrow();
+    expect(() =>
+      GroveProjectFileSchema.parse({
+        ...base,
+        name: "safe",
+        nodes: [{ name: "-bad", agent: "codex" }],
+      }),
+    ).toThrow();
   });
 });

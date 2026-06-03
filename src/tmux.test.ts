@@ -15,7 +15,7 @@ import {
   tiledLayoutArgs,
 } from "./tmux.js";
 
-const TARGET_FORMAT = "#{session_name}:#{window_index}.#{pane_index}";
+const TARGET_FORMAT = "#{session_name}:#{window_index}.#{pane_id}";
 const pexec = promisify(execFile);
 
 async function tmux(args: string[]): Promise<string> {
@@ -135,7 +135,7 @@ describe("tmux detached pane commands", () => {
     }
   });
 
-  test.fails("BUG(P1) spawn --window N multiple splits: returns unique pane ids", async () => {
+  test("returns stable unique pane-id targets for multiple splits in the same window", async () => {
     if (!(await tmuxAvailable())) return;
     const session = `grove-split-test-${process.pid}-${Date.now()}`;
     await tmux(["new-session", "-d", "-s", session, "-n", "one"]);
@@ -153,6 +153,8 @@ describe("tmux detached pane commands", () => {
         window: "one",
       });
       expect(pane1).not.toBe(pane2);
+      expect(pane1).toMatch(new RegExp(`^${session}:0\\.%\\d+$`));
+      expect(pane2).toMatch(new RegExp(`^${session}:0\\.%\\d+$`));
     } finally {
       await tmux(["kill-session", "-t", `=${session}`]);
     }

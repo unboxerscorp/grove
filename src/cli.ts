@@ -18,6 +18,7 @@ import { cmdTail } from "./commands/tail.js";
 import { cmdUp } from "./commands/up.js";
 import { cmdWaitCommand } from "./commands/wait.js";
 import { cmdWatch } from "./commands/watch.js";
+import { rawVariadicMessage } from "./util/argv.js";
 import { err } from "./util/log.js";
 
 type AnyFn = (...args: never[]) => Promise<void>;
@@ -110,7 +111,7 @@ program
   .option("-c, --config <file>", "path to grove.yaml")
   .action(
     run((node: string, message: string[], opts: Record<string, unknown>) =>
-      cmdSend(node, message.join(" "), withConfig(opts)),
+      cmdSend(node, rawVariadicMessage("send", node, message), withConfig(opts)),
     ),
   );
 
@@ -134,7 +135,7 @@ program
   .option("-t, --timeout <dur>", "max wait, e.g. 30s 20m 1h", "30m")
   .action(
     run((node: string, message: string[], opts: Record<string, unknown>) =>
-      cmdAsk(node, message.join(" "), withConfig(opts)),
+      cmdAsk(node, rawVariadicMessage("ask", node, message), withConfig(opts)),
     ),
   );
 

@@ -5,7 +5,7 @@ import type { ResolvedNode } from "./config.js";
 import type { Context, NodeCtx } from "./context.js";
 import { bringUp } from "./ops.js";
 import { saveRegistry } from "./registry.js";
-import { paneCommand } from "./tmux.js";
+import { paneCommand, paneTarget, sendText } from "./tmux.js";
 
 vi.mock("./registry.js", () => {
   return {
@@ -21,6 +21,7 @@ vi.mock("./tmux.js", () => ({
   newSession: vi.fn(async () => undefined),
   newWindow: vi.fn(async () => undefined),
   paneCommand: vi.fn(async () => "zsh"),
+  paneTarget: vi.fn(async (addr: string) => addr.replace(/\.(\d+)$/, ".%$1")),
   sendEnter: vi.fn(async () => undefined),
   sendLiteral: vi.fn(async () => undefined),
   sendText: vi.fn(async () => undefined),
@@ -108,6 +109,8 @@ describe("bringUp registry tmux pane metadata", () => {
     vi.mocked(saveRegistry).mockClear();
     vi.mocked(paneCommand).mockReset();
     vi.mocked(paneCommand).mockResolvedValue("zsh");
+    vi.mocked(paneTarget).mockClear();
+    vi.mocked(sendText).mockClear();
   });
 
   test("records the canonical tmux pane for adopted explicit tmux nodes", async () => {
@@ -118,21 +121,27 @@ describe("bringUp registry tmux pane metadata", () => {
 
     expect(ctx.registry.nodes.viewer).toEqual(
       expect.objectContaining({
-        tmux_pane: "dev10:1.2",
+        tmux_pane: "dev10:1.%2",
       }),
     );
   });
 
   test("records the canonical tmux pane for launched explicit tmux nodes", async () => {
     vi.mocked(paneCommand).mockResolvedValue("zsh");
-    const ctx = makeContext([node("viewer", { tmux: "1.2" })]);
+    const viewer = node("viewer", { tmux: "1.2" });
+    viewer.cwd = "/tmp/grove dir; rm -rf nope";
+    const ctx = makeContext([viewer]);
 
     await bringUp(ctx);
 
+    expect(vi.mocked(sendText)).toHaveBeenCalledWith(
+      "dev10:1.%2",
+      "cd '/tmp/grove dir; rm -rf nope'",
+    );
     expect(ctx.registry.nodes.viewer).toEqual(
       expect.objectContaining({
         sessionId: "session-new",
-        tmux_pane: "dev10:1.2",
+        tmux_pane: "dev10:1.%2",
         transcript: "/tmp/grove/session-new.jsonl",
       }),
     );
@@ -172,7 +181,7 @@ describe("bringUp registry tmux pane metadata", () => {
         description: "Coordinates handoffs",
         group: "core",
         role: "Lead",
-        tmux_pane: "dev10:1.1",
+        tmux_pane: "dev10:1.%1",
       }),
     );
     expect(ctx.registry.nodes.maker).toEqual(
@@ -182,6 +191,30 @@ describe("bringUp registry tmux pane metadata", () => {
         group: "core",
         parent: "lead",
         role: "Builder",
+      }),
+    );
+  });
+
+  test("preserves dynamic team fields from registry when config omits them", async () => {
+    vi.mocked(paneCommand).mockResolvedValue("codex");
+    const ctx = makeContext([node("lead", { tmux: "1.1" })]);
+    ctx.registry.nodes.lead = {
+      agent: "codex",
+      children: [],
+      description: "Runtime note",
+      group: "runtime",
+      name: "lead",
+      role: "Runtime role",
+    };
+
+    await bringUp(ctx);
+
+    expect(ctx.registry.nodes.lead).toEqual(
+      expect.objectContaining({
+        description: "Runtime note",
+        group: "runtime",
+        role: "Runtime role",
+        tmux_pane: "dev10:1.%1",
       }),
     );
   });

@@ -4,6 +4,7 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
+import { GroveNameSchema } from "./util/names.js";
 import { expandHome } from "./util/paths.js";
 
 const RawAgentTypeSchema = z.enum(["codex", "claude", "antigravity", "agy"]);
@@ -24,16 +25,16 @@ export const NodeConfigSchema = z
     // When set, grove launches the agent in that existing pane instead of
     // creating a new window named after the node.
     tmux: z.string().optional(),
-    children: z.array(z.string()).default([]),
-    parent: z.string().optional(),
-    group: z.string().optional(),
+    children: z.array(GroveNameSchema).default([]),
+    parent: GroveNameSchema.optional(),
+    group: GroveNameSchema.optional(),
   })
   .strict();
 export type NodeConfig = z.infer<typeof NodeConfigSchema>;
 
 export const GroveConfigSchema = z
   .object({
-    session: z.string().min(1),
+    session: GroveNameSchema,
     cwd: z.string().min(1),
     defaults: z
       .object({
@@ -42,7 +43,7 @@ export const GroveConfigSchema = z
       })
       .strict()
       .default({ agent: "codex" }),
-    nodes: z.record(z.string(), NodeConfigSchema),
+    nodes: z.record(GroveNameSchema, NodeConfigSchema),
   })
   .strict();
 export type GroveConfig = z.infer<typeof GroveConfigSchema>;

@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 
 import type { AgentType } from "./config.js";
+import { writeFileAtomicSync } from "./util/atomic.js";
 import { registryPath, sessionDir } from "./util/paths.js";
 
 export interface NodeRuntime {
@@ -52,7 +53,7 @@ export function loadRegistry(session: string): Registry | null {
 export function saveRegistry(reg: Registry): void {
   mkdirSync(sessionDir(reg.session), { recursive: true });
   reg.updatedAt = new Date().toISOString();
-  writeFileSync(registryPath(reg.session), JSON.stringify(reg, null, 2) + "\n");
+  writeFileAtomicSync(registryPath(reg.session), JSON.stringify(reg, null, 2) + "\n");
 }
 
 export function loadOrInit(session: string, cwd: string): Registry {

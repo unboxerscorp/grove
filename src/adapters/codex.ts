@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { homedir } from "../util/paths.js";
+import { shellQuote } from "../util/shell.js";
 import {
   fileSize,
   jsonLines,
@@ -31,9 +32,9 @@ export const codexAdapter: AgentAdapter = {
   submit: "enter-enter",
 
   launchCommand(spec: LaunchSpec): string {
-    if (spec.resumeId) return `codex resume ${spec.resumeId}`;
+    if (spec.resumeId) return `codex resume ${shellQuote(spec.resumeId)}`;
     const parts = ["codex"];
-    if (spec.model) parts.push("-m", spec.model);
+    if (spec.model) parts.push("-m", shellQuote(spec.model));
     return parts.join(" ");
   },
 

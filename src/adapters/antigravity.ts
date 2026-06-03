@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { cwdSlug } from "../util/paths.js";
+import { shellQuote } from "../util/shell.js";
 import {
   fileSize,
   jsonLines,
@@ -29,10 +30,6 @@ function safeLogName(sessionId: string): string {
 function newLogPath(cwd: string): string {
   mkdirSync(logRoot(cwd), { recursive: true });
   return path.join(logRoot(cwd), `${randomUUID()}.log`);
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function conversationIdFromRecord(record: Record<string, unknown>): string | null {

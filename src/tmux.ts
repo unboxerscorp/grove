@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const pexec = promisify(execFile);
-const PANE_TARGET_FORMAT = "#{session_name}:#{window_index}.#{pane_index}";
+const PANE_TARGET_FORMAT = "#{session_name}:#{window_index}.#{pane_id}";
 
 export interface TmuxError extends Error {
   stderr?: string;

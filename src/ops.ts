@@ -9,12 +9,14 @@ import {
   newSession,
   newWindow,
   paneCommand,
+  paneTarget,
   sendEnter,
   sendLiteral,
   sendText,
 } from "./tmux.js";
 import { color, info, step, warn } from "./util/log.js";
 import { eventsDir } from "./util/paths.js";
+import { shellQuote } from "./util/shell.js";
 import { poll, sleep, waitForChangeOrTimeout } from "./util/time.js";
 
 const READY_TIMEOUT_MS = 30_000;
@@ -200,23 +202,28 @@ export async function ask(
   return res;
 }
 
-function registerExisting(ctx: Context, nc: NodeCtx): void {
+async function registerExisting(ctx: Context, nc: NodeCtx): Promise<void> {
   const prev = ctx.registry.nodes[nc.node.name];
   const sid = nc.node.resume ?? prev?.sessionId;
   let transcript = "";
   if (sid) transcript = nc.adapter.transcriptForSession(nc.node.cwd, sid);
+  const tmuxRuntime = await tmuxPaneRuntime(nc);
   ctx.registry.nodes[nc.node.name] = {
+    ...prev,
     name: nc.node.name,
     agent: nc.node.agent,
     sessionId: sid,
     transcript: transcript || prev?.transcript,
     ...teamRuntime(nc),
-    ...tmuxPaneRuntime(ctx, nc),
+    ...tmuxRuntime,
   };
 }
 
-function tmuxPaneRuntime(ctx: Context, nc: NodeCtx): { tmux_pane?: string } {
-  return nc.node.tmux ? { tmux_pane: `${ctx.config.session}:${nc.node.tmux}` } : {};
+async function tmuxPaneRuntime(nc: NodeCtx): Promise<{ tmux_pane?: string }> {
+  if (!nc.node.tmux) return {};
+  const tmux_pane = await paneTarget(nc.addr);
+  nc.addr = tmux_pane;
+  return { tmux_pane };
 }
 
 function teamRuntime(
@@ -281,13 +288,15 @@ export async function launchNode(ctx: Context, nc: NodeCtx): Promise<void> {
     }
   }
 
+  const tmuxRuntime = await tmuxPaneRuntime(nc);
   ctx.registry.nodes[node.name] = {
+    ...ctx.registry.nodes[node.name],
     name: node.name,
     agent: node.agent,
     sessionId,
     transcript: transcript || undefined,
     ...teamRuntime(nc),
-    ...tmuxPaneRuntime(ctx, nc),
+    ...tmuxRuntime,
   };
 }
 
@@ -318,14 +327,15 @@ export async function bringUp(ctx: Context): Promise<BringUpResult> {
     // Explicit tmux target (e.g. an existing pane "0.1"): launch in place,
     // no window creation. Adopt if a non-shell agent already runs there.
     if (node.tmux) {
+      await tmuxPaneRuntime(nc);
       const running = await paneCommand(nc.addr);
       if (running && !SHELLS.has(running)) {
         step(`adopt ${color.bold(node.name)} ${color.dim(`(${nc.adapter.label}) @ ${node.tmux}`)}`);
-        registerExisting(ctx, nc);
+        await registerExisting(ctx, nc);
         result.adopted.push(node.name);
         continue;
       }
-      await sendText(nc.addr, `cd ${node.cwd}`);
+      await sendText(nc.addr, `cd ${shellQuote(node.cwd)}`);
       await sendEnter(nc.addr);
       await sleep(300);
       await launchNode(ctx, nc);
@@ -335,7 +345,7 @@ export async function bringUp(ctx: Context): Promise<BringUpResult> {
 
     if (existingWindows.includes(node.name)) {
       step(`adopt ${color.bold(node.name)} ${color.dim(`(${nc.adapter.label})`)}`);
-      registerExisting(ctx, nc);
+      await registerExisting(ctx, nc);
       result.adopted.push(node.name);
       continue;
     }

@@ -12,6 +12,7 @@ import {
   type CreateDetachedPaneRequest,
   preserveActiveWindow,
 } from "../tmux.js";
+import { validateGroveName } from "../util/names.js";
 import { expandHome } from "../util/paths.js";
 
 export interface SpawnInput {
@@ -144,19 +145,23 @@ function sessionContext(ctx: Context, session: string): Context {
 }
 
 function parseSpawnRequest(ctx: Context, input: SpawnInput): SpawnRequest {
-  const name = required(input.name, "--name");
+  const name = validateGroveName(required(input.name, "--name"), "--name");
   const agent = parseAgent(required(input.agent, "--agent"));
+  const group = trimmed(input.group);
+  const parent = trimmed(input.parent);
+  const session = trimmed(input.session) ?? ctx.config.session;
+  const window = trimmed(input.window);
   return {
     agent,
     cwd: defaultSpawnCwd(input.cwd ?? ctx.config.cwd),
     description: trimmed(input.description),
-    group: trimmed(input.group),
+    group: group ? validateGroveName(group, "--group") : undefined,
     name,
-    parent: trimmed(input.parent),
+    parent: parent ? validateGroveName(parent, "--parent") : undefined,
     resume: trimmed(input.resume),
     role: trimmed(input.role) ?? "",
-    session: trimmed(input.session) ?? ctx.config.session,
-    window: trimmed(input.window),
+    session: validateGroveName(session, "--session"),
+    window: window ? validateGroveName(window, "--window") : undefined,
   };
 }
 
