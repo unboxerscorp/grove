@@ -74,6 +74,14 @@ class CommentPayload(BaseModel):
     body: str = Field(min_length=1, max_length=20_000)
 
 
+class TaskCreatePayload(BaseModel):
+    title: str = Field(max_length=500)
+    body: str | None = Field(default=None, max_length=20_000)
+    assignee: str | None = Field(default=None, max_length=500)
+    status: str = Field(default="ready", min_length=1, max_length=100)
+    priority: int = 0
+
+
 class TicketStore:
     def __init__(self) -> None:
         self._tickets: dict[str, float] = {}
@@ -129,6 +137,26 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="board not found") from exc
         return [_task_payload(task) for task in tasks]
+
+    @app.post("/api/boards/{board_id}/tasks")
+    def create_task_endpoint(
+        request: Request,
+        board_id: str,
+        payload: TaskCreatePayload,
+    ) -> dict[str, object]:
+        _require_token(request)
+        title = payload.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title is required")
+        task = _store(request).create_task(
+            board=board_id,
+            title=title,
+            body=payload.body,
+            assignee=payload.assignee,
+            status=payload.status,
+            priority=payload.priority,
+        )
+        return _task_payload(task)
 
     @app.get("/api/tasks/{task_id}")
     def task_endpoint(request: Request, task_id: str) -> dict[str, object]:
@@ -194,18 +222,21 @@ def create_app(
             return
         await websocket.accept()
         seq = 0
+        last_payload: bytes | None = None
         try:
             while True:
-                seq += 1
                 payload = await asyncio.to_thread(_tmux_capture, pane_id)
-                await websocket.send_json(
-                    {
-                        "seq": seq,
-                        "pane_id": pane_id,
-                        "bytes_base64": base64.b64encode(payload).decode("ascii"),
-                        "ts": int(time.time()),
-                    }
-                )
+                if seq == 0 or payload != last_payload:
+                    seq += 1
+                    last_payload = payload
+                    await websocket.send_json(
+                        {
+                            "seq": seq,
+                            "pane_id": pane_id,
+                            "bytes_base64": base64.b64encode(payload).decode("ascii"),
+                            "ts": int(time.time()),
+                        }
+                    )
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
         except Exception:
             return
@@ -380,7 +411,7 @@ def _tmux_pane_parts(pane: str, *, config: WebAppConfig) -> tuple[int, int] | No
 
 def _tmux_capture(pane: str) -> bytes:
     proc = subprocess.run(
-        ["tmux", "capture-pane", "-t", pane, "-p"],
+        ["tmux", "capture-pane", "-p", "-e", "-J", "-t", pane],
         capture_output=True,
         timeout=TMUX_TIMEOUT_SECONDS,
         check=False,

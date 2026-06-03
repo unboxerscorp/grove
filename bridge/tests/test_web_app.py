@@ -78,6 +78,44 @@ def test_rest_reads_and_writes_board_store(tmp_path: Path) -> None:
     assert len(client.get(f"/api/tasks/{first.id}/comments", headers=headers).json()) == 2
 
 
+def test_rest_creates_task_on_board(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    created = client.post(
+        "/api/boards/main/tasks",
+        headers=headers,
+        json={
+            "title": "New task",
+            "body": "Task details",
+            "assignee": "grove:codex",
+            "status": "blocked",
+            "priority": 7,
+        },
+    )
+
+    assert created.status_code == 200
+    task = created.json()
+    assert task["title"] == "New task"
+    assert task["body"] == "Task details"
+    assert task["assignee"] == "grove:codex"
+    assert task["status"] == "blocked"
+    assert store.get_task(board="main", task_id=task["id"]).priority == 7
+
+
+def test_rest_rejects_empty_task_title(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    created = client.post(
+        "/api/boards/main/tasks",
+        headers=auth_headers(client),
+        json={"title": "   "},
+    )
+
+    assert created.status_code == 400
+
+
 def test_nodes_parse_fake_registry_with_explicit_panes_only(tmp_path: Path) -> None:
     write_registry(
         tmp_path,
@@ -226,6 +264,38 @@ def test_terminal_streams_worker_pane_frame(
     assert captures == ["dev10:2.0"]
 
 
+def test_terminal_skips_unchanged_capture_frames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"}},
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    monkeypatch.setattr(web_app, "POLL_INTERVAL_SECONDS", 0.01)
+    captures: list[str] = []
+    payloads = [b"\x1b[32mfirst\x1b[0m", b"\x1b[32mfirst\x1b[0m", b"second"]
+
+    def fake_capture(pane: str) -> bytes:
+        captures.append(pane)
+        return payloads[min(len(captures) - 1, len(payloads) - 1)]
+
+    monkeypatch.setattr(web_app, "_tmux_capture", fake_capture)
+    ticket = ws_ticket(client)
+
+    with client.websocket_connect(f"/ws/terminal?ticket={ticket}&pane_id=dev10:2.0") as ws:
+        first = ws.receive_json()
+        second = ws.receive_json()
+
+    assert first["seq"] == 1
+    assert base64.b64decode(first["bytes_base64"]) == b"\x1b[32mfirst\x1b[0m"
+    assert second["seq"] == 2
+    assert base64.b64decode(second["bytes_base64"]) == b"second"
+    assert captures == ["dev10:2.0", "dev10:2.0", "dev10:2.0"]
+
+
 def test_tmux_capture_uses_literal_argv_without_shell(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
 
@@ -251,7 +321,7 @@ def test_tmux_capture_uses_literal_argv_without_shell(monkeypatch: pytest.Monkey
     assert web_app._tmux_capture("dev10:2.0") == b"ok"
     assert calls == [
         {
-            "args": ["tmux", "capture-pane", "-t", "dev10:2.0", "-p"],
+            "args": ["tmux", "capture-pane", "-p", "-e", "-J", "-t", "dev10:2.0"],
             "capture_output": True,
             "timeout": web_app.TMUX_TIMEOUT_SECONDS,
             "check": False,
