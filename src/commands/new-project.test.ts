@@ -1,8 +1,9 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { Context } from "../context.js";
 import { GroveProjectFileSchema } from "../project-file.js";
 import {
+  cmdNewProject,
   createNewProject,
   type NewProjectDeps,
   renderNewProjectJson,
@@ -232,5 +233,42 @@ describe("createNewProject", () => {
     expect(renderNewProjectText(result)).toContain("session: alpha");
     expect(renderNewProjectText(result)).toContain("grove-web --session alpha");
     expect(JSON.parse(renderNewProjectJson(result))).toEqual(result);
+  });
+  test("renders text and JSON summaries with clone info", async () => {
+    const state = deps({ ghAuthed: true });
+    const result = await createNewProject(
+      "alpha",
+      { clone: "owner/repo", dir: "/workspace/alpha" },
+      state.deps,
+    );
+
+    expect(renderNewProjectText(result)).toContain("clone: cloned owner/repo");
+  });
+});
+
+describe("cmdNewProject", () => {
+  test("prints text summary to stdout by default", async () => {
+    const state = deps();
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+
+    await cmdNewProject("alpha", {}, state.deps);
+    expect(writes.join("")).toContain("session: alpha");
+  });
+
+  test("prints JSON summary to stdout when requested", async () => {
+    const state = deps();
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+
+    await cmdNewProject("alpha", { json: true }, state.deps);
+    const parsed = JSON.parse(writes.join("")) as Record<string, unknown>;
+    expect(parsed["session"]).toBe("alpha");
   });
 });

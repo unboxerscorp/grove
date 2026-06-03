@@ -8,6 +8,9 @@ dist/
 __pycache__/
 coverage/
 .worktrees/
+cache/
+.coverage
+bridge/.coverage
 /cockpit.grove.yaml
 /fleet.yaml
 /grove.yaml

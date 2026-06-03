@@ -58,7 +58,7 @@ export default tseslint.config(
       },
       parserOptions: {
         projectService: {
-          allowDefaultProject: ["tsup.config.ts"],
+          allowDefaultProject: ["tsup.config.ts", "vitest.config.ts"],
         },
         tsconfigRootDir: dirname,
       },

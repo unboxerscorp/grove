@@ -1,7 +1,8 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { Context } from "../context.js";
 import {
+  cmdLoadProject,
   loadProject,
   type LoadProjectDeps,
   renderLoadProjectJson,
@@ -51,7 +52,9 @@ function projectFile(workspace = "."): string {
   });
 }
 
-function deps(opts: { existingPaths?: string[]; workspace?: string } = {}): {
+function deps(
+  opts: { existingPaths?: string[]; workspace?: string; sessionExists?: boolean } = {},
+): {
   deps: LoadProjectDeps;
   newSessions: { cwd: string; name: string; windowName: string }[];
   sessionChecks: { agent: string; cwd: string; sessionId: string }[];
@@ -68,12 +71,12 @@ function deps(opts: { existingPaths?: string[]; workspace?: string } = {}): {
   return {
     deps: {
       exists: async (file) => existingPaths.has(file),
-      hasSession: async () => false,
-      newSession: async (name, opts) => {
+      hasSession: async () => opts.sessionExists ?? false,
+      newSession: async (name, sessionOpts) => {
         newSessions.push({
-          cwd: opts.cwd ?? "",
+          cwd: sessionOpts.cwd ?? "",
           name,
-          windowName: opts.windowName ?? "",
+          windowName: sessionOpts.windowName ?? "",
         });
       },
       readFile: async () => projectFile(opts.workspace),
@@ -175,6 +178,13 @@ describe("loadProject", () => {
     },
   );
 
+  test("rejects when tmux session already exists", async () => {
+    const state = deps({ sessionExists: true });
+    await expect(loadProject("/projects/alpha", {}, state.deps)).rejects.toThrow(
+      "tmux session already exists: alpha",
+    );
+  });
+
   test("renders text and JSON summaries", async () => {
     const state = deps();
 
@@ -183,5 +193,32 @@ describe("loadProject", () => {
     expect(renderLoadProjectText(result)).toContain("session: alpha");
     expect(renderLoadProjectText(result)).toContain("maker [codex] fresh");
     expect(JSON.parse(renderLoadProjectJson(result))).toEqual(result);
+  });
+});
+
+describe("cmdLoadProject", () => {
+  test("prints text summary to stdout by default", async () => {
+    const state = deps();
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+
+    await cmdLoadProject("/projects/alpha", {}, state.deps);
+    expect(writes.join("")).toContain("session: alpha");
+  });
+
+  test("prints JSON summary to stdout when requested", async () => {
+    const state = deps();
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+
+    await cmdLoadProject("/projects/alpha", { json: true }, state.deps);
+    const parsed = JSON.parse(writes.join("")) as Record<string, unknown>;
+    expect(parsed["session"]).toBe("alpha");
   });
 });

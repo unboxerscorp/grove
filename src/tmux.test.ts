@@ -126,10 +126,33 @@ describe("tmux detached pane commands", () => {
         async () => {
           await tmux(["select-window", "-t", `${session}:two`]);
         },
-        { intervalMs: 10 },
+        { intervalMs: 50 },
       );
 
       expect(await activeWindow(session)).toBe(before);
+    } finally {
+      await tmux(["kill-session", "-t", `=${session}`]);
+    }
+  });
+
+  test.fails("BUG(P1) spawn --window N multiple splits: returns unique pane ids", async () => {
+    if (!(await tmuxAvailable())) return;
+    const session = `grove-split-test-${process.pid}-${Date.now()}`;
+    await tmux(["new-session", "-d", "-s", session, "-n", "one"]);
+    try {
+      const pane1 = await createDetachedPane({
+        cwd: process.cwd(),
+        name: "node1",
+        session,
+        window: "one",
+      });
+      const pane2 = await createDetachedPane({
+        cwd: process.cwd(),
+        name: "node2",
+        session,
+        window: "one",
+      });
+      expect(pane1).not.toBe(pane2);
     } finally {
       await tmux(["kill-session", "-t", `=${session}`]);
     }
