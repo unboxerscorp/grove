@@ -6,6 +6,7 @@ import { NodeList } from "./components/NodeList";
 import { TaskDrawer } from "./components/TaskDrawer";
 import { TerminalPane } from "./components/TerminalPane";
 import { cx } from "./constants";
+import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
 type View = "board" | "terminal";
@@ -28,6 +29,7 @@ function GroveMark() {
 }
 
 export function App() {
+  const { t, lang, setLang } = useI18n();
   const [boards, setBoards] = useState<Board[]>([]);
   const [boardId, setBoardId] = useState<string | null>(null);
   const [nodes, setNodes] = useState<GroveNode[]>([]);
@@ -135,8 +137,8 @@ export function App() {
         <div className="dr-brand">
           <GroveMark />
           <div className="dr-brand__text">
-            <span className="dr-brand__title">Dev Room</span>
-            <span className="dr-brand__sub">grove · live cockpit</span>
+            <span className="dr-brand__title">{t("brand.title")}</span>
+            <span className="dr-brand__sub">{t("brand.sub")}</span>
           </div>
         </div>
 
@@ -161,14 +163,14 @@ export function App() {
               className={cx("dr-tab", view === "board" && "is-active")}
               onClick={() => setView("board")}
             >
-              Board
+              {t("tab.board")}
             </button>
             <button
               type="button"
               className={cx("dr-tab", view === "terminal" && "is-active")}
               onClick={() => setView("terminal")}
             >
-              Terminal
+              {t("tab.terminal")}
             </button>
           </div>
         </div>
@@ -176,11 +178,29 @@ export function App() {
         <div className="dr-top__right">
           <div className="dr-stat">
             <span className="dr-stat__n is-live">{liveCount}</span>
-            <span className="dr-stat__l">live</span>
+            <span className="dr-stat__l">{t("stat.live")}</span>
           </div>
           <span className={cx("dr-auth", AUTH_REQUIRED ? "is-secured" : "is-local")}>
-            {AUTH_REQUIRED ? "secured" : "local"}
+            {AUTH_REQUIRED ? t("auth.secured") : t("auth.local")}
           </span>
+          <div className="dr-lang" role="group" aria-label="language">
+            <button
+              type="button"
+              className={cx("dr-lang__btn", lang === "ko" && "is-active")}
+              data-lang="ko"
+              onClick={() => setLang("ko")}
+            >
+              KO
+            </button>
+            <button
+              type="button"
+              className={cx("dr-lang__btn", lang === "en" && "is-active")}
+              data-lang="en"
+              onClick={() => setLang("en")}
+            >
+              EN
+            </button>
+          </div>
         </div>
       </header>
 
@@ -190,7 +210,7 @@ export function App() {
           {view === "board" && boardId ? (
             <BoardView boardId={boardId} liveTick={liveTick} boardLive={boardLive} onOpenTask={setOpenTaskId} />
           ) : view === "board" ? (
-            <div className="dr-stage__empty">no boards available</div>
+            <div className="dr-stage__empty">{t("stage.noBoards")}</div>
           ) : (
             <TerminalPane node={selected} />
           )}

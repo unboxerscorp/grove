@@ -7,6 +7,14 @@
 
 import type { Board, Comment, GroveNode, Run, Task, WsTicket } from "./types";
 
+export interface NewTask {
+  title: string;
+  body?: string;
+  assignee?: string;
+  status?: string;
+  priority?: string;
+}
+
 const TOKEN = window.__GROVE_SESSION_TOKEN__ ?? "";
 export const AUTH_REQUIRED = window.__GROVE_AUTH_REQUIRED__ ?? false;
 const SESSION_HEADER = "X-Grove-Session-Token";
@@ -36,6 +44,17 @@ export const api = {
     if (filters?.assignee) q.set("assignee", filters.assignee);
     const qs = q.toString();
     return getJSON<Task[]>(`/api/boards/${enc(boardId)}/tasks${qs ? `?${qs}` : ""}`);
+  },
+
+  async createTask(boardId: string, payload: NewTask): Promise<Task> {
+    const res = await fetch(`/api/boards/${enc(boardId)}/tasks`, {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`create task: HTTP ${res.status}`);
+    return (await res.json()) as Task;
   },
 
   getTask: (id: string) => getJSON<Task>(`/api/tasks/${enc(id)}`),

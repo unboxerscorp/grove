@@ -56,12 +56,42 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
 
-    // Capture board counts WHILE the board view is mounted (it unmounts when we
-    // switch to the terminal tab below).
+    // #1 i18n: Korean by default; KO/EN toggle flips all labels, then back.
+    const brandText = () => page.$eval(".dr-brand__title", (el) => (el.textContent ?? "").trim());
+    const i18n = { ko: await brandText(), en: "" };
+    await page.click('.dr-lang__btn[data-lang="en"]');
+    await page.waitForFunction(
+      () => (document.querySelector(".dr-brand__title")?.textContent ?? "").trim() === "Dev Room",
+      { timeout: 5000 },
+    );
+    i18n.en = await brandText();
+    await page.click('.dr-lang__btn[data-lang="ko"]');
+    await page.waitForFunction(
+      () => (document.querySelector(".dr-brand__title")?.textContent ?? "").trim() === "개발실",
+      { timeout: 5000 },
+    );
+
+    // Capture board counts WHILE the board view is mounted.
     const board = await page.evaluate(() => ({
       columns: document.querySelectorAll(".dr-col").length,
       cards: document.querySelectorAll(".dr-card").length,
     }));
+
+    // #3 add task: open the form, submit, expect a new card + a recorded POST.
+    const NEW_TITLE = "QA verify task";
+    await page.click(".dr-addbtn");
+    await page.waitForSelector(".dr-addform", { timeout: 5000 });
+    await page.type('.dr-addform input[name="title"]', NEW_TITLE);
+    await page.click(".dr-addform__submit");
+    await page.waitForFunction(
+      (title) =>
+        Array.from(document.querySelectorAll(".dr-card__title")).some((el) =>
+          (el.textContent ?? "").includes(title),
+        ),
+      { timeout: 8000 },
+      NEW_TITLE,
+    );
+    const addTask = await page.evaluate(() => ({ created: window.__MOCK__?.createdTask ?? "" }));
 
     // Open the task drawer on the first card; assert comments + runs loaded.
     await page.click(".dr-card");
@@ -82,17 +112,34 @@ async function main() {
     await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
     await page.click(".dr-node");
     await page.waitForSelector(".dr-term .xterm", { timeout: 8000 });
+
+    // #2 terminal mirror: each snapshot carries an incrementing #marker. Wait
+    // for one, let several more arrive, then assert exactly ONE marker remains —
+    // proving the screen is replaced each frame, not appended.
+    const xtermText = () =>
+      page.evaluate(() => document.querySelector(".dr-term .xterm-rows")?.textContent ?? "");
+    await page.waitForFunction(() => /#\d+/.test(document.querySelector(".dr-term .xterm-rows")?.textContent ?? ""), {
+      timeout: 8000,
+    });
+    const firstSeq = Number((await xtermText()).match(/#(\d+)/)?.[1] ?? -1);
     await page.waitForFunction(
-      () => (document.querySelector(".dr-term .xterm")?.textContent ?? "").includes("live stream"),
+      (prev) => {
+        const m = (document.querySelector(".dr-term .xterm-rows")?.textContent ?? "").match(/#(\d+)/);
+        return !!m && Number(m[1]) >= prev + 2;
+      },
       { timeout: 8000 },
+      firstSeq,
     );
+    const term = await page.evaluate(() => ({
+      markerCount: ((document.querySelector(".dr-term .xterm-rows")?.textContent ?? "").match(/#\d+/g) ?? []).length,
+    }));
 
     const diag = await page.evaluate(() => {
       const mock = window.__MOCK__ ?? {};
       return {
         nodes: document.querySelectorAll(".dr-node").length,
         conn: (document.querySelector(".dr-conn")?.textContent ?? "").trim(),
-        termChars: (document.querySelector(".dr-term .xterm")?.textContent ?? "").trim().length,
+        termChars: (document.querySelector(".dr-term .xterm-rows")?.textContent ?? "").trim().length,
         ticketMethod: mock.ticketMethod ?? "",
         ticketHeader: mock.ticketHeader ?? "",
         terminalWsUrl: mock.terminalWsUrl ?? "",
@@ -110,6 +157,10 @@ async function main() {
       /[?&]pane_id=/.test(diag.terminalWsUrl) &&
       diag.boardWsConnected === true;
 
+    const i18nOk = i18n.ko === "개발실" && i18n.en === "Dev Room";
+    const addOk = addTask.created === NEW_TITLE;
+    const mirrorOk = term.markerCount === 1; // no accumulation
+
     const ok =
       diag.nodes >= 1 &&
       board.columns === 8 &&
@@ -118,14 +169,18 @@ async function main() {
       drawer.comments >= 1 &&
       diag.termChars > 20 &&
       wsOk &&
+      i18nOk &&
+      addOk &&
+      mirrorOk &&
       errors.length === 0;
 
+    const summary = { ...diag, ...drawer, ...board, ...term, i18n, created: addTask.created, i18nOk, addOk, mirrorOk };
     if (!ok) {
       if (errors.length) console.error(errors.join("\n"));
-      throw new Error("assertions failed: " + JSON.stringify({ ...diag, ...drawer, ...board }));
+      throw new Error("assertions failed: " + JSON.stringify(summary));
     }
 
-    console.log("VERIFY PASS " + JSON.stringify({ ...diag, ...drawer, ...board }));
+    console.log("VERIFY PASS " + JSON.stringify(summary));
     console.log("screenshot: " + shot);
   } finally {
     await browser.close();

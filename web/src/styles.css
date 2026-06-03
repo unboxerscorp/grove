@@ -241,6 +241,144 @@ button {
   min-width: 140px;
 }
 
+/* language toggle (teal-active, distinct from the amber view tabs) */
+.dr-lang {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+
+.dr-lang__btn {
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 4px 9px;
+  border-radius: 6px;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.dr-lang__btn.is-active {
+  color: var(--ink);
+  background: var(--teal);
+}
+
+/* add-task button + form */
+.dr-addbtn {
+  font-family: var(--ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--amber);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 6px 12px;
+  transition: filter 0.15s ease;
+}
+
+.dr-addbtn:hover {
+  filter: brightness(1.08);
+}
+
+.dr-addbtn.is-open {
+  color: var(--amber);
+  background: transparent;
+  border-color: rgba(240, 184, 96, 0.4);
+}
+
+.dr-addform {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  margin: 0 2px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  animation: dr-rise 0.22s ease both;
+}
+
+.dr-addform__head {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.dr-addform__title {
+  font-size: 13px;
+}
+
+.dr-addform__body {
+  resize: vertical;
+  font-family: var(--ui);
+}
+
+.dr-addform__row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+}
+
+.dr-addform__err {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--coral);
+}
+
+.dr-addform__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dr-btn {
+  font-family: var(--ui);
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  transition:
+    filter 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.dr-btn--ghost {
+  background: transparent;
+  color: var(--dim);
+}
+
+.dr-btn--ghost:hover {
+  color: var(--text);
+}
+
+.dr-btn--primary {
+  background: var(--amber);
+  border-color: transparent;
+  color: var(--ink);
+}
+
+.dr-btn--primary:hover {
+  filter: brightness(1.08);
+}
+
+.dr-btn--primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* ---- main grid ------------------------------------------------------------ */
 .dr-main {
   display: grid;

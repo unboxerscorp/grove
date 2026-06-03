@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 
 import { agentGlyph, cx } from "../constants";
+import { statusLabel, useI18n } from "../i18n";
 import type { GroveNode } from "../types";
 
 function statusClass(status: string): string {
@@ -23,6 +24,7 @@ export function NodeList(props: {
   boardLive: boolean;
 }) {
   const { nodes, selectedPane, onSelect, boardLive } = props;
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
 
   const filtered = useMemo(() => {
@@ -38,17 +40,17 @@ export function NodeList(props: {
   return (
     <aside className="dr-rail">
       <div className="dr-rail__head">
-        <span className="dr-rail__title">Nodes</span>
+        <span className="dr-rail__title">{t("nodes.title")}</span>
         <span className="dr-rail__meta">
           <span className={cx("dr-spark", boardLive && "is-on")} />
-          {liveCount}/{nodes.length} live
+          {t("nodes.live", { live: liveCount, total: nodes.length })}
         </span>
       </div>
 
       <input
         className="dr-rail__search"
         type="text"
-        placeholder="filter nodes…"
+        placeholder={t("nodes.filter")}
         value={query}
         spellCheck={false}
         onChange={(e) => setQuery(e.target.value)}
@@ -56,7 +58,7 @@ export function NodeList(props: {
 
       <div className="dr-rail__list">
         {filtered.length === 0 && (
-          <div className="dr-rail__empty">{nodes.length ? "no match" : "no nodes online"}</div>
+          <div className="dr-rail__empty">{nodes.length ? t("nodes.noMatch") : t("nodes.none")}</div>
         )}
         {filtered.map((n, i) => (
           <button
@@ -76,7 +78,9 @@ export function NodeList(props: {
               </span>
               <span className="dr-node__sub">
                 <span className="dr-node__pane">{n.tmux_pane}</span>
-                <span className={cx("dr-node__status", statusClass(n.status))}>{n.status}</span>
+                <span className={cx("dr-node__status", statusClass(n.status))}>
+                  {statusLabel(t, n.status)}
+                </span>
               </span>
             </span>
           </button>

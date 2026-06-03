@@ -81,6 +81,7 @@ const diag: Record<string, unknown> = {};
 (window as unknown as { __MOCK__: Record<string, unknown> }).__MOCK__ = diag;
 
 let ticketSeq = 0;
+let taskSeq = 0;
 
 function json(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -102,6 +103,19 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   let m = p.match(/^\/api\/boards\/([^/]+)\/tasks$/);
   if (m) {
     const board = decodeURIComponent(m[1]!);
+    if (method === "POST") {
+      const payload = (init?.body ? JSON.parse(init.body as string) : {}) as Partial<MockTask>;
+      const created: MockTask = {
+        id: `N-${++taskSeq}`,
+        title: payload.title ?? "untitled",
+        status: payload.status || "triage",
+        assignee: payload.assignee,
+        body: payload.body,
+      };
+      (TASKS[board] ??= []).unshift(created);
+      diag.createdTask = created.title;
+      return Promise.resolve(json(created));
+    }
     let list = TASKS[board] ?? [];
     const status = u.searchParams.get("status");
     const assignee = u.searchParams.get("assignee");
@@ -145,15 +159,21 @@ function bytesToB64(s: string): string {
   return btoa(bin);
 }
 
-const TERM_LINES = [
-  "\x1b[38;5;179m$\x1b[0m pnpm -s build\r\n",
-  "\x1b[90m> @grove/dev-room-web build\x1b[0m\r\n",
-  "\x1b[38;5;79m✓\x1b[0m dist/app.js  \x1b[90mbundled\x1b[0m\r\n",
-  "\x1b[38;5;179m$\x1b[0m grove status --tree\r\n",
-  "\x1b[38;5;179mroot\x1b[0m ─┬─ backend   \x1b[38;5;79m●\x1b[0m running\r\n",
-  "        ├─ frontend  \x1b[38;5;179m○\x1b[0m idle\r\n",
-  "        └─ docs      \x1b[38;5;111m✓\x1b[0m done\r\n",
-];
+// Full pane snapshot (as the backend's `capture-pane -e -J` would send), using
+// \n joins and an incrementing #marker so the screen-replace behaviour is
+// observable: if the client appended, multiple #markers would pile up.
+function snapshot(pane: string, n: number): string {
+  return (
+    [
+      `\x1b[38;5;79m● 개발실 라이브 미러\x1b[0m  pane \x1b[38;5;111m${pane}\x1b[0m  #${n}`,
+      "",
+      "\x1b[38;5;179m$\x1b[0m grove status --tree",
+      "\x1b[38;5;179mroot\x1b[0m ─┬─ backend   \x1b[38;5;79m●\x1b[0m running",
+      "        ├─ frontend  \x1b[38;5;179m○\x1b[0m idle",
+      "        └─ docs      \x1b[38;5;111m✓\x1b[0m done",
+    ].join("\n") + "\n"
+  );
+}
 
 class MockWS {
   url: string;
@@ -165,7 +185,6 @@ class MockWS {
   onerror: ((e: unknown) => void) | null = null;
 
   private timer: ReturnType<typeof setInterval> | null = null;
-  private i = 0;
   private seq = 0;
   private kind: "term" | "board" | "other";
   private pane = "";
@@ -190,23 +209,19 @@ class MockWS {
     this.onmessage?.({ data: s });
   }
 
-  private emitFrame(text: string) {
-    this.emit(
-      JSON.stringify({ seq: ++this.seq, pane_id: this.pane, bytes_base64: bytesToB64(text), ts: this.seq }),
-    );
+  private emitSnapshot() {
+    const n = ++this.seq;
+    const text = snapshot(this.pane, n);
+    this.emit(JSON.stringify({ seq: n, pane_id: this.pane, bytes_base64: bytesToB64(text), ts: n }));
   }
 
   private open() {
     this.readyState = 1;
     this.onopen?.({});
     if (this.kind === "term") {
-      this.emitFrame(
-        `\x1b[38;5;79m●\x1b[0m \x1b[1mdev-room\x1b[0m live stream — pane \x1b[38;5;111m${this.pane}\x1b[0m\r\n\r\n`,
-      );
-      this.timer = setInterval(() => {
-        this.emitFrame(TERM_LINES[this.i % TERM_LINES.length]!);
-        this.i++;
-      }, 600);
+      // Backend sends a full snapshot on change; emit one periodically.
+      this.emitSnapshot();
+      this.timer = setInterval(() => this.emitSnapshot(), 700);
     } else if (this.kind === "board") {
       setTimeout(() => this.emit(JSON.stringify({ cursor: 1, type: "task.updated", task_id: "G-1" })), 800);
     }

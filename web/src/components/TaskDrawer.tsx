@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api";
 import { initials, statusColor } from "../constants";
+import { statusLabel, useI18n } from "../i18n";
 import type { Comment, Run, Task } from "../types";
 
 export function TaskDrawer(props: { taskId: string | null; onClose: () => void }) {
   const { taskId, onClose } = props;
+  const { t } = useI18n();
   const [task, setTask] = useState<Task | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -35,7 +37,7 @@ export function TaskDrawer(props: { taskId: string | null; onClose: () => void }
         setRuns(Array.isArray(r) ? r : []);
       })
       .catch((e: unknown) => {
-        if (alive) setError(e instanceof Error ? e.message : "failed to load task");
+        if (alive) setError(e instanceof Error ? e.message : t("drawer.loadError"));
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -68,16 +70,16 @@ export function TaskDrawer(props: { taskId: string | null; onClose: () => void }
             </span>
             {task?.status && (
               <span className="dr-pill" style={{ "--accent": statusColor(task.status) } as React.CSSProperties}>
-                {task.status}
+                {statusLabel(t, task.status)}
               </span>
             )}
           </div>
-          <button type="button" className="dr-drawer__close" onClick={onClose} aria-label="close">
+          <button type="button" className="dr-drawer__close" onClick={onClose} aria-label={t("drawer.close")}>
             ✕
           </button>
         </header>
 
-        {loading && <div className="dr-drawer__msg">loading…</div>}
+        {loading && <div className="dr-drawer__msg">{t("drawer.loading")}</div>}
         {error && <div className="dr-drawer__msg is-error">{error}</div>}
 
         {task && (
@@ -86,7 +88,7 @@ export function TaskDrawer(props: { taskId: string | null; onClose: () => void }
             <div className="dr-drawer__facts">
               {task.assignee && (
                 <span className="dr-fact">
-                  <span className="dr-fact__k">assignee</span>
+                  <span className="dr-fact__k">{t("fact.assignee")}</span>
                   <span className="dr-fact__v">
                     <span className="dr-card__who">{initials(task.assignee)}</span> {task.assignee}
                   </span>
@@ -94,7 +96,7 @@ export function TaskDrawer(props: { taskId: string | null; onClose: () => void }
               )}
               {task.tenant && (
                 <span className="dr-fact">
-                  <span className="dr-fact__k">tenant</span>
+                  <span className="dr-fact__k">{t("fact.tenant")}</span>
                   <span className="dr-fact__v">{task.tenant}</span>
                 </span>
               )}
@@ -102,8 +104,10 @@ export function TaskDrawer(props: { taskId: string | null; onClose: () => void }
             {task.body && <p className="dr-drawer__body">{task.body}</p>}
 
             <section className="dr-drawer__section dr-drawer__runs">
-              <h3 className="dr-drawer__h">Runs <span className="dr-drawer__hn">{runs.length}</span></h3>
-              {runs.length === 0 && <div className="dr-drawer__empty">no runs yet</div>}
+              <h3 className="dr-drawer__h">
+                {t("drawer.runs")} <span className="dr-drawer__hn">{runs.length}</span>
+              </h3>
+              {runs.length === 0 && <div className="dr-drawer__empty">{t("drawer.noRuns")}</div>}
               {runs.map((r) => (
                 <div key={r.id} className="dr-run">
                   <span className="dr-run__dot" style={{ background: statusColor(r.status ?? "") }} />
@@ -114,14 +118,16 @@ export function TaskDrawer(props: { taskId: string | null; onClose: () => void }
                     </span>
                     {r.summary && <span className="dr-run__sum">{r.summary}</span>}
                   </span>
-                  {r.status && <span className="dr-run__status">{r.status}</span>}
+                  {r.status && <span className="dr-run__status">{statusLabel(t, r.status)}</span>}
                 </div>
               ))}
             </section>
 
             <section className="dr-drawer__section dr-drawer__comments">
-              <h3 className="dr-drawer__h">Comments <span className="dr-drawer__hn">{comments.length}</span></h3>
-              {comments.length === 0 && <div className="dr-drawer__empty">no comments</div>}
+              <h3 className="dr-drawer__h">
+                {t("drawer.comments")} <span className="dr-drawer__hn">{comments.length}</span>
+              </h3>
+              {comments.length === 0 && <div className="dr-drawer__empty">{t("drawer.noComments")}</div>}
               {comments.map((c) => (
                 <div key={c.id} className="dr-comment">
                   <span className="dr-comment__who">{c.author ?? "—"}</span>

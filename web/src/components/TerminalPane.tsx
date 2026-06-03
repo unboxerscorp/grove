@@ -6,11 +6,18 @@ import "@xterm/xterm/css/xterm.css";
 
 import { api, b64ToBytes, wsUrl } from "../api";
 import { agentGlyph, cx } from "../constants";
+import { useI18n } from "../i18n";
+import type { TFn } from "../i18n";
 import type { GroveNode, TerminalFrame } from "../types";
 
 type ConnState = "connecting" | "live" | "reconnecting" | "error";
 
 const FONT = '"Spline Sans Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
+
+// Clear screen + scrollback + home cursor. Written before each snapshot so the
+// pane is mirrored (replaced), never appended — the backend sends the full
+// `capture-pane -e -J` snapshot only when the pane changes.
+const CLEAR = "\x1b[2J\x1b[3J\x1b[H";
 
 const THEME = {
   background: "#0a0c11",
@@ -43,7 +50,13 @@ function formatBytes(n: number): string {
 }
 
 export function TerminalPane({ node }: { node: GroveNode | null }) {
+  const { t } = useI18n();
   const hostRef = useRef<HTMLDivElement | null>(null);
+  // Keep the current translator in a ref so the terminal effect (keyed only on
+  // the pane) doesn't tear down/recreate when the language toggles.
+  const tRef = useRef<TFn>(t);
+  tRef.current = t;
+
   const [state, setState] = useState<ConnState>("connecting");
   const [bytes, setBytes] = useState(0);
 
@@ -63,13 +76,13 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
     setBytes(0);
 
     const term = new Terminal({
-      convertEol: false,
-      cursorBlink: true,
+      convertEol: true, // capture frames use \n; convert to CRLF (no staircase)
+      cursorBlink: false,
       disableStdin: true, // read-only viewer
       fontFamily: FONT,
       fontSize: 13,
       lineHeight: 1.3,
-      scrollback: 6000,
+      scrollback: 1000,
       theme: THEME,
     });
     const fit = new FitAddon();
@@ -108,9 +121,9 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
             scheduleReconnect();
             return;
           }
+          // Stay "connecting" until the first snapshot actually arrives.
           ws.onopen = () => {
             backoff = 1000;
-            setState("live");
           };
           ws.onmessage = (ev: MessageEvent) => {
             let frame: TerminalFrame;
@@ -125,8 +138,11 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
               lastSeq = frame.seq;
             }
             const data = b64ToBytes(frame.bytes_base64);
+            // Replace the screen with the new full snapshot (mirror, not append).
+            term.write(CLEAR);
             term.write(data);
             setBytes((b) => b + data.length);
+            setState("live");
           };
           ws.onerror = () => {
             try {
@@ -141,12 +157,12 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
             // terminal: reconnecting won't help, so surface and stop.
             if (ev.code === 4401) {
               setState("error");
-              term.write("\r\n\x1b[38;5;203m[session expired — reload the page]\x1b[0m\r\n");
+              term.write(`\r\n\x1b[38;5;203m${tRef.current("term.authError")}\x1b[0m\r\n`);
               return;
             }
             if (ev.code === 1008) {
               setState("error");
-              term.write("\r\n\x1b[38;5;203m[pane not available]\x1b[0m\r\n");
+              term.write(`\r\n\x1b[38;5;203m${tRef.current("term.paneError")}\x1b[0m\r\n`);
               return;
             }
             setState("reconnecting");
@@ -176,10 +192,10 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
   }, [paneId]);
 
   const conn = {
-    connecting: { label: "connecting", cls: "is-connecting" },
-    live: { label: "live", cls: "is-live" },
-    reconnecting: { label: "reconnecting", cls: "is-reconnecting" },
-    error: { label: "error", cls: "is-error" },
+    connecting: { label: t("conn.connecting"), cls: "is-connecting" },
+    live: { label: t("conn.live"), cls: "is-live" },
+    reconnecting: { label: t("conn.reconnecting"), cls: "is-reconnecting" },
+    error: { label: t("conn.error"), cls: "is-error" },
   }[state];
 
   return (
@@ -187,7 +203,7 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
       <header className="dr-term__bar">
         <div className="dr-term__id">
           <span className={cx("dr-led", conn.cls)} />
-          <span className="dr-term__name">{node ? node.name : "no node selected"}</span>
+          <span className="dr-term__name">{node ? node.name : t("term.noNode")}</span>
           {node && (
             <span className="dr-term__pane">
               {agentGlyph(node.agent)} {node.agent} · {node.tmux_pane}
@@ -195,11 +211,11 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
           )}
         </div>
         <div className="dr-term__meta">
-          <span className="dr-term__ro" title="read-only viewer">
-            read-only
+          <span className="dr-term__ro" title={t("term.readOnly")}>
+            {t("term.readOnly")}
           </span>
           <span className={cx("dr-conn", conn.cls)}>{conn.label}</span>
-          <span className="dr-term__bytes">{formatBytes(bytes)} streamed</span>
+          <span className="dr-term__bytes">{t("term.streamed", { x: formatBytes(bytes) })}</span>
         </div>
       </header>
       <div className="dr-term__screen">
@@ -208,7 +224,7 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
         ) : (
           <div className="dr-term__empty">
             <div className="dr-term__empty-mark">▦</div>
-            <p>Select a node to attach to its terminal.</p>
+            <p>{t("term.empty")}</p>
           </div>
         )}
       </div>
