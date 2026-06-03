@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import cast
 
 import pytest
 
+import grove_bridge.slack as slack_module
 from grove_bridge.slack import (
     GROVE_CHAT_TIMEOUT_SECONDS,
     ChatRouteConfig,
@@ -79,6 +81,29 @@ class FakeChatFacade:
         return "grove reply"
 
 
+class FailingChatFacade:
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.calls: list[tuple[str, str, str]] = []
+
+    def send(self, *, session_id: str, node: str, text: str) -> str:
+        self.calls.append((session_id, node, text))
+        raise RuntimeError(self.message)
+
+
+class FailingPostSlackClient(FakeSlackClient):
+    def post_message(
+        self,
+        *,
+        channel: str,
+        text: str,
+        thread_ts: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> str:
+        _ = (channel, text, thread_ts, metadata)
+        raise RuntimeError("post failed xoxb-" + ("c" * 44))
+
+
 def test_slack_config_store_validates_and_masks_tokens(tmp_path: Path) -> None:
     path = tmp_path / "slack.json"
     store = SlackConfigStore(path)
@@ -104,6 +129,55 @@ def test_slack_config_store_validates_and_masks_tokens(tmp_path: Path) -> None:
     }
     assert path.stat().st_mode & 0o077 == 0
     assert mask_token("xoxb-1234567890") == "xoxb...7890"
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (["not", "a", "dict"], "invalid slack config"),
+        ({"bot_token": "xoxb-ok"}, "app_token is required"),
+        ({"app_token": "bad", "bot_token": "xoxb-ok"}, "app_token must start"),
+        ({"app_token": "xapp-ok", "bot_token": "bad"}, "bot_token must start"),
+        (
+            {"app_token": "xapp-ok", "bot_token": "xoxb-ok", "default_node": 123},
+            "default_node must be a string",
+        ),
+    ],
+)
+def test_slack_config_store_rejects_invalid_saved_config(
+    tmp_path: Path,
+    payload: object,
+    message: str,
+) -> None:
+    path = tmp_path / "slack.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        SlackConfigStore(path).load()
+
+
+def test_slack_status_probe_reports_not_configured_and_socket_connected(tmp_path: Path) -> None:
+    missing_path = tmp_path / "missing.json"
+    config_path = tmp_path / "slack.json"
+    SlackConfigStore(config_path).save(SlackConfig(app_token="xapp-ok", bot_token="xoxb-ok"))
+
+    missing_status = FakeStatusProbe(config_path=missing_path).status()
+    connected_status = FakeStatusProbe(
+        config_path=config_path,
+        socket_connected=True,
+        last_event_at=123,
+        last_error="none",
+    ).status()
+
+    assert missing_status == {
+        "status": "not_configured",
+        "last_event_at": None,
+        "last_error": None,
+        "tokens": {},
+    }
+    assert connected_status["status"] == "socket_connected"
+    assert connected_status["last_event_at"] == 123
+    assert connected_status["last_error"] == "none"
 
 
 def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Path) -> None:
@@ -435,6 +509,43 @@ def test_human_gate_completed_thread_cleans_pending(
     assert slack_thread_modes(store, task=task) == [("human_gate", "ts-complete")]
 
 
+def test_human_gate_poll_skips_when_channel_missing_or_task_not_marked_human(
+    tmp_path: Path,
+) -> None:
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board=board, title="Plain block", body=None, assignee="grove-qa")
+    claimed = store.claim_next(board=board, assignee="grove-qa", node_id="grove-qa", ttl_seconds=60)
+    assert claimed is not None
+    assert store.block(
+        board=board,
+        task_id=task.id,
+        run_id=claimed.run_id,
+        claim_lock=claimed.claim_lock,
+        reason="plain block",
+    )
+    slack = FakeSlackClient()
+
+    no_channel = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel=None),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+    with_channel = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+
+    assert no_channel.poll_human_gates() == 0
+    assert with_channel.poll_human_gates() == 0
+    assert slack.posts == []
+
+
 def test_slack_sdk_history_lookup_scans_all_pages() -> None:
     class FakePaginatedWebClient:
         def __init__(self) -> None:
@@ -493,6 +604,57 @@ def test_slack_sdk_history_lookup_scans_all_pages() -> None:
         == "ts-page-2"
     )
     assert web_client.cursors == [None, "next-page"]
+
+
+def test_slack_sdk_client_rejects_missing_post_ts_and_bad_history() -> None:
+    class BadWebClient:
+        def __init__(self, history_response: Mapping[str, object]) -> None:
+            self.history_response = history_response
+
+        def chat_postMessage(
+            self,
+            *,
+            channel: str,
+            text: str,
+            thread_ts: str | None = None,
+            metadata: Mapping[str, object] | None = None,
+        ) -> Mapping[str, object]:
+            _ = (channel, text, thread_ts, metadata)
+            return {"ok": True}
+
+        def conversations_history(
+            self,
+            *,
+            channel: str,
+            limit: int,
+            oldest: str | None = None,
+            inclusive: bool = True,
+            cursor: str | None = None,
+        ) -> Mapping[str, object]:
+            _ = (channel, limit, oldest, inclusive, cursor)
+            return self.history_response
+
+    slack = object.__new__(SlackSdkClient)
+    slack._client = BadWebClient({"messages": "bad"})
+
+    with pytest.raises(RuntimeError, match="include ts"):
+        slack.post_message(channel="C123", text="hello")
+    with pytest.raises(RuntimeError, match="missing messages"):
+        slack.find_message_by_metadata(
+            channel="C123",
+            event_type="grove_human_gate",
+            dedup_key="pending:task-1",
+        )
+
+    slack._client = BadWebClient(
+        {"messages": [], "has_more": True, "response_metadata": {"next_cursor": 123}}
+    )
+    with pytest.raises(RuntimeError, match="invalid cursor"):
+        slack.find_message_by_metadata(
+            channel="C123",
+            event_type="grove_human_gate",
+            dedup_key="pending:task-1",
+        )
 
 
 def test_chat_routing_uses_thread_session_and_posts_response(tmp_path: Path) -> None:
@@ -559,6 +721,82 @@ def test_chat_routing_uses_mentioned_node_when_channel_has_no_route(tmp_path: Pa
     assert slack.posts == [("C999", "grove reply", "222.333")]
 
 
+def test_chat_route_handles_facade_failure_and_post_failure_without_crashing(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    chat = FailingChatFacade("failure at /Users/chopin/secret xoxb-" + ("d" * 44))
+    slack = FakeSlackClient()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+    )
+
+    assert connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="please help",
+            ts="333.444",
+            thread_ts=None,
+            event_type="message",
+        )
+    )
+    assert chat.calls == [("slack:T1:C123:333.444", "chat-node", "please help")]
+    assert slack.posts == [
+        (
+            "C123",
+            "I could not complete that request safely. Check grove logs for details.",
+            "333.444",
+        )
+    ]
+
+    failing_notice_connector = SlackConnector(
+        store=store,
+        slack_client=FailingPostSlackClient(),
+        chat_facade=FailingChatFacade("safe failure"),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+    )
+    assert failing_notice_connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="please help",
+            ts="333.555",
+            thread_ts=None,
+            event_type="message",
+        )
+    )
+
+
+def test_slack_connector_ignores_non_message_events(tmp_path: Path) -> None:
+    connector = SlackConnector(
+        store=SQLiteBoardStore(tmp_path / "board.db"),
+        slack_client=FakeSlackClient(),
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+    )
+
+    assert not connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="ignored",
+            ts="999.000",
+            thread_ts=None,
+            event_type="reaction_added",
+        )
+    )
+
+
 def test_status_probe_reports_bot_auth_ok_for_saved_tokens(tmp_path: Path) -> None:
     config_path = tmp_path / "slack.json"
     SlackConfigStore(config_path).save(SlackConfig(app_token="xapp-ok", bot_token="xoxb-ok"))
@@ -570,6 +808,79 @@ def test_status_probe_reports_bot_auth_ok_for_saved_tokens(tmp_path: Path) -> No
     assert "state" not in status
     assert tokens["app_token"] == "xapp...p-ok"
     assert tokens["bot_token"] == "xoxb...b-ok"
+
+
+def test_slack_main_connects_polls_and_closes_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "slack.json"
+    board_db_path = tmp_path / "board.db"
+    SlackConfigStore(config_path).save(
+        SlackConfig(
+            app_token="xapp-main",
+            bot_token="xoxb-main",
+            default_channel="C123",
+            default_node="chat-node",
+        )
+    )
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.socket_mode_request_listeners: list[object] = []
+            self.connected = False
+            self.closed = False
+
+        def connect(self) -> None:
+            self.connected = True
+
+        def close(self) -> None:
+            self.closed = True
+
+        def send_socket_mode_response(self, response: object) -> None:
+            _ = response
+
+    socket = FakeSocket()
+
+    def fake_slack_sdk_client(*, bot_token: str) -> FakeSlackClient:
+        assert bot_token == "xoxb-main"
+        return FakeSlackClient()
+
+    def fake_chat_facade() -> FakeChatFacade:
+        return FakeChatFacade()
+
+    def fake_build_socket_client(
+        *,
+        config: SlackConfig,
+        connector: SlackConnector,
+    ) -> FakeSocket:
+        assert config.app_token == "xapp-main"
+        assert connector.human_gate.channel == "C123"
+        return socket
+
+    def stop_after_poll(seconds: float) -> None:
+        assert seconds == 0.1
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(slack_module, "SlackSdkClient", fake_slack_sdk_client)
+    monkeypatch.setattr(slack_module, "GroveServeChatFacade", fake_chat_facade)
+    monkeypatch.setattr(slack_module, "_build_socket_client", fake_build_socket_client)
+    monkeypatch.setattr("grove_bridge.slack.time.sleep", stop_after_poll)
+
+    with pytest.raises(KeyboardInterrupt):
+        slack_module.main(
+            [
+                "--config-path",
+                str(config_path),
+                "--board-db-path",
+                str(board_db_path),
+                "--poll-interval",
+                "0.1",
+            ]
+        )
+
+    assert socket.connected is True
+    assert socket.closed is True
 
 
 def test_grove_chat_facade_uses_timeout_and_literal_argv(monkeypatch: pytest.MonkeyPatch) -> None:
