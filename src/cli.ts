@@ -5,7 +5,9 @@ import { cmdAsk } from "./commands/ask.js";
 import { cmdDelegate } from "./commands/delegate.js";
 import { cmdDespawn } from "./commands/despawn.js";
 import { cmdDown } from "./commands/down.js";
+import { cmdExportProject } from "./commands/export-project.js";
 import { cmdGather } from "./commands/gather.js";
+import { cmdImportProject } from "./commands/import-project.js";
 import { cmdInit } from "./commands/init.js";
 import { cmdLoadProject } from "./commands/load-project.js";
 import { cmdNewProject } from "./commands/new-project.js";
@@ -91,6 +93,23 @@ program
   .action(
     run((projectPath: string, opts: Record<string, unknown>) => cmdLoadProject(projectPath, opts)),
   );
+
+program
+  .command("export-project [name]")
+  .description("export a portable grove project bundle")
+  .option("--out <bundle>", "output bundle directory")
+  .option("--session <session>", "project/session name")
+  .option("--json", "print the export result as JSON")
+  .action(
+    run((name: string | undefined, opts: Record<string, unknown>) => cmdExportProject(name, opts)),
+  );
+
+program
+  .command("import-project <bundle>")
+  .description("import a portable grove project bundle into a local project folder")
+  .option("--dir <path>", "destination project directory")
+  .option("--json", "print the import result as JSON")
+  .action(run((bundle: string, opts: Record<string, unknown>) => cmdImportProject(bundle, opts)));
 
 program
   .command("spawn")

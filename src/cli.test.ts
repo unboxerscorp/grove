@@ -19,4 +19,11 @@ describe("CLI help text", () => {
     expect(source).toContain("delegate <node> <title...>");
     expect(source).toContain("create a ready board task assigned to a grove node");
   });
+
+  test("project import/export commands are registered", () => {
+    const source = readFileSync(join(here, "cli.ts"), "utf8");
+
+    expect(source).toContain("export-project [name]");
+    expect(source).toContain("import-project <bundle>");
+  });
 });
