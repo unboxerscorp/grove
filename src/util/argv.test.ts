@@ -13,4 +13,29 @@ describe("rawVariadicMessage", () => {
       ),
     ).toBe("line  one two");
   });
+
+  test("falls back to parsed parts when command or fixed arg cannot be matched", () => {
+    expect(rawVariadicMessage("send", "maker", ["line", "two"], ["node", "grove"])).toBe(
+      "line two",
+    );
+    expect(
+      rawVariadicMessage(
+        "send",
+        "maker",
+        ["line", "two"],
+        ["node", "grove", "send", "other", "line", "two"],
+      ),
+    ).toBe("line two");
+  });
+
+  test("does not treat partial argv matches as raw input", () => {
+    expect(
+      rawVariadicMessage(
+        "ask",
+        "maker",
+        ["line", "two"],
+        ["node", "grove", "ask", "maker", "line"],
+      ),
+    ).toBe("line two");
+  });
 });
