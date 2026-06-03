@@ -243,6 +243,19 @@ export const api = {
     return (await res.json()) as Task;
   },
 
+  // Web equivalent of `grove delegate`: hand a node a task by creating a board
+  // task assigned to it. Reuses POST /api/boards/{board}/tasks (project-scoped
+  // via the X-Grove-Project header on the shared client); status defaults to
+  // "ready" so the assignee can pick it up. The backend records audit.task.assign.
+  delegate(boardId: string, node: string, payload: { title: string; body?: string }): Promise<Task> {
+    return api.createTask(boardId, {
+      title: payload.title,
+      body: payload.body,
+      assignee: node,
+      status: "ready",
+    });
+  },
+
   getTask: (id: string) => getJSON<Task>(`/api/tasks/${enc(id)}`),
   getComments: (id: string) => getJSON<Comment[]>(`/api/tasks/${enc(id)}/comments`),
   getRuns: (id: string) => getJSON<Run[]>(`/api/tasks/${enc(id)}/runs`),

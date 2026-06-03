@@ -376,6 +376,15 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       (TASKS[board] ??= []).unshift(created);
       diag.createdTask = created.title;
       diag.assignedAssignee = created.assignee ?? "";
+      // Full record of the last task POST so verify can assert the delegate
+      // contract (assignee + status "ready" + optional body) precisely.
+      diag.lastTaskPost = {
+        board,
+        title: created.title,
+        assignee: created.assignee ?? "",
+        status: created.status,
+        hasBody: Boolean(created.body),
+      };
       return Promise.resolve(json(created));
     }
     let list = TASKS[board] ?? [];

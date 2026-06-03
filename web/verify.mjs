@@ -439,6 +439,29 @@ async function main() {
     const plusDesc = await page.evaluate(() => window.__MOCK__?.createdNodeDesc ?? "");
     await settle();
 
+    // V5-W2 dashboard delegate: node action -> small form (title + optional body)
+    // -> POST /api/boards/{board}/tasks with assignee=<node>, status="ready"
+    // (web equivalent of `grove delegate`).
+    await page.hover('[data-name="root"]');
+    await page.click('[data-name="root"] .org-act--delegate');
+    await page.waitForSelector(".org-popover--delegate .delegate-form", { timeout: 5000 });
+    await page.type('.delegate-form input[name="delegateTitle"]', "delegated work");
+    await page.type('.delegate-form textarea[name="delegateBody"]', "do the thing");
+    await page.click(".delegate-form .delegate-form__submit");
+    await page.waitForFunction(
+      () => (window.__MOCK__?.lastTaskPost?.assignee ?? "") === "root",
+      { timeout: 6000 },
+    );
+    const deleg = await page.evaluate(() => window.__MOCK__?.lastTaskPost ?? {});
+    // Popover closes on success (form unmounts).
+    await page.waitForFunction(() => !document.querySelector(".org-popover--delegate"), { timeout: 5000 });
+    const delegateOk =
+      deleg.assignee === "root" &&
+      deleg.status === "ready" &&
+      deleg.title === "delegated work" &&
+      deleg.hasBody === true;
+    await settle();
+
     // hover action -> open this node's terminal ("터미널 열기").
     await page.hover('[data-name="root"]');
     await page.click('[data-name="root"] .org-act--term');
@@ -849,6 +872,7 @@ async function main() {
       detailOk &&
       auditOk &&
       delegationEdgesOk &&
+      delegateOk &&
       diag.projectHeader === projAfterLoad &&
       errors.length === 0;
 
@@ -917,6 +941,8 @@ async function main() {
       cost,
       delegationEdgesOk,
       deleg: { offBefore: delegOffBefore, ...delegOn, offAfter: delegOffAfter },
+      delegateOk,
+      delegatePost: deleg,
       terminalTicketKind: diag.terminalTicketKind,
       wsMismatchCode: wsMismatch.code,
       slackStatus0,

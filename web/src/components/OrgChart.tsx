@@ -285,6 +285,87 @@ function NodeForm(props: {
 }
 
 // ---------------------------------------------------------------------------
+// Delegate form (hover-action popover): web equivalent of `grove delegate` —
+// hand a node a task (title + optional body) -> POST a board task assigned to it
+// with status "ready". Errors surface as a safe message, never the raw cause.
+// ---------------------------------------------------------------------------
+function DelegateForm(props: {
+  node: string;
+  boardId: string | null;
+  onDone: () => void;
+  onClose: () => void;
+}) {
+  const { node, boardId, onDone, onClose } = props;
+  const { t } = useI18n();
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const ti = title.trim();
+    if (!ti) {
+      setError(t("delegate.titleRequired"));
+      return;
+    }
+    if (!boardId) {
+      setError(t("node.noBoard"));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    api
+      .delegate(boardId, node, { title: ti, body: body.trim() || undefined })
+      .then(() => {
+        setBusy(false);
+        onDone();
+        onClose();
+      })
+      .catch(() => {
+        setBusy(false);
+        setError(t("delegate.error")); // safe message; raw cause withheld
+      });
+  };
+
+  return (
+    <form className="node-form delegate-form" onSubmit={submit}>
+      <div className="node-form__head">
+        {t("delegate.heading")} · {node}
+      </div>
+      <input
+        className="dr-input"
+        name="delegateTitle"
+        type="text"
+        placeholder={t("delegate.title")}
+        value={title}
+        autoFocus
+        spellCheck={false}
+        onChange={(e) => setTitle(e.target.value)}
+      />
+      <textarea
+        className="dr-input delegate-form__body"
+        name="delegateBody"
+        rows={3}
+        placeholder={t("delegate.body")}
+        value={body}
+        spellCheck={false}
+        onChange={(e) => setBody(e.target.value)}
+      />
+      {error && <div className="node-form__err">{error}</div>}
+      <div className="node-form__actions">
+        <button type="button" className="dr-btn dr-btn--ghost" onClick={onClose}>
+          {t("node.cancel")}
+        </button>
+        <button type="submit" className="dr-btn dr-btn--primary delegate-form__submit" disabled={busy}>
+          {busy ? t("delegate.submitting") : t("delegate.submit")}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Node info + task-assign drawer
 // ---------------------------------------------------------------------------
 function NodeDrawer(props: {
@@ -445,8 +526,9 @@ export function OrgChart(props: {
   liveTick: number;
   projectTick: number;
   onOpenTerminal: (pane: string) => void;
+  onDelegated?: () => void;
 }) {
-  const { boardId, liveTick, projectTick, onOpenTerminal } = props;
+  const { boardId, liveTick, projectTick, onOpenTerminal, onDelegated } = props;
   const { t } = useI18n();
 
   const [nodes, setNodes] = useState<OrgNode[]>([]);
@@ -462,6 +544,7 @@ export function OrgChart(props: {
   const [hover, setHover] = useState<string | null>(null);
   const [adding, setAdding] = useState(false); // toolbar global add
   const [addChild, setAddChild] = useState<string | null>(null); // hover-"+" parent
+  const [delegateNode, setDelegateNode] = useState<string | null>(null); // delegate popover
   const [pending, setPending] = useState<{ name: string; parent?: string } | null>(null);
   const [drawerNode, setDrawerNode] = useState<OrgNode | null>(null);
 
@@ -931,6 +1014,14 @@ export function OrgChart(props: {
                   >
                     {t("org.info")}
                   </button>
+                  <button
+                    type="button"
+                    className="org-act org-act--delegate"
+                    onPointerDown={stopPD}
+                    onClick={() => setDelegateNode(node.name)}
+                  >
+                    {t("delegate.action")}
+                  </button>
                   {node.parent && (
                     <button
                       type="button"
@@ -989,6 +1080,25 @@ export function OrgChart(props: {
                 onCreating={setPending}
                 onCreated={() => setReloadKey((k) => k + 1)}
                 onClose={() => setAddChild(null)}
+              />
+            </div>
+          )}
+
+          {delegateNode && (
+            <div
+              className="org-popover org-popover--delegate"
+              style={{
+                transform: `translate(${posFor(delegateNode).x}px, ${posFor(delegateNode).y + NODE_H + 18}px)`,
+              }}
+            >
+              <DelegateForm
+                node={delegateNode}
+                boardId={boardId}
+                onDone={() => {
+                  setReloadKey((k) => k + 1); // refresh org + delegation overlay
+                  onDelegated?.(); // bump liveTick -> board + audit refresh
+                }}
+                onClose={() => setDelegateNode(null)}
               />
             </div>
           )}

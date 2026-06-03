@@ -130,6 +130,15 @@ const KO: Dict = {
   "org.cutParent": "부모 연결 끊기",
   "org.detach": "부모 끊기",
 
+  "delegate.action": "위임",
+  "delegate.heading": "작업 위임",
+  "delegate.title": "작업 제목",
+  "delegate.body": "설명 (선택)",
+  "delegate.submit": "위임",
+  "delegate.submitting": "위임 중…",
+  "delegate.titleRequired": "제목을 입력하세요",
+  "delegate.error": "위임에 실패했습니다",
+
   "tab.integrations": "연동",
   "slack.title": "Slack 연동",
   "slack.flow": "① manifest 다운로드 → ② Slack에서 앱 생성·설치 → ③ 토큰 2개 입력·저장 → ④ 소켓 연결 확인",
@@ -380,6 +389,15 @@ const EN: Dict = {
   "drag.invalid": "can't drop here",
   "org.cutParent": "detach from parent",
   "org.detach": "detach",
+
+  "delegate.action": "delegate",
+  "delegate.heading": "Delegate task",
+  "delegate.title": "Task title",
+  "delegate.body": "Description (optional)",
+  "delegate.submit": "Delegate",
+  "delegate.submitting": "Delegating…",
+  "delegate.titleRequired": "Title is required",
+  "delegate.error": "Delegation failed",
 
   "tab.integrations": "Integrations",
   "slack.title": "Slack integration",

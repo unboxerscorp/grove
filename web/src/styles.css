@@ -1338,6 +1338,23 @@ button {
   border-color: var(--coral);
 }
 
+.org-act--delegate:hover {
+  color: var(--blue);
+  border-color: var(--blue);
+}
+
+/* delegate popover form (web equivalent of `grove delegate`) */
+.org-popover--delegate {
+  width: 300px;
+}
+
+.delegate-form__body {
+  resize: vertical;
+  min-height: 54px;
+  font-family: var(--ui);
+  line-height: 1.5;
+}
+
 /* add-node form */
 .node-form {
   display: flex;
