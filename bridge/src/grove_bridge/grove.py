@@ -167,7 +167,9 @@ def grove_metadata(result: GroveRunResult) -> dict[str, object]:
     return {
         "node": result.node,
         "returncode": result.returncode,
+        "session": result.session_id,
         "grove_session_id": result.session_id,
+        "transcript": result.transcript_path,
         "transcript_path": result.transcript_path,
         "turn_id": result.turn_id,
         "tmux_pane": result.tmux_pane,

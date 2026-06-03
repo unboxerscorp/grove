@@ -84,7 +84,7 @@ class ClaimConflictStore:
             board_id="b_main",
             title="Available",
             body=None,
-            assignee="grove:codex",
+            assignee="codex-a",
             status="ready",
             priority=0,
             workspace_kind="scratch",
@@ -112,6 +112,8 @@ class ClaimConflictStore:
         assignee: str | None = None,
         limit: int | None = None,
     ) -> list[Task]:
+        if assignee != self.task.assignee:
+            return []
         count = 1 if limit is None else limit
         return [self.task for _index in range(count)]
 
@@ -233,31 +235,26 @@ class FakeProcess:
         self.returncode = -9
 
 
-def test_load_bridge_config_maps_lanes_store_and_notifier(tmp_path: Path) -> None:
+def test_load_bridge_config_maps_nodes_store_and_notifier(tmp_path: Path) -> None:
     config_path = tmp_path / "bridge.toml"
     db_path = tmp_path / "board.db"
     config_path.write_text(
         f"""
 boards = ["main", "cockpit"]
+nodes = ["codex-a", "claude-a"]
 board_db_path = "{db_path}"
 poll_interval_seconds = 2.5
 claim_ttl_seconds = 120
 heartbeat_interval_seconds = 30
 max_tasks_per_tick = 3
+grove_config = "cockpit.grove.yaml"
+timeout = "45m"
 
 [notifier]
 enabled = true
 dry_run = true
 channel_kind = "inbox"
 room_id = "ops"
-
-[lanes."grove:codex"]
-nodes = ["codex-a", "codex-b"]
-grove_config = "cockpit.grove.yaml"
-timeout = "45m"
-
-[lanes."grove:claude"]
-nodes = ["claude-a"]
 """.strip(),
         encoding="utf-8",
     )
@@ -274,10 +271,12 @@ nodes = ["claude-a"]
     assert config.notifier.dry_run is True
     assert config.notifier.channel_kind == "inbox"
     assert config.notifier.room_id == "ops"
-    assert config.lanes["grove:codex"].nodes == ("codex-a", "codex-b")
-    assert config.lanes["grove:codex"].grove_config == "cockpit.grove.yaml"
-    assert config.lanes["grove:codex"].timeout == "45m"
-    assert config.lanes["grove:claude"].nodes == ("claude-a",)
+    assert config.lanes["codex-a"].assignee == "codex-a"
+    assert config.lanes["codex-a"].nodes == ("codex-a",)
+    assert config.lanes["codex-a"].grove_config == "cockpit.grove.yaml"
+    assert config.lanes["codex-a"].timeout == "45m"
+    assert config.lanes["claude-a"].assignee == "claude-a"
+    assert config.lanes["claude-a"].nodes == ("claude-a",)
 
 
 def test_main_uses_native_store_from_config(
@@ -289,10 +288,8 @@ def test_main_uses_native_store_from_config(
     config_path.write_text(
         f"""
 boards = ["main"]
-board_db_path = "{db_path}"
-
-[lanes."grove:codex"]
 nodes = ["codex-a"]
+board_db_path = "{db_path}"
 """.strip(),
         encoding="utf-8",
     )
@@ -327,13 +324,15 @@ nodes = ["codex-a"]
     assert captured["notifier"] is not None
 
 
-def test_run_once_claims_lane_task_and_completes_with_grove_metadata(tmp_path: Path) -> None:
+def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
+    tmp_path: Path,
+) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = store.create_task(
         board="main",
         title="Implement native board",
         body="Wire grove board tasks to grove.",
-        assignee="grove:codex",
+        assignee="codex-a",
     )
     runner = FakeRunner(
         GroveRunResult(
@@ -350,8 +349,8 @@ def test_run_once_claims_lane_task_and_completes_with_grove_metadata(tmp_path: P
     config = BridgeConfig(
         boards=("main",),
         lanes={
-            "grove:codex": LaneConfig(
-                assignee="grove:codex",
+            "codex-a": LaneConfig(
+                assignee="codex-a",
                 nodes=("codex-a",),
                 grove_config="cockpit.grove.yaml",
                 timeout="30m",
@@ -372,17 +371,21 @@ def test_run_once_claims_lane_task_and_completes_with_grove_metadata(tmp_path: P
     prompt = runner.calls[0][1]
     assert "Implement native board" in prompt
     assert "Wire grove board tasks to grove." in prompt
+    assert "Assignee node: codex-a" in prompt
     assert "GROVE_BOARD_TASK=" in prompt
     assert "GROVE_BOARD_RUN_ID=" in prompt
     assert "GROVE_BOARD_DB=" in prompt
     env = runner.calls[0][2]
     assert env["GROVE_BOARD_TASK"] == task.id
     assert env["GROVE_BOARD_BOARD"] == "main"
+    assert env["GROVE_BOARD_ASSIGNEE"] == "codex-a"
     completed = store.get_task(board="main", task_id=task.id)
     assert completed.status == "done"
     assert completed.result == "implemented bridge"
     assert completed.metadata["grove_session_id"] == "sess-1"
+    assert completed.metadata["session"] == "sess-1"
     assert completed.metadata["transcript_path"] == "/tmp/transcript.jsonl"
+    assert completed.metadata["transcript"] == "/tmp/transcript.jsonl"
     assert completed.metadata["node"] == "codex-a"
 
 
@@ -392,7 +395,7 @@ def test_run_once_blocks_failed_task_and_notifies_after_block(tmp_path: Path) ->
         board="main",
         title="Needs input",
         body=None,
-        assignee="grove:claude",
+        assignee="claude-a",
     )
     runner = FakeRunner(
         GroveRunResult(
@@ -409,7 +412,7 @@ def test_run_once_blocks_failed_task_and_notifies_after_block(tmp_path: Path) ->
     notifier = RecordingNotifier()
     config = BridgeConfig(
         boards=("main",),
-        lanes={"grove:claude": LaneConfig(assignee="grove:claude", nodes=("claude-a",))},
+        lanes={"claude-a": LaneConfig(assignee="claude-a", nodes=("claude-a",))},
         board_db_path=tmp_path / "board.db",
         notifier=NotifierConfig(enabled=True, dry_run=False, channel_kind="inbox", room_id="ops"),
         claim_ttl_seconds=300,
@@ -446,7 +449,7 @@ def test_run_once_skips_terminal_writes_when_heartbeat_loses_lease(
         board="main",
         title="Lease lost",
         body=None,
-        assignee="grove:codex",
+        assignee="codex-a",
     )
 
     def deny_heartbeat(
@@ -463,7 +466,7 @@ def test_run_once_skips_terminal_writes_when_heartbeat_loses_lease(
     runner = LeaseLossRunner()
     config = BridgeConfig(
         boards=("main",),
-        lanes={"grove:codex": LaneConfig(assignee="grove:codex", nodes=("codex-a",))},
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
         board_db_path=tmp_path / "board.db",
         claim_ttl_seconds=300,
         heartbeat_interval_seconds=60,
@@ -481,7 +484,7 @@ def test_run_once_skips_terminal_writes_when_heartbeat_loses_lease(
     assert store.list_comments(board="main", task_id=task.id) == []
 
 
-def test_run_once_acquires_node_only_after_successful_claim() -> None:
+def test_run_once_claims_node_assignee_without_consuming_other_nodes_on_conflict() -> None:
     store = ClaimConflictStore()
     runner = FakeRunner(
         GroveRunResult(
@@ -498,10 +501,8 @@ def test_run_once_acquires_node_only_after_successful_claim() -> None:
     config = BridgeConfig(
         boards=("main",),
         lanes={
-            "grove:codex": LaneConfig(
-                assignee="grove:codex",
-                nodes=("codex-a", "codex-b"),
-            )
+            "codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",)),
+            "codex-b": LaneConfig(assignee="codex-b", nodes=("codex-b",)),
         },
         max_tasks_per_tick=2,
     )
@@ -512,6 +513,72 @@ def test_run_once_acquires_node_only_after_successful_claim() -> None:
     assert result.claimed == 1
     assert store.node_ids == ["codex-a", "codex-a"]
     assert runner.calls[0][0] == "codex-a"
+
+
+def test_main_builds_session_board_config_from_registry(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    grove_home = tmp_path / ".grove"
+    registry_path = grove_home / "dev10" / "registry.json"
+    registry_path.parent.mkdir(parents=True)
+    registry_path.write_text(
+        """
+{
+  "nodes": {
+    "lead": {"name": "lead", "tmux_pane": "dev10:0.0"},
+    "fe": {"name": "fe", "agent": "codex", "tmux_pane": "dev10:1.1"},
+    "qa": {"name": "qa", "agent": "claude", "tmux_pane": "dev10:1.2"}
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    class SessionFakeExecutor:
+        def __init__(
+            self,
+            *,
+            config: BridgeConfig,
+            store: object | None = None,
+            grove_runner: object | None = None,
+            notifier: NotifierProtocol | None = None,
+        ) -> None:
+            captured["config"] = config
+            captured["store"] = store
+
+        def run_once(self) -> None:
+            captured["ran_once"] = True
+
+        def run_forever(self) -> None:
+            raise AssertionError("main should run only once in this test")
+
+    monkeypatch.setattr(pull_executor_module, "PullExecutor", SessionFakeExecutor)
+    monkeypatch.setenv("GROVE_HOME", str(grove_home))
+
+    exit_code = pull_executor_module.main(
+        [
+            "--session",
+            "dev10",
+            "--board",
+            "live",
+            "--grove-config",
+            "cockpit.grove.yaml",
+            "--once",
+        ]
+    )
+
+    assert exit_code == 0
+    config = captured["config"]
+    assert isinstance(config, BridgeConfig)
+    assert config.boards == ("live",)
+    assert sorted(config.lanes) == ["fe", "qa"]
+    assert config.lanes["fe"].assignee == "fe"
+    assert config.lanes["fe"].nodes == ("fe",)
+    assert config.lanes["fe"].grove_config == "cockpit.grove.yaml"
+    assert isinstance(captured["store"], SQLiteBoardStore)
+    assert captured["ran_once"] is True
 
 
 def test_subprocess_runner_aborts_when_heartbeat_reports_lost_lease(

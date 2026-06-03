@@ -17,7 +17,7 @@ def default_board_db_path() -> Path:
 
 @dataclass(frozen=True)
 class LaneConfig:
-    """Mapping from one board assignee lane to a grove node pool."""
+    """Execution target for one board assignee node."""
 
     assignee: str
     nodes: tuple[str, ...]
@@ -74,7 +74,7 @@ def load_bridge_config(path: str | Path) -> BridgeConfig:
         raw = cast(dict[str, object], tomllib.load(handle))
 
     boards = _string_tuple(raw.get("boards", ["default"]), field="boards")
-    lanes = _lane_configs(raw.get("lanes"))
+    lanes = _execution_targets(raw)
 
     return BridgeConfig(
         boards=boards,
@@ -107,7 +107,37 @@ def load_bridge_config(path: str | Path) -> BridgeConfig:
     )
 
 
-def _lane_configs(value: object) -> dict[str, LaneConfig]:
+def _execution_targets(raw: Mapping[str, object]) -> dict[str, LaneConfig]:
+    if raw.get("nodes") is not None:
+        return _node_configs(
+            raw.get("nodes"),
+            grove_config=_optional_string(raw.get("grove_config"), field="grove_config"),
+            timeout=_string(raw.get("timeout", "30m"), field="timeout"),
+        )
+    if raw.get("lanes") is not None:
+        return _legacy_lane_configs(raw.get("lanes"))
+    raise ValueError("nodes array or lanes table is required")
+
+
+def _node_configs(
+    value: object,
+    *,
+    grove_config: str | None,
+    timeout: str,
+) -> dict[str, LaneConfig]:
+    nodes = _string_tuple(value, field="nodes")
+    return {
+        node: LaneConfig(
+            assignee=node,
+            nodes=(node,),
+            grove_config=grove_config,
+            timeout=timeout,
+        )
+        for node in nodes
+    }
+
+
+def _legacy_lane_configs(value: object) -> dict[str, LaneConfig]:
     if not isinstance(value, dict):
         raise ValueError("lanes table is required")
 
@@ -117,14 +147,18 @@ def _lane_configs(value: object) -> dict[str, LaneConfig]:
         if not isinstance(lane_value, dict):
             raise ValueError(f"lane {assignee!r} must be a table")
         lane_raw = cast(Mapping[str, object], lane_value)
-        lanes[assignee] = LaneConfig(
-            assignee=assignee,
-            nodes=_string_tuple(lane_raw.get("nodes"), field=f"lanes.{assignee}.nodes"),
-            grove_config=_optional_string(
-                lane_raw.get("grove_config"), field=f"lanes.{assignee}.grove_config"
-            ),
-            timeout=_string(lane_raw.get("timeout", "30m"), field=f"lanes.{assignee}.timeout"),
-        )
+        for node in _string_tuple(lane_raw.get("nodes"), field=f"lanes.{assignee}.nodes"):
+            lanes[node] = LaneConfig(
+                assignee=node,
+                nodes=(node,),
+                grove_config=_optional_string(
+                    lane_raw.get("grove_config"), field=f"lanes.{assignee}.grove_config"
+                ),
+                timeout=_string(
+                    lane_raw.get("timeout", "30m"),
+                    field=f"lanes.{assignee}.timeout",
+                ),
+            )
     return lanes
 
 

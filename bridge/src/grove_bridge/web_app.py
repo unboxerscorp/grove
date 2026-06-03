@@ -12,7 +12,7 @@ import secrets
 import subprocess
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import cast
 from urllib.parse import unquote
@@ -21,17 +21,24 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, status
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 
+from grove_bridge.auth_status import collect_auth_status
 from grove_bridge.config import default_board_db_path
-from grove_bridge.store import Board, BoardEvent, Comment, Run, SQLiteBoardStore, Task
+from grove_bridge.slack import SlackConfig, SlackConfigStore, config_status, slack_manifest
+from grove_bridge.store import Board, BoardEvent, Comment, Run, SlackThread, SQLiteBoardStore, Task
 
 SESSION_HEADER = "X-Grove-Session-Token"
+PROJECT_HEADER = "X-Grove-Project"
 DEFAULT_SESSION = "dev10"
 TICKET_TTL_SECONDS = 30
 POLL_INTERVAL_SECONDS = 1.0
 TMUX_TIMEOUT_SECONDS = 5.0
 GROVE_SPAWN_TIMEOUT_SECONDS = 30.0
+GROVE_PROJECT_TIMEOUT_SECONDS = 30.0
 TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?P<pane>[0-9]+)$")
 NODE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
+STACK_TRACE_RE = re.compile(r"(?i)(traceback|\bfile \"|\bat .+\(.+:\d+:\d+\))")
 NODE_AGENTS = frozenset({"codex", "claude", "antigravity"})
 STATIC_SUFFIXES = {
     ".css",
@@ -72,6 +79,21 @@ class WebAppConfig:
             raise ValueError("port must be positive")
 
 
+@dataclass(frozen=True)
+class ProjectContext:
+    config: WebAppConfig
+    name: str
+    board: str
+    from_header: bool
+
+
+@dataclass(frozen=True)
+class TicketGrant:
+    ticket: str
+    expires_at: float
+    project: ProjectContext
+
+
 class CommentPayload(BaseModel):
     author: str = Field(default="dev-room", min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=20_000)
@@ -89,6 +111,7 @@ class NodeCreatePayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     agent: str = Field(min_length=1, max_length=50)
     role: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=1000)
     parent: str | None = Field(default=None, max_length=100)
     group: str | None = Field(default=None, max_length=100)
     window: int | None = Field(default=None, ge=0)
@@ -97,20 +120,50 @@ class NodeCreatePayload(BaseModel):
 class NodeUpdatePayload(BaseModel):
     parent: str | None = Field(default=None, max_length=100)
     group: str | None = Field(default=None, max_length=100)
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class ProjectCreatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    template: str | None = Field(default=None, max_length=200)
+    clone: str | None = Field(default=None, max_length=2000)
+
+
+class ProjectLoadPayload(BaseModel):
+    path: str = Field(min_length=1, max_length=5000)
+
+
+class SlackConfigPayload(BaseModel):
+    app_token: str = Field(min_length=1, max_length=5000)
+    bot_token: str = Field(min_length=1, max_length=5000)
+    default_channel: str | None = Field(default=None, max_length=200)
+    default_node: str | None = Field(default=None, max_length=200)
 
 
 class TicketStore:
     def __init__(self) -> None:
-        self._tickets: dict[str, float] = {}
+        self._tickets: dict[str, TicketGrant] = {}
 
-    def issue(self, *, ttl_seconds: int = TICKET_TTL_SECONDS) -> str:
+    def issue(
+        self,
+        *,
+        project: ProjectContext,
+        ttl_seconds: int = TICKET_TTL_SECONDS,
+    ) -> TicketGrant:
         ticket = secrets.token_urlsafe(24)
-        self._tickets[ticket] = time.time() + ttl_seconds
-        return ticket
+        grant = TicketGrant(
+            ticket=ticket,
+            expires_at=time.time() + ttl_seconds,
+            project=project,
+        )
+        self._tickets[ticket] = grant
+        return grant
 
-    def consume(self, ticket: str) -> bool:
-        expires_at = self._tickets.pop(ticket, None)
-        return expires_at is not None and expires_at >= time.time()
+    def consume(self, ticket: str) -> TicketGrant | None:
+        grant = self._tickets.pop(ticket, None)
+        if grant is None or grant.expires_at < time.time():
+            return None
+        return grant
 
 
 def create_app(
@@ -129,13 +182,44 @@ def create_app(
     app.state.ticket_store = TicketStore()
 
     @app.get("/api/status")
-    def status_endpoint() -> dict[str, bool]:
-        return {"ok": True}
+    def status_endpoint(request: Request) -> dict[str, object]:
+        project = resolve_project(request)
+        return {"ok": True, "project": project.name}
+
+    @app.get("/api/auth-status")
+    def auth_status_endpoint(request: Request) -> list[dict[str, object]]:
+        _require_token(request)
+        return [tool_status.to_payload() for tool_status in collect_auth_status()]
+
+    @app.get("/api/projects")
+    def projects_endpoint(request: Request) -> list[dict[str, object]]:
+        _require_token(request)
+        return _project_payloads(_config(request))
+
+    @app.post("/api/projects")
+    def create_project_endpoint(
+        request: Request,
+        payload: ProjectCreatePayload,
+    ) -> dict[str, object]:
+        _require_token(request)
+        return _create_project(payload)
+
+    @app.post("/api/projects/load")
+    def load_project_endpoint(
+        request: Request,
+        payload: ProjectLoadPayload,
+    ) -> dict[str, object]:
+        _require_token(request)
+        return _load_project(payload)
 
     @app.get("/api/boards")
     def boards_endpoint(request: Request) -> list[dict[str, object]]:
         _require_token(request)
-        return [_board_payload(board) for board in _store(request).list_boards()]
+        project = resolve_project(request)
+        boards = _store(request).list_boards()
+        if project.from_header:
+            boards = [board for board in boards if board.id == project.board]
+        return [_board_payload(board) for board in boards]
 
     @app.get("/api/boards/{board_id}/tasks")
     def board_tasks_endpoint(
@@ -145,9 +229,11 @@ def create_app(
         assignee: str | None = Query(default=None),
     ) -> list[dict[str, object]]:
         _require_token(request)
+        project = resolve_project(request)
+        resolved_board = _resolve_board_id(board_id, project=project)
         try:
             tasks = _store(request).list_tasks(
-                board=board_id,
+                board=resolved_board,
                 status=status_filter,
                 assignee=assignee,
             )
@@ -165,8 +251,9 @@ def create_app(
         title = payload.title.strip()
         if not title:
             raise HTTPException(status_code=400, detail="title is required")
+        project = resolve_project(request)
         task = _store(request).create_task(
-            board=board_id,
+            board=_resolve_board_id(board_id, project=project),
             title=title,
             body=payload.body,
             assignee=payload.assignee,
@@ -216,7 +303,7 @@ def create_app(
     @app.get("/api/nodes")
     def nodes_endpoint(request: Request) -> list[dict[str, str]]:
         _require_token(request)
-        return [_node_payload(node) for node in _registry_nodes(_config(request))]
+        return [_node_payload(node) for node in _registry_nodes(resolve_project(request).config)]
 
     @app.post("/api/nodes")
     def create_node_endpoint(
@@ -224,7 +311,7 @@ def create_app(
         payload: NodeCreatePayload,
     ) -> dict[str, object]:
         _require_token(request)
-        return _spawn_node(payload, config=_config(request))
+        return _spawn_node(payload, config=resolve_project(request).config)
 
     @app.patch("/api/nodes/{name}")
     def update_node_endpoint(
@@ -233,18 +320,71 @@ def create_app(
         payload: NodeUpdatePayload,
     ) -> dict[str, object]:
         _require_token(request)
-        return _update_node_relationships(name, payload, config=_config(request))
+        return _update_node_relationships(name, payload, config=resolve_project(request).config)
 
     @app.get("/api/org")
     def org_endpoint(request: Request) -> dict[str, object]:
         _require_token(request)
-        return _org_payload(_config(request))
+        return _org_payload(resolve_project(request).config)
+
+    @app.get("/api/slack/manifest")
+    def slack_manifest_endpoint(request: Request) -> dict[str, object]:
+        _require_token(request)
+        return slack_manifest()
+
+    @app.get("/api/slack/config/status")
+    def slack_config_status_endpoint(request: Request) -> dict[str, object]:
+        _require_token(request)
+        return config_status(_slack_config_path(_config(request)))
+
+    @app.post("/api/slack/config")
+    def slack_config_endpoint(
+        request: Request,
+        payload: SlackConfigPayload,
+    ) -> dict[str, object]:
+        _require_token(request)
+        try:
+            config_value = SlackConfig(
+                app_token=payload.app_token.strip(),
+                bot_token=payload.bot_token.strip(),
+                default_channel=_optional_config_text(payload.default_channel),
+                default_node=_optional_config_text(payload.default_node),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        SlackConfigStore(_slack_config_path(_config(request))).save(config_value)
+        return {"status": "tokens_saved", "tokens": config_value.masked()}
+
+    @app.post("/api/slack/test")
+    def slack_test_endpoint(request: Request) -> dict[str, object]:
+        _require_token(request)
+        configured = SlackConfigStore(_slack_config_path(_config(request))).load() is not None
+        return {
+            "ok": configured,
+            "status": "tokens_saved" if configured else "not_configured",
+        }
+
+    @app.get("/api/slack/threads")
+    def slack_threads_endpoint(
+        request: Request,
+        task_id: str = Query(...),
+    ) -> list[dict[str, object]]:
+        _require_token(request)
+        return [
+            _slack_thread_payload(thread)
+            for thread in _store(request).list_slack_threads(task_id=task_id)
+        ]
 
     @app.post("/api/ws-ticket")
     def ws_ticket_endpoint(request: Request) -> dict[str, object]:
         _require_token(request)
-        ticket = _ticket_store(request).issue()
-        return {"ticket": ticket, "ttl_seconds": TICKET_TTL_SECONDS}
+        project = resolve_project(request)
+        grant = _ticket_store(request).issue(project=project)
+        return {
+            "ticket": grant.ticket,
+            "ttl_seconds": TICKET_TTL_SECONDS,
+            "project": project.name,
+        }
 
     @app.websocket("/ws/terminal")
     async def terminal_ws(
@@ -252,11 +392,12 @@ def create_app(
         ticket: str = Query(...),
         pane_id: str = Query(...),
     ) -> None:
-        if not _consume_ticket(_ticket_store(websocket), ticket):
+        grant = _consume_ticket(_ticket_store(websocket), ticket)
+        if grant is None:
             await websocket.close(code=4401)
             return
-        app_config = _config(websocket)
-        if not _pane_allowed(pane_id, config=app_config):
+        project = grant.project
+        if not _pane_allowed(pane_id, config=project.config):
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
         await websocket.accept()
@@ -286,9 +427,11 @@ def create_app(
         ticket: str = Query(...),
         cursor: int = Query(0),
     ) -> None:
-        if not _consume_ticket(_ticket_store(websocket), ticket):
+        grant = _consume_ticket(_ticket_store(websocket), ticket)
+        if grant is None:
             await websocket.close(code=4401)
             return
+        project = grant.project
         await websocket.accept()
         current = cursor
         try:
@@ -296,6 +439,8 @@ def create_app(
                 events = _store(websocket).list_events_after(cursor=current, limit=100)
                 for event in events:
                     current = event.cursor
+                    if not _event_in_project(_store(websocket), event, project=project):
+                        continue
                     await websocket.send_json(_event_payload(event))
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
         except Exception:
@@ -332,6 +477,39 @@ def _config(source: Request | WebSocket) -> WebAppConfig:
     return cast(WebAppConfig, source.app.state.config)
 
 
+def resolve_project(source: Request | WebSocket) -> ProjectContext:
+    base_config = _config(source)
+    raw_project = source.headers.get(PROJECT_HEADER)
+    if raw_project is None or not raw_project.strip():
+        name = base_config.registry_session
+        return ProjectContext(
+            config=base_config,
+            name=name,
+            board=name,
+            from_header=False,
+        )
+    name = raw_project.strip()
+    if PROJECT_NAME_RE.fullmatch(name) is None:
+        raise HTTPException(status_code=400, detail="invalid project")
+    project_config = replace(base_config, registry_session=name)
+    if not _registry_path(project_config).is_file():
+        raise HTTPException(status_code=404, detail="project not found")
+    return ProjectContext(
+        config=project_config,
+        name=name,
+        board=name,
+        from_header=True,
+    )
+
+
+def _resolve_board_id(board_id: str, *, project: ProjectContext) -> str:
+    if not project.from_header:
+        return board_id
+    if board_id in {project.board, "main", "default"}:
+        return project.board
+    raise HTTPException(status_code=404, detail="board not found")
+
+
 def _store(source: Request | WebSocket) -> SQLiteBoardStore:
     return cast(SQLiteBoardStore, source.app.state.store)
 
@@ -340,8 +518,24 @@ def _ticket_store(source: Request | WebSocket) -> TicketStore:
     return cast(TicketStore, source.app.state.ticket_store)
 
 
-def _consume_ticket(ticket_store: TicketStore, ticket: str) -> bool:
+def _slack_config_path(config: WebAppConfig) -> Path:
+    return config.grove_home / "slack.json"
+
+
+def _consume_ticket(ticket_store: TicketStore, ticket: str) -> TicketGrant | None:
     return ticket_store.consume(ticket)
+
+
+def _event_in_project(
+    store: SQLiteBoardStore,
+    event: BoardEvent,
+    *,
+    project: ProjectContext,
+) -> bool:
+    try:
+        return store.board_slug_for_id(event.board_id) == project.board
+    except KeyError:
+        return False
 
 
 def _index_response(config: WebAppConfig) -> HTMLResponse:
@@ -380,14 +574,137 @@ def _registry_path(config: WebAppConfig) -> Path:
     return config.grove_home / config.registry_session / "registry.json"
 
 
+def _project_payloads(config: WebAppConfig) -> list[dict[str, object]]:
+    if not config.grove_home.is_dir():
+        return []
+    projects: list[dict[str, object]] = []
+    for registry_path in sorted(config.grove_home.glob("*/registry.json")):
+        session_dir = registry_path.parent
+        loaded = _read_json_mapping(registry_path, error_detail="invalid grove registry")
+        raw_nodes = loaded.get("nodes")
+        projects.append(
+            {
+                "name": session_dir.name,
+                "workspace": _project_workspace(session_dir, loaded),
+                "node_count": len(raw_nodes) if isinstance(raw_nodes, dict) else 0,
+                "status": _tmux_session_status(session_dir.name),
+            }
+        )
+    return projects
+
+
+def _project_workspace(session_dir: Path, registry: Mapping[str, object]) -> str:
+    for key in ("workspace", "workspace_path", "cwd"):
+        value = _mapping_string(registry, key)
+        if value is not None:
+            return value
+    raw_project = registry.get("project")
+    if isinstance(raw_project, Mapping):
+        project = _string_mapping(raw_project)
+        for key in ("workspace", "workspace_path", "cwd"):
+            value = _mapping_string(project, key)
+            if value is not None:
+                return value
+    project_file = session_dir / "project.json"
+    if project_file.is_file():
+        project = _read_json_mapping(project_file, error_detail="invalid grove project")
+        for key in ("workspace", "workspace_path", "cwd"):
+            value = _mapping_string(project, key)
+            if value is not None:
+                return value
+    return ""
+
+
+def _tmux_session_status(session: str) -> str:
+    try:
+        proc = subprocess.run(
+            ["tmux", "has-session", "-t", session],
+            capture_output=True,
+            timeout=TMUX_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return "stopped"
+    return "running" if proc.returncode == 0 else "stopped"
+
+
+def _create_project(payload: ProjectCreatePayload) -> dict[str, object]:
+    name = _validated_node_ref(payload.name, field_name="project name")
+    template = _optional_text(payload.template, field_name="template", max_length=200)
+    clone = _optional_text(payload.clone, field_name="clone", max_length=2000)
+    args = ["grove", "new-project", name]
+    if template is not None:
+        args.extend(["--template", template])
+    if clone is not None:
+        args.extend(["--clone", clone])
+    args.append("--json")
+    return _run_grove_json(args, failure_detail="grove new-project failed")
+
+
+def _load_project(payload: ProjectLoadPayload) -> dict[str, object]:
+    project_path = payload.path.strip()
+    if not project_path:
+        raise HTTPException(status_code=400, detail="path is required")
+    return _run_grove_json(
+        ["grove", "load-project", project_path, "--json"],
+        failure_detail="grove load-project failed",
+    )
+
+
+def _run_grove_json(args: list[str], *, failure_detail: str) -> dict[str, object]:
+    try:
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=GROVE_PROJECT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail="grove CLI not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=400, detail=f"{failure_detail}: timed out") from exc
+    if proc.returncode != 0:
+        raise HTTPException(
+            status_code=400,
+            detail=_safe_cli_error(proc.stdout, proc.stderr, fallback=failure_detail),
+        )
+    try:
+        loaded: object = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"{failure_detail}: invalid json") from exc
+    if not isinstance(loaded, dict):
+        raise HTTPException(status_code=400, detail=f"{failure_detail}: invalid json")
+    return {str(key): value for key, value in loaded.items()}
+
+
+def _safe_cli_error(stdout: str, stderr: str, *, fallback: str) -> str:
+    raw = "\n".join(part for part in (stderr, stdout) if part.strip())
+    if not raw.strip():
+        return fallback
+    if STACK_TRACE_RE.search(raw) is not None:
+        return fallback
+    sanitized = ABSOLUTE_PATH_RE.sub("[path]", raw)
+    if "[path]" in sanitized:
+        return fallback
+    return _summary_text(sanitized) or fallback
+
+
 def _load_registry(config: WebAppConfig) -> dict[str, object]:
     path = _registry_path(config)
     if not path.is_file():
         return {"nodes": {}}
-    loaded = json.loads(path.read_text(encoding="utf-8"))
+    return _read_json_mapping(path, error_detail="invalid grove registry")
+
+
+def _read_json_mapping(path: Path, *, error_detail: str) -> dict[str, object]:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(status_code=500, detail=error_detail) from exc
     if not isinstance(loaded, dict):
-        raise HTTPException(status_code=500, detail="invalid grove registry")
-    return loaded
+        raise HTTPException(status_code=500, detail=error_detail)
+    return cast(dict[str, object], loaded)
 
 
 def _registry_nodes(config: WebAppConfig) -> list[dict[str, str]]:
@@ -398,6 +715,7 @@ def _registry_nodes(config: WebAppConfig) -> list[dict[str, str]]:
             "tmux_pane": node["tmux_pane"],
             "session_id": node["session_id"],
             "status": node["status"],
+            "description": node["description"],
         }
         for node in _registry_node_records(config)
     ]
@@ -428,6 +746,7 @@ def _registry_node_records(config: WebAppConfig) -> list[dict[str, str]]:
                 "role": _mapping_string(node, "role") or "",
                 "parent": _mapping_string(node, "parent") or "",
                 "group": _mapping_string(node, "group") or "",
+                "description": _mapping_string(node, "description") or "",
             }
         )
     return sorted(nodes, key=lambda node: node["name"])
@@ -460,6 +779,7 @@ def _org_payload(config: WebAppConfig) -> dict[str, object]:
                 "tmux_pane": node["tmux_pane"],
                 "session_id": node["session_id"],
                 "status": node["status"],
+                "description": node["description"],
             }
         )
 
@@ -525,11 +845,14 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
     if agent not in NODE_AGENTS:
         raise HTTPException(status_code=400, detail="agent must be codex, claude, or antigravity")
     role = _optional_text(payload.role, field_name="role", max_length=200)
+    description = _optional_text(payload.description, field_name="description", max_length=1000)
     parent = _optional_node_ref(payload.parent, field_name="parent")
     group = _optional_node_ref(payload.group, field_name="group")
     args = ["grove", "spawn", "--name", name, "--agent", agent]
     if role is not None:
         args.extend(["--role", role])
+    if description is not None:
+        args.extend(["--description", description])
     if parent is not None:
         args.extend(["--parent", parent])
     if group is not None:
@@ -550,8 +873,10 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=400, detail="grove spawn timed out") from exc
     if proc.returncode != 0:
-        detail = _summary_text(proc.stderr) or "grove spawn failed"
-        raise HTTPException(status_code=400, detail=detail)
+        raise HTTPException(
+            status_code=400,
+            detail=_safe_cli_error(proc.stdout, proc.stderr, fallback="grove spawn failed"),
+        )
     try:
         loaded: object = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
@@ -590,6 +915,17 @@ def _update_node_relationships(
             target.pop("group", None)
         else:
             target["group"] = new_group
+
+    if "description" in payload.model_fields_set:
+        new_description = _optional_text(
+            payload.description,
+            field_name="description",
+            max_length=1000,
+        )
+        if new_description is None:
+            target.pop("description", None)
+        else:
+            target["description"] = new_description
 
     _write_registry_atomic(registry_path, registry)
     return _org_payload(config)
@@ -716,6 +1052,13 @@ def _optional_text(value: str | None, *, field_name: str, max_length: int) -> st
     return stripped
 
 
+def _optional_config_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 def _summary_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()[:500]
 
@@ -776,6 +1119,17 @@ def _run_payload(run: Run) -> dict[str, object]:
         payload["summary"] = run.summary
     payload["node"] = run.node_id
     return payload
+
+
+def _slack_thread_payload(thread: SlackThread) -> dict[str, object]:
+    return {
+        "task_id": thread.task_id,
+        "team_id": thread.team_id,
+        "channel_id": thread.channel_id,
+        "thread_ts": thread.thread_ts,
+        "mode": thread.mode,
+        "node": thread.node,
+    }
 
 
 def _node_payload(node: dict[str, str]) -> dict[str, str]:

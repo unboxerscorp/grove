@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from grove_bridge.config import BridgeConfig, LaneConfig, load_bridge_config
+from grove_bridge.config import BridgeConfig, LaneConfig, default_board_db_path, load_bridge_config
 from grove_bridge.grove import (
     GroveRunnerProtocol,
     GroveRunResult,
@@ -20,6 +23,9 @@ from grove_bridge.grove import (
 )
 from grove_bridge.notifier import NotifierProtocol, build_notifier
 from grove_bridge.store import ClaimedTask, NotifySub, SQLiteBoardStore, Task
+
+DEFAULT_SESSION = "dev10"
+TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?P<pane>[0-9]+)$")
 
 
 class BoardStoreProtocol(Protocol):
@@ -155,7 +161,6 @@ class PullExecutor:
             heartbeat_interval_seconds=config.heartbeat_interval_seconds,
         )
         self.notifier = notifier or build_notifier(config.notifier)
-        self.node_pool = NodePool(config.lanes)
 
     def run_once(self) -> TickResult:
         result = TickResult()
@@ -177,7 +182,7 @@ class PullExecutor:
                 for _candidate in candidates:
                     if remaining <= 0:
                         break
-                    node = self.node_pool.peek(lane)
+                    node = _execution_node(lane)
                     claimed = self.store.claim_next(
                         board=board,
                         assignee=lane.assignee,
@@ -187,7 +192,6 @@ class PullExecutor:
                     if claimed is None:
                         result.claim_conflicts += 1
                         continue
-                    self.node_pool.advance(lane)
                     result.claimed += 1
                     remaining -= 1
                     self._execute_claimed(
@@ -358,7 +362,7 @@ def build_task_prompt(
         "You are executing a grove board task.\n\n"
         f"Task: {task.id}\n"
         f"Board: {board}\n"
-        f"Assignee lane: {task.assignee or '(unassigned)'}\n"
+        f"Assignee node: {task.assignee or '(unassigned)'}\n"
         f"Workspace: {workspace}\n\n"
         f"Title:\n{task.title}\n\n"
         f"Body:\n{body}\n\n"
@@ -378,13 +382,124 @@ def _failure_comment(run: GroveRunResult) -> str:
     return "\n\n".join(parts)
 
 
+def _execution_node(lane: LaneConfig) -> str:
+    return lane.nodes[0]
+
+
+def build_session_config(
+    *,
+    session: str,
+    boards: Sequence[str],
+    board_db_path: Path,
+    grove_home: Path,
+    nodes: Sequence[str] | None = None,
+    grove_config: str | None = None,
+    claim_ttl_seconds: int = BridgeConfig.claim_ttl_seconds,
+    heartbeat_interval_seconds: int = BridgeConfig.heartbeat_interval_seconds,
+    poll_interval_seconds: float = BridgeConfig.poll_interval_seconds,
+    max_tasks_per_tick: int = BridgeConfig.max_tasks_per_tick,
+    grove_binary: str = BridgeConfig.grove_binary,
+    timeout: str = "30m",
+) -> BridgeConfig:
+    selected_nodes = (
+        tuple(nodes) if nodes is not None else _registry_node_names(grove_home, session)
+    )
+    if not selected_nodes:
+        raise ValueError(f"no executable grove nodes found for session {session!r}")
+    return BridgeConfig(
+        boards=tuple(boards),
+        lanes={
+            node: LaneConfig(
+                assignee=node,
+                nodes=(node,),
+                grove_config=grove_config,
+                timeout=timeout,
+            )
+            for node in selected_nodes
+        },
+        board_db_path=board_db_path,
+        claim_ttl_seconds=claim_ttl_seconds,
+        heartbeat_interval_seconds=heartbeat_interval_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        max_tasks_per_tick=max_tasks_per_tick,
+        grove_binary=grove_binary,
+    )
+
+
+def _registry_node_names(grove_home: Path, session: str) -> tuple[str, ...]:
+    registry_path = grove_home.expanduser() / session / "registry.json"
+    loaded = json.loads(registry_path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("invalid grove registry")
+    raw_nodes = loaded.get("nodes")
+    if not isinstance(raw_nodes, dict):
+        raise ValueError("invalid grove registry")
+    names: list[str] = []
+    for key, value in raw_nodes.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        raw_node = value
+        name = raw_node.get("name")
+        node_name = name if isinstance(name, str) and name.strip() else key
+        pane = raw_node.get("tmux_pane")
+        if isinstance(pane, str) and _is_lead_pane(pane, session=session):
+            continue
+        if isinstance(pane, str) and pane.strip():
+            names.append(node_name.strip())
+    return tuple(sorted(set(names)))
+
+
+def _is_lead_pane(pane: str, *, session: str) -> bool:
+    match = TMUX_PANE_RE.fullmatch(pane)
+    if match is None or match.group("session") != session:
+        return False
+    return int(match.group("window")) == 0 and int(match.group("pane")) == 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the grove board pull executor.")
-    parser.add_argument("--config", required=True, help="path to bridge TOML config")
+    parser.add_argument("--config", help="path to bridge TOML config")
+    parser.add_argument(
+        "--session",
+        default=os.environ.get("GROVE_VIEWER_SESSION", DEFAULT_SESSION),
+        help="grove tmux session whose registry supplies executable nodes",
+    )
+    parser.add_argument(
+        "--board",
+        action="append",
+        dest="boards",
+        help="board slug to poll; may be repeated",
+    )
+    parser.add_argument(
+        "--board-db-path",
+        type=Path,
+        default=default_board_db_path(),
+        help="path to grove board sqlite database",
+    )
+    parser.add_argument(
+        "--grove-home",
+        type=Path,
+        default=Path(os.environ.get("GROVE_HOME", "~/.grove")).expanduser(),
+        help="path to grove home containing session registries",
+    )
+    parser.add_argument("--node", action="append", dest="nodes", help="restrict to one node")
+    parser.add_argument("--grove-config", help="grove CLI config passed to ask/session")
+    parser.add_argument("--timeout", default="30m", help="timeout passed to grove ask")
     parser.add_argument("--once", action="store_true", help="run one polling tick and exit")
     args = parser.parse_args(argv)
 
-    config = load_bridge_config(args.config)
+    if args.config is not None:
+        config = load_bridge_config(args.config)
+    else:
+        config = build_session_config(
+            session=args.session,
+            boards=tuple(args.boards or ["default"]),
+            board_db_path=args.board_db_path,
+            grove_home=args.grove_home,
+            nodes=args.nodes,
+            grove_config=args.grove_config,
+            timeout=args.timeout,
+        )
     store = SQLiteBoardStore(config.board_db_path)
     executor = PullExecutor(config=config, store=store, notifier=build_notifier(config.notifier))
     if args.once:

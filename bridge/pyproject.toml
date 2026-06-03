@@ -5,11 +5,13 @@ description = "Python bridge scaffold for grove cockpit integrations."
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.124.0",
+  "slack-sdk>=3.39.0",
   "uvicorn[standard]>=0.38.0",
 ]
 
 [project.scripts]
 grove-bridge-pull = "grove_bridge.pull_executor:main"
+grove-slack = "grove_bridge.slack:main"
 grove-web = "grove_bridge.web_app:main"
 
 [dependency-groups]

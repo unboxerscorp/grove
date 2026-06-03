@@ -103,6 +103,19 @@ class NotifySub:
 
 
 @dataclass(frozen=True)
+class SlackThread:
+    board_id: str
+    task_id: str | None
+    team_id: str
+    channel_id: str
+    thread_ts: str
+    mode: str
+    node: str | None
+    created_at: int
+    updated_at: int
+
+
+@dataclass(frozen=True)
 class Board:
     id: str
     slug: str
@@ -137,6 +150,9 @@ class SQLiteBoardStore:
 
     def db_path(self) -> Path:
         return self._path
+
+    def board_slug_for_id(self, board_id: str) -> str:
+        return self._board_slug(board_id)
 
     def list_boards(self) -> list[Board]:
         with self._connect() as conn:
@@ -599,6 +615,24 @@ class SQLiteBoardStore:
             metadata=metadata,
         )
 
+    def unblock_task_by_id(
+        self,
+        *,
+        task_id: str,
+        actor: str,
+        comment: str | None = None,
+        force: bool = False,
+    ) -> bool:
+        task = self.get_task_by_id(task_id)
+        board_slug = self._board_slug(task.board_id)
+        return self.unblock(
+            board=board_slug,
+            task_id=task_id,
+            actor=actor,
+            comment=comment,
+            force=force,
+        )
+
     def add_dependency(self, *, board: str, parent_id: str, child_id: str) -> None:
         board_id = self._ensure_board(board)
         with self._connect() as conn:
@@ -648,6 +682,104 @@ class SQLiteBoardStore:
                 (board_id, task_id),
             ).fetchall()
         return [_notify_sub_from_row(row) for row in rows]
+
+    def find_notify_sub(
+        self,
+        *,
+        channel_kind: str,
+        room_id: str,
+        thread_id: str,
+    ) -> NotifySub | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM notify_subs
+                WHERE channel_kind = ? AND room_id = ? AND thread_id = ?
+                ORDER BY ts ASC
+                LIMIT 1
+                """,
+                (channel_kind, room_id, thread_id or ""),
+            ).fetchone()
+        return None if row is None else _notify_sub_from_row(row)
+
+    def upsert_slack_thread(
+        self,
+        *,
+        board: str,
+        task_id: str | None,
+        team_id: str,
+        channel_id: str,
+        thread_ts: str,
+        mode: str,
+        node: str | None = None,
+    ) -> SlackThread:
+        now = _now()
+        board_id = self._ensure_board(board)
+        clean_team = team_id.strip()
+        clean_channel = channel_id.strip()
+        clean_thread = thread_ts.strip()
+        clean_mode = mode.strip()
+        if not clean_channel or not clean_thread or not clean_mode:
+            raise ValueError("channel_id, thread_ts, and mode are required")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO slack_threads (
+                    id, board_id, task_id, team_id, channel_id, thread_ts, mode,
+                    node, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(team_id, channel_id, thread_ts, mode)
+                DO UPDATE SET
+                    board_id = excluded.board_id,
+                    task_id = excluded.task_id,
+                    node = excluded.node,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    _new_id("slack_thread"),
+                    board_id,
+                    task_id,
+                    clean_team,
+                    clean_channel,
+                    clean_thread,
+                    clean_mode,
+                    node,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT * FROM slack_threads
+                WHERE team_id = ? AND channel_id = ? AND thread_ts = ? AND mode = ?
+                """,
+                (clean_team, clean_channel, clean_thread, clean_mode),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("created slack thread disappeared")
+        return _slack_thread_from_row(row)
+
+    def list_slack_threads(
+        self,
+        *,
+        task_id: str | None = None,
+        mode: str | None = None,
+    ) -> list[SlackThread]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if task_id is not None:
+            clauses.append("task_id = ?")
+            params.append(task_id)
+        if mode is not None:
+            clauses.append("mode = ?")
+            params.append(mode)
+        sql = "SELECT * FROM slack_threads"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at ASC, id ASC"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_slack_thread_from_row(row) for row in rows]
 
     def list_runs(self, *, board: str, task_id: str) -> list[Run]:
         board_id = self._ensure_board(board)
@@ -896,6 +1028,23 @@ class SQLiteBoardStore:
                 last_event_id TEXT,
                 PRIMARY KEY(board_id, task_id, channel_kind, room_id, thread_id)
             );
+
+            CREATE TABLE IF NOT EXISTS slack_threads (
+                id TEXT PRIMARY KEY,
+                board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+                task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+                team_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                thread_ts TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                node TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(team_id, channel_id, thread_ts, mode)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_slack_threads_task
+                ON slack_threads(task_id, mode);
             """
         )
 
@@ -1149,4 +1298,18 @@ def _notify_sub_from_row(row: sqlite3.Row) -> NotifySub:
         user_id=_row_optional_str(row, "user_id"),
         last_event_id=_row_optional_str(row, "last_event_id"),
         created_at=_row_int(row, "ts"),
+    )
+
+
+def _slack_thread_from_row(row: sqlite3.Row) -> SlackThread:
+    return SlackThread(
+        board_id=_row_str(row, "board_id"),
+        task_id=_row_optional_str(row, "task_id"),
+        team_id=_row_str(row, "team_id"),
+        channel_id=_row_str(row, "channel_id"),
+        thread_ts=_row_str(row, "thread_ts"),
+        mode=_row_str(row, "mode"),
+        node=_row_optional_str(row, "node"),
+        created_at=_row_int(row, "created_at"),
+        updated_at=_row_int(row, "updated_at"),
     )
