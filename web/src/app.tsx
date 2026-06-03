@@ -7,6 +7,7 @@ import { NodeList } from "./components/NodeList";
 import { AuditDrawer } from "./components/AuditDrawer";
 import { ChainDrawer } from "./components/ChainDrawer";
 import { InboxDrawer } from "./components/InboxDrawer";
+import { PresenceIndicator } from "./components/PresenceIndicator";
 import { AuthPanel } from "./components/AuthPanel";
 import { CostPanel } from "./components/CostPanel";
 import { HealthDot } from "./components/HealthDot";
@@ -353,6 +354,7 @@ export function App() {
             ⚑ {t("inbox.open")}
             {inboxCount > 0 && <span className="dr-inbox-btn__badge">{inboxCount}</span>}
           </button>
+          <PresenceIndicator liveTick={liveTick} projectTick={projectTick} />
           <HealthDot />
           <span className={cx("dr-auth", AUTH_REQUIRED ? "is-secured" : "is-local")}>
             {AUTH_REQUIRED ? t("auth.secured") : t("auth.local")}

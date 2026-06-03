@@ -263,6 +263,10 @@ const KO: Dict = {
   "inbox.answerError": "답변에 실패했습니다",
   "inbox.denied": "권한 없음 — 답변은 operator 권한이 필요합니다",
 
+  "presence.label": "현재 접속자",
+  "presence.anonymous": "익명 {n}명",
+  "presence.none": "접속자 없음",
+
   "tab.cost": "비용",
   "cost.title": "비용 · 크레딧",
   "cost.note": "에이전트 타입별 토큰·비용 집계입니다. 추정값은 표시되며 사실로 간주하지 마세요.",
@@ -545,6 +549,10 @@ const EN: Dict = {
   "inbox.answering": "Sending…",
   "inbox.answerError": "answer failed",
   "inbox.denied": "No access — answering requires operator role",
+
+  "presence.label": "Who's here",
+  "presence.anonymous": "{n} anonymous",
+  "presence.none": "nobody here",
 
   "tab.cost": "Cost",
   "cost.title": "Cost · Credit",

@@ -253,6 +253,13 @@ let slack: { status: string; last_event_at: string | null; last_error: string | 
   last_error: null,
 };
 
+// Presence mode for /api/presence: "team" (member chips) by default; verify can
+// flip to "local" (anonymous count) to exercise both render paths.
+let presenceMode: "team" | "local" = "team";
+diag.setPresenceMode = (m: "team" | "local"): void => {
+  presenceMode = m;
+};
+
 interface ProjectMock {
   name: string;
   workspace: string;
@@ -407,6 +414,38 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         },
         nodes: [],
         limitations: ["token usage is best-effort from transcripts where available"],
+      }),
+    );
+  }
+
+  if (p === "/api/presence") {
+    // Mirrors web_app.py _presence_payload: team → viewers [{name,role}] (no
+    // id/secret) + anonymous_count 0; local → [{kind:"anonymous",count}] +
+    // anonymous_count. Default team (member chips); setPresenceMode toggles.
+    diag.presenceFetches = ((diag.presenceFetches as number) ?? 0) + 1;
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    if (presenceMode === "local") {
+      return Promise.resolve(
+        json({
+          project: proj,
+          auth_mode: "local_token",
+          active_window_seconds: 60,
+          viewers: [{ kind: "anonymous", count: 1 }],
+          anonymous_count: 1,
+        }),
+      );
+    }
+    return Promise.resolve(
+      json({
+        project: proj,
+        auth_mode: "team_cookie",
+        active_window_seconds: 60,
+        viewers: [
+          { name: "alice", role: "admin" },
+          { name: "bob", role: "operator" },
+          { name: "carol", role: "viewer" },
+        ],
+        anonymous_count: 0,
       }),
     );
   }

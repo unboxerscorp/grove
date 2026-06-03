@@ -88,6 +88,41 @@ async function main() {
       /5/.test(statusBar.total) &&
       statusBar.healthOk;
 
+    // V8-W1 presence indicator (GET /api/presence): team mode (default) → member
+    // chips with role-coloured dots + name/role only (no id/secret); toggle to
+    // local → "anonymous N". Toggle back to keep the header compact afterwards.
+    await page.waitForFunction(() => document.querySelectorAll(".dr-presence__chip").length >= 1, { timeout: 8000 });
+    const presence = await page.evaluate(() => {
+      const el = document.querySelector(".dr-presence");
+      const chips = Array.from(document.querySelectorAll(".dr-presence__chip"));
+      return {
+        present: !!el,
+        chips: chips.length,
+        names: chips.map((c) => c.getAttribute("data-member")),
+        admin: !!document.querySelector(".dr-presence__chip.is-admin"),
+        operator: !!document.querySelector(".dr-presence__chip.is-operator"),
+        viewer: !!document.querySelector(".dr-presence__chip.is-viewer"),
+        // name/role only — no id-/session-/token-like strings leak into the DOM.
+        noLeak: !/sess-|token|"id"|_id/i.test(el?.textContent ?? ""),
+      };
+    });
+    // Toggle to local and leave it: the compact "anonymous N" keeps the header
+    // uncluttered for the remaining header-button tests (audit/chain/inbox/lang).
+    await page.evaluate(() => window.__MOCK__?.setPresenceMode("local"));
+    await page.waitForFunction(() => !!document.querySelector(".dr-presence__anon"), { timeout: 8000 });
+    const presenceAnon = await page.evaluate(
+      () => (document.querySelector(".dr-presence__anon")?.textContent ?? "").trim(),
+    );
+    const presenceOk =
+      presence.present &&
+      presence.chips === 3 &&
+      presence.names.join(",") === "alice,bob,carol" &&
+      presence.admin &&
+      presence.operator &&
+      presence.viewer &&
+      presence.noLeak &&
+      /1/.test(presenceAnon);
+
     // V4-W4 node-status detail panel (GET /api/status?detail=1): per-node rows
     // with last-seen + an "inferred" badge for non-heartbeat sources.
     await page.click(".nodestat__more");
@@ -1012,6 +1047,7 @@ async function main() {
       auditOk &&
       chainOk &&
       inboxOk &&
+      presenceOk &&
       delegationEdgesOk &&
       delegateOk &&
       diag.projectHeader === projAfterLoad &&
@@ -1084,6 +1120,8 @@ async function main() {
       chain: { ...chain, focus: chainFocus },
       inboxOk,
       inbox: { badgeBefore: inboxBadgeBefore, ...inboxBefore, ...answered, badgeAfter: inboxBadgeAfter, ...deniedState },
+      presenceOk,
+      presence: { ...presence, anon: presenceAnon },
       costOk,
       cost,
       delegationEdgesOk,

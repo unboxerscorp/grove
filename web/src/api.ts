@@ -209,6 +209,24 @@ export interface InboxPage {
   total?: number;
 }
 
+// Presence (web_app.py _presence_payload). Team-auth → viewers carry {name,role}
+// only (no id/secret); local-token → a single {kind:"anonymous",count} + an
+// anonymous_count. The FE renders members as chips or "anonymous N".
+export interface PresenceViewer {
+  name?: string;
+  role?: string;
+  kind?: string; // "anonymous"
+  count?: number;
+}
+
+export interface Presence {
+  project?: string;
+  auth_mode?: string;
+  active_window_seconds?: number;
+  viewers: PresenceViewer[];
+  anonymous_count?: number;
+}
+
 export interface Project {
   name: string; // = session
   workspace: string;
@@ -366,6 +384,10 @@ export const api = {
   // Cost/credit usage (project-scoped; 403 for team viewers). Per-agent token +
   // cost metrics carry source/confidence; agy credit may be unknown.
   getCost: () => getJSON<CostSummary>("/api/cost"),
+
+  // Presence: who's viewing this project (name/role for team auth; anonymous
+  // count for local-token). Project-scoped via headers.
+  getPresence: () => getJSON<Presence>("/api/presence"),
 
   // Decision inbox: blocked + ask-human tasks awaiting a human (project-scoped).
   getInbox: (params: { cursor?: number; limit?: number } = {}) => {
