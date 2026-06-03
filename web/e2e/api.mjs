@@ -73,11 +73,15 @@ function freePort() {
 }
 
 let baseUrl = "";
-async function req(method, pathname, { token, project, body } = {}) {
+async function req(method, pathname, { token, project, body, origin } = {}) {
   const headers = {};
   if (token) headers[SESSION_HEADER] = token;
   if (project !== undefined) headers[PROJECT_HEADER] = project;
   if (body !== undefined) headers["Content-Type"] = "application/json";
+  // Real browsers send Origin; default to the same (loopback) origin so
+  // state-change POSTs pass _require_allowed_origin. Pass `origin: false` to omit
+  // it, or a foreign string to exercise the cross-origin rejection (403).
+  if (origin !== false) headers["Origin"] = origin ?? baseUrl;
   const resp = await fetch(baseUrl + pathname, {
     method,
     headers,
@@ -206,7 +210,8 @@ async function startServer() {
   while (Date.now() < deadline) {
     if (exited) throw new Error(`server exited before ready:\n${serverLog}`);
     try {
-      const r = await fetch(baseUrl + "/api/status");
+      // /api/health is unauthenticated (auth-gate); /api/status now needs a token.
+      const r = await fetch(baseUrl + "/api/health");
       await r.text();
       if (r.status === 200) return port;
     } catch {
@@ -252,6 +257,22 @@ async function run() {
     asset.status === 200 && asset.text.includes("__e2e_app__"),
     `status ${asset.status}`,
   );
+
+  // --- /api/health: unauthenticated liveness, no project/session leak ---
+  const health = await req("GET", "/api/health");
+  eq("health 200 without token", health.status, 200);
+  check("health returns ok:true", Boolean(health.json) && health.json.ok === true);
+  check(
+    "health exposes no project/session/workspace/token info",
+    !/project|session|workspace|token/i.test(health.text),
+    health.text.trim(),
+  );
+
+  // --- /api/status: now token-gated (auth-gate) ---
+  eq("status 401 without token", (await req("GET", "/api/status")).status, 401);
+  const statusOk = await req("GET", "/api/status", { token });
+  eq("status 200 with token", statusOk.status, 200);
+  eq("status reports default project (alpha)", statusOk.json && statusOk.json.project, ALPHA);
 
   // --- token gating ---
   eq("auth-status 401 without token", (await req("GET", "/api/auth-status")).status, 401);
@@ -342,12 +363,12 @@ async function run() {
   eq("scoped /api/boards (beta, no tasks) returns []", (betaBoards.json || []).length, 0);
   eq(
     "invalid project header -> 400",
-    (await req("GET", "/api/status", { project: "../etc" })).status,
+    (await req("GET", "/api/status", { token, project: "../etc" })).status,
     400,
   );
   eq(
     "unknown project header -> 404",
-    (await req("GET", "/api/status", { project: "ghost_proj" })).status,
+    (await req("GET", "/api/status", { token, project: "ghost_proj" })).status,
     404,
   );
   const scopedTasks = await req("GET", `/api/boards/${ALPHA}/tasks`, { token, project: ALPHA });
@@ -389,27 +410,69 @@ async function run() {
     401,
   );
 
-  // --- ws-ticket issuance + project binding ---
-  const t1 = await req("POST", "/api/ws-ticket", { token });
-  eq("ws-ticket 200", t1.status, 200);
+  // --- ws-ticket issuance: POST body {kind, pane_id} -> project+kind+pane bind ---
+  const WORKER_PANE = `${ALPHA}:1.1`; // worker node pane — exposed/allowed
+  const LEAD_PANE = `${ALPHA}:1.0`; // also exposed; used for the pane-mismatch case
+  const t1 = await req("POST", "/api/ws-ticket", { token, body: { kind: "board" } });
+  eq("ws-ticket 200 (board)", t1.status, 200);
   check(
     "ws-ticket returns a non-empty ticket",
     Boolean(t1.json) && typeof t1.json.ticket === "string" && t1.json.ticket.length > 0,
   );
   eq("ws-ticket ttl_seconds == 30", t1.json && t1.json.ttl_seconds, 30);
   eq("ws-ticket default project == session (alpha)", t1.json && t1.json.project, ALPHA);
-  const t2 = await req("POST", "/api/ws-ticket", { token, project: BETA });
+  eq("ws-ticket echoes kind=board", t1.json && t1.json.kind, "board");
+  eq("ws-ticket board pane_id is null", t1.json && t1.json.pane_id, null);
+  const t2 = await req("POST", "/api/ws-ticket", { token, project: BETA, body: { kind: "board" } });
   eq("ws-ticket binds project from header (beta)", t2.json && t2.json.project, BETA);
+  const tt = await req("POST", "/api/ws-ticket", { token, body: { kind: "terminal", pane_id: WORKER_PANE } });
+  eq("ws-ticket 200 (terminal)", tt.status, 200);
+  eq("ws-ticket echoes kind=terminal", tt.json && tt.json.kind, "terminal");
+  eq("ws-ticket echoes pane_id", tt.json && tt.json.pane_id, WORKER_PANE);
+  eq(
+    "ws-ticket terminal without pane_id -> 400",
+    (await req("POST", "/api/ws-ticket", { token, body: { kind: "terminal" } })).status,
+    400,
+  );
 
-  // --- ws-ticket single-use over a real websocket upgrade ---
-  const issued = await req("POST", "/api/ws-ticket", { token, project: ALPHA });
-  const ticket = (issued.json && issued.json.ticket) || "";
+  // --- Origin (CSRF) on a state-change POST ---
+  eq(
+    "ws-ticket with foreign Origin -> 403",
+    (await req("POST", "/api/ws-ticket", { token, body: { kind: "board" }, origin: "http://evil.example" }))
+      .status,
+    403,
+  );
+
+  // --- ws-ticket kind/pane binding enforced over real WS upgrades ---
   const wsBase = `ws://127.0.0.1:${port}`;
-  const first = await wsProbe(`${wsBase}/ws/board?ticket=${encodeURIComponent(ticket)}&cursor=0`);
-  check("ws/board opens with a fresh ticket", first.opened === true, `code ${first.code}`);
-  const second = await wsProbe(`${wsBase}/ws/board?ticket=${encodeURIComponent(ticket)}&cursor=0`);
+  const issue = async (kind, pane_id) => {
+    const r = await req("POST", "/api/ws-ticket", {
+      token,
+      project: ALPHA,
+      body: pane_id ? { kind, pane_id } : { kind },
+    });
+    return (r.json && r.json.ticket) || "";
+  };
+  const termUrl = (ticket, pane) =>
+    `${wsBase}/ws/terminal?ticket=${encodeURIComponent(ticket)}&pane_id=${encodeURIComponent(pane)}`;
+  const boardUrl = (ticket) => `${wsBase}/ws/board?ticket=${encodeURIComponent(ticket)}&cursor=0`;
+
+  const posTerm = await wsProbe(termUrl(await issue("terminal", WORKER_PANE), WORKER_PANE));
+  check("ws/terminal accepts a matching terminal ticket+pane", posTerm.opened === true, `code ${posTerm.code}`);
+  const boardOnTerm = await wsProbe(termUrl(await issue("board"), WORKER_PANE));
+  check("ws/terminal rejects a board ticket (kind mismatch)", boardOnTerm.opened === false, `code ${boardOnTerm.code}`);
+  const termOnBoard = await wsProbe(boardUrl(await issue("terminal", WORKER_PANE)));
+  check("ws/board rejects a terminal ticket (kind mismatch)", termOnBoard.opened === false, `code ${termOnBoard.code}`);
+  const paneMismatch = await wsProbe(termUrl(await issue("terminal", WORKER_PANE), LEAD_PANE));
+  check("ws/terminal rejects a pane-mismatched ticket", paneMismatch.opened === false, `code ${paneMismatch.code}`);
+
+  // --- board ws single-use + bogus ticket ---
+  const ticket = await issue("board");
+  const first = await wsProbe(boardUrl(ticket));
+  check("ws/board opens with a fresh board ticket", first.opened === true, `code ${first.code}`);
+  const second = await wsProbe(boardUrl(ticket));
   check("ws/board rejects a reused ticket (single-use)", second.opened === false, `code ${second.code}`);
-  const bogus = await wsProbe(`${wsBase}/ws/board?ticket=not-a-real-ticket&cursor=0`);
+  const bogus = await wsProbe(boardUrl("not-a-real-ticket"));
   check("ws/board rejects a bogus ticket", bogus.opened === false, `code ${bogus.code}`);
 }
 
