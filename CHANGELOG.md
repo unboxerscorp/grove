@@ -4,6 +4,30 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.6.0] — v1.5 (2026-06-04)
+
+Test-net hardening + dashboard delegation. Auto-started after v1.4.0.
+
+### Testing
+
+- **Real-server e2e** (web/e2e/api.mjs, 61 → 107 checks) now covers /api/audit,
+  /api/status?detail=1 and /api/cost with exact-shape assertions against a live
+  grove-web — closing the mock-only gap that caused the v1.1/v1.4 FE↔backend drift
+  (a mismatch now fails CI, not just the hand-written mock).
+
+### Dashboard
+
+- **Delegate from the UI** — an org-chart node action opens a small form that posts an
+  assigned task (web equivalent of `grove delegate`); project-scoped; the backend
+  records the audit actor.
+- **Node-status uses backend idle/error directly** — no more derived idle that
+  mis-counted error nodes; error gets its own coral segment/chip in the bar + detail.
+
+### Deferred (→ v1.6)
+
+- Board event cursor replay; v1.6 features from V1.6_BRAINSTORM (delegation-chain
+  explorer, presence, notification rules, node auto-recovery, room supervisor).
+
 ## [0.5.0] — v1.4 (2026-06-04)
 
 Team-facing surfaces for the v1.3 backend. Auto-started after v1.3.0.
