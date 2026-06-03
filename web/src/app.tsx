@@ -4,6 +4,7 @@ import { api, AUTH_REQUIRED, setProject, wsUrl } from "./api";
 import type { Project } from "./api";
 import { BoardView } from "./components/BoardView";
 import { NodeList } from "./components/NodeList";
+import { AuthPanel } from "./components/AuthPanel";
 import { OrgChart } from "./components/OrgChart";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
 import { SlackPanel } from "./components/SlackPanel";
@@ -13,7 +14,7 @@ import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
-type View = "board" | "team" | "terminal" | "integrations";
+type View = "board" | "team" | "terminal" | "integrations" | "auth";
 
 function GroveMark() {
   return (
@@ -244,6 +245,14 @@ export function App() {
             >
               {t("tab.integrations")}
             </button>
+            <button
+              type="button"
+              data-view="auth"
+              className={cx("dr-tab", view === "auth" && "is-active")}
+              onClick={() => setView("auth")}
+            >
+              {t("tab.auth")}
+            </button>
           </div>
         </div>
 
@@ -287,6 +296,8 @@ export function App() {
             <OrgChart boardId={boardId} liveTick={liveTick} onOpenTerminal={pickNode} />
           ) : view === "integrations" ? (
             <SlackPanel />
+          ) : view === "auth" ? (
+            <AuthPanel />
           ) : (
             <TerminalPane node={selected} />
           )}

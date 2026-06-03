@@ -188,6 +188,21 @@ const KO: Dict = {
   "proj.load.notok": "문제 발견",
   "proj.load.switch": "이 프로젝트로 전환",
   "proj.cancel": "취소",
+
+  "tab.auth": "인증",
+  "auth.title": "개발도구 인증",
+  "auth.refresh": "새로고침",
+  "auth.refreshing": "새로고침 중…",
+  "auth.loadError": "인증 상태를 불러오지 못했습니다",
+  "auth.authed": "인증됨",
+  "auth.notAuthed": "미인증",
+  "auth.login": "로그인",
+  "auth.loginUrl": "로그인 ↗",
+  "auth.hintLabel": "이 명령을 실행하세요",
+  "auth.copy": "복사",
+  "auth.copied": "복사됨",
+
+  "node.description": "설명 (선택)",
 };
 
 const EN: Dict = {
@@ -368,6 +383,21 @@ const EN: Dict = {
   "proj.load.notok": "issues found",
   "proj.load.switch": "Switch to this project",
   "proj.cancel": "Cancel",
+
+  "tab.auth": "Auth",
+  "auth.title": "Dev tool auth",
+  "auth.refresh": "Refresh",
+  "auth.refreshing": "Refreshing…",
+  "auth.loadError": "failed to load auth status",
+  "auth.authed": "authed",
+  "auth.notAuthed": "not authed",
+  "auth.login": "Log in",
+  "auth.loginUrl": "Log in ↗",
+  "auth.hintLabel": "Run this command",
+  "auth.copy": "Copy",
+  "auth.copied": "Copied",
+
+  "node.description": "Description (optional)",
 };
 
 const STRINGS: Record<Lang, Dict> = { ko: KO, en: EN };

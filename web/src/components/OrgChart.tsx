@@ -113,6 +113,7 @@ function NodeForm(props: {
   const [name, setName] = useState("");
   const [agent, setAgent] = useState<string>("claude");
   const [role, setRole] = useState("");
+  const [description, setDescription] = useState("");
   const [parent, setParent] = useState(presetParent ?? "");
   const [group, setGroup] = useState("");
   const [busy, setBusy] = useState(false);
@@ -134,6 +135,7 @@ function NodeForm(props: {
         name: nm,
         agent,
         role: role.trim() || undefined,
+        description: description.trim() || undefined,
         parent: eff || undefined,
         group: group.trim() || undefined,
       })
@@ -188,6 +190,15 @@ function NodeForm(props: {
         value={role}
         spellCheck={false}
         onChange={(e) => setRole(e.target.value)}
+      />
+      <input
+        className="dr-input"
+        name="description"
+        type="text"
+        placeholder={t("node.description")}
+        value={description}
+        spellCheck={false}
+        onChange={(e) => setDescription(e.target.value)}
       />
       {!presetParent && (
         <div className="node-form__row">
@@ -741,6 +752,11 @@ export function OrgChart(props: {
                   <span className="org-node__agent">{agentGlyph(node.agent)}</span>
                 </div>
                 {node.role && <div className="org-node__role">{node.role}</div>}
+                {node.description && (
+                  <div className="org-node__desc" title={node.description}>
+                    {node.description}
+                  </div>
+                )}
                 {node.group && <div className="org-node__group">{node.group}</div>}
 
                 <div className="org-node__actions">

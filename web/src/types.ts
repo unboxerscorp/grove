@@ -46,6 +46,7 @@ export interface OrgNode extends GroveNode {
   parent?: string | null;
   children?: string[];
   group?: string;
+  description?: string;
 }
 
 export interface Org {

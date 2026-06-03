@@ -120,6 +120,7 @@ async function main() {
       nodes: document.querySelectorAll(".org-node").length,
       edges: document.querySelectorAll(".org-edge").length,
       legend: document.querySelectorAll(".org-legend__item").length,
+      descs: document.querySelectorAll(".org-node__desc").length,
     }));
 
     const center = async (name) =>
@@ -230,6 +231,7 @@ async function main() {
     await page.click('[data-name="root"] .org-node__plus');
     await page.waitForSelector(".org-popover .node-form", { timeout: 5000 });
     await page.type('.org-popover input[name="name"]', PLUS_NODE);
+    await page.type('.org-popover input[name="description"]', "qa-desc");
     await page.click(".org-popover .node-form__submit");
     await page.waitForFunction(
       (nm) =>
@@ -240,6 +242,7 @@ async function main() {
       PLUS_NODE,
     );
     const plusCreated = await page.evaluate(() => window.__MOCK__?.createdNode ?? "");
+    const plusDesc = await page.evaluate(() => window.__MOCK__?.createdNodeDesc ?? "");
     await settle();
 
     // hover action -> open this node's terminal ("터미널 열기").
@@ -324,6 +327,29 @@ async function main() {
       /5678/.test(maskedText) &&
       liveAfterTest === true &&
       nodeOptions >= 2;
+
+    // Dev-tool auth status panel: 5 tools, LEDs, login-hint reveal, URL hint, refresh.
+    await page.click('.dr-tab[data-view="auth"]');
+    await page.waitForSelector(".auth-row", { timeout: 8000 });
+    const authRows = await page.$$eval(".auth-row", (els) => els.length);
+    const authLeds = await page.evaluate(() => ({
+      ok: document.querySelectorAll(".auth-led.is-ok").length,
+      warn: document.querySelectorAll(".auth-led.is-warn").length,
+    }));
+    await page.click('[data-tool="codex"] .auth-login');
+    await page.waitForSelector('[data-tool="codex"] .auth-hint', { timeout: 5000 });
+    const codexHint = await page.$eval('[data-tool="codex"] .auth-hint__cmd', (el) => (el.textContent ?? "").trim());
+    const cfHref = await page.$eval('[data-tool="cf"] .auth-login', (el) => el.getAttribute("href") ?? "");
+    await page.click(".auth-refresh");
+    await page.waitForFunction(() => (window.__MOCK__?.authStatusFetched ?? 0) >= 2, { timeout: 6000 });
+    const authFetches = await page.evaluate(() => window.__MOCK__?.authStatusFetched ?? 0);
+    const authOk =
+      authRows === 5 &&
+      authLeds.ok >= 1 &&
+      authLeds.warn >= 1 &&
+      codexHint === "codex login" &&
+      cfHref.startsWith("http") &&
+      authFetches >= 2;
 
     // Project switcher: list, switch, new project, load project (integrity).
     const projName = () => page.$eval(".proj-switcher__name", (el) => (el.textContent ?? "").trim());
@@ -435,6 +461,8 @@ async function main() {
       patchedGroup.endsWith(":research") &&
       groupExit === "backend:null" &&
       plusCreated === PLUS_NODE &&
+      plusDesc === "qa-desc" &&
+      orgView.descs >= 1 &&
       nodeDrawer.facts >= 1 &&
       nodeDrawer.assignForm;
 
@@ -451,6 +479,7 @@ async function main() {
       mirrorOk &&
       teamOk &&
       slackOk &&
+      authOk &&
       projectOk &&
       wsBindOk &&
       diag.projectHeader === projAfterLoad &&
@@ -481,6 +510,12 @@ async function main() {
       mirrorOk,
       teamOk,
       slackOk,
+      authOk,
+      authRows,
+      codexHint,
+      cfHref,
+      plusDesc,
+      orgDescs: orgView.descs,
       wsBindOk,
       slackStatus0,
       slackCfg,

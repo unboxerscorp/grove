@@ -46,6 +46,7 @@ interface OrgNodeMock {
   name: string;
   agent: string;
   role?: string;
+  description?: string;
   parent?: string | null;
   group?: string;
   tmux_pane: string;
@@ -54,8 +55,8 @@ interface OrgNodeMock {
 }
 
 const ORG_NODES: OrgNodeMock[] = [
-  { name: "root", agent: "claude", role: "오케스트레이터", parent: null, group: "core", tmux_pane: "grove:0.0", session_id: "sess-root", status: "running" },
-  { name: "backend", agent: "codex", role: "백엔드", parent: "root", group: "build", tmux_pane: "grove:0.1", session_id: "sess-be", status: "running" },
+  { name: "root", agent: "claude", role: "오케스트레이터", description: "전체 작업 조율·분배", parent: null, group: "core", tmux_pane: "grove:0.0", session_id: "sess-root", status: "running" },
+  { name: "backend", agent: "codex", role: "백엔드", description: "API·DB 담당", parent: "root", group: "build", tmux_pane: "grove:0.1", session_id: "sess-be", status: "running" },
   { name: "frontend", agent: "claude", role: "프런트엔드", parent: "root", group: "build", tmux_pane: "grove:0.2", session_id: "sess-fe", status: "idle" },
   { name: "researcher", agent: "claude", role: "리서치", parent: "root", group: "research", tmux_pane: "grove:0.3", session_id: "sess-re", status: "error" },
   { name: "docs", agent: "codex", role: "문서", parent: "backend", group: "build", tmux_pane: "grove:1.0", session_id: "sess-docs", status: "done" },
@@ -234,6 +235,19 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     );
   }
 
+  if (p === "/api/auth-status") {
+    diag.authStatusFetched = ((diag.authStatusFetched as number) ?? 0) + 1;
+    return Promise.resolve(
+      json([
+        { tool: "claude", label: "Claude Code", authed: true, detail: "~/.claude" },
+        { tool: "codex", label: "Codex", authed: false, detail: "not logged in", login_hint: "codex login" },
+        { tool: "antigravity", label: "Antigravity", authed: false, detail: "token missing", login_hint: "agy auth login" },
+        { tool: "gh", label: "GitHub CLI", authed: true, detail: "user: octocat" },
+        { tool: "cf", label: "Cloudflare", authed: false, login_hint: "https://dash.cloudflare.com/login" },
+      ]),
+    );
+  }
+
   if (p === "/api/org") {
     const hdrs = init?.headers as Record<string, string> | undefined;
     diag.projectHeader = hdrs?.["X-Grove-Project"] ?? "";
@@ -257,6 +271,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         name,
         agent,
         role: body.role ?? "",
+        description: body.description ?? "",
         parent: body.parent || null,
         group: body.group ?? "",
         tmux_pane: `grove:2.${ORG_NODES.length}`,
@@ -265,6 +280,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       };
       ORG_NODES.push(node);
       diag.createdNode = name;
+      diag.createdNodeDesc = node.description;
       return Promise.resolve(json({ ...node, children: [] }));
     }
     return Promise.resolve(json(ORG_NODES.map(basicNode)));

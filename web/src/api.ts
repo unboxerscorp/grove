@@ -21,7 +21,16 @@ export interface NewNode {
   role?: string;
   parent?: string;
   group?: string;
+  description?: string;
   window?: number;
+}
+
+export interface AuthTool {
+  tool: string; // codex | claude | antigravity | gh | cf
+  label: string;
+  authed: boolean;
+  detail?: string;
+  login_hint?: string;
 }
 
 export interface NodePatch {
@@ -161,6 +170,9 @@ export const api = {
     }
     return (await res.json()) as OrgNode;
   },
+
+  // Dev-tool auth status.
+  getAuthStatus: () => getJSON<AuthTool[]>("/api/auth-status"),
 
   // Projects (= sessions).
   listProjects: () => getJSON<Project[]>("/api/projects"),
