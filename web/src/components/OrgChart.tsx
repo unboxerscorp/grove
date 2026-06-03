@@ -5,6 +5,7 @@ import { AGENTS, agentGlyph, COLUMNS, cx, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
 import type { OrgNode } from "../types";
+import { useFocusTrap } from "../useFocusTrap";
 
 // ---------------------------------------------------------------------------
 // Canvas geometry + helpers
@@ -257,6 +258,8 @@ function NodeDrawer(props: {
 }) {
   const { node, boardId, onClose, onTerminal } = props;
   const { t } = useI18n();
+  const panelRef = useRef<HTMLElement | null>(null);
+  useFocusTrap(true, panelRef);
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<string>(COLUMNS[0].key);
   const [priority, setPriority] = useState<string>("normal");
@@ -307,7 +310,14 @@ function NodeDrawer(props: {
   return (
     <div className="dr-drawer">
       <div className="dr-drawer__scrim" onClick={onClose} />
-      <aside className="dr-drawer__panel node-drawer" role="dialog" aria-label={node.name}>
+      <aside
+        className="dr-drawer__panel node-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={node.name}
+        tabIndex={-1}
+        ref={panelRef}
+      >
         <header className="dr-drawer__head">
           <div className="dr-drawer__id">
             <span className="dr-drawer__ticket">
@@ -710,8 +720,15 @@ export function OrgChart(props: {
                     className="org-edge-cut"
                     transform={`translate(${mx}, ${my})`}
                     role="button"
+                    tabIndex={0}
                     aria-label={t("org.cutParent")}
                     onClick={() => applyPatch(ch, { parent: null })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        applyPatch(ch, { parent: null });
+                      }
+                    }}
                   >
                     <title>{t("org.cutParent")}</title>
                     <circle className="org-edge-cut__bg" r="10" />

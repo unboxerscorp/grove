@@ -151,6 +151,10 @@ export function App() {
           ws.onopen = () => {
             backoff = 1000; // reset on a successful connect
             setBoardLive(true);
+            // Catch-up: re-request the board snapshot on every (re)connect so
+            // events missed while the socket was down are reflected immediately
+            // (no cursor bookkeeping needed). Harmless on the first connect.
+            setLiveTick((x) => x + 1);
           };
           ws.onmessage = () => setLiveTick((x) => x + 1);
           ws.onclose = (ev: CloseEvent) => {

@@ -1,13 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import { initials, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { Comment, Run, Task } from "../types";
+import { useFocusTrap } from "../useFocusTrap";
 
 export function TaskDrawer(props: { taskId: string | null; onClose: () => void }) {
   const { taskId, onClose } = props;
   const { t } = useI18n();
+  const panelRef = useRef<HTMLElement | null>(null);
+  useFocusTrap(!!taskId, panelRef);
   const [task, setTask] = useState<Task | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -62,7 +65,7 @@ export function TaskDrawer(props: { taskId: string | null; onClose: () => void }
   return (
     <div className="dr-drawer">
       <div className="dr-drawer__scrim" onClick={onClose} />
-      <aside className="dr-drawer__panel" role="dialog" aria-label="task detail">
+      <aside className="dr-drawer__panel" role="dialog" aria-modal="true" aria-label="task detail" tabIndex={-1} ref={panelRef}>
         <header className="dr-drawer__head">
           <div className="dr-drawer__id">
             <span className="dr-drawer__ticket" style={{ color: statusColor(task?.status ?? "") }}>

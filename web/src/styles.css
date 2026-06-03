@@ -757,9 +757,20 @@ button {
   transition: opacity 0.14s ease;
 }
 
-.org-edge-g:hover .org-edge-cut {
+.org-edge-g:hover .org-edge-cut,
+.org-edge-cut:focus {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* keyboard focus reveals + rings the detach control */
+.org-edge-cut:focus {
+  outline: none;
+}
+
+.org-edge-cut:focus-visible .org-edge-cut__bg {
+  stroke: var(--amber);
+  stroke-width: 2;
 }
 
 .org-edges.is-dragging .org-edge-cut {
