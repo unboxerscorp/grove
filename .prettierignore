@@ -8,6 +8,8 @@ coverage/
 __pycache__/
 bridge/.venv/
 bridge/.pytest_cache/
+# Dashboard plugins are self-formatted (own build/lint), not the root's.
+plugins/
 cockpit.grove.yaml
 fleet.yaml
 grove.yaml

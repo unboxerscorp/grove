@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>grove-viewer — mock harness</title>
+    <!-- Production plugin CSS (built) -->
+    <link rel="stylesheet" href="../dist/index.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #08090b;
+      }
+      #root {
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Harness installs the host SDK + mock backend BEFORE the plugin runs. -->
+    <script src="./harness.js"></script>
+    <!-- The real, built production bundle under test. -->
+    <script src="../dist/index.js"></script>
+  </body>
+</html>

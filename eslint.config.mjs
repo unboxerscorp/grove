@@ -23,6 +23,9 @@ export default tseslint.config(
       ".grove-home/**",
       "bridge/.venv/**",
       "bridge/.pytest_cache/**",
+      // Dashboard plugins ship their own self-contained build/lint (see
+      // plugins/*/dashboard); keep them out of the root TS check.
+      "plugins/**",
     ],
   },
   {

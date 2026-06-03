@@ -1,0 +1,37 @@
+[project]
+name = "grove-viewer-dashboard-api"
+version = "0.1.0"
+description = "Python API for the grove-viewer Legacy dashboard plugin."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "pydantic>=2.0.0",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28.0",
+  "mypy>=1.18.2",
+  "pytest>=8.4.2",
+  "ruff>=0.14.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["ANN", "B", "E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+pretty = true
+show_error_codes = true
+strict = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]

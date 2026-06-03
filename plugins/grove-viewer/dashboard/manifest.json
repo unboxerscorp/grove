@@ -1,0 +1,14 @@
+{
+  "name": "grove-viewer",
+  "label": "Dev Room",
+  "description": "Live view into any agent's terminal — pick a grove node, watch its tmux pane stream in real time, glance at the board.",
+  "icon": "Terminal",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/dev-room",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/index.css",
+  "api": "plugin_api.py"
+}
