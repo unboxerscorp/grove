@@ -7,6 +7,7 @@ import {
   type DelegateFetchInit,
   delegateTask,
   discoverWebUrl,
+  isLoopbackWebUrl,
   renderDelegateJson,
   renderDelegateText,
 } from "./delegate.js";
@@ -61,9 +62,11 @@ function deps(
   calls: FetchCall[];
   deps: DelegateDeps;
   readPaths: string[];
+  warnings: string[];
 } {
   const calls: FetchCall[] = [];
   const readPaths: string[] = [];
+  const warnings: string[] = [];
   return {
     calls,
     deps: {
@@ -90,10 +93,24 @@ function deps(
         return null;
       },
       sessionDir: (session) => `/home/tester/.grove/${session}`,
+      warn: (message) => {
+        warnings.push(message);
+      },
     },
     readPaths,
+    warnings,
   };
 }
+
+describe("isLoopbackWebUrl", () => {
+  test("allows only loopback hosts by default", () => {
+    expect(isLoopbackWebUrl("http://127.0.0.1:8765")).toBe(true);
+    expect(isLoopbackWebUrl("http://localhost:8765")).toBe(true);
+    expect(isLoopbackWebUrl("http://[::1]:8765")).toBe(true);
+    expect(isLoopbackWebUrl("http://10.0.0.5:8765")).toBe(false);
+    expect(isLoopbackWebUrl("https://example.com")).toBe(false);
+  });
+});
 
 describe("discoverWebUrl", () => {
   test("prefers GROVE_WEB_URL over web.json and fallback", () => {
@@ -186,6 +203,39 @@ describe("delegateTask", () => {
     await expect(
       delegateTask("maker", "Fix issue", { session: "dev10" }, state.deps),
     ).rejects.toThrow("grove-web task create failed");
+  });
+
+  test("rejects non-loopback web URLs before reading or sending the dashboard token", async () => {
+    const state = deps({ env: { GROVE_WEB_URL: "http://10.0.0.5:8765" } });
+
+    await expect(
+      delegateTask("maker", "Fix issue", { session: "dev10" }, state.deps),
+    ).rejects.toThrow("refusing to send dashboard token to non-loopback grove-web URL");
+
+    expect(state.calls).toEqual([]);
+    expect(state.readPaths).not.toContain("/home/tester/.grove/dev10/dashboard-token");
+  });
+
+  test("allows non-loopback web URLs with explicit opt-in and warns", async () => {
+    const state = deps({ env: { GROVE_WEB_URL: "http://10.0.0.5:8765" } });
+
+    await delegateTask("maker", "Fix issue", { allowRemote: true, session: "dev10" }, state.deps);
+
+    expect(state.calls[0]?.url).toBe("http://10.0.0.5:8765/api/boards/default/tasks");
+    expect(state.warnings).toEqual([
+      "delegate sending dashboard token to non-loopback grove-web URL: http://10.0.0.5:8765",
+    ]);
+  });
+
+  test("allows non-loopback web URLs with env opt-in and warns", async () => {
+    const state = deps({
+      env: { GROVE_DELEGATE_ALLOW_REMOTE: "1", GROVE_WEB_URL: "http://10.0.0.5:8765" },
+    });
+
+    await delegateTask("maker", "Fix issue", { session: "dev10" }, state.deps);
+
+    expect(state.calls).toHaveLength(1);
+    expect(state.warnings[0]).toContain("non-loopback grove-web URL");
   });
 
   test("renders text and JSON from the created task", async () => {

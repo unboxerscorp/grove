@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { loadConfig } from "../config.js";
 import { loadRegistry, type Registry } from "../registry.js";
+import { warn } from "../util/log.js";
 import { validateGroveName } from "../util/names.js";
 import { sessionDir } from "../util/paths.js";
 
@@ -11,6 +12,7 @@ const DEFAULT_BOARD = "default";
 const FALLBACK_WEB_URL = "http://127.0.0.1:8765";
 
 export interface DelegateInput {
+  allowRemote?: boolean;
   body?: string;
   board?: string;
   config?: string;
@@ -50,6 +52,7 @@ export interface DelegateDeps {
   loadRegistry(session: string): Registry | null;
   readText(file: string): string | null;
   sessionDir(session: string): string;
+  warn(message: string): void;
 }
 
 const defaultDeps: DelegateDeps = {
@@ -61,6 +64,7 @@ const defaultDeps: DelegateDeps = {
     return existsSync(file) ? readFileSync(file, "utf8") : null;
   },
   sessionDir,
+  warn,
 };
 
 function trimmed(value: string | undefined): string | undefined {
@@ -98,6 +102,30 @@ function webJsonPathFor(dir: string): string {
 function normalizeBaseUrl(value: string): string {
   const url = new URL(value);
   return url.origin;
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  return ["1", "true", "yes"].includes(value?.trim().toLowerCase() ?? "");
+}
+
+function normalizedHostname(baseUrl: string): string {
+  const hostname = new URL(baseUrl).hostname.toLowerCase();
+  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+}
+
+export function isLoopbackWebUrl(baseUrl: string): boolean {
+  return new Set(["127.0.0.1", "localhost", "::1"]).has(normalizedHostname(baseUrl));
+}
+
+function assertRemoteAllowed(baseUrl: string, input: DelegateInput, deps: DelegateDeps): void {
+  if (isLoopbackWebUrl(baseUrl)) return;
+  if (input.allowRemote || isTruthyEnv(deps.env["GROVE_DELEGATE_ALLOW_REMOTE"])) {
+    deps.warn(`delegate sending dashboard token to non-loopback grove-web URL: ${baseUrl}`);
+    return;
+  }
+  throw new Error(
+    `refusing to send dashboard token to non-loopback grove-web URL: ${baseUrl}; use --allow-remote or GROVE_DELEGATE_ALLOW_REMOTE=1 only for trusted endpoints`,
+  );
 }
 
 function baseUrlFromWebJson(raw: string): string | null {
@@ -186,6 +214,7 @@ export async function delegateTask(
   assertNodeExists(session, node, deps);
 
   const baseUrl = discoverWebUrl(session, deps);
+  assertRemoteAllowed(baseUrl, input, deps);
   const { path: tokenPath, token } = readToken(session, deps);
   const endpoint = `${baseUrl}/api/boards/${encodeURIComponent(board)}/tasks`;
   const payload = {
