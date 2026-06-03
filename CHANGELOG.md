@@ -4,6 +4,48 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.12.0] — v1.11 (2026-06-04)
+
+Smarter delegation + visible autonomy. Auto-started after v1.10.0.
+
+### Routing planner (read-only)
+
+- **GET /api/plan** recommends candidate nodes for a task/role — ranked by role/capability
+  match + current node load (running/blocked from node-status) + cost signal — and returns
+  them read-only. No side effects: the planner only reads (list_runs/list_tasks), never
+  claims/delegates/spawns; the human/lead still decides. Token-gated and project/task
+  scoped (no cross-project leak). Every score factor is tagged with source + confidence
+  (estimate vs measured); cost normalizes tokens and usd separately (no unit mixing).
+  Returned requirements terms are redacted via the backend's path/secret masking (no
+  absolute path or xoxb/sk-/gh\*\_ token leak). 198 py tests + 28 real-server e2e checks.
+
+### Autonomy visibility (web)
+
+- **Audit drawer** surfaces autopickup + retro events with distinct chips/glyphs and quick
+  filters (exact /api/audit?action= match) — you can see who self-claimed or self-retro'd.
+- **Org nodes** show a `⚡ 자율(추론)` / `auto (inferred)` badge when a node has autonomous
+  pickups in the audit trail — labeled inferred (read-only; not a config flag).
+
+### Planner surfacing (web)
+
+- **Task drawer** gains a read-only "node recommendation" panel: enter a role → GET
+  /api/plan → ranked candidates with per-factor score + confidence. No assign/delegate
+  button (display only; verify asserts no mutation before/after). Error UI renders a fixed
+  string only — never e.message — and getJSON strips the query from thrown errors so role
+  input can't leak. Mock mirrors the real \_plan_payload shape and its redaction order
+  (mask path/secret → tokenize), so /etc/passwd + xoxb-tokens never surface as terms.
+
+### Quality
+
+- Reviewer gates: planner term-redaction (P1) + cost-unit-mixing, FE error-leak (P1) +
+  mock/backend redaction drift (P2) — each caught and fixed before commit. Full check +
+  web e2e green (135/135).
+
+### Deferred (→ v1.12)
+
+- planner→delegate one-click, pickup-enable toggle UI, guarded autonomous execution loop,
+  Slack command surface v1, mobile actions (see docs/V1_12_BRAINSTORM.md).
+
 ## [0.11.0] — v1.10 (2026-06-04)
 
 Safe self-direction. Auto-started after v1.9.0.
