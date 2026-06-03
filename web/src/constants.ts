@@ -45,3 +45,22 @@ export function initials(name: string): string {
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
 }
+
+/** Compact, locale-neutral "time ago" (e.g. "12s", "3m", "2h", "5d"). */
+export function fmtAgo(ts?: string | number | null): string {
+  if (ts === undefined || ts === null || ts === "") return "—";
+  let ms: number;
+  if (typeof ts === "number") ms = ts < 1e12 ? ts * 1000 : ts;
+  else {
+    const parsed = Date.parse(ts);
+    if (Number.isNaN(parsed)) return String(ts);
+    ms = parsed;
+  }
+  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}

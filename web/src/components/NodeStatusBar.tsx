@@ -1,26 +1,50 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
-import type { NodeSummary } from "../api";
-import { useI18n } from "../i18n";
+import type { NodeDetail, NodeSummary } from "../api";
+import { cx, fmtAgo } from "../constants";
+import { statusLabel, useI18n } from "../i18n";
+
+function detailClass(s: string): string {
+  switch (s) {
+    case "running":
+      return "is-running";
+    case "error":
+      return "is-error";
+    case "blocked":
+      return "is-blocked";
+    case "dead":
+      return "is-dead";
+    default:
+      return "is-idle";
+  }
+}
 
 /**
  * Sub-header node-liveness heatmap for the active project. Reads the server's
  * authoritative summary from GET /api/status ({nodes:{running,total,stale}}),
  * derives idle = total - running - stale, and renders a proportion bar + chips.
+ * The "Detail" toggle fetches GET /api/status?detail=1 for a per-node breakdown
+ * (status, last-seen, and an "inferred" badge when source !== heartbeat).
  * Polls and re-runs on liveTick (board events) and projectTick (project switch).
  */
 export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; projectTick: number }) {
   const { t } = useI18n();
   const [summary, setSummary] = useState<NodeSummary | null>(null);
+  const [detail, setDetail] = useState<NodeDetail[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const openRef = useRef(open);
+  openRef.current = open;
 
   useEffect(() => {
     let alive = true;
     const load = () =>
       api
-        .getStatus()
+        .getStatus(openRef.current)
         .then((s) => {
-          if (alive) setSummary(s.nodes ?? null);
+          if (!alive) return;
+          setSummary(s.nodes ?? null);
+          if (openRef.current) setDetail(s.detail ?? []);
         })
         .catch(() => {
           /* keep last */
@@ -32,6 +56,23 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
       clearInterval(id);
     };
   }, [liveTick, projectTick]);
+
+  // Fetch the per-node detail as soon as the panel is opened.
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    api
+      .getStatus(true)
+      .then((s) => {
+        if (alive) setDetail(s.detail ?? []);
+      })
+      .catch(() => {
+        /* keep last */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open, liveTick, projectTick]);
 
   const running = summary?.running ?? 0;
   const total = summary?.total ?? 0;
@@ -61,6 +102,36 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
       <span className="nodestat__total">
         {total} {t("status.total")}
       </span>
+      <button
+        type="button"
+        className={cx("nodestat__more", open && "is-open")}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {t("status.detail")} ▾
+      </button>
+
+      {open && (
+        <div className="nodestat-detail" role="region" aria-label={t("status.detail")}>
+          {(detail ?? []).map((d) => (
+            <div key={d.name} className="nodestat-row">
+              <span className={cx("nodestat__led", detailClass(d.status))} />
+              <span className="nodestat-row__name">{d.name}</span>
+              <span className={cx("nodestat-row__status", detailClass(d.status))}>{statusLabel(t, d.status)}</span>
+              {d.source === "inferred" && (
+                <span className="nodestat-row__inferred" title={d.status_reason ?? ""}>
+                  {t("status.inferred")}
+                  {typeof d.confidence === "number" ? ` ${Math.round(d.confidence * 100)}%` : ""}
+                </span>
+              )}
+              <span className="nodestat-row__seen">
+                {t("status.lastSeen")} {fmtAgo(d.last_seen)}
+              </span>
+            </div>
+          ))}
+          {detail && detail.length === 0 && <div className="nodestat-row nodestat-row--empty">—</div>}
+        </div>
+      )}
     </div>
   );
 }

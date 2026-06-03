@@ -77,6 +77,49 @@ async function main() {
       /5/.test(statusBar.total) &&
       statusBar.healthOk;
 
+    // V4-W4 node-status detail panel (GET /api/status?detail=1): per-node rows
+    // with last-seen + an "inferred" badge for non-heartbeat sources.
+    await page.click(".nodestat__more");
+    await page.waitForSelector(".nodestat-detail .nodestat-row", { timeout: 6000 });
+    const detail = await page.evaluate(() => ({
+      rows: document.querySelectorAll(".nodestat-detail .nodestat-row").length,
+      inferred: document.querySelectorAll(".nodestat-row__inferred").length,
+      seen: !!document.querySelector(".nodestat-row__seen"),
+      detailFetched: window.__MOCK__?.statusDetailFetched === true,
+    }));
+    await page.click(".nodestat__more"); // collapse
+    const detailOk = detail.rows >= 1 && detail.inferred >= 1 && detail.seen && detail.detailFetched;
+
+    // V4-W1 audit drawer (GET /api/audit): events render, cursor paging, filter.
+    await page.click(".dr-audit-btn");
+    await page.waitForSelector(".audit-drawer", { timeout: 5000 });
+    await page.waitForFunction(() => document.querySelectorAll(".audit-event").length >= 1, { timeout: 6000 });
+    const audit1 = await page.evaluate(() => ({
+      events: document.querySelectorAll(".audit-event").length,
+      hasActor: !!document.querySelector(".audit-event__actor"),
+      hasAction: !!document.querySelector(".audit-event__action"),
+      hasMore: !!document.querySelector(".audit-more"),
+    }));
+    await page.click(".audit-more");
+    await page.waitForFunction((n) => document.querySelectorAll(".audit-event").length > n, { timeout: 6000 }, audit1.events);
+    const auditAfterMore = await page.evaluate(() => ({
+      events: document.querySelectorAll(".audit-event").length,
+      cursorUsed: window.__MOCK__?.auditCursorUsed === true,
+    }));
+    await page.type('.audit-filter input[name="node"]', "backend");
+    await page.waitForFunction(() => (window.__MOCK__?.auditFilter ?? "").includes("node=backend"), { timeout: 5000 });
+    const auditFilter = await page.evaluate(() => window.__MOCK__?.auditFilter ?? "");
+    await page.click(".audit-drawer .dr-drawer__close");
+    await page.waitForFunction(() => !document.querySelector(".audit-drawer"), { timeout: 5000 });
+    const auditOk =
+      audit1.events >= 1 &&
+      audit1.hasActor &&
+      audit1.hasAction &&
+      audit1.hasMore &&
+      auditAfterMore.events > audit1.events &&
+      auditAfterMore.cursorUsed &&
+      /node=backend/.test(auditFilter);
+
     // #1 i18n: Korean by default; KO/EN toggle flips all labels, then back.
     const brandText = () => page.$eval(".dr-brand__title", (el) => (el.textContent ?? "").trim());
     const i18n = { ko: await brandText(), en: "" };
@@ -736,6 +779,8 @@ async function main() {
       wsBindOk &&
       wsKindOk &&
       statusBarOk &&
+      detailOk &&
+      auditOk &&
       diag.projectHeader === projAfterLoad &&
       errors.length === 0;
 
@@ -796,6 +841,10 @@ async function main() {
       wsKindOk,
       statusBarOk,
       statusBar,
+      detailOk,
+      detail,
+      auditOk,
+      audit: { ...audit1, after: auditAfterMore, filter: auditFilter },
       terminalTicketKind: diag.terminalTicketKind,
       wsMismatchCode: wsMismatch.code,
       slackStatus0,

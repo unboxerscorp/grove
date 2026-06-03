@@ -211,6 +211,21 @@ const KO: Dict = {
   "health.degraded": "보드 저하",
   "health.down": "서버 응답 없음",
   "health.pending": "확인 중",
+
+  "status.detail": "상세",
+  "status.dead": "종료",
+  "status.lastSeen": "마지막 확인",
+  "status.inferred": "추정",
+  "status.reason": "사유",
+
+  "audit.open": "감사",
+  "audit.title": "감사 로그",
+  "audit.filterAction": "액션 필터",
+  "audit.filterNode": "노드 필터",
+  "audit.empty": "이벤트 없음",
+  "audit.more": "더 보기",
+  "audit.loading": "불러오는 중…",
+  "audit.loadError": "감사 로그를 불러오지 못했습니다",
 };
 
 const EN: Dict = {
@@ -414,6 +429,21 @@ const EN: Dict = {
   "health.degraded": "board degraded",
   "health.down": "server down",
   "health.pending": "checking",
+
+  "status.detail": "Detail",
+  "status.dead": "dead",
+  "status.lastSeen": "last seen",
+  "status.inferred": "inferred",
+  "status.reason": "reason",
+
+  "audit.open": "Audit",
+  "audit.title": "Audit log",
+  "audit.filterAction": "filter action",
+  "audit.filterNode": "filter node",
+  "audit.empty": "no events",
+  "audit.more": "Load more",
+  "audit.loading": "Loading…",
+  "audit.loadError": "failed to load audit log",
 };
 
 const STRINGS: Record<Lang, Dict> = { ko: KO, en: EN };

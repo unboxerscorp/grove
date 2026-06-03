@@ -160,6 +160,16 @@ let ticketSeq = 0;
 // the ticket's binding doesn't match the socket it's used on.
 const ticketBindings: Record<string, { kind: string; pane: string; project: string }> = {};
 let taskSeq = 0;
+
+// Audit log seed (6 events -> 2 pages at limit 4). Fixed ts for determinism.
+const AUDIT_EVENTS = [
+  { actor: "root", action: "spawn", target: "backend", ts: "2026-06-04T03:00:05Z" },
+  { actor: "backend", action: "claim", target: "G-4", ts: "2026-06-04T03:01:10Z" },
+  { actor: "backend", action: "complete", target: "G-4", ts: "2026-06-04T03:02:00Z" },
+  { actor: "frontend", action: "reparent", target: "docs", ts: "2026-06-04T03:03:00Z" },
+  { actor: "root", action: "block", target: "G-7", ts: "2026-06-04T03:04:00Z" },
+  { actor: "root", action: "spawn", target: "frontend", ts: "2026-06-04T03:05:00Z" },
+];
 let slack: { status: string; last_event_at: string | null; last_error: string | null } = {
   status: "not_configured",
   last_event_at: null,
@@ -203,7 +213,48 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
     const running = ORG_NODES.filter((n) => n.status === "running").length;
     const stale = ORG_NODES.filter((n) => n.status === "error").length;
-    return Promise.resolve(json({ project: proj, nodes: { running, total: ORG_NODES.length, stale } }));
+    const body: Record<string, unknown> = {
+      project: proj,
+      nodes: { running, total: ORG_NODES.length, stale },
+    };
+    if (u.searchParams.get("detail")) {
+      diag.statusDetailFetched = true;
+      body.detail = ORG_NODES.map((n) => {
+        // done -> "dead" (no heartbeat); error -> inferred. Others heartbeat.
+        const status = n.status === "done" ? "dead" : n.status;
+        const inferred = n.status === "error" || n.status === "done";
+        return {
+          name: n.name,
+          status,
+          last_seen: inferred ? "2026-06-04T02:55:00Z" : "2026-06-04T03:05:30Z",
+          status_reason: inferred ? "no recent heartbeat" : "heartbeat ok",
+          source: inferred ? "inferred" : "heartbeat",
+          confidence: n.status === "error" ? 0.5 : n.status === "done" ? 0.4 : 1.0,
+        };
+      });
+    }
+    return Promise.resolve(json(body));
+  }
+
+  if (p === "/api/audit") {
+    diag.auditFetches = ((diag.auditFetches as number) ?? 0) + 1;
+    const sp = u.searchParams;
+    diag.auditFilter = `action=${sp.get("action") ?? ""}&node=${sp.get("node") ?? ""}&task=${sp.get("task_id") ?? ""}`;
+    if (sp.get("cursor")) diag.auditCursorUsed = true;
+    const limit = Number(sp.get("limit") ?? "4") || 4;
+    const start = Number(sp.get("cursor") ?? "0") || 0;
+    const action = sp.get("action");
+    const node = sp.get("node");
+    const taskId = sp.get("task_id");
+    let events = [...AUDIT_EVENTS];
+    if (action) events = events.filter((e) => e.action.includes(action));
+    if (node) events = events.filter((e) => e.actor === node || e.target === node);
+    if (taskId) events = events.filter((e) => e.target === taskId);
+    const slice = events.slice(start, start + limit);
+    const nextIdx = start + limit;
+    return Promise.resolve(
+      json({ events: slice, next_cursor: nextIdx < events.length ? String(nextIdx) : null }),
+    );
   }
 
   if (p === "/api/boards") {

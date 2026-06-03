@@ -269,6 +269,7 @@ button {
 
 /* node-liveness heatmap (sub-header) */
 .nodestat {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -357,6 +358,223 @@ button {
   .nodestat__label {
     display: none;
   }
+}
+
+/* node-status detail toggle + dropdown panel */
+.nodestat__more {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 3px 9px;
+  transition:
+    color 0.14s ease,
+    border-color 0.14s ease;
+}
+
+.nodestat__more:hover,
+.nodestat__more.is-open {
+  color: var(--amber);
+  border-color: rgba(240, 184, 96, 0.4);
+}
+
+.nodestat-detail {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 16px;
+  z-index: 25;
+  width: min(420px, 92vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel);
+  box-shadow: 0 26px 52px -24px rgba(0, 0, 0, 0.92);
+  animation: dr-rise 0.18s ease both;
+}
+
+.nodestat-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 8px;
+}
+
+.nodestat-row:hover {
+  background: var(--panel-2);
+}
+
+.nodestat-row--empty {
+  color: var(--faint);
+  font-family: var(--mono);
+}
+
+.nodestat__led.is-running {
+  background: var(--teal);
+  box-shadow: 0 0 7px rgba(84, 199, 184, 0.65);
+}
+.nodestat__led.is-idle {
+  background: var(--slate);
+}
+.nodestat__led.is-error {
+  background: var(--coral);
+}
+.nodestat__led.is-blocked {
+  background: var(--amber);
+}
+.nodestat__led.is-dead {
+  background: var(--faint);
+}
+
+.nodestat-row__name {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.nodestat-row__status {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.nodestat-row__status.is-running {
+  color: var(--teal);
+}
+.nodestat-row__status.is-error {
+  color: var(--coral);
+}
+.nodestat-row__status.is-blocked {
+  color: var(--amber);
+}
+.nodestat-row__status.is-dead {
+  color: var(--faint);
+}
+
+.nodestat-row__inferred {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amber);
+  border: 1px dashed rgba(240, 184, 96, 0.5);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.nodestat-row__seen {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+/* audit log button + drawer */
+.dr-audit-btn {
+  font-family: var(--ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 10px;
+  transition:
+    color 0.14s ease,
+    border-color 0.14s ease;
+}
+
+.dr-audit-btn:hover {
+  color: var(--amber);
+  border-color: rgba(240, 184, 96, 0.4);
+}
+
+.audit-filter {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 16px 16px;
+}
+
+.audit-msg {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--faint);
+  padding: 8px 2px;
+}
+
+.audit-msg.is-error {
+  color: var(--coral);
+}
+
+.audit-event {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--panel-2);
+  animation: dr-rise 0.22s ease both;
+}
+
+.audit-event__actor {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--teal);
+}
+
+.audit-event__action {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amber);
+  border: 1px solid rgba(240, 184, 96, 0.3);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.audit-event__target {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-event__ts {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  flex: none;
+}
+
+.audit-more {
+  margin-top: 6px;
+  align-self: flex-start;
 }
 
 /* ---- shared form controls ------------------------------------------------- */

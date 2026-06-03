@@ -39,9 +39,31 @@ export interface NodeSummary {
   stale: number;
 }
 
+export interface NodeDetail {
+  name: string;
+  status: string; // running | idle | error | blocked | dead
+  last_seen?: string | number | null;
+  status_reason?: string;
+  source?: string; // heartbeat | inferred | ...
+  confidence?: number;
+}
+
 export interface StatusSummary {
   project?: string;
   nodes?: NodeSummary;
+  detail?: NodeDetail[];
+}
+
+export interface AuditEvent {
+  actor: string;
+  action: string;
+  target: string;
+  ts: string | number;
+}
+
+export interface AuditPage {
+  events: AuditEvent[];
+  next_cursor?: string | number | null;
 }
 
 export interface Health {
@@ -187,8 +209,20 @@ export const api = {
     return (await res.json()) as OrgNode;
   },
 
-  // Live status: project + node liveness summary (token-scoped via headers()).
-  getStatus: () => getJSON<StatusSummary>("/api/status"),
+  // Live status: project + node liveness summary; detail=1 adds per-node rows.
+  getStatus: (detail = false) => getJSON<StatusSummary>(`/api/status${detail ? "?detail=1" : ""}`),
+
+  // Read-only audit log (cursor-paged; filter by action/node/task_id).
+  getAudit: (params: { cursor?: string | number; limit?: number; action?: string; node?: string; task_id?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.cursor !== undefined && params.cursor !== "") q.set("cursor", String(params.cursor));
+    if (params.limit) q.set("limit", String(params.limit));
+    if (params.action) q.set("action", params.action);
+    if (params.node) q.set("node", params.node);
+    if (params.task_id) q.set("task_id", params.task_id);
+    const qs = q.toString();
+    return getJSON<AuditPage>(`/api/audit${qs ? `?${qs}` : ""}`);
+  },
 
   // Server liveness (unauthenticated; the extra headers are harmless).
   getHealth: () => getJSON<Health>("/api/health"),

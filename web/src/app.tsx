@@ -4,6 +4,7 @@ import { api, AUTH_REQUIRED, setProject, wsUrl } from "./api";
 import type { Project } from "./api";
 import { BoardView } from "./components/BoardView";
 import { NodeList } from "./components/NodeList";
+import { AuditDrawer } from "./components/AuditDrawer";
 import { AuthPanel } from "./components/AuthPanel";
 import { HealthDot } from "./components/HealthDot";
 import { NodeStatusBar } from "./components/NodeStatusBar";
@@ -43,6 +44,7 @@ export function App() {
   const [selectedPane, setSelectedPane] = useState<string | null>(null);
   const [view, setView] = useState<View>("board");
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [auditOpen, setAuditOpen] = useState(false);
   const [liveTick, setLiveTick] = useState(0);
   const [boardLive, setBoardLive] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -285,6 +287,9 @@ export function App() {
             <span className="dr-stat__n is-live">{liveCount}</span>
             <span className="dr-stat__l">{t("stat.live")}</span>
           </div>
+          <button type="button" className="dr-audit-btn" onClick={() => setAuditOpen(true)}>
+            ⌗ {t("audit.open")}
+          </button>
           <HealthDot />
           <span className={cx("dr-auth", AUTH_REQUIRED ? "is-secured" : "is-local")}>
             {AUTH_REQUIRED ? t("auth.secured") : t("auth.local")}
@@ -332,6 +337,7 @@ export function App() {
       </main>
 
       <TaskDrawer taskId={openTaskId} onClose={() => setOpenTaskId(null)} />
+      <AuditDrawer open={auditOpen} projectTick={projectTick} onClose={() => setAuditOpen(false)} />
     </div>
   );
 }
