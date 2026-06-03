@@ -4,6 +4,58 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.3.0] — v1.2 (2026-06-04)
+
+Reliability core + observability + resilience + team-mode design. Auto-started
+right after v1.1.0 per the standing 24/7 directive (no user gate between versions).
+
+### Reliability
+
+- **Event-driven turn detection** — `fs.watch` wake-ups replace the fixed 1.5s
+  poll in the wait path (ops/tail/fanin): near-instant on transcript append, with a
+  deadline-bounded safety fallback (can never hang). Durable submit baseline
+  preserved; a bound session with a missing or empty (size 0) transcript fails fast
+  with a rebind/repair hint instead of timing out. Live-verified on the dev10 fleet.
+
+### Resilience
+
+- **`grove despawn`** + node lifecycle — clean teardown: kills the node's pane via a
+  validated single-pane target only (ambiguous targets refused, so an odd registry
+  value can't kill a whole window) + registry cleanup (children/parent fixups); bulk
+  `--group`/`--all` needs `--yes`; pane-absent / dead-session → registry-only. Live
+  kills run inside preserveActiveWindow (no focus steal). `grove rebind` repair
+  re-resolves stale pane targets.
+- **Board store** — WAL + `busy_timeout=5s` + `synchronous=NORMAL` on every
+  connection: readers no longer block the writer, contention waits instead of
+  SQLITE_BUSY (16 concurrent claims serialize to a single CAS winner).
+
+### Observability
+
+- `/api/health` (unauthenticated, no leak: ok/version/board_ok/uptime) split from the
+  token-gated `/api/status` (+ node-liveness summary). Structured, redacted request/
+  error logs. Dashboard node-status bar + server health dot.
+
+### Security
+
+- Stable dashboard token persisted (0600, race-safe O_EXCL) across restarts — a
+  relaunch no longer 401s open dashboards.
+
+### agy
+
+- Environment parity (#21): the skills generator emits `.agents/AGENTS.md` +
+  `.agents/skills` for agy in sync with the codex/claude targets; agy follows the same
+  harness/org/delegate conventions. (Interactive submit fixed in v1.1.)
+
+### Docs
+
+- `docs/DESIGN_team_auth.md` (team-mode auth design), `docs/ROADMAP_v1.2.md`.
+
+### Deferred (→ v1.3)
+
+- `grove delegate` / first-class board-as-delegation + multi-orchestrator UX; real
+  team-auth implementation (per the design); deeper observability (heatmap detail,
+  metrics).
+
 ## [0.2.0] — v1.1 "Stable" (2026-06-04)
 
 Hardening release over v1.0: a 5-node review swarm (codex + claude + agy×3) audited
