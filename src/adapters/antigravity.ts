@@ -120,7 +120,7 @@ export const antigravityAdapter: AgentAdapter = {
   name: "antigravity",
   label: "agy",
   readyPattern: /(^|\n)\s*[>❯]\s*$|status:?\s*idle/i,
-  submit: "enter",
+  submit: "enter-enter",
 
   launchCommand(spec: LaunchSpec): string {
     if (spec.resumeId) {

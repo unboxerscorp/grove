@@ -22,6 +22,10 @@ function tempDir(): string {
 }
 
 describe("antigravity adapter", () => {
+  test("uses the same double-enter bracketed-paste submit mode as codex and claude", () => {
+    expect(antigravityAdapter.submit).toBe("enter-enter");
+  });
+
   test("builds an interactive launch command with initial prompt and log file", () => {
     const command = antigravityAdapter.launchCommand({
       cwd: "/tmp/grove project",
