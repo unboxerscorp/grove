@@ -5,6 +5,9 @@ description = "Python bridge scaffold for grove cockpit integrations."
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+grove-bridge-pull = "grove_bridge.pull_executor:main"
+
 [dependency-groups]
 dev = [
   "hatchling>=1.28.0",
