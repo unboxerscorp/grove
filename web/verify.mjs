@@ -140,18 +140,76 @@ async function main() {
     };
     const settle = () => new Promise((r) => setTimeout(r, 520));
 
+    // Drag-intent labels: a read-only probe (snaps back, no PATCH) that checks
+    // the floating badge flips between reparent and group modes.
+    const badge = () =>
+      page.evaluate(() => ({
+        text: document.querySelector(".org-dragbadge")?.textContent ?? "",
+        cls: document.querySelector(".org-dragbadge")?.className ?? "",
+      }));
+    const fStart = await center("frontend");
+    const dC0 = await center("docs");
+    const rC0 = await center("researcher");
+    const glide = async (ax, ay, bx, by) => {
+      for (let i = 1; i <= 6; i++) {
+        await page.mouse.move(ax + ((bx - ax) * i) / 6, ay + ((by - ay) * i) / 6);
+        await new Promise((r) => setTimeout(r, 18));
+      }
+    };
+    await page.mouse.move(fStart.x, fStart.y);
+    await page.mouse.down();
+    await glide(fStart.x, fStart.y, dC0.x, dC0.y); // over docs -> reparent
+    const badgeReparent = await badge();
+    await glide(dC0.x, dC0.y, rC0.x + 132, rC0.y); // near researcher -> group
+    const badgeGroup = await badge();
+    await glide(rC0.x + 132, rC0.y, rC0.x + 320, rC0.y); // far empty -> snap back
+    await page.mouse.up();
+    await settle();
+    const dragLabelsOk =
+      /is-reparent/.test(badgeReparent.cls) &&
+      badgeReparent.text.length > 0 &&
+      /is-group/.test(badgeGroup.cls) &&
+      badgeGroup.text.length > 0;
+
+    // #2 proximity grouping (initial layout: "researcher" is rightmost, so the
+    // space to its right is empty): drag "backend" there -> PATCH {group}.
+    const resC = await center("researcher");
+    await dragTo("backend", resC.x + 132, resC.y);
+    await page.waitForFunction(() => /:research$/.test(window.__MOCK__?.patchedGroup ?? ""), { timeout: 6000 });
+    const patchedGroup = await page.evaluate(() => window.__MOCK__?.patchedGroup ?? "");
+    await settle();
+
+    // #4 group exit: drag the now-grouped "backend" far from every node -> {group:null}.
+    const farPoint = await page.evaluate(() => {
+      const c = document.querySelector(".org-canvas").getBoundingClientRect();
+      let maxRight = c.left;
+      document.querySelectorAll(".org-node").forEach((n) => {
+        maxRight = Math.max(maxRight, n.getBoundingClientRect().right);
+      });
+      return { x: Math.min(maxRight + 240, c.right - 36), y: c.top + 110 };
+    });
+    await dragTo("backend", farPoint.x, farPoint.y);
+    await page.waitForFunction(() => /:null$/.test(window.__MOCK__?.patchedGroup ?? ""), { timeout: 6000 });
+    const groupExit = await page.evaluate(() => window.__MOCK__?.patchedGroup ?? "");
+    await settle();
+
+    // #3 detach: the edge ✕ AND a node "부모 끊기" action both PATCH {parent:null}.
+    // Assert the edge ✕ is present/reachable, then use the node action (timing-
+    // deterministic) to actually detach "docs" -> root.
+    const cutAffordance = await page.evaluate(
+      () => !!document.querySelector('[data-edge-child="docs"] .org-edge-cut'),
+    );
+    await page.hover('[data-name="docs"]');
+    await page.click('[data-name="docs"] .org-act--detach');
+    await page.waitForFunction(() => /->null$/.test(window.__MOCK__?.patchedParent ?? ""), { timeout: 6000 });
+    const cutParent = await page.evaluate(() => window.__MOCK__?.patchedParent ?? "");
+    await settle();
+
     // #1 drag-to-reparent: drop "frontend" onto "docs" -> PATCH {parent}.
     const docsC = await center("docs");
     await dragTo("frontend", docsC.x, docsC.y);
-    await page.waitForFunction(() => (window.__MOCK__?.patchedParent ?? "") !== "", { timeout: 6000 });
+    await page.waitForFunction(() => /^frontend->/.test(window.__MOCK__?.patchedParent ?? ""), { timeout: 6000 });
     const patchedParent = await page.evaluate(() => window.__MOCK__?.patchedParent ?? "");
-    await settle();
-
-    // #2 proximity grouping: drag "backend" NEAR "researcher" (not over) -> PATCH {group}.
-    const resC = await center("researcher");
-    await dragTo("backend", resC.x + 132, resC.y);
-    await page.waitForFunction(() => (window.__MOCK__?.patchedGroup ?? "") !== "", { timeout: 6000 });
-    const patchedGroup = await page.evaluate(() => window.__MOCK__?.patchedGroup ?? "");
     await settle();
 
     // #3 hover-"+" add child: reveals a "+" on the node -> inline create -> POST.
@@ -239,8 +297,12 @@ async function main() {
       orgView.nodes >= 1 &&
       orgView.edges >= 1 &&
       orgView.legend >= 1 &&
+      dragLabelsOk &&
+      cutAffordance &&
+      cutParent === "docs->null" &&
       patchedParent.startsWith("frontend->") &&
-      !!patchedGroup &&
+      patchedGroup.endsWith(":research") &&
+      groupExit === "backend:null" &&
       plusCreated === PLUS_NODE &&
       nodeDrawer.facts >= 1 &&
       nodeDrawer.assignForm;
@@ -267,8 +329,14 @@ async function main() {
       orgNodes: orgView.nodes,
       edges: orgView.edges,
       legend: orgView.legend,
+      dragLabelsOk,
+      badgeReparent: badgeReparent.text,
+      badgeGroup: badgeGroup.text,
+      cutAffordance,
+      cutParent,
       patchedParent,
       patchedGroup,
+      groupExit,
       plusCreated,
       facts: nodeDrawer.facts,
       i18n,

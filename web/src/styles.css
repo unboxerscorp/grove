@@ -657,15 +657,15 @@ button {
   color: var(--group);
 }
 
-/* node hover actions (terminal / info) */
+/* node hover actions (terminal / info) — sit ABOVE the node */
 .org-node__actions {
   position: absolute;
   left: 10px;
-  bottom: -13px;
+  top: -13px;
   display: flex;
   gap: 6px;
   opacity: 0;
-  transform: translateY(-4px);
+  transform: translateY(4px);
   transition:
     opacity 0.15s ease,
     transform 0.15s ease;
@@ -676,37 +676,146 @@ button {
   transform: translateY(0);
 }
 
-/* hover "+" to add a child (mind-map style) */
+/* hover "+" to add a child — BELOW the node (children grow downward) */
 .org-node__plus {
   position: absolute;
-  right: -12px;
-  top: 50%;
-  width: 24px;
-  height: 24px;
+  left: 50%;
+  bottom: -14px;
+  width: 26px;
+  height: 26px;
   display: grid;
   place-items: center;
   border-radius: 50%;
   border: 1px solid rgba(240, 184, 96, 0.5);
   background: var(--panel);
   color: var(--amber);
-  font-size: 16px;
+  font-size: 17px;
   line-height: 1;
   opacity: 0;
-  transform: translateY(-50%) scale(0.85);
+  transform: translate(-50%, -4px) scale(0.85);
   transition:
     opacity 0.15s ease,
     transform 0.15s ease,
     background 0.15s ease;
+  z-index: 2;
 }
 
 .org-node:hover .org-node__plus {
   opacity: 1;
-  transform: translateY(-50%) scale(1);
+  transform: translate(-50%, 0) scale(1);
 }
 
 .org-node__plus:hover {
   background: var(--amber);
   color: var(--ink);
+}
+
+/* reparent target: downward caret hinting the child attaches below */
+.org-node.is-drop::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -11px;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 7px solid var(--teal);
+}
+
+/* interactive edges: hover a connector to reveal a ✕ that detaches the child */
+.org-edge-g {
+  pointer-events: none;
+}
+
+.org-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18;
+  pointer-events: stroke;
+}
+
+.org-edges.is-dragging .org-edge-hit {
+  pointer-events: none;
+}
+
+.org-edge-cut {
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  transition: opacity 0.14s ease;
+}
+
+.org-edge-g:hover .org-edge-cut {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.org-edges.is-dragging .org-edge-cut {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.org-edge-cut__bg {
+  fill: var(--panel);
+  stroke: var(--coral);
+  stroke-width: 1.2;
+}
+
+.org-edge-cut:hover .org-edge-cut__bg {
+  fill: var(--coral);
+}
+
+.org-edge-cut__x {
+  fill: none;
+  stroke: var(--coral);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.org-edge-cut:hover .org-edge-cut__x {
+  stroke: var(--ink);
+}
+
+/* floating drag-intent badge (reparent / group / ungroup / invalid) */
+.org-dragbadge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 40;
+  pointer-events: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 12px 26px -14px rgba(0, 0, 0, 0.9);
+}
+
+.org-dragbadge.is-reparent {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.org-dragbadge.is-group {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.org-dragbadge.is-ungroup {
+  border-color: var(--coral);
+  color: var(--coral);
+}
+
+.org-dragbadge.is-invalid {
+  border-color: var(--coral);
+  color: var(--coral);
+  background: rgba(255, 107, 107, 0.12);
 }
 
 /* inline child-add popover */
@@ -755,6 +864,11 @@ button {
 .org-act--info:hover {
   color: var(--amber);
   border-color: var(--amber);
+}
+
+.org-act--detach:hover {
+  color: var(--coral);
+  border-color: var(--coral);
 }
 
 /* add-node form */

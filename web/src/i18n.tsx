@@ -118,6 +118,13 @@ const KO: Dict = {
   "node.assigned": "부여됨",
   "node.assignError": "작업을 부여하지 못했습니다",
   "node.noBoard": "보드가 없어 부여할 수 없습니다",
+
+  "drag.reparent": "「{target}」의 하위로",
+  "drag.group": "「{target}」과 같은 그룹",
+  "drag.ungroup": "그룹에서 나감",
+  "drag.invalid": "여기엔 놓을 수 없음",
+  "org.cutParent": "부모 연결 끊기",
+  "org.detach": "부모 끊기",
 };
 
 const EN: Dict = {
@@ -228,6 +235,13 @@ const EN: Dict = {
   "node.assigned": "Assigned",
   "node.assignError": "failed to assign task",
   "node.noBoard": "no board to assign to",
+
+  "drag.reparent": "into {target}",
+  "drag.group": "same group as {target}",
+  "drag.ungroup": "leave group",
+  "drag.invalid": "can't drop here",
+  "org.cutParent": "detach from parent",
+  "org.detach": "detach",
 };
 
 const STRINGS: Record<Lang, Dict> = { ko: KO, en: EN };

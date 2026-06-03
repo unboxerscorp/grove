@@ -625,6 +625,20 @@ export function OrgChart(props: {
 
   const stopPD = (e: React.PointerEvent) => e.stopPropagation();
 
+  // What will happen if the user drops right now — drives the floating badge
+  // and the target highlight colours.
+  const dragInfo: { mode: string; text: string } | null = (() => {
+    if (!drag) return null;
+    if (drag.over) {
+      return drag.invalid
+        ? { mode: "invalid", text: t("drag.invalid") }
+        : { mode: "reparent", text: t("drag.reparent", { target: drag.over }) };
+    }
+    if (drag.group) return { mode: "group", text: t("drag.group", { target: drag.group }) };
+    if (byName[drag.name]?.group) return { mode: "ungroup", text: t("drag.ungroup") };
+    return null;
+  })();
+
   return (
     <section className="org">
       <div className="org__toolbar">
@@ -664,15 +678,35 @@ export function OrgChart(props: {
 
       <div className={cx("org-canvas", drag && "is-dragging")} ref={canvasRef}>
         <div className="org-stage" style={{ width: layout.width, height: layout.height }}>
-          <svg className="org-edges" width={layout.width} height={layout.height} aria-hidden="true">
-            {edges.map(([par, ch]) => (
-              <path
-                key={`${par}>${ch}`}
-                className={cx("org-edge", drag?.name === ch && "is-active")}
-                d={edgePath(posFor(par), posFor(ch))}
-                style={{ stroke: groupColor(byName[ch]?.group) }}
-              />
-            ))}
+          <svg className={cx("org-edges", drag && "is-dragging")} width={layout.width} height={layout.height}>
+            {edges.map(([par, ch]) => {
+              const a = posFor(par);
+              const b = posFor(ch);
+              const d = edgePath(a, b);
+              const mx = (a.x + b.x) / 2 + NODE_W / 2;
+              const my = (a.y + NODE_H + b.y) / 2;
+              return (
+                <g key={`${par}>${ch}`} className="org-edge-g" data-edge-child={ch}>
+                  <path
+                    className={cx("org-edge", drag?.name === ch && "is-active")}
+                    d={d}
+                    style={{ stroke: groupColor(byName[ch]?.group) }}
+                  />
+                  <path className="org-edge-hit" d={d} />
+                  <g
+                    className="org-edge-cut"
+                    transform={`translate(${mx}, ${my})`}
+                    role="button"
+                    aria-label={t("org.cutParent")}
+                    onClick={() => applyPatch(ch, { parent: null })}
+                  >
+                    <title>{t("org.cutParent")}</title>
+                    <circle className="org-edge-cut__bg" r="10" />
+                    <path className="org-edge-cut__x" d="M -3.5 -3.5 L 3.5 3.5 M 3.5 -3.5 L -3.5 3.5" />
+                  </g>
+                </g>
+              );
+            })}
           </svg>
 
           {nodes.map((node) => {
@@ -726,6 +760,16 @@ export function OrgChart(props: {
                   >
                     {t("org.info")}
                   </button>
+                  {node.parent && (
+                    <button
+                      type="button"
+                      className="org-act org-act--detach"
+                      onPointerDown={stopPD}
+                      onClick={() => applyPatch(node.name, { parent: null })}
+                    >
+                      {t("org.detach")}
+                    </button>
+                  )}
                 </div>
 
                 <button
@@ -764,7 +808,7 @@ export function OrgChart(props: {
             <div
               className="org-popover"
               style={{
-                transform: `translate(${posFor(addChild).x + NODE_W + 18}px, ${posFor(addChild).y}px)`,
+                transform: `translate(${posFor(addChild).x}px, ${posFor(addChild).y + NODE_H + 18}px)`,
               }}
             >
               <NodeForm
@@ -775,6 +819,15 @@ export function OrgChart(props: {
                 onCreated={() => setReloadKey((k) => k + 1)}
                 onClose={() => setAddChild(null)}
               />
+            </div>
+          )}
+
+          {drag && dragInfo && (
+            <div
+              className={cx("org-dragbadge", `is-${dragInfo.mode}`)}
+              style={{ transform: `translate(${drag.x + NODE_W + 12}px, ${drag.y - 6}px)` }}
+            >
+              {dragInfo.text}
             </div>
           )}
         </div>
