@@ -5,6 +5,8 @@ import { cmdAsk } from "./commands/ask.js";
 import { cmdDown } from "./commands/down.js";
 import { cmdGather } from "./commands/gather.js";
 import { cmdInit } from "./commands/init.js";
+import { cmdLoadProject } from "./commands/load-project.js";
+import { cmdNewProject } from "./commands/new-project.js";
 import { cmdOrg } from "./commands/org.js";
 import { cmdRebind } from "./commands/rebind.js";
 import { cmdSend } from "./commands/send.js";
@@ -70,11 +72,29 @@ program
   .action(run((opts: Record<string, unknown>) => cmdOrg(withConfig(opts))));
 
 program
+  .command("new-project <name>")
+  .description("create a detached tmux project session and spawn its initial grove nodes")
+  .option("--template <name>", "template name from ~/.grove/templates/<name>.yaml")
+  .option("--dir <path>", "workspace directory (default: ~/grove-projects/<name>)")
+  .option("--clone <owner/repo>", "clone a GitHub repo into the workspace when gh is authenticated")
+  .option("--json", "print the project summary as JSON")
+  .action(run((name: string, opts: Record<string, unknown>) => cmdNewProject(name, opts)));
+
+program
+  .command("load-project <path>")
+  .description("load a grove.project.json file or project folder and restore its grove nodes")
+  .option("--json", "print the load summary as JSON")
+  .action(
+    run((projectPath: string, opts: Record<string, unknown>) => cmdLoadProject(projectPath, opts)),
+  );
+
+program
   .command("spawn")
   .description("create a detached tmux pane and launch a new grove node")
   .requiredOption("--name <name>", "new node name")
   .requiredOption("--agent <agent>", "agent adapter: codex, claude, or antigravity")
   .option("--role <role>", "role / initial prompt for the new node")
+  .option("--description <text>", "short human-readable note for the new node")
   .option("--parent <node>", "parent node name")
   .option("--group <group>", "team group")
   .option("--session <session>", "target tmux/grove session")

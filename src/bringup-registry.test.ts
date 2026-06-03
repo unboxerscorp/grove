@@ -86,12 +86,15 @@ function makeContext(nodes: ResolvedNode[]): Context {
 
 function node(
   name: string,
-  opts: Partial<Pick<ResolvedNode, "children" | "group" | "parent" | "role" | "tmux">> = {},
+  opts: Partial<
+    Pick<ResolvedNode, "children" | "description" | "group" | "parent" | "role" | "tmux">
+  > = {},
 ): ResolvedNode {
   return {
     agent: "codex",
     children: opts.children ?? [],
     cwd: "/tmp/grove",
+    description: opts.description,
     group: opts.group,
     name,
     parent: opts.parent,
@@ -148,6 +151,7 @@ describe("bringUp registry tmux pane metadata", () => {
     const ctx = makeContext([
       node("lead", {
         children: ["maker"],
+        description: "Coordinates handoffs",
         group: "core",
         role: "Lead",
         tmux: "1.1",
@@ -155,6 +159,7 @@ describe("bringUp registry tmux pane metadata", () => {
       node("maker", {
         group: "core",
         parent: "lead",
+        description: "Builds TypeScript changes",
         role: "Builder",
       }),
     ]);
@@ -164,6 +169,7 @@ describe("bringUp registry tmux pane metadata", () => {
     expect(ctx.registry.nodes.lead).toEqual(
       expect.objectContaining({
         children: ["maker"],
+        description: "Coordinates handoffs",
         group: "core",
         role: "Lead",
         tmux_pane: "dev10:1.1",
@@ -172,6 +178,7 @@ describe("bringUp registry tmux pane metadata", () => {
     expect(ctx.registry.nodes.maker).toEqual(
       expect.objectContaining({
         children: [],
+        description: "Builds TypeScript changes",
         group: "core",
         parent: "lead",
         role: "Builder",

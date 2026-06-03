@@ -18,28 +18,33 @@ export interface SpawnInput {
   name?: string;
   agent?: string;
   role?: string;
+  description?: string;
   parent?: string;
   group?: string;
   session?: string;
   window?: string;
   cwd?: string;
+  resume?: string;
 }
 
 interface SpawnRequest {
   name: string;
   agent: AgentType;
   role: string;
+  description?: string;
   parent?: string;
   group?: string;
   session: string;
   window?: string;
   cwd: string;
+  resume?: string;
 }
 
 export interface SpawnResult {
   name: string;
   agent: AgentType;
   role: string;
+  description?: string;
   session: string;
   pane: string;
   parent?: string;
@@ -144,9 +149,11 @@ function parseSpawnRequest(ctx: Context, input: SpawnInput): SpawnRequest {
   return {
     agent,
     cwd: defaultSpawnCwd(input.cwd ?? ctx.config.cwd),
+    description: trimmed(input.description),
     group: trimmed(input.group),
     name,
     parent: trimmed(input.parent),
+    resume: trimmed(input.resume),
     role: trimmed(input.role) ?? "",
     session: trimmed(input.session) ?? ctx.config.session,
     window: trimmed(input.window),
@@ -161,6 +168,7 @@ function runtimeFromConfigured(node: ResolvedNode): NodeRuntime {
   return {
     agent: node.agent,
     children: [...node.children],
+    description: node.description,
     group: node.group,
     name: node.name,
     parent: node.parent,
@@ -220,9 +228,11 @@ export async function spawnNode(
       agent: parsed.agent,
       children: [],
       cwd: parsed.cwd,
+      description: parsed.description,
       group: parsed.group,
       name: parsed.name,
       parent: parsed.parent,
+      resume: parsed.resume,
       role: parsed.role,
     };
     const nc: NodeCtx = {
@@ -242,6 +252,7 @@ export async function spawnNode(
       ...runtime,
       agent: parsed.agent,
       children: runtime.children ?? [],
+      description: parsed.description,
       group: parsed.group,
       name: parsed.name,
       parent: parsed.parent,
@@ -255,6 +266,7 @@ export async function spawnNode(
     const transcriptDetected = Boolean(saved.sessionId && saved.transcript);
     return {
       agent: parsed.agent,
+      description: parsed.description,
       group: parsed.group,
       name: parsed.name,
       pane,
@@ -270,11 +282,9 @@ export async function spawnNode(
 }
 
 export function renderSpawnText(result: SpawnResult): string {
-  const lines = [
-    `${result.name} [${result.agent}]`,
-    `role: ${result.role}`,
-    `pane: ${result.pane}`,
-  ];
+  const lines = [`${result.name} [${result.agent}]`, `role: ${result.role}`];
+  if (result.description) lines.push(`description: ${result.description}`);
+  lines.push(`pane: ${result.pane}`);
   if (result.parent) lines.push(`parent: ${result.parent}`);
   if (result.group) lines.push(`group: ${result.group}`);
   if (result.sessionId) lines.push(`sessionId: ${result.sessionId}`);

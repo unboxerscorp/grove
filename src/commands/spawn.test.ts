@@ -111,6 +111,7 @@ function deps(opts: { bindTranscript?: boolean } = {}): {
         ctx.registry.nodes[nc.node.name] = {
           agent: nc.node.agent,
           children: [],
+          description: nc.node.description,
           group: nc.node.group,
           name: nc.node.name,
           parent: nc.node.parent,
@@ -222,6 +223,7 @@ describe("spawnNode", () => {
       ctx,
       {
         agent: "codex",
+        description: "Owns implementation tasks",
         group: "core",
         name: "maker",
         parent: "lead",
@@ -242,6 +244,7 @@ describe("spawnNode", () => {
     expect(state.launched[0]?.node).toEqual(
       expect.objectContaining({
         agent: "codex",
+        description: "Owns implementation tasks",
         group: "core",
         name: "maker",
         parent: "lead",
@@ -252,6 +255,7 @@ describe("spawnNode", () => {
       expect.objectContaining({
         agent: "codex",
         children: [],
+        description: "Owns implementation tasks",
         group: "core",
         name: "maker",
         parent: "lead",
@@ -266,6 +270,7 @@ describe("spawnNode", () => {
     expect(result).toEqual(
       expect.objectContaining({
         agent: "codex",
+        description: "Owns implementation tasks",
         name: "maker",
         pane: "dev10:2.0",
         transcriptDetected: true,
@@ -313,6 +318,7 @@ describe("spawnNode", () => {
   test("renders text and JSON summaries", () => {
     const result = {
       agent: "codex" as const,
+      description: "Owns implementation tasks",
       group: "core",
       name: "maker",
       pane: "dev10:2.0",
@@ -326,6 +332,7 @@ describe("spawnNode", () => {
     };
 
     expect(renderSpawnText(result)).toContain("maker [codex]");
+    expect(renderSpawnText(result)).toContain("description: Owns implementation tasks");
     expect(renderSpawnText(result)).toContain("pane: dev10:2.0");
     expect(JSON.parse(renderSpawnJson(result))).toEqual(result);
   });

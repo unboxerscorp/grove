@@ -6,6 +6,7 @@ export interface OrgNode {
   name: string;
   agent: AgentType;
   role?: string;
+  description?: string;
   parent?: string;
   children: string[];
   group?: string;
@@ -35,6 +36,7 @@ function orgNode(name: string, runtime: NodeRuntime, configured?: ResolvedNode):
   return {
     agent: runtime.agent ?? configured?.agent,
     children: [...(runtime.children ?? configured?.children ?? [])],
+    description: runtime.description ?? configured?.description,
     group: runtime.group ?? configured?.group,
     name,
     parent: runtime.parent ?? configured?.parent,
@@ -78,6 +80,11 @@ function roleSuffix(role?: string): string {
   return label ? ` ${label}` : "";
 }
 
+function descriptionLine(description: string | undefined, depth: number): string | null {
+  const label = description?.replace(/\s+/g, " ").trim();
+  return label ? `${"  ".repeat(depth + 1)}description: ${label}` : null;
+}
+
 export function renderOrgText(org: OrgJson): string {
   const byName = new Map(org.nodes.map((node) => [node.name, node]));
   const lines = [org.session];
@@ -87,6 +94,8 @@ export function renderOrgText(org: OrgJson): string {
     if (!node || seen.has(name)) return;
     seen.add(name);
     lines.push(`${"  ".repeat(depth)}${node.name} [${node.agent}]${roleSuffix(node.role)}`);
+    const description = descriptionLine(node.description, depth);
+    if (description) lines.push(description);
     for (const child of node.children) render(child, depth + 1);
   };
 

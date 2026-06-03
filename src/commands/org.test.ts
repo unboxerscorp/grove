@@ -29,6 +29,7 @@ function makeContext(runtimeNodes: Record<string, NodeRuntime>): Context {
       agent: "claude",
       children: ["maker"],
       cwd: "/tmp/grove",
+      description: "Coordinates the team",
       group: "core",
       name: "lead",
       role: "Lead",
@@ -37,6 +38,7 @@ function makeContext(runtimeNodes: Record<string, NodeRuntime>): Context {
       agent: "codex",
       children: [],
       cwd: "/tmp/grove",
+      description: "Builds TypeScript changes",
       group: "core",
       name: "maker",
       parent: "lead",
@@ -65,8 +67,21 @@ function makeContext(runtimeNodes: Record<string, NodeRuntime>): Context {
       cwd: "/tmp/grove",
       defaults: { agent: "codex" },
       nodes: {
-        lead: { agent: "claude", children: ["maker"], group: "core", role: "Lead" },
-        maker: { agent: "codex", children: [], group: "core", parent: "lead", role: "Builder" },
+        lead: {
+          agent: "claude",
+          children: ["maker"],
+          description: "Coordinates the team",
+          group: "core",
+          role: "Lead",
+        },
+        maker: {
+          agent: "codex",
+          children: [],
+          description: "Builds TypeScript changes",
+          group: "core",
+          parent: "lead",
+          role: "Builder",
+        },
         viewer: {
           agent: "antigravity",
           children: [],
@@ -92,8 +107,19 @@ describe("team graph config", () => {
     const config = GroveConfigSchema.parse({
       cwd: "/tmp/grove",
       nodes: {
-        lead: { agent: "claude", children: ["maker"], group: "core", role: "Lead" },
-        maker: { agent: "codex", group: "core", role: "Builder" },
+        lead: {
+          agent: "claude",
+          children: ["maker"],
+          description: "Coordinates the team",
+          group: "core",
+          role: "Lead",
+        },
+        maker: {
+          agent: "codex",
+          description: "Builds TypeScript changes",
+          group: "core",
+          role: "Builder",
+        },
       },
       session: "dev10",
     });
@@ -101,6 +127,7 @@ describe("team graph config", () => {
     expect(resolveNodes(config)).toEqual([
       expect.objectContaining({
         children: ["maker"],
+        description: "Coordinates the team",
         group: "core",
         name: "lead",
         role: "Lead",
@@ -122,6 +149,7 @@ describe("org rendering", () => {
       lead: {
         agent: "claude",
         children: ["maker"],
+        description: "Coordinates the team",
         group: "core",
         name: "lead",
         role: "Lead",
@@ -129,6 +157,7 @@ describe("org rendering", () => {
       maker: {
         agent: "codex",
         children: [],
+        description: "Builds TypeScript changes",
         group: "core",
         name: "maker",
         parent: "lead",
@@ -147,7 +176,9 @@ describe("org rendering", () => {
       [
         "dev10",
         "lead [claude] Lead",
+        "  description: Coordinates the team",
         "  maker [codex] Builder",
+        "    description: Builds TypeScript changes",
         "viewer [antigravity] Viewer",
         "",
         "groups",
@@ -162,6 +193,7 @@ describe("org rendering", () => {
       lead: {
         agent: "claude",
         children: [],
+        description: "Coordinates the team",
         group: "core",
         name: "lead",
         role: "Lead",
@@ -169,6 +201,7 @@ describe("org rendering", () => {
       maker: {
         agent: "codex",
         children: [],
+        description: "Builds TypeScript changes",
         group: "core",
         name: "maker",
         parent: "lead",
@@ -184,6 +217,7 @@ describe("org rendering", () => {
         {
           agent: "claude",
           children: ["maker"],
+          description: "Coordinates the team",
           group: "core",
           name: "lead",
           role: "Lead",
@@ -191,6 +225,7 @@ describe("org rendering", () => {
         {
           agent: "codex",
           children: [],
+          description: "Builds TypeScript changes",
           group: "core",
           name: "maker",
           parent: "lead",

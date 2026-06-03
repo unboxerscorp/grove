@@ -7,6 +7,7 @@ export interface NodeRuntime {
   name: string;
   agent: AgentType;
   role?: string;
+  description?: string;
   parent?: string;
   children?: string[];
   group?: string;

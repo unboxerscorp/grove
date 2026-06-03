@@ -17,6 +17,7 @@ export const NodeConfigSchema = z
     agent: AgentTypeSchema.optional(),
     model: z.string().optional(),
     role: z.string().optional(),
+    description: z.string().optional(),
     cwd: z.string().optional(),
     resume: z.string().optional(),
     // Explicit tmux target suffix, e.g. a window index or "window.pane" ("0.1").
@@ -51,6 +52,7 @@ export interface ResolvedNode {
   agent: AgentType;
   model?: string;
   role?: string;
+  description?: string;
   cwd: string;
   resume?: string;
   tmux?: string;
@@ -91,6 +93,7 @@ export function resolveNodes(config: GroveConfig): ResolvedNode[] {
       agent: n.agent ?? config.defaults.agent,
       model: n.model ?? config.defaults.model,
       role: n.role,
+      description: n.description,
       cwd: expandHome(n.cwd ?? config.cwd),
       resume: n.resume,
       tmux: n.tmux,

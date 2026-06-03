@@ -219,11 +219,14 @@ function tmuxPaneRuntime(ctx: Context, nc: NodeCtx): { tmux_pane?: string } {
   return nc.node.tmux ? { tmux_pane: `${ctx.config.session}:${nc.node.tmux}` } : {};
 }
 
-function teamRuntime(nc: NodeCtx): Pick<NodeRuntime, "children" | "group" | "parent" | "role"> {
-  const runtime: Pick<NodeRuntime, "children" | "group" | "parent" | "role"> = {
+function teamRuntime(
+  nc: NodeCtx,
+): Pick<NodeRuntime, "children" | "description" | "group" | "parent" | "role"> {
+  const runtime: Pick<NodeRuntime, "children" | "description" | "group" | "parent" | "role"> = {
     children: [...nc.node.children],
   };
   if (nc.node.role) runtime.role = nc.node.role;
+  if (nc.node.description) runtime.description = nc.node.description;
   if (nc.node.parent) runtime.parent = nc.node.parent;
   if (nc.node.group) runtime.group = nc.node.group;
   return runtime;
