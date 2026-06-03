@@ -210,7 +210,12 @@ function registerExisting(ctx: Context, nc: NodeCtx): void {
     agent: nc.node.agent,
     sessionId: sid,
     transcript: transcript || prev?.transcript,
+    ...tmuxPaneRuntime(ctx, nc),
   };
+}
+
+function tmuxPaneRuntime(ctx: Context, nc: NodeCtx): { tmux_pane?: string } {
+  return nc.node.tmux ? { tmux_pane: `${ctx.config.session}:${nc.node.tmux}` } : {};
 }
 
 async function launch(ctx: Context, nc: NodeCtx): Promise<void> {
@@ -262,6 +267,7 @@ async function launch(ctx: Context, nc: NodeCtx): Promise<void> {
     agent: node.agent,
     sessionId,
     transcript: transcript || undefined,
+    ...tmuxPaneRuntime(ctx, nc),
   };
 }
 
