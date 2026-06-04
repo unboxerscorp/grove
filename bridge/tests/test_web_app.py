@@ -9,6 +9,7 @@ import os
 import sqlite3
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -1560,6 +1561,166 @@ def test_usage_endpoint_scopes_project_and_handles_empty_data(tmp_path: Path) ->
     assert "999" not in rendered
     assert invalid.status_code == 400
     assert missing.status_code == 404
+
+
+def test_usage_trend_flags_spike_without_enforcement_and_keeps_agy_cost_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    secret = "xoxb-" + ("e" * 44)
+    now = int(time.time())
+    day = 86_400
+    for offset, tokens in zip((6, 5, 4, 3), (10, 12, 11, 60), strict=True):
+        complete_run_at(
+            store,
+            db_path,
+            board="dev10",
+            node="maker",
+            metadata={
+                "node": "maker",
+                "total_tokens": tokens,
+                "cost_usd": tokens / 100,
+                "transcript_path": f"/Users/chopin/private/{secret}.jsonl",
+            },
+            started_at=now - (offset * day),
+            created_by="member-1",
+        )
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="agy-node",
+        metadata={"node": "agy-node", "total_tokens": 40, "cost_usd": 999.0},
+        started_at=now - day,
+        created_by="member-1",
+    )
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="other",
+        metadata={"node": "other", "total_tokens": 777, "cost_usd": 7.77},
+        started_at=now - day,
+        created_by="member-2",
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "maker": {"name": "maker", "agent": "codex", "tmux_pane": "dev10:1.0"},
+            "agy-node": {"name": "agy-node", "agent": "agy", "tmux_pane": "dev10:1.1"},
+            "other": {"name": "other", "agent": "claude", "tmux_pane": "dev10:1.2"},
+        },
+    )
+
+    def fail_enforcement(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("trend endpoint must not call enforcement")
+
+    monkeypatch.setattr(store, "set_member_quota", fail_enforcement)
+    monkeypatch.setattr(store, "set_execution_global", fail_enforcement)
+    client = make_client(tmp_path, store, usage_trend_enabled=True)
+
+    response = client.get(
+        "/api/usage/trend?window=7d&member=member-1",
+        headers=auth_headers(client),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "advisory"
+    assert payload["actions"] == []
+    assert payload["enforcement"] == {"called": False}
+    nodes = {node["node"]: node for node in payload["nodes"]}
+    assert set(nodes) == {"agy-node", "maker"}
+    assert nodes["maker"]["anomaly"]["total_tokens"]["flagged"] is True
+    assert nodes["maker"]["anomaly"]["total_tokens"]["reason"] == "spike"
+    assert nodes["maker"]["forecast"]["label"] == "simple extrapolation; not a prediction"
+    assert nodes["maker"]["forecast"]["total_tokens_next_day"]["value"] == 109
+    assert nodes["maker"]["days"][-1]["totals"]["cost_usd_estimate"]["value"] == 0.6
+    assert nodes["agy-node"]["days"][0]["totals"]["cost_usd_estimate"] == {
+        "value": None,
+        "source": "estimate",
+        "confidence": "unknown",
+        "status": "unknown",
+    }
+    assert nodes["agy-node"]["trend"]["cost_usd_estimate"]["status"] == "unknown"
+    assert nodes["agy-node"]["anomaly"]["cost_usd_estimate"] == {
+        "flagged": False,
+        "reason": "excluded: agy cost is unknown",
+        "confidence": "unknown",
+    }
+    assert any("agy cost is unknown" in item for item in payload["limitations"])
+    rendered = json.dumps(payload)
+    assert secret not in rendered
+    assert "/Users/chopin" not in rendered
+    assert "999" not in rendered
+    assert "777" not in rendered
+    audits = store.list_audit_events(board="dev10", action="usage-trend")
+    assert audits[-1].payload["advisory_only"] is True
+
+
+def test_usage_trend_default_off_viewer_gate_project_scope_and_thin_data(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    secret = "xoxb-" + ("f" * 44)
+    now = int(time.time())
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node=f"/Users/chopin/{secret}",
+        metadata={"node": "unsafe", "total_tokens": 100},
+        started_at=now - 86_400,
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"maker10": {"name": "maker10", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"maker11": {"name": "maker11", "agent": "claude", "tmux_pane": "dev11:1.0"}},
+    )
+    default_client = make_client(tmp_path, store)
+    disabled = default_client.get("/api/usage/trend", headers=auth_headers(default_client))
+
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    viewer_client = make_client(
+        tmp_path,
+        store,
+        auth_mode=AuthMode.TEAM_COOKIE,
+        usage_trend_enabled=True,
+    )
+    login = viewer_client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+    viewer = viewer_client.get("/api/usage/trend?window=7d")
+
+    enabled_client = make_client(tmp_path, store, usage_trend_enabled=True)
+    scoped = enabled_client.get(
+        "/api/usage/trend?window=7d&project=dev11",
+        headers=auth_headers(enabled_client),
+    )
+    invalid = enabled_client.get(
+        "/api/usage/trend?window=365d",
+        headers=auth_headers(enabled_client),
+    )
+
+    assert disabled.status_code == 404
+    assert login.status_code == 200
+    assert viewer.status_code == 403
+    assert scoped.status_code == 200
+    payload = scoped.json()
+    assert payload["project"] == "dev11"
+    assert payload["nodes"] == []
+    assert "no runs matched" in payload["limitations"][-1]
+    assert invalid.status_code == 400
+    rendered = json.dumps(payload)
+    assert secret not in rendered
+    assert "/Users/chopin" not in rendered
 
 
 def test_retro_analytics_reports_advisory_insights_without_mutating_work(
@@ -4454,6 +4615,7 @@ def make_client(
     quota_enabled: bool = False,
     slack_intake_enabled: bool = False,
     retro_analytics_enabled: bool = False,
+    usage_trend_enabled: bool = False,
 ) -> TestClient:
     dist = tmp_path / "dist"
     dist.mkdir(exist_ok=True)
@@ -4484,6 +4646,7 @@ def make_client(
         quota_enabled=quota_enabled,
         slack_intake_enabled=slack_intake_enabled,
         retro_analytics_enabled=retro_analytics_enabled,
+        usage_trend_enabled=usage_trend_enabled,
     )
     return TestClient(
         create_app(config=config, store=store),

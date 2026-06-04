@@ -107,6 +107,10 @@ NODE_AGENTS = frozenset({"codex", "claude", "antigravity"})
 COST_AGENTS = ("codex", "claude", "agy")
 RETRO_ANALYTICS_SMALL_SAMPLE = 3
 RETRO_SLOW_RUN_SECONDS = 60 * 60
+USAGE_TREND_WINDOWS = {"7d": 7, "14d": 14, "30d": 30}
+USAGE_TREND_MIN_BASELINE_DAYS = 3
+USAGE_TREND_SPIKE_RATIO = 2.0
+USAGE_TREND_SPIKE_ZSCORE = 3.0
 RETRO_THEME_TERMS: dict[str, tuple[str, ...]] = {
     "testing": ("test", "tests", "pytest", "coverage", "flake", "flaky"),
     "blocked": ("blocked", "stuck", "waiting", "dependency"),
@@ -165,6 +169,7 @@ class WebAppConfig:
     quota_enabled: bool = False
     slack_intake_enabled: bool = False
     retro_analytics_enabled: bool = False
+    usage_trend_enabled: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dist_dir", self.dist_dir.expanduser())
@@ -264,6 +269,13 @@ class PlanCandidateDraft:
     cost_usd_signal: float | None
     cost_source: str
     cost_confidence: str
+
+
+@dataclass(frozen=True)
+class UsageTrendDay:
+    day: str
+    total_tokens: int | None
+    cost_usd: float | None
 
 
 class CommentPayload(BaseModel):
@@ -653,6 +665,26 @@ def create_app(
             window=window,
             node_filter=node,
             agent_filter=agent,
+        )
+
+    @app.get("/api/usage/trend")
+    def usage_trend_endpoint(
+        request: Request,
+        window: str = Query(default="14d"),
+        project_name: str | None = Query(default=None, alias="project"),
+        member: str | None = Query(default=None),
+    ) -> dict[str, object]:
+        auth = _require_auth(request)
+        _require_cost_access(auth)
+        config_value = _config(request)
+        _require_usage_trend_enabled(config_value)
+        project = _cost_project_context(request, project_name)
+        return _usage_trend_payload(
+            _store(request),
+            project=project,
+            auth=auth,
+            window=window,
+            member_filter=member,
         )
 
     @app.get("/api/ledger")
@@ -1962,6 +1994,307 @@ def _usage_payload(
         "days": _usage_days_payload(runs, agent_by_node=agent_by_node),
         "limitations": _usage_limitations(runs),
     }
+
+
+def _usage_trend_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    auth: AuthContext,
+    window: str,
+    member_filter: str | None,
+) -> dict[str, object]:
+    now = int(time.time())
+    window_payload, since = _usage_trend_window(window, now=now)
+    registry_nodes = _cost_registry_node_records(project.config)
+    agent_by_node = {_cost_node_name(node): _cost_node_agent(node) for node in registry_nodes}
+    clean_member = _usage_trend_member_filter(member_filter)
+    tasks = {task.id: task for task in store.list_tasks(board=project.board)}
+    runs = [
+        run
+        for run in store.list_runs_for_board(board=project.board, since=since)
+        if _usage_trend_run_matches_member(run, tasks=tasks, member_filter=clean_member)
+    ]
+    grouped = _runs_by_node(runs)
+    store.add_audit_event(
+        board=project.board,
+        kind="audit.usage.trend",
+        actor=_actor_payload(auth),
+        action="usage-trend",
+        target={"type": "usage_trend", "id": project.name},
+        status="ok",
+        summary="usage trend read",
+        payload={
+            "project": project.name,
+            "advisory_only": True,
+            "window": window_payload["name"],
+            "member": clean_member,
+        },
+    )
+    has_agy = any(
+        _usage_agent_for_node(node, agent_by_node=agent_by_node) == "agy" for node in grouped
+    )
+    limitations = [
+        "advisory-only: signals do not throttle, abort, kill, dispatch, or change config",
+        "trend and anomaly signals use explicit run metadata only",
+        "forecast is a simple labeled extrapolation, not a prediction",
+    ]
+    if not runs:
+        limitations.append("no runs matched the requested project and period")
+    if has_agy:
+        limitations.append("agy cost is unknown and excluded from cost anomaly checks")
+    return {
+        "ok": True,
+        "project": project.name,
+        "mode": "advisory",
+        "actions": [],
+        "enforcement": {"called": False},
+        "generated_at": _cost_metric(now, source="server", confidence="explicit"),
+        "window": window_payload,
+        "filters": {"member": _safe_public_text(clean_member) if clean_member else None},
+        "nodes": [
+            _usage_trend_node_payload(
+                node,
+                agent=_usage_agent_for_node(node, agent_by_node=agent_by_node),
+                runs=node_runs,
+            )
+            for node, node_runs in sorted(grouped.items())
+        ],
+        "limitations": limitations,
+    }
+
+
+def _usage_trend_window(window: str, *, now: int) -> tuple[dict[str, object], int]:
+    clean = window.strip().lower()
+    days = USAGE_TREND_WINDOWS.get(clean)
+    if days is None:
+        raise HTTPException(status_code=400, detail="invalid usage trend window")
+    since = now - (days * 86_400)
+    return (
+        {
+            "name": clean,
+            "days": _cost_metric(days, source="server", confidence="explicit"),
+            "since": _cost_metric(since, source="server", confidence="explicit"),
+            "until": _cost_metric(now, source="server", confidence="explicit"),
+        },
+        since,
+    )
+
+
+def _usage_trend_member_filter(member_filter: str | None) -> str | None:
+    if member_filter is None or not member_filter.strip():
+        return None
+    return _safe_public_text(member_filter.strip())
+
+
+def _usage_trend_run_matches_member(
+    run: Run,
+    *,
+    tasks: Mapping[str, Task],
+    member_filter: str | None,
+) -> bool:
+    if member_filter is None:
+        return True
+    task = tasks.get(run.task_id)
+    return task is not None and task.created_by == member_filter
+
+
+def _usage_trend_node_payload(
+    node: str,
+    *,
+    agent: str,
+    runs: Sequence[Run],
+) -> dict[str, object]:
+    day_runs = _runs_by_day(runs)
+    day_values = [
+        _usage_trend_day_value(day, runs=day_runs[day], agent=agent) for day in sorted(day_runs)
+    ]
+    token_values = [day.total_tokens for day in day_values if day.total_tokens is not None]
+    cost_values = [day.cost_usd for day in day_values if day.cost_usd is not None]
+    confidence = "low" if len(token_values) < USAGE_TREND_MIN_BASELINE_DAYS + 1 else "medium"
+    payload: dict[str, object] = {
+        "node": _safe_public_text(node),
+        "agent": agent,
+        "confidence": confidence,
+        "days": [
+            {
+                "day": day.day,
+                "totals": _usage_trend_day_totals(day_runs[day.day], agent=agent),
+            }
+            for day in day_values
+        ],
+        "trend": {
+            "total_tokens": _usage_trend_signal(token_values, confidence=confidence),
+            "cost_usd_estimate": _usage_trend_signal(
+                cost_values,
+                confidence=confidence,
+                unknown=agent == "agy",
+            ),
+        },
+        "anomaly": {
+            "total_tokens": _usage_anomaly_signal(token_values, confidence=confidence),
+            "cost_usd_estimate": _usage_anomaly_signal(
+                cost_values,
+                confidence=confidence,
+                excluded=agent == "agy",
+            ),
+        },
+        "forecast": {
+            "label": "simple extrapolation; not a prediction",
+            "total_tokens_next_day": _usage_forecast_signal(token_values, confidence=confidence),
+            "cost_usd_next_day": _usage_forecast_signal(
+                cost_values,
+                confidence=confidence,
+                unknown=agent == "agy",
+            ),
+        },
+    }
+    warnings = _usage_trend_warnings(day_values=day_values, agent=agent, confidence=confidence)
+    if warnings:
+        payload["warnings"] = warnings
+    return payload
+
+
+def _usage_trend_day_value(day: str, *, runs: Sequence[Run], agent: str) -> UsageTrendDay:
+    usage = _usage_from_runs(runs)
+    return UsageTrendDay(
+        day=day,
+        total_tokens=usage.total_tokens,
+        cost_usd=None if agent == "agy" else usage.cost_usd,
+    )
+
+
+def _usage_trend_day_totals(runs: Sequence[Run], *, agent: str) -> dict[str, object]:
+    usage = _usage_from_runs(runs)
+    if agent != "agy":
+        return _usage_totals_from_usage(usage, runs=len(runs))
+    return {
+        **_usage_totals_from_usage(
+            CostUsage(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+                cost_usd=None,
+                source=usage.source,
+                confidence=usage.confidence,
+                warnings=usage.warnings,
+            ),
+            runs=len(runs),
+        ),
+        "cost_usd_estimate": _cost_metric(
+            None,
+            source="estimate",
+            confidence="unknown",
+            status_value="unknown",
+        ),
+    }
+
+
+def _usage_trend_signal(
+    values: Sequence[float | int],
+    *,
+    confidence: str,
+    unknown: bool = False,
+) -> dict[str, object]:
+    if unknown:
+        return _cost_metric(None, source="estimate", confidence="unknown", status_value="unknown")
+    if len(values) < 2:
+        return _cost_metric(None, source="run_metadata", confidence="low", status_value="unknown")
+    baseline = _mean(values[:-1])
+    latest = float(values[-1])
+    delta = latest - baseline
+    return {
+        "latest": _cost_metric(round(latest, 6), source="run_metadata", confidence=confidence),
+        "baseline": _cost_metric(round(baseline, 6), source="run_metadata", confidence=confidence),
+        "delta": _cost_metric(round(delta, 6), source="run_metadata", confidence=confidence),
+        "ratio": _cost_metric(
+            round(latest / baseline, 6) if baseline > 0 else None,
+            source="run_metadata" if baseline > 0 else "none",
+            confidence=confidence if baseline > 0 else "unknown",
+            status_value="unknown" if baseline <= 0 else None,
+        ),
+    }
+
+
+def _usage_anomaly_signal(
+    values: Sequence[float | int],
+    *,
+    confidence: str,
+    excluded: bool = False,
+) -> dict[str, object]:
+    if excluded:
+        return {
+            "flagged": False,
+            "reason": "excluded: agy cost is unknown",
+            "confidence": "unknown",
+        }
+    if len(values) < USAGE_TREND_MIN_BASELINE_DAYS + 1:
+        return {
+            "flagged": False,
+            "reason": "insufficient baseline data",
+            "confidence": "low",
+        }
+    baseline_values = [float(value) for value in values[:-1]]
+    latest = float(values[-1])
+    baseline = _mean(baseline_values)
+    stdev = _population_stdev(baseline_values, mean=baseline)
+    ratio = latest / baseline if baseline > 0 else 0.0
+    zscore = (latest - baseline) / stdev if stdev > 0 else 0.0
+    flagged = ratio >= USAGE_TREND_SPIKE_RATIO or zscore >= USAGE_TREND_SPIKE_ZSCORE
+    return {
+        "flagged": flagged,
+        "reason": "spike" if flagged else "within baseline",
+        "latest": _cost_metric(round(latest, 6), source="run_metadata", confidence=confidence),
+        "baseline": _cost_metric(round(baseline, 6), source="run_metadata", confidence=confidence),
+        "ratio": _cost_metric(round(ratio, 6), source="run_metadata", confidence=confidence),
+        "zscore": _cost_metric(round(zscore, 6), source="run_metadata", confidence=confidence),
+        "confidence": confidence,
+    }
+
+
+def _usage_forecast_signal(
+    values: Sequence[float | int],
+    *,
+    confidence: str,
+    unknown: bool = False,
+) -> dict[str, object]:
+    if unknown:
+        return _cost_metric(None, source="estimate", confidence="unknown", status_value="unknown")
+    if len(values) < 2:
+        return _cost_metric(None, source="run_metadata", confidence="low", status_value="unknown")
+    latest = float(values[-1])
+    previous = float(values[-2])
+    forecast = max(0.0, latest + (latest - previous))
+    return _cost_metric(round(forecast, 6), source="run_metadata", confidence=confidence)
+
+
+def _usage_trend_warnings(
+    *,
+    day_values: Sequence[UsageTrendDay],
+    agent: str,
+    confidence: str,
+) -> list[str]:
+    warnings: list[str] = []
+    if confidence == "low":
+        warnings.append("thin data; trend and forecast confidence is low")
+    if agent == "agy":
+        warnings.append("agy cost is unknown and excluded from cost anomaly checks")
+    if not day_values:
+        warnings.append("no measured run metadata for this node in the window")
+    return warnings
+
+
+def _mean(values: Sequence[float | int]) -> float:
+    if not values:
+        return 0.0
+    return sum(float(value) for value in values) / len(values)
+
+
+def _population_stdev(values: Sequence[float], *, mean: float) -> float:
+    if not values:
+        return 0.0
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    return float(variance**0.5)
 
 
 def _ledger_payload(
@@ -4358,6 +4691,11 @@ def _require_retro_analytics_enabled(config: WebAppConfig) -> None:
         raise HTTPException(status_code=404, detail="retro analytics is not enabled")
 
 
+def _require_usage_trend_enabled(config: WebAppConfig) -> None:
+    if not config.usage_trend_enabled:
+        raise HTTPException(status_code=404, detail="usage trend is not enabled")
+
+
 def _require_answer_access(auth: AuthContext) -> None:
     _require_operator_access(auth, detail="answer requires operator role")
 
@@ -5700,6 +6038,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Enable read-only retro analytics insights.",
     )
+    parser.add_argument(
+        "--enable-usage-trend",
+        action="store_true",
+        help="Enable advisory-only usage trend and anomaly signals.",
+    )
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -5729,6 +6072,7 @@ def main(argv: list[str] | None = None) -> int:
         quota_enabled=args.enable_quotas,
         slack_intake_enabled=args.enable_intake,
         retro_analytics_enabled=args.enable_retro_analytics,
+        usage_trend_enabled=args.enable_usage_trend,
     )
     app = create_app(config=config)
     started_at = cast(int, app.state.started_at)
