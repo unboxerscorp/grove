@@ -7,6 +7,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import importlib
 import importlib.metadata
 import ipaddress
 import json
@@ -18,10 +19,11 @@ import subprocess
 import sys
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, cast
+from types import ModuleType
+from typing import Annotated, TypedDict, cast
 from urllib.parse import unquote, urlparse
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, status
@@ -287,6 +289,23 @@ class UsageTrendDay:
     cost_usd: float | None
 
 
+class NodeRecord(TypedDict):
+    name: str
+    agent: str
+    tmux_pane: str
+    session_id: str
+    status: str
+    role: str
+    parent: str
+    group: str
+    description: str
+    kind: str
+    exposed: bool
+    terminal_allowed: bool
+    input_allowed: bool
+    unavailable_reason: str
+
+
 class CommentPayload(BaseModel):
     author: str = Field(default="dev-room", min_length=1, max_length=200)
     body: str = Field(min_length=1, max_length=20_000)
@@ -345,6 +364,31 @@ class NodeUpdatePayload(BaseModel):
 
 class NodeSendPayload(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
+
+
+class MasterChatPayload(BaseModel):
+    message: str = Field(min_length=1, max_length=20_000)
+    conversation_id: str | None = Field(default=None, max_length=200)
+    request_id: str | None = Field(default=None, max_length=200)
+    origin_surface: str = Field(default="floating_web_chat", max_length=50)
+    origin_page: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def _coerce_message(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+            raise ValueError("message is required")
+        return value
+
+    @field_validator("origin_surface")
+    @classmethod
+    def _validate_origin_surface(cls, value: str) -> str:
+        if value not in {"floating_web_chat", "api"}:
+            raise ValueError("origin_surface must be floating_web_chat or api")
+        return value
 
 
 class AutoPickupTogglePayload(BaseModel):
@@ -936,6 +980,20 @@ def create_app(
         _require_auth(request)
         return [tool_status.to_payload() for tool_status in collect_auth_status()]
 
+    @app.post("/api/master/chat")
+    def master_chat_endpoint(
+        request: Request,
+        payload: MasterChatPayload,
+    ) -> dict[str, object]:
+        auth = _require_auth(request)
+        project = resolve_project(request)
+        return _handle_master_chat_request(
+            request,
+            payload,
+            auth=auth,
+            project=project,
+        )
+
     @app.get("/api/projects")
     def projects_endpoint(request: Request) -> list[dict[str, object]]:
         _require_auth(request)
@@ -1332,7 +1390,7 @@ def create_app(
         return {"ok": True, "comment": _comment_payload(comment)}
 
     @app.get("/api/nodes")
-    def nodes_endpoint(request: Request) -> list[dict[str, str]]:
+    def nodes_endpoint(request: Request) -> list[dict[str, object]]:
         _require_auth(request)
         return [_node_payload(node) for node in _registry_nodes(resolve_project(request).config)]
 
@@ -1397,7 +1455,7 @@ def create_app(
         project = resolve_project(request)
         node_record = _node_record_in_project(node, config=project.config)
         pane = node_record["tmux_pane"]
-        if not _pane_allowed(pane, config=project.config):
+        if not _pane_input_allowed(pane, config=project.config):
             raise HTTPException(status_code=404, detail="node not found")
         _check_node_input_rate_limit(request, project=project, node=node_record["name"])
         try:
@@ -2887,7 +2945,7 @@ def _retro_blocked_by_assignee(
 def _retro_outcomes_payload(
     runs: Sequence[Run],
     *,
-    nodes: Sequence[Mapping[str, str]],
+    nodes: Sequence[NodeRecord],
     confidence: str,
 ) -> dict[str, object]:
     node_info = {_safe_public_text(node["name"]): node for node in nodes}
@@ -2898,7 +2956,8 @@ def _retro_outcomes_payload(
         outcome = _retro_run_outcome(run)
         counts = node_counts.setdefault(node, _empty_outcome_counts())
         counts[outcome] = counts.get(outcome, 0) + 1
-        role = _safe_public_text(node_info.get(node, {}).get("role") or "unknown")
+        info = node_info.get(node)
+        role = _safe_public_text(info["role"] if info is not None else "unknown")
         role_bucket = role_counts.setdefault(role, _empty_outcome_counts())
         role_bucket[outcome] = role_bucket.get(outcome, 0) + 1
     return {
@@ -2910,8 +2969,12 @@ def _retro_outcomes_payload(
                 source="run_metadata",
                 confidence=confidence,
                 extra={
-                    "role": _safe_public_text(node_info.get(node, {}).get("role") or "unknown"),
-                    "agent": _safe_public_text(node_info.get(node, {}).get("agent") or "unknown"),
+                    "role": _safe_public_text(
+                        node_info[node]["role"] if node in node_info else "unknown"
+                    ),
+                    "agent": _safe_public_text(
+                        node_info[node]["agent"] if node in node_info else "unknown"
+                    ),
                 },
             )
             for node, counts in sorted(node_counts.items())
@@ -5041,6 +5104,194 @@ def _actor_payload(auth: AuthContext) -> dict[str, object]:
     return {"kind": "local", "id": "lead", "login": "lead", "role": "none"}
 
 
+def _handle_master_chat_request(
+    request: Request,
+    payload: MasterChatPayload,
+    *,
+    auth: AuthContext,
+    project: ProjectContext,
+) -> dict[str, object]:
+    module = _load_master_module()
+    master_actor = _master_actor(module, auth)
+    scope = _master_scope(module, project, payload)
+    context = _master_request_context(module, payload, actor=master_actor, scope=scope)
+    redacted_message = _safe_public_text(payload.message)
+    turn = _master_construct(
+        module,
+        "MasterTurn",
+        context=context,
+        message=payload.message,
+        redacted_message=redacted_message,
+    )
+    route_target = _master_feedback_route_target(module, project=project)
+    chat_request = _master_construct(
+        module,
+        "MasterChatRequest",
+        turn=turn,
+        route_target=route_target,
+    )
+    try:
+        handler = cast(Callable[[object], object], _master_attr(module, "handle_master_chat"))
+        response = handler(chat_request)
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=503, detail="master chat is not implemented") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=_safe_public_text(exc)) from exc
+    except Exception as exc:
+        LOGGER.warning("event=master_chat_error error=%s", _safe_log_text(exc))
+        raise HTTPException(status_code=503, detail="master chat is unavailable") from exc
+    _record_master_audit_events(
+        _store(request),
+        response,
+        auth=auth,
+        project=project,
+    )
+    rendered = _jsonable(response)
+    if not isinstance(rendered, dict):
+        raise HTTPException(status_code=503, detail="master chat returned invalid response")
+    return rendered
+
+
+def _load_master_module() -> ModuleType:
+    try:
+        return importlib.import_module("grove_bridge.master")
+    except Exception as exc:
+        LOGGER.warning("event=master_chat_import_failed error=%s", _safe_log_text(exc))
+        raise HTTPException(status_code=503, detail="master chat is unavailable") from exc
+
+
+def _master_attr(module: ModuleType, name: str) -> object:
+    try:
+        return getattr(module, name)
+    except AttributeError as exc:
+        raise HTTPException(status_code=503, detail="master chat is unavailable") from exc
+
+
+def _master_construct(module: ModuleType, name: str, **kwargs: object) -> object:
+    factory = cast(Callable[..., object], _master_attr(module, name))
+    return factory(**kwargs)
+
+
+def _master_feedback_route_target(module: ModuleType, *, project: ProjectContext) -> object:
+    route_class = _master_attr(module, "FeedbackRouteTarget")
+    grove_default = getattr(route_class, "grove_dev_default", None)
+    if not callable(grove_default):
+        raise HTTPException(status_code=503, detail="master chat is unavailable")
+    return cast(Callable[..., object], grove_default)(
+        board=project.board,
+        assignee="grove-master",
+    )
+
+
+def _master_actor(module: ModuleType, auth: AuthContext) -> object:
+    actor = _actor_payload(auth)
+    role = str(actor.get("role") or "none")
+    is_operator = auth.mode != AuthMode.TEAM_COOKIE or role in {"admin", "operator"}
+    return _master_construct(
+        module,
+        "MasterActor",
+        id=_actor_id(actor),
+        role="operator" if auth.mode == AuthMode.LOCAL_TOKEN else role,
+        is_operator=is_operator,
+        display_name=str(actor.get("login") or _actor_id(actor)),
+    )
+
+
+def _master_scope(
+    module: ModuleType,
+    project: ProjectContext,
+    payload: MasterChatPayload,
+) -> object:
+    origin_page = _safe_public_text(payload.origin_page) if payload.origin_page else None
+    return _master_construct(
+        module,
+        "MasterScope",
+        selected_project=project.name,
+        visible_projects=_visible_project_names(project),
+        origin_surface=payload.origin_surface,
+        origin_page=origin_page,
+    )
+
+
+def _master_request_context(
+    module: ModuleType,
+    payload: MasterChatPayload,
+    *,
+    actor: object,
+    scope: object,
+) -> object:
+    return _master_construct(
+        module,
+        "MasterRequestContext",
+        conversation_id=_master_request_id(payload.conversation_id, prefix="conv"),
+        request_id=_master_request_id(payload.request_id, prefix="req"),
+        actor=actor,
+        scope=scope,
+        metadata={"source": "web_app", "redacted": True},
+    )
+
+
+def _master_request_id(value: str | None, *, prefix: str) -> str:
+    if value is not None and value.strip():
+        return _safe_public_text(value)
+    return f"{prefix}_{secrets.token_urlsafe(12)}"
+
+
+def _visible_project_names(project: ProjectContext) -> tuple[str, ...]:
+    names = {project.name}
+    for payload in _project_payloads(project.config):
+        name = payload.get("name")
+        if isinstance(name, str) and name.strip():
+            names.add(name.strip())
+    return tuple(sorted(names))
+
+
+def _record_master_audit_events(
+    store: SQLiteBoardStore,
+    response: object,
+    *,
+    auth: AuthContext,
+    project: ProjectContext,
+) -> None:
+    actor = _actor_payload(auth)
+    events = getattr(response, "audit_events", ())
+    if not isinstance(events, Sequence) or isinstance(events, str | bytes):
+        return
+    for event in events:
+        payload = _jsonable(event)
+        if not isinstance(payload, dict):
+            continue
+        event_kind = str(payload.get("kind") or "master.event")
+        store.add_audit_event(
+            board=project.board,
+            kind=f"audit.{event_kind}",
+            actor=actor,
+            action=event_kind,
+            target={"type": "master", "id": str(payload.get("request_id") or "")},
+            status="ok",
+            summary=event_kind,
+            payload={
+                "project": project.name,
+                "master_event": payload,
+                "redacted": True,
+            },
+        )
+
+
+def _jsonable(value: object) -> object:
+    if is_dataclass(value) and not isinstance(value, type):
+        return {field.name: _jsonable(getattr(value, field.name)) for field in fields(value)}
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    return _safe_public_text(value)
+
+
 def _actor_id(actor: Mapping[str, object]) -> str:
     actor_id = actor.get("id")
     return actor_id if isinstance(actor_id, str) else "system"
@@ -5797,7 +6048,7 @@ def _ensure_project_master_node(
             "description": "Project master/orchestrator.",
         }
     _write_registry_atomic(path, registry)
-    return dict(_project_master_node())
+    return dict(_project_master_node(config))
 
 
 def _load_project(payload: ProjectLoadPayload) -> dict[str, object]:
@@ -5866,7 +6117,7 @@ def _read_json_mapping(path: Path, *, error_detail: str) -> dict[str, object]:
     return cast(dict[str, object], loaded)
 
 
-def _registry_nodes(config: WebAppConfig) -> list[dict[str, str]]:
+def _registry_nodes(config: WebAppConfig) -> list[dict[str, object]]:
     return [
         {
             "name": node["name"],
@@ -5875,40 +6126,129 @@ def _registry_nodes(config: WebAppConfig) -> list[dict[str, str]]:
             "session_id": node["session_id"],
             "status": node["status"],
             "description": node["description"],
+            "role": node["role"],
+            "parent": node["parent"],
+            "group": node["group"],
+            "kind": node["kind"],
+            "exposed": node["exposed"],
+            "terminal_allowed": node["terminal_allowed"],
+            "input_allowed": node["input_allowed"],
+            "unavailable_reason": node["unavailable_reason"],
         }
-        for node in _registry_node_records(config)
+        for node in _org_node_records(config)
     ]
 
 
-def _registry_node_records(config: WebAppConfig) -> list[dict[str, str]]:
+def _registry_node_records(config: WebAppConfig) -> list[NodeRecord]:
     raw_nodes = _load_registry(config).get("nodes")
     if not isinstance(raw_nodes, dict):
         return []
-    nodes: list[dict[str, str]] = []
+    nodes: list[NodeRecord] = []
     for key, raw_node in raw_nodes.items():
-        if not isinstance(key, str) or not isinstance(raw_node, dict):
+        if not isinstance(key, str):
+            continue
+        if not isinstance(raw_node, dict):
+            nodes.append(
+                _node_record(
+                    name=key,
+                    agent="unknown",
+                    pane="",
+                    session_id="",
+                    status="error",
+                    role="",
+                    parent="",
+                    group="",
+                    description="",
+                    kind="registry",
+                    config=config,
+                    unavailable_reason="invalid node record",
+                )
+            )
             continue
         node = _string_mapping(raw_node)
         pane = _mapping_string(node, "tmux_pane")
         name = _mapping_string(node, "name") or key
-        if pane is None or not _valid_exposed_tmux_pane(pane, config=config):
-            continue
         nodes.append(
-            {
-                "name": name,
-                "agent": _mapping_string(node, "agent") or "unknown",
-                "tmux_pane": pane,
-                "session_id": _mapping_string(node, "session_id")
+            _node_record(
+                name=name,
+                agent=_mapping_string(node, "agent") or "unknown",
+                pane=pane or "",
+                session_id=_mapping_string(node, "session_id")
                 or _mapping_string(node, "sessionId")
                 or "",
-                "status": _node_status(node),
-                "role": _mapping_string(node, "role") or "",
-                "parent": _mapping_string(node, "parent") or "",
-                "group": _mapping_string(node, "group") or "",
-                "description": _mapping_string(node, "description") or "",
-            }
+                status=_node_status(node),
+                role=_mapping_string(node, "role") or "",
+                parent=_mapping_string(node, "parent") or "",
+                group=_mapping_string(node, "group") or "",
+                description=_mapping_string(node, "description") or "",
+                kind="registry",
+                config=config,
+            )
         )
     return sorted(nodes, key=lambda node: node["name"])
+
+
+def _node_record(
+    *,
+    name: str,
+    agent: str,
+    pane: str,
+    session_id: str,
+    status: str,
+    role: str,
+    parent: str,
+    group: str,
+    description: str,
+    kind: str,
+    config: WebAppConfig,
+    unavailable_reason: str | None = None,
+) -> NodeRecord:
+    reason = unavailable_reason
+    if reason is None:
+        reason = _node_unavailable_reason(pane, kind=kind, config=config)
+    exposed = reason == ""
+    status = _node_record_status(status, reason=reason, kind=kind)
+    input_allowed = exposed and _valid_input_tmux_pane(pane, config=config)
+    return {
+        "name": name,
+        "agent": agent,
+        "tmux_pane": pane,
+        "session_id": session_id,
+        "status": status,
+        "role": role,
+        "parent": parent,
+        "group": group,
+        "description": description,
+        "kind": kind,
+        "exposed": exposed,
+        "terminal_allowed": exposed,
+        "input_allowed": input_allowed,
+        "unavailable_reason": reason,
+    }
+
+
+def _node_record_status(status: str, *, reason: str, kind: str) -> str:
+    if kind == "meta" or not reason:
+        return status
+    clean = status.strip().lower()
+    if clean in {"dead", "stale", "error", "blocked"}:
+        return clean
+    return "dead"
+
+
+def _node_unavailable_reason(pane: str, *, kind: str, config: WebAppConfig) -> str:
+    if kind == "meta":
+        return "meta node has no pane"
+    if not pane:
+        return "no live pane"
+    match = TMUX_PANE_RE.fullmatch(pane)
+    if match is None:
+        return "tmux_pane invalid"
+    if match.group("session") != config.registry_session:
+        return "tmux_pane outside project session"
+    if not _canonical_tmux_pane(pane, config=config):
+        return "tmux_pane invalid"
+    return ""
 
 
 def _project_master_exists(config: WebAppConfig) -> bool:
@@ -5928,11 +6268,11 @@ def _assignee_candidates(config: WebAppConfig) -> list[dict[str, object]]:
     for node in _registry_node_records(config):
         by_name[node["name"]] = _assignee_candidate_payload(node, default=default)
     if _project_master_exists(config):
-        master = _project_master_node()
+        master = _project_master_node(config)
         by_name[PROJECT_MASTER_NODE_NAME] = _assignee_candidate_payload(master, default=default)
     if LEAD_NODE_NAME not in by_name:
         by_name[LEAD_NODE_NAME] = _assignee_candidate_payload(
-            _external_lead_node(),
+            _external_lead_node(config),
             default=default,
         )
     return sorted(
@@ -5942,7 +6282,7 @@ def _assignee_candidates(config: WebAppConfig) -> list[dict[str, object]]:
 
 
 def _assignee_candidate_payload(
-    node: Mapping[str, str],
+    node: NodeRecord,
     *,
     default: str,
 ) -> dict[str, object]:
@@ -5969,15 +6309,19 @@ def _validated_task_assignee(value: str | None, *, project: ProjectContext) -> s
     return assignee
 
 
-def _org_payload(config: WebAppConfig) -> dict[str, object]:
+def _org_node_records(config: WebAppConfig) -> list[NodeRecord]:
     nodes = _registry_node_records(config)
     if _project_master_exists(config) and not any(
         node["name"] == PROJECT_MASTER_NODE_NAME for node in nodes
     ):
-        nodes.append(_project_master_node())
+        nodes.append(_project_master_node(config))
     if not any(node["name"] == LEAD_NODE_NAME for node in nodes):
-        nodes.append(_external_lead_node())
-    nodes = sorted(nodes, key=lambda node: node["name"])
+        nodes.append(_external_lead_node(config))
+    return sorted(nodes, key=lambda node: node["name"])
+
+
+def _org_payload(config: WebAppConfig) -> dict[str, object]:
+    nodes = _org_node_records(config)
     names = {node["name"] for node in nodes}
     children_by_parent: dict[str, list[str]] = {name: [] for name in names}
     groups: dict[str, list[str]] = {}
@@ -6006,6 +6350,11 @@ def _org_payload(config: WebAppConfig) -> dict[str, object]:
                 "session_id": node["session_id"],
                 "status": node["status"],
                 "description": node["description"],
+                "kind": node["kind"],
+                "exposed": node["exposed"],
+                "terminal_allowed": node["terminal_allowed"],
+                "input_allowed": node["input_allowed"],
+                "unavailable_reason": node["unavailable_reason"],
             }
         )
 
@@ -6022,35 +6371,39 @@ def _org_payload(config: WebAppConfig) -> dict[str, object]:
     }
 
 
-def _project_master_node() -> dict[str, str]:
-    return {
-        "name": PROJECT_MASTER_NODE_NAME,
-        "agent": "claude",
-        "tmux_pane": "",
-        "session_id": "",
-        "status": "external",
-        "role": "orchestrator",
-        "parent": LEAD_NODE_NAME,
-        "group": "",
-        "description": "Project master/orchestrator.",
-    }
+def _project_master_node(config: WebAppConfig) -> NodeRecord:
+    return _node_record(
+        name=PROJECT_MASTER_NODE_NAME,
+        agent="claude",
+        pane="",
+        session_id="",
+        status="external",
+        role="orchestrator",
+        parent=LEAD_NODE_NAME,
+        group="",
+        description="Project master/orchestrator.",
+        kind="meta",
+        config=config,
+    )
 
 
-def _external_lead_node() -> dict[str, str]:
-    return {
-        "name": LEAD_NODE_NAME,
-        "agent": "claude",
-        "tmux_pane": "",
-        "session_id": "",
-        "status": "external",
-        "role": "orchestrator",
-        "parent": "",
-        "group": "",
-        "description": "External lead/orchestrator.",
-    }
+def _external_lead_node(config: WebAppConfig) -> NodeRecord:
+    return _node_record(
+        name=LEAD_NODE_NAME,
+        agent="claude",
+        pane="",
+        session_id="",
+        status="external",
+        role="orchestrator",
+        parent="",
+        group="",
+        description="External lead/orchestrator.",
+        kind="meta",
+        config=config,
+    )
 
 
-def _org_parent(node: Mapping[str, str], *, names: set[str]) -> str:
+def _org_parent(node: NodeRecord, *, names: set[str]) -> str:
     name = node["name"]
     parent = node["parent"]
     if name == LEAD_NODE_NAME:
@@ -6076,16 +6429,38 @@ def _node_status(node: Mapping[str, object]) -> str:
 
 
 def _allowed_panes(config: WebAppConfig) -> set[str]:
-    return {node["tmux_pane"] for node in _registry_nodes(config)}
+    return {
+        node["tmux_pane"] for node in _registry_node_records(config) if node["terminal_allowed"]
+    }
+
+
+def _allowed_input_panes(config: WebAppConfig) -> set[str]:
+    return {node["tmux_pane"] for node in _registry_node_records(config) if node["input_allowed"]}
 
 
 def _pane_allowed(pane: str, *, config: WebAppConfig) -> bool:
     return _valid_exposed_tmux_pane(pane, config=config) and pane in _allowed_panes(config)
 
 
+def _pane_input_allowed(pane: str, *, config: WebAppConfig) -> bool:
+    return _valid_input_tmux_pane(pane, config=config) and pane in _allowed_input_panes(config)
+
+
 def _valid_exposed_tmux_pane(pane: str, *, config: WebAppConfig) -> bool:
+    return _tmux_pane_parts(pane, config=config) is not None and _canonical_tmux_pane(
+        pane,
+        config=config,
+    )
+
+
+def _valid_input_tmux_pane(pane: str, *, config: WebAppConfig) -> bool:
     parts = _tmux_pane_parts(pane, config=config)
-    return parts is not None and parts != (0, 0)
+    return parts is not None and parts != (0, 0) and _canonical_tmux_pane(pane, config=config)
+
+
+def _canonical_tmux_pane(pane: str, *, config: WebAppConfig) -> bool:
+    parts = _tmux_pane_parts(pane, config=config)
+    return parts is not None and pane == f"{config.registry_session}:{parts[0]}.{parts[1]}"
 
 
 def _tmux_pane_parts(pane: str, *, config: WebAppConfig) -> tuple[int, int] | None:
@@ -6189,10 +6564,13 @@ def _node_name_from_spawn_result(payload: Mapping[str, object], *, fallback: str
 
 
 def _node_in_project(name: str, *, config: WebAppConfig) -> str:
-    return _node_record_in_project(name, config=config)["name"]
+    node = _node_record_in_project(name, config=config)
+    if not node["exposed"]:
+        raise HTTPException(status_code=404, detail="node not found")
+    return node["name"]
 
 
-def _node_record_in_project(name: str, *, config: WebAppConfig) -> dict[str, str]:
+def _node_record_in_project(name: str, *, config: WebAppConfig) -> NodeRecord:
     node_name = _validated_node_ref(name, field_name="node")
     for node in _registry_node_records(config):
         if node["name"] == node_name:
@@ -6201,7 +6579,7 @@ def _node_record_in_project(name: str, *, config: WebAppConfig) -> dict[str, str
 
 
 def _node_connect_payload(
-    node: Mapping[str, str],
+    node: NodeRecord,
     *,
     project: ProjectContext,
 ) -> dict[str, object]:
@@ -6624,7 +7002,7 @@ def _slack_thread_payload(thread: SlackThread) -> dict[str, object]:
     }
 
 
-def _node_payload(node: dict[str, str]) -> dict[str, str]:
+def _node_payload(node: dict[str, object]) -> dict[str, object]:
     return node
 
 

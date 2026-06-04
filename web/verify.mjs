@@ -1244,22 +1244,26 @@ async function main() {
     // is a required node dropdown (default project-master), operator-only web→node
     // send box (viewer locked), copyable SSH/connect command per node. The
     // terminal is attached to node "root" from the n5 test above.
+    // V28 access flags: "root" is the LEAD pane (grove:0.0) — terminal_allowed but
+    // NOT input_allowed: it streams (viewable) yet shows no send box and no SSH
+    // connect (view-only). The backend /send REJECTS the 0.0 pane (404).
     await page.waitForSelector(".dr-term__tools", { timeout: 8000 });
-    // SSH connect: button -> copyable tmux attach command.
-    await page.$eval(".dr-term__connect-btn", (el) => el.click());
-    await page.waitForSelector(".dr-term__connect-code", { timeout: 6000 });
-    const sshCmd = await page.evaluate(() => ({
-      cmd: (document.querySelector(".dr-term__connect-code")?.textContent ?? "").trim(),
-      copyBtn: !!document.querySelector(".dr-term__connect-copy"),
-      fetched: window.__MOCK__?.nodeConnectFetched ?? "",
+    const leadTerm = await page.evaluate(() => ({
+      toolsPresent: !!document.querySelector(".dr-term__tools"),
+      viewOnly: !!document.querySelector('.dr-term__send-viewer[data-viewonly="1"]'),
+      noSendBox: document.querySelectorAll(".dr-term__send-input").length === 0,
+      noConnect: document.querySelectorAll(".dr-term__connect-btn").length === 0,
+      streaming: (document.querySelector(".dr-term .xterm-rows")?.textContent ?? "").trim().length > 0,
     }));
-    // operator send box: present; sending records the POST (terminal streams it).
-    const sendBoxOperator = await page.evaluate(() => !!document.querySelector(".dr-term__send-input"));
-    await page.type(".dr-term__send-input", "echo hi");
-    await page.$eval(".dr-term__send-btn", (el) => el.click());
-    await page.waitForFunction(() => window.__MOCK__?.nodeSent != null, { timeout: 6000 });
-    const nodeSent = await page.evaluate(() => window.__MOCK__?.nodeSent ?? null);
-    // viewer lock: switch to another node as a viewer -> send box hidden + note.
+    // proves no false positive: sending to the lead pane (0.0) is rejected (404).
+    const send00 = await page.evaluate(async () => {
+      const res = await fetch("/api/nodes/root/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Grove-Project": "dev10" },
+        body: JSON.stringify({ text: "blocked" }),
+      });
+      return res.status;
+    });
     const pickRail = (name) =>
       page.evaluate((n) => {
         const btn = Array.from(document.querySelectorAll(".dr-node")).find(
@@ -1267,15 +1271,31 @@ async function main() {
         );
         btn?.click();
       }, name);
-    await page.evaluate(() => window.__MOCK__.setViewer(true));
+    // switch to a worker node (backend, grove:0.1 — input_allowed): SSH + send work.
     await pickRail("backend");
+    await page.waitForSelector(".dr-term__connect-btn", { timeout: 8000 });
+    await page.$eval(".dr-term__connect-btn", (el) => el.click());
+    await page.waitForSelector(".dr-term__connect-code", { timeout: 6000 });
+    const sshCmd = await page.evaluate(() => ({
+      cmd: (document.querySelector(".dr-term__connect-code")?.textContent ?? "").trim(),
+      copyBtn: !!document.querySelector(".dr-term__connect-copy"),
+      fetched: window.__MOCK__?.nodeConnectFetched ?? "",
+    }));
+    const sendBoxOperator = await page.evaluate(() => !!document.querySelector(".dr-term__send-input"));
+    await page.type(".dr-term__send-input", "echo hi");
+    await page.$eval(".dr-term__send-btn", (el) => el.click());
+    await page.waitForFunction(() => window.__MOCK__?.nodeSent != null, { timeout: 6000 });
+    const nodeSent = await page.evaluate(() => window.__MOCK__?.nodeSent ?? null);
+    // viewer lock on a worker node -> send box hidden + note.
+    await page.evaluate(() => window.__MOCK__.setViewer(true));
+    await pickRail("frontend");
     await page.waitForSelector(".dr-term__send-viewer", { timeout: 8000 });
     const sendViewer = await page.evaluate(() => ({
       viewerNote: !!document.querySelector(".dr-term__send-viewer"),
       sendInput: document.querySelectorAll(".dr-term__send-input").length, // hidden for viewers
     }));
     await page.evaluate(() => window.__MOCK__.setViewer(false));
-    await pickRail("frontend");
+    await pickRail("backend");
     await page.waitForSelector(".dr-term__send-input", { timeout: 8000 });
 
     // board: no board-select + required assignee dropdown defaulting to master.
@@ -1314,13 +1334,21 @@ async function main() {
       assignee.options >= 2 &&
       assignee.hasMaster &&
       assignee.noFreeInput &&
-      // SSH/connect command (copyable).
+      // lead pane (root, 0.0): view-only terminal — streams, but no send/connect;
+      // and the backend rejects /send to 0.0 (no false positive).
+      leadTerm.toolsPresent &&
+      leadTerm.viewOnly &&
+      leadTerm.noSendBox &&
+      leadTerm.noConnect &&
+      leadTerm.streaming &&
+      send00 === 404 &&
+      // SSH/connect command (copyable) on a worker node.
       /tmux attach/.test(sshCmd.cmd) &&
       sshCmd.copyBtn &&
-      sshCmd.fetched === "root" &&
-      // operator web→node send box: records a POST.
+      sshCmd.fetched === "backend" &&
+      // operator web→node send box on a worker node: records a POST.
       sendBoxOperator &&
-      nodeSent?.node === "root" &&
+      nodeSent?.node === "backend" &&
       nodeSent?.text === "echo hi" &&
       // viewer is locked out of node input.
       sendViewer.viewerNote &&
@@ -2731,6 +2759,126 @@ async function main() {
       });
     });
 
+    // --- MasterChat (floating operator chat) — isolated page --------------
+    // Drives the v1.27 widget against the mock backend contract on a throwaway
+    // page (no effect on the main page's state/screenshot/diag): operator sees
+    // the FAB; the panel opens; the history GET 405 is graceful (no fatal, no
+    // "unavailable" banner); an answer send increments masterChatSent + carries
+    // origin "floating_web_chat" and renders answer.text; a preview send renders
+    // the proposal bubble; and a viewer (?viewer=1) never sees the launcher.
+    const mpage = await browser.newPage();
+    await mpage.setViewport({ width: 1320, height: 860, deviceScaleFactor: 2 });
+    const mchatErrors = [];
+    mpage.on("pageerror", (e) => mchatErrors.push("pageerror: " + String(e)));
+    mpage.on("console", (m) => {
+      if (m.type() !== "error") return;
+      const tx = m.text();
+      if (/Failed to load resource|net::|fonts\.googleapis/.test(tx)) return;
+      mchatErrors.push("console: " + tx);
+    });
+
+    await mpage.goto("file://" + htmlPath, { waitUntil: "load" });
+    await mpage.waitForSelector(".dr-mchat__fab", { timeout: 8000 });
+    const mchatFabPresent = (await mpage.$(".dr-mchat__fab")) !== null;
+    await mpage.click(".dr-mchat__fab");
+    await mpage.waitForSelector(".dr-mchat__panel", { timeout: 5000 });
+    await mpage.waitForSelector(".dr-mchat__empty", { timeout: 5000 });
+    const mchatHistory = await mpage.evaluate(() => ({
+      empty: !!document.querySelector(".dr-mchat__empty"),
+      notice: !!document.querySelector(".dr-mchat__notice"),
+    }));
+
+    // answer path: send a question -> masterChatSent++, origin, user bubble sent,
+    // master bubble from answer.text.
+    const mchatSentBefore = await mpage.evaluate(() => window.__MOCK__?.masterChatSent ?? 0);
+    await mpage.type(".dr-mchat__input", "what is the current status");
+    await mpage.keyboard.press("Enter");
+    await mpage.waitForFunction(
+      () => document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble').length >= 1,
+      { timeout: 5000 },
+    );
+    const mchatAnswer = await mpage.evaluate(() => {
+      const masters = Array.from(
+        document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble'),
+      ).map((b) => b.textContent ?? "");
+      return {
+        sent: window.__MOCK__?.masterChatSent ?? 0,
+        origin: window.__MOCK__?.masterChatOrigin ?? "",
+        userSent: !!document.querySelector('.dr-mchat__row[data-role="user"][data-status="sent"]'),
+        masterText: masters[masters.length - 1] ?? "",
+      };
+    });
+
+    // preview path: an "add …" message -> proposal summary master bubble.
+    await mpage.type(".dr-mchat__input", "add a login page");
+    await mpage.keyboard.press("Enter");
+    await mpage.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble')).some((b) =>
+          /proposed:|review and confirm/.test(b.textContent ?? ""),
+        ),
+      { timeout: 5000 },
+    );
+    const mchatPreview = await mpage.evaluate(() => {
+      const masters = Array.from(
+        document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble'),
+      ).map((b) => b.textContent ?? "");
+      return {
+        masterBubbles: masters.length,
+        hasProposal: masters.some((t) => /proposed:|review and confirm/.test(t)),
+      };
+    });
+
+    // denied path: a deploy/destructive message -> operator_gate.reason master bubble.
+    await mpage.type(".dr-mchat__input", "deploy to prod");
+    await mpage.keyboard.press("Enter");
+    await mpage.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble')).some((b) =>
+          /operator approval required/.test(b.textContent ?? ""),
+        ),
+      { timeout: 5000 },
+    );
+    const mchatDenied = await mpage.evaluate(() =>
+      Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble')).some((b) =>
+        /operator approval required/.test(b.textContent ?? ""),
+      ),
+    );
+
+    // operator-only: a viewer mount (?viewer=1) hides the launcher entirely.
+    await mpage.goto("file://" + htmlPath + "?viewer=1", { waitUntil: "load" });
+    await mpage.waitForSelector(".devroom .dr-brand", { timeout: 8000 });
+    await mpage.waitForFunction(() => (window.__MOCK__?.meFetches ?? 0) >= 1, { timeout: 5000 });
+    const mchatViewerHidden = (await mpage.$(".dr-mchat__fab")) === null;
+    await mpage.close();
+
+    const mchat = {
+      fabPresent: mchatFabPresent,
+      history: mchatHistory,
+      answer: {
+        sentIncremented: mchatAnswer.sent === mchatSentBefore + 1,
+        origin: mchatAnswer.origin,
+        userSent: mchatAnswer.userSent,
+        hasAnswer: /follow up/.test(mchatAnswer.masterText),
+      },
+      preview: mchatPreview,
+      denied: mchatDenied,
+      viewerHidden: mchatViewerHidden,
+      errors: mchatErrors.length,
+    };
+    const masterChatOk =
+      mchat.fabPresent &&
+      mchat.history.empty &&
+      mchat.history.notice === false &&
+      mchat.answer.sentIncremented &&
+      mchat.answer.origin === "floating_web_chat" &&
+      mchat.answer.userSent &&
+      mchat.answer.hasAnswer &&
+      mchat.preview.hasProposal &&
+      mchat.denied &&
+      mchat.viewerHidden &&
+      mchat.errors === 0;
+
     const wsOk =
       diag.ticketMethod === "POST" &&
       !!diag.ticketHeader &&
@@ -2820,6 +2968,7 @@ async function main() {
       execLoopOk &&
       delegationEdgesOk &&
       delegateOk &&
+      masterChatOk &&
       diag.projectHeader === projAfterLoad &&
       errors.length === 0;
 
@@ -2862,7 +3011,7 @@ async function main() {
       n4SparkOff,
       n5Ok,
       projModelOk,
-      projModel: { noBoardSelect, assignee, sshCmd, sendBoxOperator, nodeSent, sendViewer },
+      projModel: { noBoardSelect, assignee, leadTerm, send00, sshCmd, sendBoxOperator, nodeSent, sendViewer },
       n5Reconnecting,
       n5Relive,
       n5TermReconnected,
@@ -2957,6 +3106,8 @@ async function main() {
       projAfterNew,
       projAfterLoad,
       loadResult,
+      masterChatOk,
+      mchat,
     };
     if (!ok) {
       if (errors.length) console.error(errors.join("\n"));

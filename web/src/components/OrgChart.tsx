@@ -461,9 +461,11 @@ function NodeDrawer(props: {
             {fact(t("node.fact.session"), node.session_id)}
           </div>
 
-          <button type="button" className="dr-btn dr-btn--ghost node-drawer__term" onClick={() => onTerminal(node)}>
-            {t("org.openTerminal")} ↗
-          </button>
+          {node.terminal_allowed !== false && (
+            <button type="button" className="dr-btn dr-btn--ghost node-drawer__term" onClick={() => onTerminal(node)}>
+              {t("org.openTerminal")} ↗
+            </button>
+          )}
 
           <form className="dr-drawer__section node-drawer__assign-sec" onSubmit={assign}>
             <h3 className="dr-drawer__h">{t("node.assign")}</h3>
@@ -1016,14 +1018,16 @@ export function OrgChart(props: {
                 {node.group && <div className="org-node__group">{node.group}</div>}
 
                 <div className="org-node__actions">
-                  <button
-                    type="button"
-                    className="org-act org-act--term"
-                    onPointerDown={stopPD}
-                    onClick={() => onOpenTerminal(node.tmux_pane)}
-                  >
-                    {t("org.openTerminal")}
-                  </button>
+                  {node.terminal_allowed !== false && (
+                    <button
+                      type="button"
+                      className="org-act org-act--term"
+                      onPointerDown={stopPD}
+                      onClick={() => onOpenTerminal(node.tmux_pane)}
+                    >
+                      {t("org.openTerminal")}
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="org-act org-act--info"

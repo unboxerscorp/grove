@@ -64,8 +64,11 @@ export function NodeList(props: {
           <button
             key={n.tmux_pane || n.session_id || n.name}
             type="button"
-            className={cx("dr-node", n.tmux_pane === selectedPane && "is-selected")}
+            data-node={n.name}
+            className={cx("dr-node", n.tmux_pane === selectedPane && "is-selected", n.terminal_allowed === false && "is-locked")}
             style={{ animationDelay: `${Math.min(i, 14) * 26}ms` }}
+            disabled={n.terminal_allowed === false}
+            title={n.terminal_allowed === false ? t("nodes.notViewable") : undefined}
             onClick={() => onSelect(n.tmux_pane)}
           >
             <span className={cx("dr-node__dot", statusClass(n.status))} />

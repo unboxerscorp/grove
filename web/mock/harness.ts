@@ -69,6 +69,29 @@ const ORG_NODES: OrgNodeMock[] = [
   { name: "docs", agent: "codex", role: "문서", parent: "backend", group: "build", tmux_pane: "grove:1.0", session_id: "sess-docs", status: "done" },
 ];
 
+// v1.28 access flags — mirror web_app.py NodeRecord + _pane_allowed: a node with
+// a valid worker pane is fully exposed; the LEAD pane (window.pane == 0.0) is
+// terminal_allowed (viewable) but NOT input_allowed (no send / no connect);
+// a node with no/invalid pane (meta) is neither.
+function nodeAccessFlags(pane: string): {
+  exposed: boolean;
+  terminal_allowed: boolean;
+  input_allowed: boolean;
+  unavailable_reason: string;
+} {
+  const match = /^[A-Za-z0-9_.-]+:(\d+)\.(\d+)$/.exec(pane || "");
+  if (!match) {
+    return { exposed: false, terminal_allowed: false, input_allowed: false, unavailable_reason: pane ? "tmux_pane invalid" : "no live pane" };
+  }
+  const isLead = Number(match[1]) === 0 && Number(match[2]) === 0;
+  return {
+    exposed: !isLead,
+    terminal_allowed: true, // any real pane is viewable (incl. the lead pane)
+    input_allowed: !isLead, // lead pane (0.0) rejects input/send/connect
+    unavailable_reason: isLead ? "lead pane is not exposed" : "",
+  };
+}
+
 function basicNode(n: OrgNodeMock) {
   return {
     name: n.name,
@@ -76,6 +99,7 @@ function basicNode(n: OrgNodeMock) {
     tmux_pane: n.tmux_pane,
     session_id: n.session_id,
     status: n.status,
+    ...nodeAccessFlags(n.tmux_pane),
   };
 }
 
@@ -112,7 +136,7 @@ function buildOrg() {
   const groups: Record<string, string[]> = {};
   for (const n of ORG_NODES) if (n.group) (groups[n.group] ??= []).push(n.name);
   return {
-    nodes: ORG_NODES.map((n) => ({ ...n, children: children[n.name] ?? [] })),
+    nodes: ORG_NODES.map((n) => ({ ...n, children: children[n.name] ?? [], ...nodeAccessFlags(n.tmux_pane) })),
     roots: ORG_NODES.filter((n) => !n.parent).map((n) => n.name),
     groups,
     children,
@@ -127,7 +151,7 @@ const SOLO_NODES: OrgNodeMock[] = [
 ];
 function buildSoloOrg() {
   return {
-    nodes: SOLO_NODES.map((n) => ({ ...n, children: [] as string[] })),
+    nodes: SOLO_NODES.map((n) => ({ ...n, children: [] as string[], ...nodeAccessFlags(n.tmux_pane) })),
     roots: ["solo"],
     groups: {} as Record<string, string[]>,
     children: {} as Record<string, string[]>,
@@ -330,10 +354,25 @@ diag.setExecutionGlobal = (enabled: boolean, killSwitch: boolean): void => {
 
 // Current-viewer role for /api/me. Default: local-token (operator-equivalent,
 // member null). Verify flips to a team "viewer" to prove proactive control lock.
-let viewerMode = false;
+// ?viewer=1 seeds viewer at load so a fresh goto/reload mounts the app as a
+// viewer (used to assert the operator-only master-chat launcher is hidden);
+// diag.setViewer still flips it at runtime for re-fetch-based checks.
+let viewerMode = new URLSearchParams(window.location.search).get("viewer") === "1";
 diag.setViewer = (on: boolean): void => {
   viewerMode = on;
 };
+
+// master chat (GET/POST /api/master/chat). Mirrors grove-py: POST returns a raw
+// MasterChatResponse (response_type answer|preview|denied + answer/proposal/
+// operator_gate); the history GET is unimplemented (POST-only route) -> 405, which
+// the FE treats as "no history". default ON so the floating widget is demoable;
+// diag.setMasterChatEnabled(false) -> 503 reproduces the graceful unavailable
+// notice; viewer POST -> 403 (operator-only).
+let masterChatEnabled = true;
+diag.setMasterChatEnabled = (on: boolean): void => {
+  masterChatEnabled = on;
+};
+let masterSeq = 0;
 
 // v1.27 web→node input (--enable-node-input). default ON so the box is
 // exercisable; diag.setNodeInput(false) -> 404. diag.nodeSendRateLimited -> 429.
@@ -1408,6 +1447,68 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     );
   }
 
+  if (p === "/api/master/chat") {
+    // Mirrors grove-py /api/master/chat. 503 while disabled (backend WIP); the
+    // history GET is unimplemented (POST-only route) -> 405; viewer POST -> 403.
+    // POST returns a raw MasterChatResponse, with a deterministic mock
+    // classification so all three response_types are demoable.
+    const reject = (status: number, detail: string) =>
+      Promise.resolve(new Response(JSON.stringify({ detail }), { status }));
+    if (!masterChatEnabled) return reject(503, "master chat is not available yet");
+    if (method === "GET") return reject(405, "method not allowed");
+    if (method === "POST") {
+      if (viewerMode) return reject(403, "master chat requires operator role");
+      const body = (init?.body ? JSON.parse(init.body as string) : {}) as {
+        message?: string;
+        conversation_id?: string;
+        request_id?: string;
+        origin_surface?: string;
+        origin_page?: string;
+      };
+      const message = typeof body.message === "string" ? body.message : "";
+      masterSeq += 1;
+      const conversationId = body.conversation_id || `conv-${masterSeq}`;
+      const requestId = body.request_id || `req-${masterSeq}`;
+      diag.masterChatSent = ((diag.masterChatSent as number) ?? 0) + 1;
+      diag.masterChatOrigin = body.origin_surface ?? "";
+      // Deterministic classification: deploy/destructive -> denied (operator gate);
+      // add/create/build -> preview (proposal + requires_confirmation); else answer.
+      const lower = message.toLowerCase();
+      let response_type: "answer" | "preview" | "denied" = "answer";
+      let answer: { text: string } | null = null;
+      let proposal: { summary: string } | null = null;
+      let operator_gate: { reason: string } | null = null;
+      let requires_confirmation = false;
+      let classification = "question";
+      if (/\b(deploy|prod|production|delete|drop|destroy)\b/.test(lower)) {
+        response_type = "denied";
+        classification = "command";
+        operator_gate = { reason: "operator approval required for production/destructive actions (mock)" };
+      } else if (/\b(add|create|build|make|implement|task|fix)\b/.test(lower)) {
+        response_type = "preview";
+        classification = "task";
+        proposal = { summary: `proposed: ${message.slice(0, 60)} — review and confirm to proceed. (mock)` };
+        requires_confirmation = true;
+      } else {
+        answer = { text: `received: “${message.slice(0, 60)}” — project-master will follow up. (mock)` };
+      }
+      return Promise.resolve(
+        json({
+          conversation_id: conversationId,
+          request_id: requestId,
+          response_type,
+          classification,
+          answer,
+          proposal,
+          feedback_route: "general",
+          operator_gate,
+          requires_confirmation,
+          audit_events: [],
+        }),
+      );
+    }
+  }
+
   if (p === "/api/execution") {
     // Mirrors web_app.py _execution_gate_payload + POST partial update.
     const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
@@ -1817,6 +1918,8 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const projNodes = proj === SOLO_PROJECT ? SOLO_NODES : ORG_NODES;
     const rec = projNodes.find((n) => n.name === node);
     if (!rec) return reject(404, "node not found");
+    // Mirror _pane_allowed: the lead pane (0.0) is not input-allowed -> 404.
+    if (!nodeAccessFlags(rec.tmux_pane).input_allowed) return reject(404, "node not found");
     if (diag.nodeSendRateLimited) return reject(429, "node input rate limit exceeded");
     const body = (init?.body ? JSON.parse(init.body as string) : {}) as { text?: string };
     diag.nodeSent = { node, text: typeof body.text === "string" ? body.text : "" };
@@ -1832,6 +1935,9 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const projNodes = proj === SOLO_PROJECT ? SOLO_NODES : ORG_NODES;
     const rec = projNodes.find((n) => n.name === node);
     if (!rec)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "node not found" }), { status: 404 }));
+    // Mirror _node_connect_payload (_pane_allowed): the lead pane (0.0) 404s.
+    if (!nodeAccessFlags(rec.tmux_pane).exposed)
       return Promise.resolve(new Response(JSON.stringify({ detail: "node not found" }), { status: 404 }));
     diag.nodeConnectFetched = node;
     const session = rec.tmux_pane.split(":")[0];

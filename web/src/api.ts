@@ -721,6 +721,69 @@ export interface JoinResult {
   expires_at?: number;
 }
 
+// Master chat (v1.27). Operator-only conversational channel to the project-master
+// orchestrator, implemented by grove-py at /api/master/chat. POST is live; the
+// history GET may stay unimplemented (POST-only route) and 405 — callers treat
+// 404/405/501/503 as a graceful "not yet available" and surface other codes as
+// real errors. Replies are keyed by `id` and upserted in place (pending -> sent).
+export type MasterChatRole = "user" | "master";
+
+export interface MasterChatMessage {
+  id: string;
+  role: MasterChatRole;
+  text: string;
+  ts: number; // epoch ms
+  status?: "pending" | "sent";
+}
+
+export interface MasterChatHistory {
+  messages: MasterChatMessage[];
+}
+
+// Request body for POST /api/master/chat (grove-py). request_id = the optimistic
+// client message id; conversation_id threads the session (echoed back to reuse).
+export interface MasterChatSendBody {
+  message: string;
+  conversation_id?: string;
+  request_id?: string;
+  origin_surface?: "floating_web_chat" | "api";
+  origin_page?: string;
+}
+
+// Raw MasterChatResponse from grove-py. Surfaced as-is; masterReplyText() picks
+// the human reply by response_type and the FE threads conversation_id forward.
+export type MasterChatResponseType = "answer" | "preview" | "denied";
+
+export interface MasterChatResponse {
+  conversation_id: string;
+  request_id: string;
+  response_type: MasterChatResponseType;
+  classification?: string;
+  answer?: { text?: string } | null;
+  proposal?: { summary?: string } | null;
+  feedback_route?: string | { id?: string; title?: string } | null;
+  operator_gate?: { reason?: string } | null;
+  requires_confirmation?: boolean;
+  audit_events?: unknown[];
+}
+
+/** Human reply text for a master response, by response_type: answer.text |
+ *  proposal.summary (else feedback-route title) | operator_gate.reason. */
+export function masterReplyText(res: MasterChatResponse): string {
+  const fr = res.feedback_route;
+  const routeTitle = typeof fr === "string" ? fr : (fr?.title ?? "");
+  switch (res.response_type) {
+    case "answer":
+      return res.answer?.text ?? "";
+    case "preview":
+      return res.proposal?.summary ?? routeTitle;
+    case "denied":
+      return res.operator_gate?.reason ?? "";
+    default:
+      return res.answer?.text ?? res.proposal?.summary ?? "";
+  }
+}
+
 const TOKEN = window.__GROVE_SESSION_TOKEN__ ?? "";
 export const AUTH_REQUIRED = window.__GROVE_AUTH_REQUIRED__ ?? false;
 const SESSION_HEADER = "X-Grove-Session-Token";
@@ -1165,6 +1228,32 @@ export const api = {
     });
     if (!res.ok) throw new Error(`/api/ws-ticket: HTTP ${res.status}`);
     return (await res.json()) as WsTicket;
+  },
+
+  // Master chat history (operator-only; project-scoped via headers). The GET may
+  // be unimplemented (POST-only route) and throw `… HTTP 404/405`; the caller
+  // treats that as "no history" and judges availability on send instead.
+  getMasterChatHistory: () => getJSON<MasterChatHistory>("/api/master/chat"),
+
+  // POST a message to the project-master. request_id = clientId (optimistic id);
+  // conversation_id threads the session (assigned by the backend, reused on the
+  // next send). Returns the raw MasterChatResponse — see masterReplyText().
+  async sendMasterChat(text: string, clientId: string, conversationId?: string): Promise<MasterChatResponse> {
+    const body: MasterChatSendBody = {
+      message: text,
+      request_id: clientId,
+      origin_surface: "floating_web_chat",
+      origin_page: window.location.pathname,
+    };
+    if (conversationId) body.conversation_id = conversationId;
+    const res = await fetch("/api/master/chat", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`/api/master/chat: HTTP ${res.status}`);
+    return (await res.json()) as MasterChatResponse;
   },
 };
 

@@ -626,7 +626,8 @@ def test_project_header_scopes_status_org_nodes_boards_and_tasks(tmp_path: Path)
     assert org.json()["session"] == "dev11"
     assert [node["name"] for node in org.json()["nodes"]] == ["lead", "worker"]
     assert org.json()["nodes"][0]["status"] == "external"
-    assert [node["name"] for node in nodes.json()] == ["worker"]
+    assert [node["name"] for node in nodes.json()] == ["lead", "worker"]
+    assert {node["name"] for node in nodes.json()} == {node["name"] for node in org.json()["nodes"]}
     assert boards.json() == [{"id": "dev11", "name": "dev11", "task_count": 1}]
     assert [task["id"] for task in tasks.json()] == [dev11_task.id]
     assert dev10_task.id not in str(tasks.json())
@@ -963,6 +964,125 @@ def test_audit_endpoint_rejects_team_viewer_role(tmp_path: Path) -> None:
 
     assert login.status_code == 200
     assert response.status_code == 403
+
+
+def test_master_chat_returns_answer_and_records_redacted_audit(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    secret = "xoxb-" + ("m" * 44)
+
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={
+            "message": f"MASTER로 뭐 가능? {secret} /Users/chopin/private",
+            "conversation_id": "conv-web",
+            "request_id": "req-web",
+            "origin_page": "/boards/dev10",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["conversation_id"] == "conv-web"
+    assert payload["request_id"] == "req-web"
+    assert payload["response_type"] == "answer"
+    assert payload["classification"]["intent"] == "capability.explain"
+    assert payload["answer"]["text"].startswith("MASTER can answer")
+    assert payload["proposal"] is None
+    rendered = json.dumps(payload)
+    assert secret not in rendered
+    assert "/Users/chopin" not in rendered
+    audits = store.list_audit_events(board="dev10", action="master.turn.received")
+    assert len(audits) == 1
+    audit_rendered = json.dumps(audits[0].payload)
+    assert secret not in audit_rendered
+    assert "/Users/chopin" not in audit_rendered
+    assert audits[0].kind == "audit.master.turn.received"
+
+
+def test_master_chat_returns_feedback_preview_with_default_route(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={
+            "message": "피드백: 보드 검색이 너무 느려요",
+            "origin_surface": "api",
+            "origin_page": "/projects/dev10/board",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response_type"] == "preview"
+    assert payload["requires_confirmation"] is True
+    assert payload["classification"]["kind"] == "feedback_route"
+    assert payload["feedback_route"]["route"] == {
+        "project": "grove-dev",
+        "board": "dev10",
+        "assignee": "grove-master",
+        "labels": ["grove-feedback"],
+    }
+    assert payload["proposal"]["requires_operator"] is True
+    assert payload["operator_gate"]["allowed"] is True
+
+
+def test_master_chat_viewer_action_denied_but_answer_allowed(tmp_path: Path) -> None:
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        auth_mode=AuthMode.TEAM_COOKIE,
+    )
+    login = client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+
+    denied = client.post("/api/master/chat", json={"message": "새 프로젝트 만들어줘"})
+    answer = client.post("/api/master/chat", json={"message": "MASTER로 뭐 가능?"})
+
+    assert login.status_code == 200
+    assert denied.status_code == 200
+    assert denied.json()["response_type"] == "denied"
+    assert denied.json()["operator_gate"]["allowed"] is False
+    assert answer.status_code == 200
+    assert answer.json()["response_type"] == "answer"
+
+
+def test_master_chat_rejects_missing_or_bad_payload(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    headers = auth_headers(client)
+
+    missing = client.post("/api/master/chat", headers=headers, json={})
+    blank = client.post("/api/master/chat", headers=headers, json={"message": "   "})
+    bad_surface = client.post(
+        "/api/master/chat",
+        headers=headers,
+        json={"message": "hello", "origin_surface": "slack"},
+    )
+    bad_message_type = client.post("/api/master/chat", headers=headers, json={"message": []})
+
+    assert missing.status_code == 422
+    assert blank.status_code == 422
+    assert bad_surface.status_code == 422
+    assert bad_message_type.status_code == 422
+
+
+def test_master_chat_unavailable_module_returns_503(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    monkeypatch.setattr(web_app, "_load_master_module", lambda: object())
+
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={"message": "MASTER로 뭐 가능?"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "master chat is unavailable"
 
 
 def test_inbox_returns_blocked_and_ask_human_items_with_cursor_and_redaction(
@@ -3585,6 +3705,11 @@ def test_create_project_invokes_new_project_with_literal_argv(
             "parent": "lead",
             "group": "",
             "description": "Project master/orchestrator.",
+            "kind": "meta",
+            "exposed": False,
+            "terminal_allowed": False,
+            "input_allowed": False,
+            "unavailable_reason": "meta node has no pane",
         },
     }
     registry = read_registry(tmp_path, "new-dev")
@@ -3725,7 +3850,9 @@ def test_load_project_invokes_load_project_and_returns_integrity_result(
     assert calls == [["grove", "load-project", "/repo/dev10", "--json"]]
 
 
-def test_nodes_parse_fake_registry_with_explicit_panes_only(tmp_path: Path) -> None:
+def test_nodes_expose_all_registry_nodes_with_precise_availability(
+    tmp_path: Path,
+) -> None:
     write_registry(
         tmp_path,
         "dev10",
@@ -3738,24 +3865,84 @@ def test_nodes_parse_fake_registry_with_explicit_panes_only(tmp_path: Path) -> N
                 "pending": {"task": "x"},
             },
             "beta": {"name": "beta", "agent": "claude"},
-            "lead": {"name": "lead", "agent": "lead", "tmux_pane": "dev10:0.0"},
+            "stale": {"name": "stale", "agent": "codex", "status": "stale"},
         },
     )
     client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
 
-    response = client.get("/api/nodes", headers=auth_headers(client))
+    nodes_response = client.get("/api/nodes", headers=auth_headers(client))
+    org_response = client.get("/api/org", headers=auth_headers(client))
 
-    assert response.status_code == 200
-    assert response.json() == [
-        {
-            "name": "alpha",
-            "agent": "codex",
-            "tmux_pane": "dev10:1.2",
-            "session_id": "sess-a",
-            "status": "running",
-            "description": "",
-        }
-    ]
+    assert nodes_response.status_code == 200
+    assert org_response.status_code == 200
+    nodes = {node["name"]: node for node in nodes_response.json()}
+    org_nodes = {node["name"]: node for node in org_response.json()["nodes"]}
+    assert set(nodes) == set(org_nodes) == {"alpha", "beta", "lead", "stale"}
+    assert nodes["alpha"]["tmux_pane"] == "dev10:1.2"
+    assert nodes["alpha"]["session_id"] == "sess-a"
+    assert nodes["alpha"]["status"] == "running"
+    assert nodes["alpha"]["exposed"] is True
+    assert nodes["alpha"]["terminal_allowed"] is True
+    assert nodes["alpha"]["input_allowed"] is True
+    assert nodes["alpha"]["unavailable_reason"] == ""
+    assert nodes["beta"]["status"] == "dead"
+    assert nodes["beta"]["exposed"] is False
+    assert nodes["beta"]["unavailable_reason"] == "no live pane"
+    assert nodes["stale"]["status"] == "stale"
+    assert nodes["stale"]["exposed"] is False
+    assert nodes["stale"]["unavailable_reason"] == "no live pane"
+    assert nodes["lead"]["kind"] == "meta"
+    assert nodes["lead"]["status"] == "external"
+    assert nodes["lead"]["exposed"] is False
+    assert nodes["lead"]["unavailable_reason"] == "meta node has no pane"
+
+
+def test_nodes_reread_registry_on_each_request_and_include_meta(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"alpha": {"name": "alpha", "agent": "codex", "tmux_pane": "dev10:1.2"}},
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    first = client.get("/api/nodes", headers=auth_headers(client))
+    (tmp_path / ".grove" / "dev10" / "registry.json").write_text(
+        json.dumps(
+            {
+                "session": "dev10",
+                "nodes": {
+                    "alpha": {
+                        "name": "alpha",
+                        "agent": "codex",
+                        "tmux_pane": "dev10:1.2",
+                    },
+                    "gamma": {
+                        "name": "gamma",
+                        "agent": "claude",
+                        "tmux_pane": "dev10:1.3",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    second = client.get("/api/nodes", headers=auth_headers(client))
+    org = client.get("/api/org", headers=auth_headers(client))
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert org.status_code == 200
+    assert {node["name"] for node in first.json()} == {"alpha", "lead"}
+    assert {node["name"] for node in second.json()} == {"alpha", "gamma", "lead"}
+    assert {node["name"] for node in second.json()} == {
+        node["name"] for node in org.json()["nodes"]
+    }
+    lead = next(node for node in second.json() if node["name"] == "lead")
+    assert lead["kind"] == "meta"
+    assert lead["tmux_pane"] == ""
+    assert lead["terminal_allowed"] is False
+    assert lead["input_allowed"] is False
+    assert lead["unavailable_reason"] == "meta node has no pane"
 
 
 def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
@@ -3806,76 +3993,36 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
     response = client.get("/api/org", headers=auth_headers(client))
 
     assert response.status_code == 200
-    assert response.json() == {
-        "session": "dev10",
-        "roots": ["lead"],
-        "groups": [
-            {"name": "core", "parent": "lead", "nodes": ["lead", "worker"]},
-            {"name": "verify", "parent": "lead", "nodes": ["qa"]},
-        ],
-        "nodes": [
-            {
-                "name": "lead",
-                "agent": "codex",
-                "role": "lead",
-                "parent": "",
-                "children": ["qa", "worker"],
-                "group": "core",
-                "tmux_pane": "dev10:1.0",
-                "session_id": "sess-lead",
-                "status": "idle",
-                "description": "Coordinates the project.",
-            },
-            {
-                "name": "qa",
-                "agent": "antigravity",
-                "role": "qa",
-                "parent": "lead",
-                "children": [],
-                "group": "verify",
-                "tmux_pane": "dev10:2.0",
-                "session_id": "",
-                "status": "idle",
-                "description": "",
-            },
-            {
-                "name": "worker",
-                "agent": "claude",
-                "role": "builder",
-                "parent": "lead",
-                "children": [],
-                "group": "core",
-                "tmux_pane": "dev10:1.1",
-                "session_id": "",
-                "status": "running",
-                "description": "",
-            },
-        ],
-        "default_assignee": "lead",
-        "assignee_candidates": [
-            {
-                "name": "lead",
-                "agent": "codex",
-                "role": "lead",
-                "status": "idle",
-                "default": True,
-            },
-            {
-                "name": "qa",
-                "agent": "antigravity",
-                "role": "qa",
-                "status": "idle",
-                "default": False,
-            },
-            {
-                "name": "worker",
-                "agent": "claude",
-                "role": "builder",
-                "status": "running",
-                "default": False,
-            },
-        ],
-    }
+    payload = response.json()
+    nodes = {node["name"]: node for node in payload["nodes"]}
+    assert payload["session"] == "dev10"
+    assert payload["roots"] == ["hidden", "lead", "lead-pane"]
+    assert payload["groups"] == [
+        {"name": "core", "parent": "lead", "nodes": ["lead", "worker"]},
+        {"name": "verify", "parent": "lead", "nodes": ["qa"]},
+    ]
+    assert set(nodes) == {"hidden", "lead", "lead-pane", "qa", "worker"}
+    assert nodes["lead"]["children"] == ["qa", "worker"]
+    assert nodes["lead"]["exposed"] is True
+    assert nodes["lead"]["unavailable_reason"] == ""
+    assert nodes["hidden"]["exposed"] is False
+    assert nodes["hidden"]["status"] == "dead"
+    assert nodes["hidden"]["unavailable_reason"] == "no live pane"
+    assert nodes["lead-pane"]["exposed"] is True
+    assert nodes["lead-pane"]["status"] == "idle"
+    assert nodes["lead-pane"]["terminal_allowed"] is True
+    assert nodes["lead-pane"]["input_allowed"] is False
+    assert nodes["lead-pane"]["unavailable_reason"] == ""
+    assert nodes["qa"]["parent"] == "lead"
+    assert nodes["worker"]["status"] == "running"
+    assert payload["default_assignee"] == "lead"
+    assert [candidate["name"] for candidate in payload["assignee_candidates"]] == [
+        "lead",
+        "hidden",
+        "lead-pane",
+        "qa",
+        "worker",
+    ]
 
 
 def test_org_adds_external_lead_for_grouped_workers(tmp_path: Path) -> None:
@@ -5073,9 +5220,83 @@ def test_ws_ticket_rejects_kind_and_pane_mismatch(
     assert exc.value.code == 1008
 
 
+def test_terminal_allows_lead_pane_read_only_and_node_send_still_rejects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "lead": {"name": "lead", "agent": "claude", "tmux_pane": "dev10:0.0"},
+            "worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"},
+        },
+    )
+    client = make_client(tmp_path, store, node_input_enabled=True)
+    captures: list[str] = []
+    send_calls: list[str] = []
+
+    def fake_capture(pane: str) -> bytes:
+        captures.append(pane)
+        return b"lead pane"
+
+    monkeypatch.setattr(web_app, "_tmux_capture", fake_capture)
+    monkeypatch.setattr(web_app, "_tmux_send_text", lambda pane, text: send_calls.append(pane))
+
+    nodes_response = client.get("/api/nodes", headers=auth_headers(client))
+    ticket_response = client.post(
+        "/api/ws-ticket",
+        headers=auth_headers(client),
+        json={"kind": "terminal", "pane_id": "dev10:0.0"},
+    )
+
+    assert nodes_response.status_code == 200
+    nodes = {node["name"]: node for node in nodes_response.json()}
+    assert nodes["lead"]["exposed"] is True
+    assert nodes["lead"]["terminal_allowed"] is True
+    assert nodes["lead"]["input_allowed"] is False
+    assert nodes["lead"]["unavailable_reason"] == ""
+    assert ticket_response.status_code == 200
+
+    with client.websocket_connect(
+        f"/ws/terminal?ticket={ticket_response.json()['ticket']}&pane_id=dev10:0.0"
+    ) as ws:
+        frame = ws.receive_json()
+
+    operator_send = client.post(
+        "/api/nodes/lead/send",
+        headers=auth_headers(client),
+        json={"text": "do not inject"},
+    )
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    viewer_client = make_client(
+        tmp_path,
+        store,
+        auth_mode=AuthMode.TEAM_COOKIE,
+        node_input_enabled=True,
+    )
+    login = viewer_client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+    viewer_send = viewer_client.post(
+        "/api/nodes/lead/send",
+        headers={CSRF_HEADER: str(login.json()["csrf"])},
+        json={"text": "viewer cannot inject"},
+    )
+
+    assert frame["pane_id"] == "dev10:0.0"
+    assert base64.b64decode(frame["bytes_base64"]) == b"lead pane"
+    assert captures == ["dev10:0.0"]
+    assert operator_send.status_code == 404
+    assert viewer_send.status_code == 403
+    assert send_calls == []
+    assert web_app._pane_allowed("dev10:0.0", config=app_config(client))
+    assert not web_app._pane_input_allowed("dev10:0.0", config=app_config(client))
+    assert web_app._pane_input_allowed("dev10:2.0", config=app_config(client))
+
+
 @pytest.mark.parametrize(
     "pane",
-    ["dev10:0.0", "dev10:00.00", "dev10:0.00", "dev10:00.0", "dev10:000.0"],
+    ["dev10:00.00", "dev10:0.00", "dev10:00.0", "dev10:000.0"],
 )
 def test_terminal_rejects_lead_pane_aliases(
     tmp_path: Path,
@@ -5096,14 +5317,16 @@ def test_terminal_rejects_lead_pane_aliases(
         "_tmux_capture",
         lambda unsafe_pane: pytest.fail(f"capture should not run for {unsafe_pane}"),
     )
-    ticket = terminal_ticket(client, "dev10:2.0")
+    response = client.post(
+        "/api/ws-ticket",
+        headers=auth_headers(client),
+        json={"kind": "terminal", "pane_id": pane},
+    )
 
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect(f"/ws/terminal?ticket={ticket}&pane_id={pane}"):
-            pass
-
-    assert exc.value.code == 1008
+    assert response.status_code == 400
+    assert response.json()["detail"] == "pane not allowed"
     assert web_app._pane_allowed("dev10:2.0", config=app_config(client))
+    assert not web_app._pane_allowed(pane, config=app_config(client))
 
 
 @pytest.mark.parametrize(

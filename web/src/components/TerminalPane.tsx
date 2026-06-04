@@ -159,6 +159,15 @@ function TerminalTools({ node, t }: { node: GroveNode; t: TFn }) {
       alive = false;
     };
   }, [node.name]);
+  // The lead pane (input_allowed=false) and meta/no-pane nodes are view-only: no
+  // send box and no connect command (the backend rejects send/connect for them).
+  if (node.input_allowed === false) {
+    return (
+      <div className="dr-term__tools">
+        <div className="dr-term__send-viewer" data-viewonly="1">{t("term.send.viewOnly")}</div>
+      </div>
+    );
+  }
   return (
     <div className="dr-term__tools">
       <SshConnect node={node} t={t} />
@@ -182,7 +191,9 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
   const [state, setState] = useState<ConnState>("connecting");
   const [bytes, setBytes] = useState(0);
 
-  const paneId = node?.tmux_pane ?? null;
+  // Only attach when the node is terminal-viewable (terminal_allowed !== false).
+  const viewable = !!node && node.terminal_allowed !== false;
+  const paneId = viewable ? (node?.tmux_pane ?? null) : null;
 
   useEffect(() => {
     const mount = hostRef.current;
@@ -341,8 +352,13 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
         </div>
       </header>
       <div className="dr-term__screen">
-        {node ? (
+        {node && viewable ? (
           <div className="dr-term__host" ref={hostRef} />
+        ) : node && !viewable ? (
+          <div className="dr-term__empty" data-notviewable="1">
+            <div className="dr-term__empty-mark">⛔</div>
+            <p>{t("term.notViewable")}</p>
+          </div>
         ) : (
           <div className="dr-term__empty">
             <div className="dr-term__empty-mark">▦</div>
@@ -350,7 +366,7 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
           </div>
         )}
       </div>
-      {node && <TerminalTools node={node} t={t} />}
+      {node && viewable && <TerminalTools node={node} t={t} />}
     </section>
   );
 }

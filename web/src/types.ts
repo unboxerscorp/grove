@@ -39,6 +39,14 @@ export interface GroveNode {
   tmux_pane: string;
   session_id: string;
   status: string;
+  // v1.28 backend-authoritative access flags (web_app.py NodeRecord). The lead
+  // pane (window.pane == 0.0) is terminal_allowed:true but input_allowed:false;
+  // meta / no-pane nodes are neither. Optional — older payloads omit them, so the
+  // FE treats `undefined`/`true` as allowed and only `=== false` as blocked.
+  terminal_allowed?: boolean;
+  input_allowed?: boolean;
+  exposed?: boolean;
+  unavailable_reason?: string;
 }
 
 export interface OrgNode extends GroveNode {

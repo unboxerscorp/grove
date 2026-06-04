@@ -38,6 +38,7 @@ const KO: Dict = {
   "nodes.filter": "노드 필터…",
   "nodes.noMatch": "일치 항목 없음",
   "nodes.none": "온라인 노드 없음",
+  "nodes.notViewable": "터미널을 열 수 없는 노드입니다 (pane 없음).",
 
   "status.running": "실행 중",
   "status.idle": "대기",
@@ -63,6 +64,8 @@ const KO: Dict = {
   "term.send.sending": "전송 중…",
   "term.send.ok": "전송됨 — 결과는 위 터미널에 스트리밍됩니다",
   "term.send.viewer": "읽기 전용 — 노드 입력은 operator만 가능합니다.",
+  "term.send.viewOnly": "보기 전용 — 이 노드(lead 페인)에는 입력할 수 없습니다.",
+  "term.notViewable": "이 노드는 터미널을 열 수 없습니다 (pane 없음).",
   "term.send.err.disabled": "노드 입력이 비활성화되어 있습니다 (--enable-node-input).",
   "term.send.err.forbidden": "노드 입력은 operator만 가능합니다.",
   "term.send.err.rate": "너무 잦은 전송입니다 — 잠시 후 다시 시도하세요.",
@@ -660,6 +663,20 @@ const KO: Dict = {
   "cost.conf.partial": "부분",
   "cost.conf.inferred": "유추",
   "cost.conf.unknown": "알 수 없음",
+
+  "mchat.title": "마스터",
+  "mchat.subtitle": "project-master · 실시간",
+  "mchat.open": "마스터 챗 열기",
+  "mchat.close": "닫기",
+  "mchat.empty": "메시지를 보내 project-master와 대화를 시작하세요.",
+  "mchat.placeholder": "project-master에게 보낼 메시지…",
+  "mchat.send": "전송",
+  "mchat.sending": "전송 중…",
+  "mchat.you": "나",
+  "mchat.master": "마스터",
+  "mchat.error": "전송 실패",
+  "mchat.retry": "다시 시도",
+  "mchat.unavailable": "마스터 채팅 백엔드는 준비 중입니다 — 곧 사용할 수 있어요.",
 };
 
 const EN: Dict = {
@@ -690,6 +707,7 @@ const EN: Dict = {
   "nodes.filter": "filter nodes…",
   "nodes.noMatch": "no match",
   "nodes.none": "no nodes online",
+  "nodes.notViewable": "This node has no terminal to open (no pane).",
 
   "status.running": "running",
   "status.idle": "idle",
@@ -715,6 +733,8 @@ const EN: Dict = {
   "term.send.sending": "Sending…",
   "term.send.ok": "Sent — the result streams into the terminal above",
   "term.send.viewer": "Read-only — only operators can send to a node.",
+  "term.send.viewOnly": "View-only — this node (lead pane) can't take input.",
+  "term.notViewable": "This node has no terminal to open (no pane).",
   "term.send.err.disabled": "Node input is disabled (--enable-node-input).",
   "term.send.err.forbidden": "Only operators can send to a node.",
   "term.send.err.rate": "Too many sends — try again shortly.",
@@ -1312,6 +1332,20 @@ const EN: Dict = {
   "cost.conf.partial": "partial",
   "cost.conf.inferred": "inferred",
   "cost.conf.unknown": "unknown",
+
+  "mchat.title": "Master",
+  "mchat.subtitle": "project-master · live",
+  "mchat.open": "Open master chat",
+  "mchat.close": "Close",
+  "mchat.empty": "Send a message to start a conversation with project-master.",
+  "mchat.placeholder": "Message project-master…",
+  "mchat.send": "Send",
+  "mchat.sending": "Sending…",
+  "mchat.you": "You",
+  "mchat.master": "Master",
+  "mchat.error": "Send failed",
+  "mchat.retry": "Retry",
+  "mchat.unavailable": "Master chat backend is being set up — available soon.",
 };
 
 const STRINGS: Record<Lang, Dict> = { ko: KO, en: EN };

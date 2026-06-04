@@ -28,6 +28,7 @@ import { ProjectSwitcher } from "./components/ProjectSwitcher";
 import { SlackPanel } from "./components/SlackPanel";
 import { TaskDrawer } from "./components/TaskDrawer";
 import { TerminalPane } from "./components/TerminalPane";
+import { MasterChat } from "./components/MasterChat";
 import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { GroveNode } from "./types";
@@ -639,6 +640,8 @@ export function App() {
         }}
         onNavigate={(v) => setView(v)}
       />
+      {/* Floating operator-only chat to the project-master (bottom-right). */}
+      <MasterChat />
     </div>
   );
 }

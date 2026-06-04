@@ -23,7 +23,8 @@ grove repair --all
   nodes; each node is a live tmux pane with adapter-specific turn detection.
 - **Web dev-room SPA** - `grove-web` serves the board, org chart, live terminal
   viewer, project switcher, auth/status panels, audit drawer, cost/usage views,
-  execution timeline, aggregation, and handoff surfaces.
+  execution timeline, aggregation, handoff surfaces, and the floating MasterChat
+  preview widget.
 - **Grouped sidebar navigation** - v1.24 moved the crowded top nav into a grouped,
   collapsible left sidebar from user UI feedback. It keeps every panel reachable and
   collapses into a responsive drawer on narrow screens; it is a layout change, not a
@@ -48,17 +49,26 @@ grove repair --all
   filters, full-text search over task title/body, pagination, and live board results.
   Operators can save named board views; results are project-scoped, role-aware, and
   redacted.
+- **GROVE MASTER chat preview** - v1.28 adds `POST /api/master/chat` and a
+  bottom-right MasterChat widget. It uses deterministic, no-LLM classification to
+  answer read-only questions or render an action proposal preview. It is preview-only:
+  no command, board mutation, node spawn, or config change is executed from this path.
 - **Web-to-node input** - v1.27 can send a prompt or command from a node's terminal
   panel to that node's tmux pane when `grove-web --enable-node-input` is set. It is
   operator-gated, project/pane allowlisted, rate-limited, sent as literal tmux input,
-  and audited with redaction.
+  and audited with redaction. Backend node flags decide whether a pane is viewable or
+  input-capable.
 - **Node connect copy** - each terminal panel can fetch `GET /api/nodes/{node}/connect`
   and copy a read-only tmux attach/select-pane command for that node. It exposes
   connection strings only for nodes in the current project scope.
-- **Org and board clarity** - the org chart shows an explicit external `lead`
-  orchestrator when the registry does not already have one, and board cards show task
-  titles as primary text with long titles/summaries wrapping instead of widening
-  columns.
+- **Perfect node sync** - v1.28 makes `/api/nodes` and the org chart surface every
+  registry/meta node, including `lead` and `project-master`. Nodes without a usable
+  pane are shown as unavailable with a reason instead of silently disappearing.
+- **Lead as a real node** - the project lead is a project-scoped real node, such as
+  `dev10:0.0`, not a synthetic placeholder. Its terminal can be viewed read-only when
+  allowed, while web-to-node input to the lead/orchestrator pane stays blocked.
+- **Board card clarity** - board cards show task titles as primary text with long
+  titles/summaries wrapping instead of widening columns.
 - **Channels and ask-human** - Slack integration and web/chat paths route work and
   human decisions through grove tasks, comments, and unblock flows.
 - **Event-driven turn detection** - transcript/event watchers wake waits promptly,
@@ -227,6 +237,10 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
 - The v1.25 command palette is navigation-only. Cmd-K opens views/drawers or routes to
   existing gated UI; it does not create tasks, update config, send Slack messages, or
   bypass confirmations.
+- GROVE MASTER chat is preview-only. `POST /api/master/chat` is operator-gated,
+  deterministic, no-LLM, and audited with message hashes and redacted metadata. It can
+  answer or suggest an action preview, but it does not execute commands, create tasks,
+  spawn nodes, or change config.
 - Board query/search is read-only, deterministic, paginated, project-scoped,
   role-aware, and redacted. Missing boards or saved views return clear 404s; dev-room
   board access stays inside the owning project and rejects cross-project board IDs.
@@ -238,10 +252,14 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
 - Web-to-node input is default OFF (`--enable-node-input`). When enabled, sends require
   operator/admin role, project-scoped pane allowlisting, rate limiting, literal tmux
   input (`send-keys -l`), and audit/redaction; viewers can still watch terminals but
-  cannot send.
+  cannot send. The lead/orchestrator pane is view-only when exposed: terminal capture is
+  allowed, node-send is blocked.
 - Node connect commands are read-only and project-scoped. `GET /api/nodes/{node}/connect`
   returns attach/select-pane strings for an authorized node; it does not expose tokens
   or grant extra tmux privileges.
+- Node lists do not hide failures. `/api/nodes` and the org chart include unexposed
+  nodes with `exposed=false` and an unavailable reason, while omitting token, key, and
+  raw path fields.
 - Notification routing v2 is default OFF and dry-run by default. Operator-gated config
   and audit are required before routing/escalation can move beyond simulation, and
   payloads stay redacted.

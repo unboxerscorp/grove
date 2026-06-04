@@ -4,6 +4,22 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.29.0] — v1.28 (2026-06-04)
+
+The meta-assistant chat, a node list that never lies, and the lead as a first-class node. Auto-started after v1.27.0.
+
+### GROVE MASTER chat (preview)
+
+- **POST /api/master/chat** + a floating bottom-right **MasterChat** widget (Channel-Talk style): a natural-language message runs through a deterministic (non-LLM) classifier that decides answer-only vs. an actionable proposal and renders a **preview only** — no command or action is ever executed. Operator-gated (viewers see it hidden/denied), audited with a message-hash + redacted metadata (no secrets/paths). Read-only by design; a future confirm/execute path will add the full operator state-change gate (CSRF/Origin).
+
+### Perfect node sync
+
+- `/api/nodes` and the org now surface **every** node — registry nodes plus the meta lead / project-master — and **never silently drop** one. A node without a live pane (or otherwise unexposed) is shown with `exposed=false` + an `unavailable_reason` instead of disappearing. No token/key/raw-path fields are exposed.
+
+### The lead is a real node
+
+- The lead/orchestrator is a real, **project-scoped** node (e.g. `dev10:0.0`), not a synthetic placeholder injected into every project. Its terminal is **viewable read-only** (capture/WS), while **node-input/send to the orchestrator pane stays blocked** — separate view vs. input pane allowlists (`terminal_allowed` / `input_allowed`). The FE consumes those flags so the UI offers exactly what the backend permits (view for the lead, no send box).
+
 ## [0.28.0] — v1.27 (2026-06-04)
 
 Drive the whole dev loop from the web: send a command to a node from the dashboard, copy a node's SSH/connect command, and a confusion-free 1:1:1 project model. Auto-started after v1.26.0; folds in the live board-create fix the user hit.
