@@ -3999,6 +3999,122 @@ async function run() {
     cList.status === 200 && Array.from({ length: N }, (_, i) => `concurrent-${i}`).every((b) => cBodies.has(b)),
     (cList.json || []).length,
   );
+
+  // ==========================================================================
+  // Phase 2 stable expansion: previously-uncovered endpoints, asserted against
+  // the real server's current contract. Pure-HTTP, LOCAL_TOKEN (= operator).
+  // ==========================================================================
+
+  // --- LOCAL_TOKEN auth context: /api/me, /api/csrf, team-only /api/login ----
+  const me = await req("GET", "/api/me");
+  eq("me 200 (local-token mode needs no auth)", me.status, 200);
+  eq("me auth_mode == local-token", me.json && me.json.auth_mode, "local-token");
+  eq("me member is null in local mode", me.json && me.json.member, null);
+  const csrfInfo = await req("GET", "/api/csrf");
+  eq("csrf 200 (local-token mode)", csrfInfo.status, 200);
+  eq("csrf token is null in local mode", csrfInfo.json && csrfInfo.json.csrf, null);
+  eq(
+    "login -> 404 when team auth is disabled",
+    (await req("POST", "/api/login", { token, body: { name: "x", secret: "y" } })).status,
+    404,
+  );
+  check("me/csrf leak no secrets", !hasSecret(me.json) && !hasSecret(csrfInfo.json));
+
+  // --- /api/presence (perfect-sync viewer presence) -------------------------
+  eq("presence 401 without token", (await req("GET", "/api/presence")).status, 401);
+  const presence = await req("GET", "/api/presence", { token, project: ALPHA });
+  eq("presence 200 with token", presence.status, 200);
+  eq("presence scoped to alpha", presence.json && presence.json.project, ALPHA);
+  eq("presence auth_mode == local-token", presence.json && presence.json.auth_mode, "local-token");
+  eq("presence anonymous_count == 1 (local mode)", presence.json && presence.json.anonymous_count, 1);
+  check("presence viewers is a non-empty array", Array.isArray(presence.json && presence.json.viewers) && presence.json.viewers.length >= 1);
+  check("presence active_window_seconds is an int", Number.isInteger(presence.json && presence.json.active_window_seconds));
+  check("presence leaks no secrets", !hasSecret(presence.json));
+
+  // --- /api/inbox ask-human queue + answer-clears-it journey ----------------
+  eq("inbox 401 without token", (await req("GET", "/api/inbox")).status, 401);
+  const inbox0 = await req("GET", "/api/inbox", { token, project: ALPHA });
+  eq("inbox 200 with token", inbox0.status, 200);
+  check("inbox items is an array", Array.isArray(inbox0.json && inbox0.json.items));
+  check("inbox total is a number", typeof (inbox0.json && inbox0.json.total) === "number");
+  eq("inbox advertises the answer endpoint", inbox0.json && inbox0.json.answer && inbox0.json.answer.endpoint, "/api/tasks/{task_id}/answer");
+  eq("inbox answer method is POST", inbox0.json && inbox0.json.answer && inbox0.json.answer.method, "POST");
+  const inboxSeed = await req("POST", `/api/boards/${ALPHA}/tasks`, { token, project: ALPHA, body: { title: "e2e ask-human task" } });
+  const inboxTaskId = (inboxSeed.json && inboxSeed.json.id) || "";
+  eq("inbox: PATCH task -> blocked 200", (await req("PATCH", taskPath(inboxTaskId, "/status"), { token, project: ALPHA, body: { status: "blocked" } })).status, 200);
+  const inbox1 = await req("GET", "/api/inbox", { token, project: ALPHA });
+  check("inbox: a blocked task surfaces in the ask-human queue", inbox1.text.includes(inboxTaskId), inbox1.json && inbox1.json.total);
+  const inboxBeta = await req("GET", "/api/inbox", { token, project: BETA });
+  check("inbox: blocked alpha task is absent from beta's inbox (scope isolation)", !inboxBeta.text.includes(inboxTaskId));
+  eq("inbox: answer the blocked task 200", (await req("POST", taskPath(inboxTaskId, "/answer"), { token, project: ALPHA, body: { text: "go ahead" } })).status, 200);
+  const inbox2 = await req("GET", "/api/inbox", { token, project: ALPHA });
+  check("inbox: an answered task leaves the queue", !inbox2.text.includes(inboxTaskId));
+  check("inbox leaks no secrets", !hasSecret(inbox1.json));
+  const inboxPaged = await req("GET", "/api/inbox?limit=1", { token, project: ALPHA });
+  check(
+    "inbox ?limit=1 returns at most 1 item",
+    Array.isArray(inboxPaged.json && inboxPaged.json.items) && inboxPaged.json.items.length <= 1,
+    inboxPaged.json && inboxPaged.json.items && inboxPaged.json.items.length,
+  );
+
+  // --- /api/nodes/{node}/connect (read-only attach hints) -------------------
+  const connectPath = (n) => `/api/nodes/${encodeURIComponent(n)}/connect`;
+  eq("connect 401 without token", (await req("GET", connectPath("worker"))).status, 401);
+  const connect = await req("GET", connectPath("worker"), { token, project: ALPHA });
+  eq("connect worker 200", connect.status, 200);
+  eq("connect echoes node name", connect.json && connect.json.node, "worker");
+  eq("connect tmux_target is the worker pane", connect.json && connect.json.tmux_target, `${ALPHA}:1.1`);
+  check(
+    "connect exposes attach + select_pane commands",
+    Boolean(connect.json) && connect.json.commands && typeof connect.json.commands.attach === "string" && typeof connect.json.commands.select_pane === "string",
+  );
+  eq("connect nonexistent node -> 404", (await req("GET", connectPath("ghost_node"), { token, project: ALPHA })).status, 404);
+  check("connect leaks no GROVE_HOME path", Boolean(connect.text) && !connect.text.includes(groveHome));
+
+  // --- /api/nodes/{node}/send (operator + Origin gating; never a real send) -
+  const sendPath = (n) => `/api/nodes/${encodeURIComponent(n)}/send`;
+  eq("send 401 without token", (await req("POST", sendPath("worker"), { project: ALPHA, body: { text: "hi" } })).status, 401);
+  eq(
+    "send 403 foreign Origin (CSRF)",
+    (await req("POST", sendPath("worker"), { token, project: ALPHA, body: { text: "hi" }, origin: "http://evil.example" })).status,
+    403,
+  );
+  const sendWorker = await req("POST", sendPath("worker"), { token, project: ALPHA, body: { text: "hi" } });
+  check(
+    "send never performs a real 200 send in-harness (feature-gated 404 or tmux-unavailable 502)",
+    [404, 502].includes(sendWorker.status),
+    sendWorker.status,
+  );
+  eq("send nonexistent node -> 404", (await req("POST", sendPath("ghost_node"), { token, project: ALPHA, body: { text: "hi" } })).status, 404);
+  check("send error leaks no GROVE_HOME path", Boolean(sendWorker.text) && !sendWorker.text.includes(groveHome));
+
+  // --- /api/master/chat (deterministic answer/preview classifier + redaction)
+  const masterPath = "/api/master/chat";
+  eq("master-chat 401 without token", (await req("POST", masterPath, { body: { message: "hello" } })).status, 401);
+  eq("master-chat 422 on a blank message", (await req("POST", masterPath, { token, project: ALPHA, body: { message: "   " } })).status, 422);
+  const mAnswer = await req("POST", masterPath, { token, project: ALPHA, body: { message: "What is your capability?" } });
+  eq("master-chat capability question 200", mAnswer.status, 200);
+  check(
+    "master-chat response_type is one of answer|preview|denied",
+    ["answer", "preview", "denied"].includes(mAnswer.json && mAnswer.json.response_type),
+    mAnswer.json && mAnswer.json.response_type,
+  );
+  eq("master-chat capability -> answer mode", mAnswer.json && mAnswer.json.response_type, "answer");
+  check("master-chat answer carries an answer body and needs no confirmation", Boolean(mAnswer.json) && mAnswer.json.answer && mAnswer.json.requires_confirmation === false);
+  const mPreview = await req("POST", masterPath, { token, project: ALPHA, body: { message: "I want to report a bug: the board is broken" } });
+  eq("master-chat feedback message 200", mPreview.status, 200);
+  eq("master-chat feedback -> preview mode", mPreview.json && mPreview.json.response_type, "preview");
+  check("master-chat preview requires confirmation", Boolean(mPreview.json) && mPreview.json.requires_confirmation === true);
+  const mSecret = await req("POST", masterPath, { token, project: ALPHA, body: { message: "What is your capability? secret xoxb-deadbeefcafe1234567890" } });
+  eq("master-chat secret-bearing message 200", mSecret.status, 200);
+  // Assert the SPECIFIC injected secret is scrubbed (the broad hasSecret() scan
+  // false-positives on the response's legitimate long-hex ids, so match the
+  // secret directly — the real contract is "the user's secret never echoes").
+  check(
+    "master-chat redacts the injected slack secret from its response",
+    !mSecret.text.includes("xoxb-deadbeefcafe1234567890") && !mSecret.text.includes("deadbeefcafe1234567890"),
+    mSecret.text.slice(0, 300),
+  );
 }
 
 console.log("grove-web API e2e\n");

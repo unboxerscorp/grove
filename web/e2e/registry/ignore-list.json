@@ -1,0 +1,7 @@
+{
+  "_doc": "Explicitly ignored interactive elements (NOT real actionable controls or third-party detail). Each needs reason + owner + expiry. The coverage gate subtracts these from the denominator; everything else discovered-and-enabled MUST be in controls.json or the gate FAILs. Keep this list small — it is an escape hatch, not a way to hide unmapped high-risk controls.",
+  "ignored": [
+    { "match": { "view": "drawer:command-palette", "classContains": "cmdk__input" }, "reason": "search input inside the palette; routing is exercised via cmdk.item", "owner": "test-e2e-web", "expiry": "2026-07-01" },
+    { "match": { "view": "*", "classContains": "dr-drawer__close" }, "reason": "generic drawer close affordance; covered implicitly by every drawer nav oracle's reset", "owner": "test-e2e-web", "expiry": "2026-07-01" }
+  ]
+}

@@ -1,0 +1,818 @@
+{
+  "_doc": "UI control registry v1 (single source of truth). Coverage closure: every ENABLED discovered control in button-inventory.json must match one entry here or in ignore-list.json (by view + match.classContains); unmatched = coverage-gap FAIL (ratchet, never shrinks). oracle_class drives the assertion; allowed_roles drives the 2-axis role-denial oracle (viewer 'forbidden' => UI hidden/disabled AND direct-API 403). live_safe=false controls are HARD-BLOCKED from firing on :9131 (external/destructive isolated-only).",
+  "roles": [
+    "viewer",
+    "operator",
+    "admin"
+  ],
+  "controls": [
+    {
+      "id": "chrome.tab",
+      "view": "*",
+      "match": {
+        "classContains": "dr-tab"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "none",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "chrome.lang",
+      "view": "chrome",
+      "match": {
+        "classContains": "dr-lang__btn"
+      },
+      "oracle_class": "read-only",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "none",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "chrome.authBadge",
+      "view": "chrome",
+      "match": {
+        "classContains": "dr-auth"
+      },
+      "oracle_class": "read-only",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "none",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "chrome.cmdkTrigger",
+      "view": "chrome",
+      "match": {
+        "classContains": "cmdk-trigger"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "close",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "cmdk.item",
+      "view": "drawer:command-palette",
+      "match": {
+        "classContains": "cmdk__item"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "close",
+      "needs_stable_hook": false
+    },
+    {
+      "id": "cmdk.list",
+      "view": "drawer:command-palette",
+      "match": {
+        "classContains": "cmdk__list"
+      },
+      "oracle_class": "read-only",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "close",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "chrome.projSwitcher",
+      "view": "chrome",
+      "match": {
+        "classContains": "proj-switcher__btn"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "close",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "chrome.projItem",
+      "view": "drawer:project-switcher",
+      "match": {
+        "classContains": "proj-item"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "none",
+      "needs_stable_hook": false
+    },
+    {
+      "id": "chrome.auditBtn",
+      "view": "chrome",
+      "match": {
+        "classContains": "dr-audit-btn"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "close",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "chrome.chainBtn",
+      "view": "chrome",
+      "match": {
+        "classContains": "dr-chain-btn"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "close",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "chrome.inboxBtn",
+      "view": "chrome",
+      "match": {
+        "classContains": "dr-inbox-btn"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "close",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "chrome.mchatFab",
+      "view": "chrome",
+      "match": {
+        "classContains": "dr-mchat__fab"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "close",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "mchat.send",
+      "view": "drawer:master-chat",
+      "match": {
+        "classContains": "dr-mchat__send"
+      },
+      "oracle_class": "external",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/master/chat"
+      },
+      "live_safe": false,
+      "reset": "none",
+      "needs_stable_hook": true,
+      "destructive_guard": "isolated-only"
+    },
+    {
+      "id": "board.addOpen",
+      "view": "board",
+      "match": {
+        "classContains": "dr-addbtn"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "hidden_or_disabled",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "close",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "board.colAdd",
+      "view": "board",
+      "match": {
+        "classContains": "dr-col__add"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "hidden_or_disabled",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "close",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "board.addSubmit",
+      "view": "board",
+      "match": {
+        "classContains": "dr-addform__submit"
+      },
+      "oracle_class": "state-change",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/boards/{board}/tasks"
+      },
+      "live_safe": false,
+      "reset": "sandbox-destroy",
+      "needs_stable_hook": true,
+      "destructive_guard": "isolated-only"
+    },
+    {
+      "id": "board.cardOpen",
+      "view": "board",
+      "match": {
+        "classContains": "dr-card__open"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "close",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "board.cardStatus",
+      "view": "board",
+      "match": {
+        "classContains": "dr-card__status"
+      },
+      "oracle_class": "state-change",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "PATCH",
+        "path": "/api/tasks/{id}/status"
+      },
+      "live_safe": false,
+      "reset": "restore",
+      "needs_stable_hook": true,
+      "destructive_guard": "isolated-only"
+    },
+    {
+      "id": "setup.featureSwitch",
+      "view": "auth",
+      "match": {
+        "classContains": "setup-switch"
+      },
+      "oracle_class": "state-change",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/gui-features/{feature}"
+      },
+      "live_safe": false,
+      "reset": "restore",
+      "needs_stable_hook": true,
+      "destructive_guard": "isolated-only"
+    },
+    {
+      "id": "cost.refresh",
+      "view": "cost",
+      "match": {
+        "classContains": "cost-refresh"
+      },
+      "oracle_class": "read-only",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "GET",
+        "path": "/api/cost"
+      },
+      "live_safe": true,
+      "reset": "none",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "handoff.previewBtn",
+      "view": "handoff",
+      "match": {
+        "classContains": "handoff-preview__btn"
+      },
+      "oracle_class": "preview",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": null,
+      "live_safe": true,
+      "reset": "none",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "exec.confirmYes",
+      "view": "exec",
+      "match": {
+        "classContains": "exec-confirm-yes"
+      },
+      "oracle_class": "destructive",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/execution"
+      },
+      "live_safe": false,
+      "destructive_guard": "isolated-only",
+      "reset": "restore",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "ledger.quotaYes",
+      "view": "ledger",
+      "match": {
+        "classContains": "ledger-quota__yes"
+      },
+      "oracle_class": "state-change",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/quota"
+      },
+      "live_safe": false,
+      "destructive_guard": "isolated-only",
+      "reset": "restore",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "routing.confirmYes",
+      "view": "routing",
+      "match": {
+        "classContains": "routing-confirm__yes"
+      },
+      "oracle_class": "state-change",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/notifications/routing"
+      },
+      "live_safe": false,
+      "destructive_guard": "isolated-only",
+      "reset": "restore",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "slack.test",
+      "view": "integrations",
+      "match": {
+        "classContains": "slack-test"
+      },
+      "oracle_class": "external",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/slack/test"
+      },
+      "live_safe": false,
+      "destructive_guard": "mock-only",
+      "reset": "none",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "slack.save",
+      "view": "integrations",
+      "match": {
+        "classContains": "slack-save"
+      },
+      "oracle_class": "external",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/slack/config"
+      },
+      "live_safe": false,
+      "destructive_guard": "mock-only",
+      "reset": "restore",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "handoff.acceptYes",
+      "view": "handoff",
+      "match": {
+        "classContains": "handoff-accept__yes"
+      },
+      "oracle_class": "external",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/handoff/accept"
+      },
+      "live_safe": false,
+      "destructive_guard": "isolated-only",
+      "reset": "sandbox-destroy",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "terminal.connect",
+      "view": "terminal",
+      "match": {
+        "classContains": "dr-term__connect-btn"
+      },
+      "oracle_class": "external",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "GET",
+        "path": "/api/nodes/{node}/connect"
+      },
+      "live_safe": false,
+      "reset": "none",
+      "needs_stable_hook": true,
+      "destructive_guard": "isolated-only"
+    },
+    {
+      "id": "terminal.send",
+      "view": "terminal",
+      "match": {
+        "classContains": "dr-term__send"
+      },
+      "oracle_class": "external",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/nodes/{node}/send"
+      },
+      "live_safe": false,
+      "destructive_guard": "isolated-only",
+      "reset": "none",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "connect.reissue",
+      "view": "connect",
+      "match": {
+        "classContains": "connect-reissue"
+      },
+      "oracle_class": "external",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "forbidden",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/share"
+      },
+      "live_safe": false,
+      "destructive_guard": "isolated-only",
+      "reset": "none",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "connect.joinBtn",
+      "view": "connect",
+      "match": {
+        "classContains": "connect-join__btn"
+      },
+      "oracle_class": "state-change",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/join"
+      },
+      "live_safe": false,
+      "destructive_guard": "isolated-only",
+      "reset": "sandbox-destroy",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "org.nodeDrag",
+      "view": "team",
+      "match": {
+        "classContains": "org-node"
+      },
+      "oracle_class": "drag",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "PATCH",
+        "path": "/api/nodes/{name}"
+      },
+      "live_safe": false,
+      "destructive_guard": "isolated-only",
+      "reset": "restore",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "chrome.hamburger",
+      "view": "chrome",
+      "match": {
+        "classContains": "dr-hamburger"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": true,
+      "reset": "none"
+    },
+    {
+      "id": "board.select",
+      "view": "board",
+      "match": {
+        "classContains": "dr-select"
+      },
+      "oracle_class": "local-toggle",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": true,
+      "reset": "none"
+    },
+    {
+      "id": "team.orgDelegToggle",
+      "view": "team",
+      "match": {
+        "classContains": "org-deleg-toggle"
+      },
+      "oracle_class": "local-toggle",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": true,
+      "reset": "none"
+    },
+    {
+      "id": "team.orgAddBtn",
+      "view": "team",
+      "match": {
+        "classContains": "org-addbtn"
+      },
+      "oracle_class": "state-change",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "expected_network": {
+        "method": "POST",
+        "path": "/api/nodes"
+      },
+      "live_safe": false,
+      "destructive_guard": "isolated-only",
+      "reset": "none"
+    },
+    {
+      "id": "trend.windowBtn",
+      "view": "trend",
+      "match": {
+        "classContains": "trend-window__btn"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": true,
+      "reset": "none"
+    },
+    {
+      "id": "integrations.manifestBtn",
+      "view": "integrations",
+      "match": {
+        "classContains": "slack-manifest__btn"
+      },
+      "oracle_class": "copy",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": true,
+      "reset": "none"
+    },
+    {
+      "id": "integrations.select",
+      "view": "integrations",
+      "match": {
+        "classContains": "dr-select"
+      },
+      "oracle_class": "local-toggle",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": true,
+      "reset": "none"
+    },
+    {
+      "id": "connect.inviteBtn",
+      "view": "connect",
+      "match": {
+        "classContains": "connect-invite__btn"
+      },
+      "oracle_class": "state-change",
+      "allowed_roles": {
+        "viewer": "forbidden",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": false,
+      "destructive_guard": "isolated-only",
+      "reset": "none"
+    },
+    {
+      "id": "handoff.pasteInput",
+      "view": "handoff",
+      "match": {
+        "classContains": "handoff-paste__input"
+      },
+      "oracle_class": "local-toggle",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": true,
+      "reset": "none"
+    },
+    {
+      "id": "auth.refreshBtn",
+      "view": "auth",
+      "match": {
+        "classContains": "auth-refresh"
+      },
+      "oracle_class": "read-only",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": true,
+      "reset": "none"
+    },
+    {
+      "id": "drawer.auditQf",
+      "view": "drawer:audit",
+      "match": {
+        "classContains": "audit-qf"
+      },
+      "oracle_class": "local-toggle",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": true,
+      "reset": "none"
+    },
+    {
+      "id": "proj.newBtn",
+      "view": "drawer:project-switcher",
+      "match": {
+        "classContains": "proj-menu__new"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": true,
+      "reset": "none"
+    },
+    {
+      "id": "proj.loadBtn",
+      "view": "drawer:project-switcher",
+      "match": {
+        "classContains": "proj-menu__load"
+      },
+      "oracle_class": "nav",
+      "allowed_roles": {
+        "viewer": "allowed",
+        "operator": "allowed",
+        "admin": "allowed"
+      },
+      "live_safe": true,
+      "reset": "none"
+    }
+  ]
+}
