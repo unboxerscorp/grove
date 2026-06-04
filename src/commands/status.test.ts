@@ -100,4 +100,39 @@ describe("renderStatus", () => {
 
     expect(paneCommand).not.toHaveBeenCalled();
   });
+
+  test("renders registry-only nodes spawned interactively", async () => {
+    vi.mocked(hasSession).mockResolvedValue(true);
+    vi.mocked(paneCommand).mockResolvedValue("codex");
+    vi.mocked(resolveTranscript).mockReturnValue("");
+
+    const ctx = context();
+    const ephemeralNode = {
+      agent: "codex" as const,
+      children: [],
+      cwd: "/repo",
+      name: "ephemeral",
+      parent: "lead",
+    };
+    ctx.byName.set("ephemeral", {
+      adapter: adapter("ephemeral-adapter"),
+      addr: "dev10:2.0",
+      node: ephemeralNode,
+    });
+    ctx.registry.nodes.ephemeral = {
+      agent: "codex",
+      name: "ephemeral",
+      parent: "lead",
+      tmux_pane: "dev10:2.0",
+    };
+
+    const lines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((line?: string) => {
+      lines.push(line ?? "");
+    });
+
+    await renderStatus(ctx);
+
+    expect(lines.join("\n")).toContain("ephemeral [ephemeral-adapter]");
+  });
 });

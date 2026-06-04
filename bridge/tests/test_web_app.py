@@ -21,7 +21,7 @@ from starlette.websockets import WebSocketDisconnect
 import grove_bridge.team_auth as team_auth
 import grove_bridge.web_app as web_app
 from grove_bridge.auth_status import ToolAuthStatus
-from grove_bridge.store import SQLiteBoardStore
+from grove_bridge.store import BoardEvent, SQLiteBoardStore
 from grove_bridge.team_auth import (
     CSRF_HEADER,
     TEAM_SESSION_COOKIE,
@@ -6307,6 +6307,13 @@ def test_ws_ticket_is_single_use_and_expires(
     now = 1031.0
     assert web_app._consume_ticket(ticket_store(client), expired) is None
 
+    unused_expired = ws_ticket(client)
+    now = 1062.0
+    fresh = ws_ticket(client)
+    tickets = ticket_store(client)._tickets
+    assert unused_expired not in tickets
+    assert fresh in tickets
+
 
 def test_ws_ticket_binds_project_from_request_header(tmp_path: Path) -> None:
     write_registry(
@@ -6668,6 +6675,70 @@ def test_terminal_skips_unchanged_capture_frames(
     assert captures == ["dev10:2.0", "dev10:2.0", "dev10:2.0"]
 
 
+def test_terminal_reports_tmux_capture_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"}},
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    def timeout_capture(pane: str) -> bytes:
+        raise subprocess.TimeoutExpired(cmd=["tmux", "capture-pane", "-t", pane], timeout=5)
+
+    monkeypatch.setattr(web_app, "_tmux_capture", timeout_capture)
+    ticket = terminal_ticket(client, "dev10:2.0")
+
+    with client.websocket_connect(f"/ws/terminal?ticket={ticket}&pane_id=dev10:2.0") as ws:
+        frame = ws.receive_json()
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+
+    assert frame == {
+        "type": "error",
+        "code": "tmux_capture_timeout",
+        "pane_id": "dev10:2.0",
+        "message": "tmux capture timed out",
+        "ts": frame["ts"],
+    }
+    assert exc.value.code == 1011
+
+
+def test_terminal_reports_tmux_capture_os_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"}},
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    def failed_capture(_pane: str) -> bytes:
+        raise OSError("tmux is unavailable")
+
+    monkeypatch.setattr(web_app, "_tmux_capture", failed_capture)
+    ticket = terminal_ticket(client, "dev10:2.0")
+
+    with client.websocket_connect(f"/ws/terminal?ticket={ticket}&pane_id=dev10:2.0") as ws:
+        frame = ws.receive_json()
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+
+    assert frame == {
+        "type": "error",
+        "code": "tmux_capture_unavailable",
+        "pane_id": "dev10:2.0",
+        "message": "tmux capture unavailable",
+        "ts": frame["ts"],
+    }
+    assert exc.value.code == 1011
+
+
 def test_tmux_capture_uses_literal_argv_without_shell(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, Any]] = []
 
@@ -6735,6 +6806,44 @@ def test_board_ws_filters_events_by_ticket_project(tmp_path: Path) -> None:
 
     assert message["task_id"] == dev11.id
     assert dev10.id not in str(message)
+
+
+def test_board_ws_queries_events_with_project_scope_before_limit(tmp_path: Path) -> None:
+    class RecordingStore(SQLiteBoardStore):
+        def __init__(self, path: Path) -> None:
+            super().__init__(path)
+            self.seen_boards: list[str | None] = []
+
+        def list_events_after(
+            self,
+            *,
+            cursor: int = 0,
+            limit: int = 100,
+            board: str | None = None,
+        ) -> list[BoardEvent]:
+            self.seen_boards.append(board)
+            return super().list_events_after(cursor=cursor, limit=limit, board=board)
+
+    store = RecordingStore(tmp_path / "board.db")
+    for index in range(125):
+        store.create_task(board="dev10", title=f"Hidden {index}", body=None, assignee="lead")
+    visible = store.create_task(board="dev11", title="Visible", body=None, assignee="worker")
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev11:2.0"}},
+    )
+    client = make_client(tmp_path, store)
+    ticket = client.post(
+        "/api/ws-ticket",
+        headers=auth_headers(client) | {"X-Grove-Project": "dev11"},
+    ).json()["ticket"]
+
+    with client.websocket_connect(f"/ws/board?ticket={ticket}") as ws:
+        message = ws.receive_json()
+
+    assert message["task_id"] == visible.id
+    assert store.seen_boards[0] == "dev11"
 
 
 def test_board_ws_rejects_missing_ticket(tmp_path: Path) -> None:

@@ -42,4 +42,51 @@ describe("cmdUp", () => {
     expect(bringUp).toHaveBeenCalledWith(ctx);
     expect(renderStatus).toHaveBeenCalledWith(ctx);
   });
+
+  test("keeps registry-only nodes visible to status without adding them to bring-up nodes", async () => {
+    const configured = {
+      agent: "codex" as const,
+      children: [],
+      cwd: "/repo",
+      name: "lead",
+    };
+    const spawned = {
+      agent: "claude" as const,
+      children: [],
+      cwd: "/repo",
+      name: "orch-platform",
+      parent: "lead",
+    };
+    const ctx = {
+      byName: new Map([
+        ["lead", { adapter: {} as never, addr: "dev10:0.0", node: configured }],
+        ["orch-platform", { adapter: {} as never, addr: "dev10:1.1", node: spawned }],
+      ]),
+      config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "dev10" },
+      configPath: "/repo/grove.yaml",
+      nodes: [configured],
+      registry: {
+        cwd: "/repo",
+        nodes: {
+          "orch-platform": {
+            agent: "claude",
+            name: "orch-platform",
+            parent: "lead",
+            tmux_pane: "dev10:1.1",
+          },
+        },
+        session: "dev10",
+        updatedAt: "now",
+      },
+    } satisfies Context;
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.mocked(loadContext).mockReturnValue(ctx);
+    vi.mocked(bringUp).mockResolvedValue({ adopted: [], created: false, launched: [] });
+
+    await cmdUp({ config: "grove.yaml" });
+
+    expect(vi.mocked(bringUp).mock.calls[0]?.[0].nodes.map((node) => node.name)).toEqual(["lead"]);
+    expect(vi.mocked(renderStatus).mock.calls[0]?.[0].byName.has("orch-platform")).toBe(true);
+  });
 });

@@ -599,10 +599,12 @@ class TicketStore:
         pane_id: str | None = None,
         ttl_seconds: int = TICKET_TTL_SECONDS,
     ) -> TicketGrant:
+        now = time.time()
+        self._sweep_expired(now)
         ticket = secrets.token_urlsafe(24)
         grant = TicketGrant(
             ticket=ticket,
-            expires_at=time.time() + ttl_seconds,
+            expires_at=now + ttl_seconds,
             project=project,
             kind=kind,
             pane_id=pane_id,
@@ -611,10 +613,17 @@ class TicketStore:
         return grant
 
     def consume(self, ticket: str) -> TicketGrant | None:
+        now = time.time()
+        self._sweep_expired(now)
         grant = self._tickets.pop(ticket, None)
-        if grant is None or grant.expires_at < time.time():
+        if grant is None or grant.expires_at < now:
             return None
         return grant
+
+    def _sweep_expired(self, now: float) -> None:
+        expired = [ticket for ticket, grant in self._tickets.items() if grant.expires_at < now]
+        for ticket in expired:
+            self._tickets.pop(ticket, None)
 
 
 def create_app(
@@ -2283,7 +2292,32 @@ def create_app(
                 if not _pane_allowed(pane_id, config=project.config):
                     await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                     return
-                payload = await asyncio.to_thread(_tmux_capture, pane_id)
+                try:
+                    payload = await asyncio.to_thread(_tmux_capture, pane_id)
+                except subprocess.TimeoutExpired:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "code": "tmux_capture_timeout",
+                            "pane_id": pane_id,
+                            "message": "tmux capture timed out",
+                            "ts": int(time.time()),
+                        }
+                    )
+                    await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+                    return
+                except OSError:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "code": "tmux_capture_unavailable",
+                            "pane_id": pane_id,
+                            "message": "tmux capture unavailable",
+                            "ts": int(time.time()),
+                        }
+                    )
+                    await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+                    return
                 if seq == 0 or payload != last_payload:
                     seq += 1
                     last_payload = payload
@@ -2317,11 +2351,13 @@ def create_app(
         current = cursor
         try:
             while True:
-                events = _store(websocket).list_events_after(cursor=current, limit=100)
+                events = _store(websocket).list_events_after(
+                    cursor=current,
+                    limit=100,
+                    board=project.board,
+                )
                 for event in events:
                     current = event.cursor
-                    if not _event_in_project(_store(websocket), event, project=project):
-                        continue
                     await websocket.send_json(_event_payload(event))
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
         except Exception:

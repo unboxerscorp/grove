@@ -20,12 +20,15 @@ export async function renderStatus(ctx: Context): Promise<void> {
 
   const childrenOf = new Map<string, string[]>();
   const roots: string[] = [];
-  for (const n of ctx.nodes) {
+  const displayNodes = [...ctx.byName.values()].map((nc) => nc.node);
+  const displayNames = new Set(displayNodes.map((node) => node.name));
+  for (const n of displayNodes) {
     if (n.parent) {
       const arr = childrenOf.get(n.parent) ?? [];
       arr.push(n.name);
       childrenOf.set(n.parent, arr);
-    } else {
+    }
+    if (!n.parent || !displayNames.has(n.parent)) {
       roots.push(n.name);
     }
   }

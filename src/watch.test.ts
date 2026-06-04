@@ -165,4 +165,20 @@ describe("watch scan", () => {
     expect(watchFile).toHaveBeenCalled();
     expect(readTurnEventsSince(eventLogDir, 0).events).toHaveLength(1);
   });
+
+  test("watches registry-only nodes spawned interactively", async () => {
+    const eventLogDir = tempDir();
+    const transcript = join(tempDir(), "current.jsonl");
+    writeFileSync(transcript, "{}\n");
+    const { ctx } = makeNodeCtx(transcript);
+
+    ctx.nodes = [];
+
+    const watcher = startTurnEventWatcher(ctx, {
+      eventLogDir,
+    });
+    watcher.stop();
+
+    expect(readTurnEventsSince(eventLogDir, 0).events).toHaveLength(1);
+  });
 });

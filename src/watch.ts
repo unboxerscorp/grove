@@ -106,9 +106,9 @@ export function startTurnEventWatcher(
   const offsets = new Map<string, number>();
   const watchers = new Map<string, { transcript: string; watcher?: FSWatcher }>();
 
-  const scan = (nc: NodeCtx, transcript: string): void => {
+  const scan = (latestCtx: Context, nc: NodeCtx, transcript: string): void => {
     const key = nc.node.name;
-    const result = scanNodeForTurnEvent(ctx, nc, {
+    const result = scanNodeForTurnEvent(latestCtx, nc, {
       eventLogDir,
       transcript,
       fromOffset: offsets.get(key) ?? nc.adapter.size(transcript),
@@ -132,7 +132,7 @@ export function startTurnEventWatcher(
       watchers.delete(nc.node.name);
     }
 
-    scan(nc, transcript);
+    scan(latestCtx, nc, transcript);
 
     if (watchers.has(nc.node.name)) return;
     if (!watched.includes(nc.node.name)) watched.push(nc.node.name);
@@ -140,7 +140,7 @@ export function startTurnEventWatcher(
     let watcher: FSWatcher | undefined;
     try {
       watcher = watchFile(transcript, { persistent: true }, () => {
-        scan(nc, transcript);
+        scan(latestCtx, nc, transcript);
       });
       watcher.on("error", () => {
         try {
@@ -157,9 +157,7 @@ export function startTurnEventWatcher(
   };
 
   const refresh = (latestCtx: Context): void => {
-    for (const node of latestCtx.nodes) {
-      const nc = latestCtx.byName.get(node.name);
-      if (!nc) continue;
+    for (const nc of latestCtx.byName.values()) {
       ensureNode(latestCtx, nc);
     }
   };

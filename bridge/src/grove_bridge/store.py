@@ -1893,16 +1893,31 @@ class SQLiteBoardStore:
             ).fetchall()
         return [_run_from_row(row) for row in rows]
 
-    def list_events_after(self, *, cursor: int = 0, limit: int = 100) -> list[BoardEvent]:
+    def list_events_after(
+        self,
+        *,
+        cursor: int = 0,
+        limit: int = 100,
+        board: str | None = None,
+    ) -> list[BoardEvent]:
+        clauses = ["rowid > ?"]
+        params: list[object] = [cursor]
+        if board is not None:
+            board_id = self._board_id_for_slug(board)
+            if board_id is None:
+                return []
+            clauses.append("board_id = ?")
+            params.append(board_id)
+        params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT rowid AS cursor, * FROM events
-                WHERE rowid > ?
+                WHERE {" AND ".join(clauses)}
                 ORDER BY rowid ASC
                 LIMIT ?
                 """,
-                (cursor, limit),
+                params,
             ).fetchall()
         return [_event_from_row(row) for row in rows]
 
