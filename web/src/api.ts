@@ -5,7 +5,19 @@
 // header on upgrade, so every WS connect first POSTs /api/ws-ticket for a
 // short-lived single-use ticket and connects with ?ticket=.
 
-import type { Board, Comment, GroveNode, Org, OrgNode, Run, Task, WsTicket } from "./types";
+import type {
+  Board,
+  Comment,
+  GroveNode,
+  GuiFeatureKey,
+  GuiFeatureUpdate,
+  GuiFeatures,
+  Org,
+  OrgNode,
+  Run,
+  Task,
+  WsTicket,
+} from "./types";
 
 export interface NewTask {
   title: string;
@@ -930,6 +942,19 @@ export const api = {
 
   // Current viewer's identity/role (member null in local-token mode = operator).
   getMe: () => getJSON<MeInfo>("/api/me"),
+
+  getGuiFeatures: () => getJSON<GuiFeatures>("/api/gui-features"),
+
+  async setGuiFeature(feature: GuiFeatureKey, enabled: boolean): Promise<GuiFeatureUpdate> {
+    const res = await fetch(`/api/gui-features/${enc(feature)}`, {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) throw new Error(`gui feature: HTTP ${res.status}`);
+    return (await res.json()) as GuiFeatureUpdate;
+  },
 
   // --- execution loop ------------------------------------------------------
   getExecutionGate: () => getJSON<ExecutionGate>("/api/execution"),

@@ -149,6 +149,17 @@ DELEGATE_BOARD_ALIASES = frozenset({"dev-room"})
 DELEGATE_BOARD_OWNER_PROJECT = "dev10"
 LEAD_NODE_NAME = "lead"
 PROJECT_MASTER_NODE_NAME = "project-master"
+GUI_FEATURES = (
+    "quota",
+    "intake",
+    "node-input",
+    "digest",
+    "summary",
+    "handoff",
+    "usage-trend",
+    "retro-analytics",
+)
+GUI_FEATURE_SET = frozenset(GUI_FEATURES)
 
 
 class AuthMode(StrEnum):
@@ -408,6 +419,10 @@ class ExecutionGatePayload(BaseModel):
     kill_switch: bool | None = None
     board_enabled: bool | None = None
     board_kill_switch: bool | None = None
+
+
+class GuiFeatureTogglePayload(BaseModel):
+    enabled: bool
 
 
 class ProjectCreatePayload(BaseModel):
@@ -687,6 +702,52 @@ def create_app(
             payload["node_details"] = _node_status_details(project.config)
         return payload
 
+    @app.get("/api/gui-features")
+    def gui_features_endpoint(request: Request) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        return _gui_features_payload(_store(request), project=project)
+
+    @app.post("/api/gui-features/{feature}")
+    def set_gui_feature_endpoint(
+        request: Request,
+        feature: str,
+        payload: GuiFeatureTogglePayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="gui feature toggles require operator role",
+        )
+        project = resolve_project(request)
+        feature_name = _gui_feature_name(feature)
+        _store(request).set_gui_feature_enabled(
+            board=project.board,
+            feature=feature_name,
+            enabled=payload.enabled,
+        )
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.gui.feature",
+            actor=_actor_payload(auth),
+            action="gui-feature-toggle",
+            target={"type": "gui_feature", "id": feature_name},
+            payload={
+                "project": project.name,
+                "feature": feature_name,
+                "enabled": payload.enabled,
+            },
+            summary=f"{feature_name} {'enabled' if payload.enabled else 'disabled'}",
+        )
+        features_payload = _gui_features_payload(_store(request), project=project)
+        features = cast(dict[str, dict[str, object]], features_payload["features"])
+        return {
+            "ok": True,
+            "project": project.name,
+            "key": feature_name,
+            "feature": features[feature_name],
+            "features": features,
+        }
+
     @app.get("/api/presence")
     def presence_endpoint(request: Request) -> dict[str, object]:
         auth = _require_auth(request)
@@ -779,9 +840,13 @@ def create_app(
     ) -> dict[str, object]:
         auth = _require_auth(request)
         _require_cost_access(auth)
-        config_value = _config(request)
-        _require_usage_trend_enabled(config_value)
         project = _cost_project_context(request, project_name)
+        _require_gui_feature_enabled(
+            _store(request),
+            project=project,
+            feature="usage-trend",
+            detail="usage trend is not enabled",
+        )
         return _usage_trend_payload(
             _store(request),
             project=project,
@@ -806,7 +871,11 @@ def create_app(
             auth=auth,
             window=window,
             member_filter=member_filter,
-            quota_enabled=_config(request).quota_enabled,
+            quota_enabled=_gui_feature_enabled(
+                _store(request),
+                project=project,
+                feature="quota",
+            ),
         )
 
     @app.get("/api/retro/analytics")
@@ -817,9 +886,13 @@ def create_app(
     ) -> dict[str, object]:
         auth = _require_auth(request)
         _require_retro_access(auth)
-        config_value = _config(request)
-        _require_retro_analytics_enabled(config_value)
         project = _cost_project_context(request, project_name)
+        _require_gui_feature_enabled(
+            _store(request),
+            project=project,
+            feature="retro-analytics",
+            detail="retro analytics is not enabled",
+        )
         return _retro_analytics_payload(
             _store(request),
             project=project,
@@ -829,10 +902,15 @@ def create_app(
 
     @app.post("/api/quota")
     def quota_endpoint(request: Request, payload: QuotaPayload) -> dict[str, object]:
-        config_value = _config(request)
-        _require_quota_enabled(config_value)
-        auth = _require_operator_state_change(request, detail="quota requires operator role")
         project = resolve_project(request)
+        _require_gui_feature_enabled(
+            _store(request),
+            project=project,
+            feature="quota",
+            detail="quota is not enabled",
+        )
+        auth = _require_operator_state_change(request, detail="quota requires operator role")
+        config_value = project.config
         member_id = _quota_member_id(payload.member_id, config=config_value)
         state = _store(request).set_member_quota(
             board=project.board,
@@ -903,9 +981,13 @@ def create_app(
         project_name: str | None = Query(default=None, alias="project"),
     ) -> dict[str, object]:
         _require_auth(request)
-        config_value = _config(request)
-        _require_summary_enabled(config_value)
         project = _cost_project_context(request, project_name)
+        _require_gui_feature_enabled(
+            _store(request),
+            project=project,
+            feature="summary",
+            detail="summary export is not enabled",
+        )
         return _signed_summary_payload(_store(request), project=project)
 
     @app.post("/api/aggregate")
@@ -915,9 +997,13 @@ def create_app(
         project_name: str | None = Query(default=None, alias="project"),
     ) -> dict[str, object]:
         _require_auth(request)
-        config_value = _config(request)
-        _require_summary_enabled(config_value)
         project = _cost_project_context(request, project_name)
+        _require_gui_feature_enabled(
+            _store(request),
+            project=project,
+            feature="summary",
+            detail="summary export is not enabled",
+        )
         return _aggregate_summary_payload(project.config, payload)
 
     @app.get("/api/handoff/export")
@@ -927,9 +1013,13 @@ def create_app(
         project_name: str | None = Query(default=None, alias="project"),
     ) -> dict[str, object]:
         auth = _require_operator_state_change(request, detail="handoff requires operator role")
-        config_value = _config(request)
-        _require_handoff_enabled(config_value)
         project = _cost_project_context(request, project_name)
+        _require_gui_feature_enabled(
+            _store(request),
+            project=project,
+            feature="handoff",
+            detail="handoff is not enabled",
+        )
         task = _task_for_project(_store(request), task_id, project=project)
         return _signed_handoff_payload(_store(request), project=project, task=task, auth=auth)
 
@@ -940,9 +1030,13 @@ def create_app(
         project_name: str | None = Query(default=None, alias="project"),
     ) -> dict[str, object]:
         auth = _require_operator_state_change(request, detail="handoff requires operator role")
-        config_value = _config(request)
-        _require_handoff_enabled(config_value)
         project = _cost_project_context(request, project_name)
+        _require_gui_feature_enabled(
+            _store(request),
+            project=project,
+            feature="handoff",
+            detail="handoff is not enabled",
+        )
         task = _task_for_project(_store(request), payload.task_id, project=project)
         return _signed_handoff_payload(_store(request), project=project, task=task, auth=auth)
 
@@ -953,9 +1047,13 @@ def create_app(
         project_name: str | None = Query(default=None, alias="project"),
     ) -> dict[str, object]:
         auth = _require_operator_state_change(request, detail="handoff requires operator role")
-        config_value = _config(request)
-        _require_handoff_enabled(config_value)
         project = _cost_project_context(request, project_name)
+        _require_gui_feature_enabled(
+            _store(request),
+            project=project,
+            feature="handoff",
+            detail="handoff is not enabled",
+        )
         return _accept_handoff_payload(
             _store(request),
             config=project.config,
@@ -1450,9 +1548,13 @@ def create_app(
             request,
             detail="node input requires operator role",
         )
-        config_value = _config(request)
-        _require_node_input_enabled(config_value)
         project = resolve_project(request)
+        _require_gui_feature_enabled(
+            _store(request),
+            project=project,
+            feature="node-input",
+            detail="node input is not enabled",
+        )
         node_record = _node_record_in_project(node, config=project.config)
         pane = node_record["tmux_pane"]
         if not _pane_input_allowed(pane, config=project.config):
@@ -1681,10 +1783,14 @@ def create_app(
     @app.get("/api/slack/config/status")
     def slack_config_status_endpoint(request: Request) -> dict[str, object]:
         _require_auth(request)
-        config_value = _config(request)
+        project = resolve_project(request)
         return config_status(
-            _slack_config_path(config_value),
-            intake_enabled=config_value.slack_intake_enabled,
+            _slack_config_path(project.config),
+            intake_enabled=_gui_feature_enabled(
+                _store(request),
+                project=project,
+                feature="intake",
+            ),
         )
 
     @app.post("/api/slack/config")
@@ -5045,6 +5151,79 @@ def _require_audit_access(auth: AuthContext) -> None:
 
 def _require_cost_access(auth: AuthContext) -> None:
     _require_operator_access(auth, detail="cost requires operator role")
+
+
+def _gui_feature_name(value: str) -> str:
+    clean = value.strip().lower()
+    if clean not in GUI_FEATURE_SET:
+        raise HTTPException(status_code=404, detail="gui feature is not known")
+    return clean
+
+
+def _gui_features_payload(store: SQLiteBoardStore, *, project: ProjectContext) -> dict[str, object]:
+    return {
+        "project": project.name,
+        "features": {
+            feature: _gui_feature_state(store, project=project, feature=feature)
+            for feature in GUI_FEATURES
+        },
+    }
+
+
+def _gui_feature_state(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    feature: str,
+) -> dict[str, object]:
+    stored = store.gui_feature_flags(board=project.board, features=(feature,))[feature]
+    enabled = stored.get("enabled")
+    if stored.get("configured") is True and isinstance(enabled, bool):
+        return {"enabled": enabled, "configured": True, "source": "gui"}
+    config_enabled = _gui_feature_config_default(project.config, feature)
+    return {
+        "enabled": config_enabled,
+        "configured": False,
+        "source": "config" if config_enabled else "default",
+    }
+
+
+def _gui_feature_enabled(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    feature: str,
+) -> bool:
+    return bool(_gui_feature_state(store, project=project, feature=feature)["enabled"])
+
+
+def _require_gui_feature_enabled(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    feature: str,
+    detail: str,
+) -> None:
+    if not _gui_feature_enabled(store, project=project, feature=feature):
+        raise HTTPException(status_code=404, detail=detail)
+
+
+def _gui_feature_config_default(config: WebAppConfig, feature: str) -> bool:
+    if feature == "quota":
+        return config.quota_enabled
+    if feature == "intake":
+        return config.slack_intake_enabled
+    if feature == "node-input":
+        return config.node_input_enabled
+    if feature == "summary":
+        return config.summary_export_enabled
+    if feature == "handoff":
+        return config.handoff_enabled
+    if feature == "usage-trend":
+        return config.usage_trend_enabled
+    if feature == "retro-analytics":
+        return config.retro_analytics_enabled
+    return False
 
 
 def _require_summary_enabled(config: WebAppConfig) -> None:

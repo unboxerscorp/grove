@@ -29,6 +29,7 @@ import { SlackPanel } from "./components/SlackPanel";
 import { TaskDrawer } from "./components/TaskDrawer";
 import { TerminalPane } from "./components/TerminalPane";
 import { MasterChat } from "./components/MasterChat";
+import { GroveMark } from "./components/GroveMark";
 import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { GroveNode } from "./types";
@@ -133,23 +134,6 @@ const DRAWER_CLASS: Record<"audit" | "chain" | "inbox", string> = {
   inbox: "dr-inbox-btn",
 };
 
-function GroveMark() {
-  return (
-    <svg className="dr-mark" viewBox="0 0 24 24" width={22} height={22} aria-hidden="true">
-      <path
-        d="M12 22V13M12 13L7 9M12 13l5-4M12 9V3"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={1.6}
-        strokeLinecap="round"
-      />
-      <circle cx={12} cy={3} r={1.7} fill="currentColor" />
-      <circle cx={7} cy={9} r={1.5} fill="currentColor" />
-      <circle cx={17} cy={9} r={1.5} fill="currentColor" />
-    </svg>
-  );
-}
-
 export function App() {
   const { t, lang, setLang } = useI18n();
   // The project's single board, addressed by the "default" alias (resolves to
@@ -176,6 +160,7 @@ export function App() {
   // Left sidebar: mobile drawer open + per-group collapse (all expanded default).
   const [navOpen, setNavOpen] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
+  const [tutorialOpenKey, setTutorialOpenKey] = useState(0);
   const toggleGroup = (id: string) =>
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
@@ -555,6 +540,19 @@ export function App() {
               );
             })}
           </nav>
+          <div className="dr-sidebar__foot">
+            <button
+              type="button"
+              className="dr-tutorial-btn"
+              onClick={() => {
+                setTutorialOpenKey((x) => x + 1);
+                setNavOpen(false);
+              }}
+            >
+              <span className="dr-tutorial-btn__icon" aria-hidden="true">?</span>
+              <span className="dr-tutorial-btn__label">{t("nav.tutorial")}</span>
+            </button>
+          </div>
         </aside>
 
         <div className="dr-content">
@@ -633,6 +631,7 @@ export function App() {
         <CommandPalette open onClose={() => setPaletteOpen(false)} commands={paletteCommands} />
       )}
       <OnboardingWizard
+        openKey={tutorialOpenKey}
         projectCount={projects.length}
         onProjectReady={(name) => {
           void loadProjects();

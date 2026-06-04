@@ -39,6 +39,11 @@ export interface GroveNode {
   tmux_pane: string;
   session_id: string;
   status: string;
+  role?: string;
+  parent?: string | null;
+  children?: string[];
+  group?: string;
+  description?: string;
   // v1.28 backend-authoritative access flags (web_app.py NodeRecord). The lead
   // pane (window.pane == 0.0) is terminal_allowed:true but input_allowed:false;
   // meta / no-pane nodes are neither. Optional — older payloads omit them, so the
@@ -95,4 +100,33 @@ export interface BoardEvent {
   cursor?: number;
   type?: string;
   task_id?: string;
+}
+
+export type GuiFeatureKey =
+  | "quota"
+  | "intake"
+  | "node-input"
+  | "digest"
+  | "summary"
+  | "handoff"
+  | "usage-trend"
+  | "retro-analytics";
+
+export interface GuiFeatureState {
+  enabled: boolean;
+  configured: boolean;
+  source: "default" | "cli" | "config" | "gui";
+}
+
+export interface GuiFeatures {
+  project?: string;
+  features: Record<GuiFeatureKey, GuiFeatureState>;
+}
+
+export interface GuiFeatureUpdate {
+  ok: boolean;
+  project?: string;
+  key: GuiFeatureKey;
+  feature: GuiFeatureState;
+  features: Record<GuiFeatureKey, GuiFeatureState>;
 }

@@ -4,11 +4,12 @@ import { api } from "../api";
 import { cx } from "../constants";
 import { useI18n } from "../i18n";
 import { useFocusTrap } from "../useFocusTrap";
+import { GroveMark } from "./GroveMark";
 
-// Bumped suffix ("v2") so a re-introduced/extended wizard can re-show once even
+// Bumped suffix ("v3") so a re-introduced/extended wizard can re-show once even
 // for users who dismissed the previous one.
-const SEEN_KEY = "grove.onboarded.v2";
-const STEPS = ["welcome", "project", "node", "auth"] as const;
+const SEEN_KEY = "grove.onboarded.v3";
+const STEPS = ["welcome", "project", "board", "node", "setup"] as const;
 
 function hasSeen(): boolean {
   try {
@@ -33,11 +34,12 @@ function markSeen(): void {
  * surfaced as guidance. Renders as an overlay above the (already-live) dashboard.
  */
 export function OnboardingWizard(props: {
+  openKey: number;
   projectCount: number;
   onProjectReady: (name: string) => void;
-  onNavigate: (view: "team" | "auth") => void;
+  onNavigate: (view: "board" | "team" | "auth") => void;
 }) {
-  const { projectCount, onProjectReady, onNavigate } = props;
+  const { openKey, projectCount, onProjectReady, onNavigate } = props;
   const { t } = useI18n();
   // Show on first visit OR when there are no projects yet (and not yet seen).
   const [visible, setVisible] = useState(() => !hasSeen());
@@ -65,6 +67,12 @@ export function OnboardingWizard(props: {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [visible]);
+
+  useEffect(() => {
+    if (openKey <= 0) return;
+    setStep(0);
+    setVisible(true);
+  }, [openKey]);
 
   const createProject = () => {
     const nm = name.trim();
@@ -115,7 +123,10 @@ export function OnboardingWizard(props: {
       <div className="onb-wizard__scrim" />
       <aside className="onb-wizard__panel" tabIndex={-1} ref={panelRef}>
         <header className="onb-wizard__head">
-          <span className="onb-wizard__brand">🌳 {t("onb.title")}</span>
+          <span className="onb-wizard__brand">
+            <GroveMark size={20} />
+            {t("onb.title")}
+          </span>
           <button type="button" className="onb-skip" onClick={dismiss}>
             {t("onb.skip")}
           </button>
@@ -188,6 +199,23 @@ export function OnboardingWizard(props: {
 
           {step === 2 && (
             <>
+              <h2 className="onb-title">{t("onb.board.title")}</h2>
+              <p className="onb-body">{t("onb.board.body")}</p>
+              <button
+                type="button"
+                className="dr-btn dr-btn--primary onb-goto-board"
+                onClick={() => {
+                  onNavigate("board");
+                  setStep(3);
+                }}
+              >
+                {t("onb.board.cta")} ↗
+              </button>
+            </>
+          )}
+
+          {step === 3 && (
+            <>
               <h2 className="onb-title">{t("onb.node.title")}</h2>
               <p className="onb-body">{t("onb.node.body")}</p>
               <button
@@ -195,7 +223,7 @@ export function OnboardingWizard(props: {
                 className="dr-btn dr-btn--primary onb-goto-team"
                 onClick={() => {
                   onNavigate("team");
-                  setStep(3);
+                  setStep(4);
                 }}
               >
                 {t("onb.node.cta")} ↗
@@ -203,10 +231,10 @@ export function OnboardingWizard(props: {
             </>
           )}
 
-          {step === 3 && (
+          {step === 4 && (
             <>
-              <h2 className="onb-title">{t("onb.auth.title")}</h2>
-              <p className="onb-body">{t("onb.auth.body")}</p>
+              <h2 className="onb-title">{t("onb.setup.title")}</h2>
+              <p className="onb-body">{t("onb.setup.body")}</p>
               <button
                 type="button"
                 className="dr-btn dr-btn--ghost onb-goto-auth"
@@ -215,7 +243,7 @@ export function OnboardingWizard(props: {
                   dismiss();
                 }}
               >
-                {t("onb.auth.cta")} ↗
+                {t("onb.setup.cta")} ↗
               </button>
             </>
           )}

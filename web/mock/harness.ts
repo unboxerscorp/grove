@@ -96,6 +96,10 @@ function basicNode(n: OrgNodeMock) {
   return {
     name: n.name,
     agent: n.agent,
+    role: n.role,
+    parent: n.parent,
+    group: n.group,
+    description: n.description,
     tmux_pane: n.tmux_pane,
     session_id: n.session_id,
     status: n.status,
@@ -401,6 +405,84 @@ let handoffEnabled = true;
 diag.setHandoffEnabled = (on: boolean): void => {
   handoffEnabled = on;
 };
+
+const guiFeatureKeys = [
+  "quota",
+  "intake",
+  "node-input",
+  "digest",
+  "summary",
+  "handoff",
+  "usage-trend",
+  "retro-analytics",
+] as const;
+type GuiFeatureKey = (typeof guiFeatureKeys)[number];
+
+function guiFeatureEnabled(key: GuiFeatureKey): boolean {
+  switch (key) {
+    case "quota":
+      return quotaEnabled;
+    case "intake":
+      return slackIntakeEnabled === true;
+    case "node-input":
+      return nodeInputEnabled;
+    case "summary":
+      return summaryEnabled;
+    case "handoff":
+      return handoffEnabled;
+    case "usage-trend":
+      return usageTrendEnabled;
+    case "retro-analytics":
+      return retroAnalyticsEnabled;
+    case "digest":
+      return true;
+  }
+}
+
+function setGuiFeatureEnabled(key: GuiFeatureKey, enabled: boolean): void {
+  switch (key) {
+    case "quota":
+      quotaEnabled = enabled;
+      return;
+    case "intake":
+      slackIntakeEnabled = enabled;
+      return;
+    case "node-input":
+      nodeInputEnabled = enabled;
+      return;
+    case "summary":
+      summaryEnabled = enabled;
+      return;
+    case "handoff":
+      handoffEnabled = enabled;
+      return;
+    case "usage-trend":
+      usageTrendEnabled = enabled;
+      return;
+    case "retro-analytics":
+      retroAnalyticsEnabled = enabled;
+      return;
+    case "digest":
+      return;
+  }
+}
+
+function guiFeaturesPayload() {
+  return {
+    project: "dev10",
+    features: Object.fromEntries(
+      guiFeatureKeys.map((key) => [
+        key,
+        {
+          enabled: guiFeatureEnabled(key),
+          configured: false,
+          source: "cli",
+        },
+      ]),
+    ),
+  };
+}
+
 const HANDOFF_NOW = AUDIT_TS0 + 1000; // accept reference clock (epoch seconds)
 const HANDOFF_TTL = 86_400; // receiver ttl (seconds)
 const HANDOFF_TRUSTED = new Set(["room-alpha"]); // allowlisted signer key_ids
@@ -890,6 +972,38 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       });
     }
     return Promise.resolve(json(body));
+  }
+
+  if (p === "/api/gui-features") {
+    diag.guiFeaturesFetched = true;
+    return Promise.resolve(json(guiFeaturesPayload()));
+  }
+
+  const guiMatch = p.match(/^\/api\/gui-features\/([^/]+)$/);
+  if (guiMatch && method === "POST") {
+    const key = decodeURIComponent(guiMatch[1] ?? "") as GuiFeatureKey;
+    if (!guiFeatureKeys.includes(key)) {
+      return Promise.resolve(new Response(JSON.stringify({ detail: "unknown GUI feature" }), { status: 404 }));
+    }
+    if (viewerMode) {
+      return Promise.resolve(new Response(JSON.stringify({ detail: "GUI feature toggles require operator role" }), { status: 403 }));
+    }
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as { enabled?: boolean };
+    setGuiFeatureEnabled(key, body.enabled === true);
+    diag.guiFeaturePost = { key, enabled: body.enabled === true };
+    return Promise.resolve(
+      json({
+        ok: true,
+        project: "dev10",
+        key,
+        feature: {
+          enabled: guiFeatureEnabled(key),
+          configured: true,
+          source: "gui",
+        },
+        features: guiFeaturesPayload().features,
+      }),
+    );
   }
 
   if (p === "/api/audit") {

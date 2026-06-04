@@ -13,14 +13,14 @@ function shortId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 10)}…` : id;
 }
 
-function AddTaskForm(props: { boardId: string; onCreated: () => void; onClose: () => void }) {
-  const { boardId, onCreated, onClose } = props;
+function AddTaskForm(props: { boardId: string; initialStatus?: string; onCreated: () => void; onClose: () => void }) {
+  const { boardId, initialStatus, onCreated, onClose } = props;
   const { t } = useI18n();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [assignee, setAssignee] = useState("");
   const [candidates, setCandidates] = useState<AssigneeCandidate[]>([]);
-  const [status, setStatus] = useState<string>(COLUMNS[0].key);
+  const [status, setStatus] = useState<string>(initialStatus ?? COLUMNS[0].key);
   const [priority, setPriority] = useState<string>("normal");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -174,6 +174,7 @@ export function BoardView(props: {
   const [assigneeFilter, setAssigneeFilter] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const [adding, setAdding] = useState(false);
+  const [addStatus, setAddStatus] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     let alive = true;
@@ -253,7 +254,10 @@ export function BoardView(props: {
           <button
             type="button"
             className={cx("dr-addbtn", adding && "is-open")}
-            onClick={() => setAdding((v) => !v)}
+            onClick={() => {
+              setAddStatus(undefined);
+              setAdding((v) => !v);
+            }}
           >
             {t("add.open")}
           </button>
@@ -262,7 +266,9 @@ export function BoardView(props: {
 
       {adding && (
         <AddTaskForm
+          key={addStatus ?? "default"}
           boardId={boardId}
+          initialStatus={addStatus}
           onCreated={() => setReloadKey((k) => k + 1)}
           onClose={() => setAdding(false)}
         />
@@ -273,14 +279,31 @@ export function BoardView(props: {
       <div className="dr-board__cols">
         {columns.map((col) => {
           const items = byColumn[col.key] ?? [];
+          const canAdd = !["blocked", "done", "archived"].includes(col.key);
           return (
             <div key={col.key} className="dr-col">
               <div
                 className="dr-col__head"
                 style={{ "--accent": statusColor(col.key) } as React.CSSProperties}
               >
-                <span className="dr-col__name">{statusLabel(t, col.key)}</span>
-                <span className="dr-col__n">{items.length}</span>
+                <div className="dr-col__title">
+                  <span className="dr-col__name">{statusLabel(t, col.key)}</span>
+                  <span className="dr-col__n">{items.length}</span>
+                </div>
+                {canAdd && (
+                  <button
+                    type="button"
+                    className="dr-col__add"
+                    aria-label={t("board.addToStatus", { status: statusLabel(t, col.key) })}
+                    title={t("board.addToStatus", { status: statusLabel(t, col.key) })}
+                    onClick={() => {
+                      setAddStatus(col.key);
+                      setAdding(true);
+                    }}
+                  >
+                    +
+                  </button>
+                )}
               </div>
               <div className="dr-col__cards">
                 {items.map((task, i) => (

@@ -7,6 +7,7 @@ import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
 import type { OrgNode } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
+import { GroveMark } from "./GroveMark";
 
 // ---------------------------------------------------------------------------
 // Canvas geometry + helpers
@@ -540,6 +541,7 @@ export function OrgChart(props: {
   const [reloadKey, setReloadKey] = useState(0);
   const [delegEvents, setDelegEvents] = useState<AuditEvent[]>([]);
   const [showDeleg, setShowDeleg] = useState(false); // overlay off by default
+  const [taskCounts, setTaskCounts] = useState<Record<string, number>>({});
 
   const [cur, setCur] = useState<Positions>({});
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -597,6 +599,31 @@ export function OrgChart(props: {
       alive = false;
     };
   }, [liveTick, projectTick, reloadKey]);
+
+  useEffect(() => {
+    if (!boardId) {
+      setTaskCounts({});
+      return;
+    }
+    let alive = true;
+    api
+      .listTasks(boardId)
+      .then((tasks) => {
+        if (!alive) return;
+        const counts: Record<string, number> = {};
+        for (const task of tasks) {
+          if (!task.assignee || ["done", "archived"].includes(task.status)) continue;
+          counts[task.assignee] = (counts[task.assignee] ?? 0) + 1;
+        }
+        setTaskCounts(counts);
+      })
+      .catch(() => {
+        if (alive) setTaskCounts({});
+      });
+    return () => {
+      alive = false;
+    };
+  }, [boardId, liveTick, projectTick, reloadKey]);
 
   const byName = useMemo(() => {
     const m: Record<string, OrgNode> = {};
@@ -843,6 +870,7 @@ export function OrgChart(props: {
     <section className="org">
       <div className="org__toolbar">
         <div className="org__lead">
+          <GroveMark size={18} className="org__mark" />
           <span className="org__title">{t("org.title")}</span>
           <span className="org__sub">{t("org.subtitle", { n: nodes.length, g: groups.length })}</span>
         </div>
@@ -1002,6 +1030,11 @@ export function OrgChart(props: {
                 <div className="org-node__main">
                   <span className={cx("org-node__dot", statusClass(node.status))} />
                   <span className="org-node__name">{node.name}</span>
+                  {(taskCounts[node.name] ?? 0) > 0 && (
+                    <span className="org-node__taskbadge" title={t("org.taskCount", { n: taskCounts[node.name] ?? 0 })}>
+                      {taskCounts[node.name]}
+                    </span>
+                  )}
                   {autonomousNodes.has(node.name) && (
                     <span className="org-node__auto" data-auto={node.name} title={t("autonomy.inferredHint")}>
                       ⚡ {t("autonomy.auto")}

@@ -4,6 +4,18 @@ import { api } from "../api";
 import type { AuthTool } from "../api";
 import { cx } from "../constants";
 import { useI18n } from "../i18n";
+import type { GuiFeatureKey, GuiFeatureState } from "../types";
+
+const GUI_FEATURES: { key: GuiFeatureKey; labelKey: string; noteKey: string }[] = [
+  { key: "quota", labelKey: "setup.feature.quota", noteKey: "setup.feature.quota.note" },
+  { key: "intake", labelKey: "setup.feature.intake", noteKey: "setup.feature.intake.note" },
+  { key: "node-input", labelKey: "setup.feature.nodeInput", noteKey: "setup.feature.nodeInput.note" },
+  { key: "digest", labelKey: "setup.feature.digest", noteKey: "setup.feature.digest.note" },
+  { key: "summary", labelKey: "setup.feature.summary", noteKey: "setup.feature.summary.note" },
+  { key: "handoff", labelKey: "setup.feature.handoff", noteKey: "setup.feature.handoff.note" },
+  { key: "usage-trend", labelKey: "setup.feature.usageTrend", noteKey: "setup.feature.usageTrend.note" },
+  { key: "retro-analytics", labelKey: "setup.feature.retro", noteKey: "setup.feature.retro.note" },
+];
 
 function AuthMark() {
   return (
@@ -27,6 +39,11 @@ export function AuthPanel() {
   const [error, setError] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState<string | null>(null);
+  const [features, setFeatures] = useState<Record<GuiFeatureKey, GuiFeatureState> | null>(null);
+  const [featuresLoading, setFeaturesLoading] = useState(true);
+  const [featureError, setFeatureError] = useState<string | null>(null);
+  const [featureBusy, setFeatureBusy] = useState<GuiFeatureKey | null>(null);
+  const [isViewer, setIsViewer] = useState(false);
 
   // Keep the translator in a ref so `load` is stable — a language toggle must
   // NOT re-trigger /api/auth-status (same pattern as TerminalPane's tRef).
@@ -45,9 +62,34 @@ export function AuthPanel() {
       .finally(() => setLoading(false));
   }, []);
 
+  const loadFeatures = useCallback(() => {
+    setFeaturesLoading(true);
+    api
+      .getGuiFeatures()
+      .then((payload) => {
+        setFeatures(payload.features);
+        setFeatureError(null);
+      })
+      .catch(() => setFeatureError(tRef.current("setup.features.loadError")))
+      .finally(() => setFeaturesLoading(false));
+  }, []);
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadFeatures();
+    let alive = true;
+    api
+      .getMe()
+      .then((me) => {
+        if (alive) setIsViewer(me?.member?.role === "viewer");
+      })
+      .catch(() => {
+        if (alive) setIsViewer(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [load, loadFeatures]);
 
   const toggle = (tool: string) =>
     setRevealed((prev) => {
@@ -64,6 +106,18 @@ export function AuthPanel() {
     window.setTimeout(() => setCopied((c) => (c === tool ? null : c)), 1500);
   };
 
+  const toggleFeature = (key: GuiFeatureKey) => {
+    const current = features?.[key];
+    if (!current || featureBusy) return;
+    setFeatureBusy(key);
+    setFeatureError(null);
+    api
+      .setGuiFeature(key, !current.enabled)
+      .then((payload) => setFeatures(payload.features))
+      .catch(() => setFeatureError(tRef.current("setup.features.saveError")))
+      .finally(() => setFeatureBusy(null));
+  };
+
   return (
     <section className="auth">
       <div className="auth__scroll">
@@ -78,6 +132,53 @@ export function AuthPanel() {
         </header>
 
         {error && <div className="auth__msg is-error">{error}</div>}
+
+        <section className="setup-features" aria-label={t("setup.features.title")}>
+          <div className="setup-features__head">
+            <div>
+              <h3 className="setup-features__title">{t("setup.features.title")}</h3>
+              <p className="setup-features__note">{t("setup.features.note")}</p>
+            </div>
+            {isViewer && <span className="setup-features__readonly">{t("setup.features.readonly")}</span>}
+          </div>
+          {featureError && <div className="auth__msg is-error">{featureError}</div>}
+          <div className="setup-feature-grid">
+            {GUI_FEATURES.map((item, i) => {
+              const state = features?.[item.key];
+              const enabled = state?.enabled === true;
+              const busy = featureBusy === item.key;
+              return (
+                <div
+                  key={item.key}
+                  className={cx("setup-feature", enabled && "is-on")}
+                  data-feature={item.key}
+                  style={{ animationDelay: `${Math.min(i, 8) * 26}ms` }}
+                >
+                  <div className="setup-feature__copy">
+                    <span className="setup-feature__label">{t(item.labelKey)}</span>
+                    <span className="setup-feature__note">{t(item.noteKey)}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className={cx("setup-switch", enabled && "is-on")}
+                    role="switch"
+                    aria-checked={enabled}
+                    data-enabled={enabled ? "1" : "0"}
+                    disabled={featuresLoading || busy || isViewer || !state}
+                    onClick={() => toggleFeature(item.key)}
+                  >
+                    <span className="setup-switch__track">
+                      <span className="setup-switch__knob" />
+                    </span>
+                    <span className="setup-switch__text">
+                      {busy ? t("setup.features.saving") : enabled ? t("setup.features.on") : t("setup.features.off")}
+                    </span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
 
         <div className="auth-list">
           {tools.map((tool, i) => {

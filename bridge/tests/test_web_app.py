@@ -588,6 +588,169 @@ def test_status_includes_token_gated_node_liveness_summary(tmp_path: Path) -> No
     assert by_name["broken"]["status_reason"] == "crashed"
 
 
+def test_gui_feature_toggles_default_off_persist_and_audit(tmp_path: Path) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+    expected = {
+        "quota",
+        "intake",
+        "node-input",
+        "digest",
+        "summary",
+        "handoff",
+        "usage-trend",
+        "retro-analytics",
+    }
+
+    initial = client.get("/api/gui-features", headers=headers)
+
+    assert initial.status_code == 200
+    initial_toggles = initial.json()["features"]
+    assert set(initial_toggles) == expected
+    assert all(not state["enabled"] for state in initial_toggles.values())
+    assert all(not state["configured"] for state in initial_toggles.values())
+
+    for feature in ("quota", "node-input", "summary"):
+        updated = client.post(
+            f"/api/gui-features/{feature}",
+            headers=headers,
+            json={"enabled": True},
+        )
+        assert updated.status_code == 200
+
+    updated_toggles = client.get("/api/gui-features", headers=headers).json()["features"]
+    assert updated_toggles["quota"] == {"enabled": True, "configured": True, "source": "gui"}
+    assert updated_toggles["node-input"]["enabled"] is True
+    assert updated_toggles["summary"]["enabled"] is True
+    assert updated_toggles["handoff"]["enabled"] is False
+
+    reloaded = make_client(tmp_path, SQLiteBoardStore(db_path))
+    persisted = reloaded.get("/api/gui-features", headers=auth_headers(reloaded))
+
+    assert persisted.status_code == 200
+    assert persisted.json()["features"]["quota"]["enabled"] is True
+    assert persisted.json()["features"]["node-input"]["enabled"] is True
+    assert persisted.json()["features"]["summary"]["enabled"] is True
+
+    audits = store.list_audit_events(board="dev10", action="gui-feature-toggle")
+    assert [event.kind for event in audits] == ["audit.gui.feature"] * 3
+    assert [event.payload["feature"] for event in audits] == ["quota", "node-input", "summary"]
+    assert [event.payload["enabled"] for event in audits] == [True, True, True]
+
+
+def test_gui_feature_toggles_wire_existing_feature_gates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="dev10", title="Handoff candidate", body=None, assignee=None)
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    assert (
+        client.post(
+            "/api/quota",
+            headers=headers,
+            json={"member_id": "alice", "enabled": True, "soft_run_limit": 1},
+        ).status_code
+        == 404
+    )
+    assert client.get("/api/slack/config/status", headers=headers).json()["intake"] == {
+        "enabled": False
+    }
+    assert (
+        client.post(
+            "/api/nodes/worker/send",
+            headers=headers,
+            json={"text": "hello"},
+        ).status_code
+        == 404
+    )
+    assert client.get("/api/summary", headers=headers).status_code == 404
+    assert (
+        client.post(
+            "/api/handoff/export",
+            headers=headers,
+            json={"task_id": task.id},
+        ).status_code
+        == 404
+    )
+    assert client.get("/api/usage/trend", headers=headers).status_code == 404
+    assert client.get("/api/retro/analytics", headers=headers).status_code == 404
+
+    for feature in (
+        "quota",
+        "intake",
+        "node-input",
+        "digest",
+        "summary",
+        "handoff",
+        "usage-trend",
+        "retro-analytics",
+    ):
+        enabled = client.post(
+            f"/api/gui-features/{feature}",
+            headers=headers,
+            json={"enabled": True},
+        )
+        assert enabled.status_code == 200
+
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+
+    assert (
+        client.post(
+            "/api/quota",
+            headers=headers,
+            json={"member_id": "alice", "enabled": True, "soft_run_limit": 1},
+        ).status_code
+        == 200
+    )
+    assert client.get("/api/ledger", headers=headers).json()["quota_enabled"] is True
+    assert client.get("/api/slack/config/status", headers=headers).json()["intake"] == {
+        "enabled": True
+    }
+    assert (
+        client.post(
+            "/api/nodes/worker/send",
+            headers=headers,
+            json={"text": "hello"},
+        ).status_code
+        == 200
+    )
+    assert calls
+    assert client.get("/api/summary", headers=headers).status_code == 200
+    assert (
+        client.post(
+            "/api/handoff/export",
+            headers=headers,
+            json={"task_id": task.id},
+        ).status_code
+        == 200
+    )
+    assert client.get("/api/usage/trend", headers=headers).status_code == 200
+    assert client.get("/api/retro/analytics", headers=headers).status_code == 200
+
+
 def test_project_header_scopes_status_org_nodes_boards_and_tasks(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     dev10_task = store.create_task(
@@ -1903,6 +2066,90 @@ def test_usage_trend_flags_spike_without_enforcement_and_keeps_agy_cost_unknown(
     assert "777" not in rendered
     audits = store.list_audit_events(board="dev10", action="usage-trend")
     assert audits[-1].payload["advisory_only"] is True
+
+
+def test_gui_feature_toggles_persist_audit_and_enable_default_off_surfaces(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    now = int(time.time())
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="maker",
+        metadata={"node": "maker", "total_tokens": 25, "cost_usd": 0.25},
+        started_at=now - 86_400,
+        created_by="member-1",
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"maker": {"name": "maker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    initial = client.get("/api/gui-features", headers=headers)
+    disabled = client.get("/api/usage/trend", headers=headers)
+    updated = client.post(
+        "/api/gui-features/usage-trend",
+        headers=headers,
+        json={"enabled": True},
+    )
+    enabled = client.get("/api/usage/trend", headers=headers)
+
+    assert initial.status_code == 200
+    initial_payload = initial.json()
+    assert initial_payload["features"]["usage-trend"] == {
+        "enabled": False,
+        "configured": False,
+        "source": "default",
+    }
+    assert initial_payload["features"]["quota"]["enabled"] is False
+    assert disabled.status_code == 404
+    assert updated.status_code == 200
+    assert updated.json()["key"] == "usage-trend"
+    assert updated.json()["feature"] == {
+        "enabled": True,
+        "configured": True,
+        "source": "gui",
+    }
+    assert updated.json()["features"]["usage-trend"] == updated.json()["feature"]
+    assert updated.json()["features"]["quota"]["enabled"] is False
+    assert enabled.status_code == 200
+    assert enabled.json()["mode"] == "advisory"
+
+    reopened = SQLiteBoardStore(db_path)
+    assert (
+        reopened.gui_feature_flags(board="dev10", features=("usage-trend",))["usage-trend"][
+            "enabled"
+        ]
+        is True
+    )
+    audits = reopened.list_audit_events(board="dev10", action="gui-feature-toggle")
+    assert audits[-1].payload["feature"] == "usage-trend"
+    assert audits[-1].payload["enabled"] is True
+
+
+def test_gui_feature_toggle_is_operator_only(tmp_path: Path) -> None:
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
+
+    login = client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+    response = client.post(
+        "/api/gui-features/summary",
+        headers={CSRF_HEADER: login.json()["csrf"]},
+        json={"enabled": True},
+    )
+
+    assert login.status_code == 200
+    assert response.status_code == 403
+    assert (
+        store.gui_feature_flags(board="dev10", features=("summary",))["summary"]["enabled"] is False
+    )
 
 
 def test_usage_trend_default_off_viewer_gate_project_scope_and_thin_data(

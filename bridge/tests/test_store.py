@@ -281,6 +281,39 @@ def test_audit_event_sanitizes_extra_payload_strings(tmp_path: Path) -> None:
     assert event.payload["node"] == "[path]"
 
 
+def test_gui_feature_flags_default_off_and_persist(tmp_path: Path) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+
+    initial = store.gui_feature_flags(
+        board="main",
+        features=("quota", "intake", "node-input", "digest"),
+    )
+
+    assert initial == {
+        "quota": {"enabled": False, "configured": False},
+        "intake": {"enabled": False, "configured": False},
+        "node-input": {"enabled": False, "configured": False},
+        "digest": {"enabled": False, "configured": False},
+    }
+
+    updated = store.set_gui_feature_enabled(board="main", feature="node-input", enabled=True)
+
+    assert updated["enabled"] is True
+    assert updated["configured"] is True
+    assert isinstance(updated["updated_at"], int)
+
+    reopened = SQLiteBoardStore(db_path)
+    persisted = reopened.gui_feature_flags(
+        board="main",
+        features=("quota", "node-input"),
+    )
+
+    assert persisted["quota"] == {"enabled": False, "configured": False}
+    assert persisted["node-input"]["enabled"] is True
+    assert persisted["node-input"]["configured"] is True
+
+
 def test_release_stale_returns_running_tasks_to_ready(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = store.create_task(

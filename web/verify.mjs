@@ -56,8 +56,8 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
 
-    // V9-W2 onboarding wizard: shows on first visit, steps welcome -> project
-    // (reused create/load forms) -> node -> auth, skippable, and remembered via
+    // V9-W2/V29 onboarding wizard: shows on first visit, steps welcome -> project
+    // (reused create/load forms) -> board -> team -> setup, skippable, and remembered via
     // localStorage so a reload does NOT re-show it. Runs first (it overlays the
     // dashboard); the trailing reload leaves the app in the normal returning-user
     // state the rest of the suite expects.
@@ -75,10 +75,20 @@ async function main() {
       hasLoad: !!document.querySelector(".onb-proj-load"),
       hasImport: !!document.querySelector(".onb-import-note"),
     }));
-    await page.click(".onb-next"); // project -> node
+    await page.click(".onb-next"); // project -> board
     await page.waitForFunction(() => document.querySelector(".onb-step")?.getAttribute("data-step") === "2", { timeout: 5000 });
-    await page.click(".onb-next"); // node -> auth
+    const wizBoard = await page.evaluate(() => ({
+      step: document.querySelector(".onb-step")?.getAttribute("data-step"),
+      hasBoardCta: !!document.querySelector(".onb-goto-board"),
+    }));
+    await page.click(".onb-next"); // board -> node
     await page.waitForFunction(() => document.querySelector(".onb-step")?.getAttribute("data-step") === "3", { timeout: 5000 });
+    const wizNode = await page.evaluate(() => ({
+      step: document.querySelector(".onb-step")?.getAttribute("data-step"),
+      hasTeamCta: !!document.querySelector(".onb-goto-team"),
+    }));
+    await page.click(".onb-next"); // node -> setup
+    await page.waitForFunction(() => document.querySelector(".onb-step")?.getAttribute("data-step") === "4", { timeout: 5000 });
     const wizLast = await page.evaluate(() => ({
       step: document.querySelector(".onb-step")?.getAttribute("data-step"),
       hasFinish: !!document.querySelector(".onb-finish"),
@@ -86,25 +96,39 @@ async function main() {
     }));
     await page.click(".onb-skip"); // skip/dismiss -> hide + persist flag
     await page.waitForFunction(() => !document.querySelector(".onb-wizard"), { timeout: 5000 });
-    const wizFlag = await page.evaluate(() => localStorage.getItem("grove.onboarded.v2"));
+    const wizFlag = await page.evaluate(() => localStorage.getItem("grove.onboarded.v3"));
     await page.reload({ waitUntil: "load" });
     await page.waitForSelector(".devroom .dr-brand", { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
     const wizAfterReload = await page.evaluate(() => !!document.querySelector(".onb-wizard"));
+    const sidebarTutorial = await page.evaluate(() => !!document.querySelector(".dr-tutorial-btn"));
+    await page.click(".dr-tutorial-btn");
+    await page.waitForSelector(".onb-wizard", { timeout: 5000 });
+    const sidebarTutorialOpen = await page.evaluate(
+      () => document.querySelector(".onb-step")?.getAttribute("data-step") === "0",
+    );
+    await page.click(".onb-skip");
+    await page.waitForFunction(() => !document.querySelector(".onb-wizard"), { timeout: 5000 });
     const wizardOk =
       wizStep0.visible &&
       wizStep0.step === "0" &&
-      wizStep0.dots === 4 &&
+      wizStep0.dots === 5 &&
       wizStep1.step === "1" &&
       wizStep1.hasCreate &&
       wizStep1.hasLoad &&
       wizStep1.hasImport &&
-      wizLast.step === "3" &&
+      wizBoard.step === "2" &&
+      wizBoard.hasBoardCta &&
+      wizNode.step === "3" &&
+      wizNode.hasTeamCta &&
+      wizLast.step === "4" &&
       wizLast.hasFinish &&
-      wizLast.activeDot === 3 &&
+      wizLast.activeDot === 4 &&
       wizFlag === "1" &&
-      wizAfterReload === false;
+      wizAfterReload === false &&
+      sidebarTutorial &&
+      sidebarTutorialOpen;
 
     // V2-W4 node status heatmap (from GET /api/status) + server health dot
     // (GET /api/health). Mock summary mirrors _node_liveness_summary:
@@ -506,21 +530,47 @@ async function main() {
     const i18n = { ko: await brandText(), en: "" };
     await page.click('.dr-lang__btn[data-lang="en"]');
     await page.waitForFunction(
-      () => (document.querySelector(".dr-brand__title")?.textContent ?? "").trim() === "Dev Room",
+      () => (document.querySelector(".dr-brand__title")?.textContent ?? "").trim() === "GROVE",
       { timeout: 5000 },
     );
     i18n.en = await brandText();
     await page.click('.dr-lang__btn[data-lang="ko"]');
     await page.waitForFunction(
-      () => (document.querySelector(".dr-brand__title")?.textContent ?? "").trim() === "개발실",
+      () => (document.querySelector(".dr-brand__title")?.textContent ?? "").trim() === "GROVE",
       { timeout: 5000 },
     );
+    const shellBatch = await page.evaluate(() => {
+      const nodes = Array.from(document.querySelectorAll(".dr-node"));
+      const depths = nodes.map((n) => Number(n.getAttribute("data-depth") ?? "0"));
+      return {
+        brand: (document.querySelector(".dr-brand__title")?.textContent ?? "").trim(),
+        markPaths: document.querySelectorAll(".dr-mark path").length,
+        markCircles: document.querySelectorAll(".dr-mark circle").length,
+        nodes: nodes.length,
+        nested: depths.some((d) => d >= 1),
+        roots: depths.filter((d) => d === 0).length,
+        tutorial: !!document.querySelector(".dr-tutorial-btn"),
+      };
+    });
 
     // Capture board counts WHILE the board view is mounted.
     const board = await page.evaluate(() => ({
       columns: document.querySelectorAll(".dr-col").length,
       cards: document.querySelectorAll(".dr-card").length,
     }));
+    const boardBatch = await page.evaluate(() => {
+      const cols = Array.from(document.querySelectorAll(".dr-col"));
+      return {
+        addButtons: document.querySelectorAll(".dr-col__add").length,
+        blockedHasAdd: !!cols[5]?.querySelector(".dr-col__add"),
+        doneHasAdd: !!cols[7]?.querySelector(".dr-col__add"),
+      };
+    });
+    await page.$eval(".dr-col:nth-child(7) .dr-col__add", (el) => el.click());
+    await page.waitForSelector(".dr-addform", { timeout: 5000 });
+    const boardBatchAdd = await page.$eval('.dr-addform select[name="status"]', (el) => el.value);
+    await page.$eval(".dr-addform__cancel", (el) => el.click());
+    await page.waitForFunction(() => !document.querySelector(".dr-addform"), { timeout: 5000 });
 
     // 긴급 #4 board card: the TITLE is the primary text (>= the id slug), the raw
     // id is only a small secondary slug, and long ids/titles WRAP — never causing
@@ -985,6 +1035,7 @@ async function main() {
       edges: document.querySelectorAll(".org-edge").length,
       legend: document.querySelectorAll(".org-legend__item").length,
       descs: document.querySelectorAll(".org-node__desc").length,
+      taskBadges: document.querySelectorAll(".org-node__taskbadge").length,
     }));
 
     // V11-W2 autonomy visibility (org): a node that self-claimed (autopickup
@@ -1530,13 +1581,41 @@ async function main() {
     await page.click(".auth-refresh");
     await page.waitForFunction(() => (window.__MOCK__?.authStatusFetched ?? 0) >= 2, { timeout: 6000 });
     const authFetches = await page.evaluate(() => window.__MOCK__?.authStatusFetched ?? 0);
+    await page.waitForSelector(".setup-feature", { timeout: 8000 });
+    const setupFeatures = await page.evaluate(() => ({
+      fetched: window.__MOCK__?.guiFeaturesFetched === true,
+      cards: document.querySelectorAll(".setup-feature").length,
+      switches: document.querySelectorAll('.setup-switch[role="switch"]').length,
+      on: document.querySelectorAll('.setup-switch[data-enabled="1"]').length,
+      off: document.querySelectorAll('.setup-switch[data-enabled="0"]').length,
+      digestBefore: document
+        .querySelector('.setup-feature[data-feature="digest"] .setup-switch')
+        ?.getAttribute("data-enabled"),
+    }));
+    await page.$eval('.setup-feature[data-feature="digest"] .setup-switch', (el) => el.click());
+    await page.waitForFunction(() => window.__MOCK__?.guiFeaturePost?.key === "digest", { timeout: 6000 });
+    const setupToggle = await page.evaluate(() => ({
+      post: window.__MOCK__?.guiFeaturePost ?? null,
+      digestAfter: document
+        .querySelector('.setup-feature[data-feature="digest"] .setup-switch')
+        ?.getAttribute("data-enabled"),
+    }));
+    const setupFeatureOk =
+      setupFeatures.fetched &&
+      setupFeatures.cards === 8 &&
+      setupFeatures.switches === 8 &&
+      setupFeatures.on + setupFeatures.off === 8 &&
+      setupFeatures.digestBefore === "1" &&
+      setupToggle.post?.enabled === false &&
+      setupToggle.digestAfter === "1";
     const authOk =
       authRows === 5 &&
       authLeds.ok >= 1 &&
       authLeds.warn >= 1 &&
       codexHint === "codex login" &&
       cfHref.startsWith("http") &&
-      authFetches >= 2;
+      authFetches >= 2 &&
+      setupFeatureOk;
 
     // V4-W3 cost/credit panel: 3 agent cards; estimate/inferred values flagged
     // (codex registry=exact, no badge; claude/agy inferred=badge); agy credit
@@ -1884,7 +1963,7 @@ async function main() {
     // a peer arriving via a share link should not meet the first-run wizard.
     await page2.evaluateOnNewDocument(() => {
       try {
-        localStorage.setItem("grove.onboarded.v2", "1");
+        localStorage.setItem("grove.onboarded.v3", "1");
       } catch {
         /* ignore */
       }
@@ -2898,7 +2977,20 @@ async function main() {
     const wsKindOk =
       diag.terminalTicketKind === "terminal" && wsMismatch.code === 1008 && wsMismatch.gotFrame === false;
 
-    const i18nOk = i18n.ko === "개발실" && i18n.en === "Dev Room";
+    const batchUiOk =
+      shellBatch.brand === "GROVE" &&
+      shellBatch.markPaths >= 2 &&
+      shellBatch.markCircles >= 3 &&
+      shellBatch.nodes >= 1 &&
+      shellBatch.nested &&
+      shellBatch.roots >= 1 &&
+      shellBatch.tutorial &&
+      boardBatch.addButtons === 6 &&
+      boardBatch.blockedHasAdd === false &&
+      boardBatch.doneHasAdd === false &&
+      boardBatchAdd === "review" &&
+      orgView.taskBadges >= 1;
+    const i18nOk = i18n.ko === "GROVE" && i18n.en === "GROVE";
     const addOk = addTask.created === NEW_TITLE;
     const mirrorOk = term.markerCount === 1; // no accumulation
     const teamOk =
@@ -2969,6 +3061,7 @@ async function main() {
       delegationEdgesOk &&
       delegateOk &&
       masterChatOk &&
+      batchUiOk &&
       diag.projectHeader === projAfterLoad &&
       errors.length === 0;
 
@@ -2993,6 +3086,10 @@ async function main() {
       plusCreated,
       facts: nodeDrawer.facts,
       i18n,
+      batchUiOk,
+      shellBatch,
+      boardBatch,
+      boardBatchAdd,
       created: addTask.created,
       i18nOk,
       addOk,
@@ -3028,11 +3125,15 @@ async function main() {
       slackIntakeOk,
       slackIntake: { on: intakeOn, shape: intakeShapeOn, off: intakeOff, unknown: intakeUnknown, audit: slackAudit },
       authOk,
+      setupFeatureOk,
+      setupFeatures,
+      setupToggle,
       authRows,
       codexHint,
       cfHref,
       plusDesc,
       orgDescs: orgView.descs,
+      orgTaskBadges: orgView.taskBadges,
       wsBindOk,
       wsKindOk,
       statusBarOk,

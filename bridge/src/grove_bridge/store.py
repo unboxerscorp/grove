@@ -1329,6 +1329,50 @@ class SQLiteBoardStore:
             if isinstance(member_id, str) and isinstance(raw, Mapping)
         }
 
+    def gui_feature_flags(
+        self,
+        *,
+        board: str,
+        features: tuple[str, ...],
+    ) -> dict[str, dict[str, object]]:
+        settings = self._board_settings(board) or {}
+        raw = _gui_feature_settings(settings)
+        out: dict[str, dict[str, object]] = {}
+        for feature in features:
+            state = raw.get(feature)
+            if not isinstance(state, Mapping) or not isinstance(state.get("enabled"), bool):
+                out[feature] = {"enabled": False, "configured": False}
+                continue
+            payload: dict[str, object] = {
+                "enabled": state["enabled"],
+                "configured": True,
+            }
+            updated_at = state.get("updated_at")
+            if isinstance(updated_at, int) and not isinstance(updated_at, bool):
+                payload["updated_at"] = updated_at
+            out[feature] = payload
+        return out
+
+    def set_gui_feature_enabled(
+        self,
+        *,
+        board: str,
+        feature: str,
+        enabled: bool,
+    ) -> dict[str, object]:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            features = _mutable_gui_feature_settings(settings)
+            raw = features.get(feature)
+            state = dict(raw) if isinstance(raw, Mapping) else {}
+            state["enabled"] = enabled
+            state["updated_at"] = now
+            features[feature] = state
+            self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
+        return self.gui_feature_flags(board=board, features=(feature,))[feature]
+
     def set_member_quota(
         self,
         *,
@@ -2638,6 +2682,11 @@ def _quota_settings(settings: Mapping[str, object]) -> Mapping[str, object]:
     return raw if isinstance(raw, Mapping) else {}
 
 
+def _gui_feature_settings(settings: Mapping[str, object]) -> Mapping[str, object]:
+    raw = settings.get("gui_features")
+    return raw if isinstance(raw, Mapping) else {}
+
+
 def _saved_views_from_settings(settings: Mapping[str, object]) -> dict[str, dict[str, object]]:
     raw = settings.get("saved_views")
     if not isinstance(raw, Mapping):
@@ -2694,6 +2743,14 @@ def _mutable_quota_settings(settings: dict[str, object]) -> dict[str, object]:
     if not isinstance(raw, dict):
         raw = {}
         settings["quota"] = raw
+    return cast(dict[str, object], raw)
+
+
+def _mutable_gui_feature_settings(settings: dict[str, object]) -> dict[str, object]:
+    raw = settings.get("gui_features")
+    if not isinstance(raw, dict):
+        raw = {}
+        settings["gui_features"] = raw
     return cast(dict[str, object], raw)
 
 
