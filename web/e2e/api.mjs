@@ -14,6 +14,7 @@
 //   - plan          (read-only ranked candidates, redaction, project/task scope)
 //   - autopickup    (node toggle auth, global gate, scope, team viewer denial)
 //   - execution     (global/node gates, approval/abort, scope, viewer denial)
+//   - usage         (node/day rollups, agy unknowns, project scope, redaction)
 //
 // Each check asserts the CORRECT contract. A failing check is a real defect to
 // report as `# BUG(Pn)` — never relax the assertion to match a bug.
@@ -40,6 +41,8 @@ const BETA = "qae2e_beta"; // second registry, used to prove header binding/scop
 const EMPTY = "qae2e_empty"; // created during the plan checks to prove empty-registry behavior
 const SCOPE = "qae2e_scope"; // created during the autopickup checks to prove node scope
 const TEAM = "qae2e_team"; // created during the autopickup checks for team-auth viewer denial
+const USAGE = "qae2e_usage"; // created during the usage checks for run rollups
+const USAGE_EMPTY = "qae2e_usage_empty"; // created during the usage checks for graceful empty data
 const READY_TIMEOUT_MS = 25_000;
 const NODE_LAST_SEEN = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
 
@@ -285,6 +288,27 @@ function tryMarkExecutionExecuting({ database = dbPath, board, taskId, runId, no
     [database, board, taskId, runId, node],
   );
   return JSON.parse(out).ok === true;
+}
+
+function completeUsageRun({ database = dbPath, board, node, metadata, startedAt }) {
+  runBridgePython(
+    [
+      "import json, sqlite3, sys",
+      "from pathlib import Path",
+      "from grove_bridge.store import SQLiteBoardStore",
+      "store = SQLiteBoardStore(Path(sys.argv[1]))",
+      "metadata = json.loads(sys.argv[4])",
+      "started_at = int(sys.argv[5])",
+      "task = store.create_task(board=sys.argv[2], title=f'{sys.argv[3]} usage', body=None, assignee=sys.argv[3])",
+      "claim = store.claim_next(board=sys.argv[2], assignee=sys.argv[3], node_id=sys.argv[3], ttl_seconds=30)",
+      "if claim is None: raise SystemExit('claim failed')",
+      "ok = store.complete(board=sys.argv[2], task_id=task.id, run_id=claim.run_id, claim_lock=claim.claim_lock, result='done', summary='done', metadata=metadata)",
+      "if not ok: raise SystemExit('complete failed')",
+      "with sqlite3.connect(sys.argv[1]) as conn:",
+      "    conn.execute('UPDATE runs SET started_at = ?, ended_at = ? WHERE id = ?', (started_at, started_at + 60, claim.run_id))",
+    ],
+    [database, board, node, JSON.stringify(metadata), String(startedAt)],
+  );
 }
 
 function scaffold() {
@@ -1422,6 +1446,146 @@ async function run() {
     row && JSON.stringify(row.last_seen),
   );
   check("status?detail=1 leaks no secrets", !hasSecret(detail.json));
+
+  // --- /api/usage: node/day rollups, agy unknowns, project scope ---
+  const usageSecret = "xoxb-" + "a".repeat(44);
+  writeRegistry(USAGE, {
+    maker: { name: "maker", agent: "codex", tmux_pane: `${USAGE}:1.0`, status: "idle" },
+    reviewer: { name: "reviewer", agent: "claude", tmux_pane: `${USAGE}:1.1`, status: "idle" },
+    "agy-node": { name: "agy-node", agent: "agy", tmux_pane: `${USAGE}:1.2`, status: "idle" },
+  });
+  writeRegistry(USAGE_EMPTY, {
+    "empty-worker": { name: "empty-worker", agent: "codex", tmux_pane: `${USAGE_EMPTY}:1.0`, status: "idle" },
+  });
+  completeUsageRun({
+    board: USAGE,
+    node: "maker",
+    metadata: {
+      node: "maker",
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 15,
+      cost_usd: 0.12,
+      transcript_path: `/Users/chopin/private/${usageSecret}.jsonl`,
+    },
+    startedAt: 1_704_067_200,
+  });
+  completeUsageRun({
+    board: USAGE,
+    node: "maker",
+    metadata: { node: "maker", input_tokens: 2, output_tokens: 5, total_tokens: 7, cost_usd: 0.02 },
+    startedAt: 1_704_067_260,
+  });
+  completeUsageRun({
+    board: USAGE,
+    node: "reviewer",
+    metadata: { node: "reviewer", total_tokens: 30 },
+    startedAt: 1_704_153_600,
+  });
+  completeUsageRun({
+    board: USAGE,
+    node: "agy-node",
+    metadata: { node: "agy-node", total_tokens: 44 },
+    startedAt: 1_704_153_660,
+  });
+
+  eq("usage 401 without token", (await req("GET", "/api/usage?window=all")).status, 401);
+  eq(
+    "usage 401 with wrong token",
+    (await req("GET", "/api/usage?window=all", { token: "wrong-token" })).status,
+    401,
+  );
+  const usage = await req("GET", `/api/usage?window=all&project=${encodeURIComponent(USAGE)}`, { token });
+  eq("usage 200 with token", usage.status, 200);
+  eq("usage project == usage project", usage.json && usage.json.project, USAGE);
+  eq("usage window name == all", usage.json && usage.json.window && usage.json.window.name, "all");
+  check("usage generated_at is tagged metric", isTaggedMetric(usage.json && usage.json.generated_at));
+  check("usage filters expose node/agent", Boolean(usage.json) && usage.json.filters && "node" in usage.json.filters && "agent" in usage.json.filters);
+  const usageTotals = usage.json && usage.json.totals;
+  check(
+    "usage totals has run/token/cost metrics",
+    Boolean(usageTotals) &&
+      isTaggedMetric(usageTotals.runs) &&
+      isTaggedMetric(usageTotals.input_tokens) &&
+      isTaggedMetric(usageTotals.output_tokens) &&
+      isTaggedMetric(usageTotals.total_tokens) &&
+      isTaggedMetric(usageTotals.cost_usd_estimate),
+  );
+  eq("usage totals runs == 4", usageTotals && usageTotals.runs && usageTotals.runs.value, 4);
+  eq("usage totals total_tokens == 96", usageTotals && usageTotals.total_tokens && usageTotals.total_tokens.value, 96);
+  eq("usage totals confidence explicit", usageTotals && usageTotals.confidence, "explicit");
+  const usageNodes = usage.json && Array.isArray(usage.json.nodes) ? usage.json.nodes : [];
+  check("usage nodes roll up by node", usageNodes.length === 3, usageNodes.map((node) => node.node).join(","));
+  const usageNodeByName = Object.fromEntries(usageNodes.map((node) => [node.node, node]));
+  const makerUsage = usageNodeByName.maker;
+  eq("usage maker runs == 2", makerUsage && makerUsage.totals && makerUsage.totals.runs.value, 2);
+  eq("usage maker input_tokens == 12", makerUsage && makerUsage.totals && makerUsage.totals.input_tokens.value, 12);
+  eq("usage maker cost_usd_estimate == 0.14", makerUsage && makerUsage.totals && makerUsage.totals.cost_usd_estimate.value, 0.14);
+  check("usage maker includes per-day rollup", Boolean(makerUsage) && Array.isArray(makerUsage.days) && makerUsage.days.length === 1);
+  const reviewerUsage = usageNodeByName.reviewer;
+  eq("usage reviewer agent == claude", reviewerUsage && reviewerUsage.agent, "claude");
+  eq("usage reviewer total_tokens == 30", reviewerUsage && reviewerUsage.totals && reviewerUsage.totals.total_tokens.value, 30);
+  const agyUsage = usageNodeByName["agy-node"];
+  eq("usage agy node agent == agy", agyUsage && agyUsage.agent, "agy");
+  eq("usage agy total_tokens preserved", agyUsage && agyUsage.totals && agyUsage.totals.total_tokens.value, 44);
+  eq("usage agy cost is unknown/null", agyUsage && agyUsage.totals && agyUsage.totals.cost_usd_estimate.value, null);
+  eq("usage agy cost confidence unknown", agyUsage && agyUsage.totals && agyUsage.totals.cost_usd_estimate.confidence, "unknown");
+  eq("usage agy cost status unknown", agyUsage && agyUsage.totals && agyUsage.totals.cost_usd_estimate.status, "unknown");
+  eq("usage agy credit_remaining unknown/null", agyUsage && agyUsage.credit_remaining && agyUsage.credit_remaining.value, null);
+  eq("usage agy credit_status unknown", agyUsage && agyUsage.credit_status, "unknown");
+  check(
+    "usage agy warns credit unknown without estimating",
+    Boolean(agyUsage) &&
+      Array.isArray(agyUsage.warnings) &&
+      agyUsage.warnings.some((warning) => /agy credit is unknown/i.test(warning)),
+    agyUsage && JSON.stringify(agyUsage.warnings),
+  );
+  const usageDays = usage.json && Array.isArray(usage.json.days) ? usage.json.days : [];
+  check("usage days roll up by day", usageDays.length === 2, usageDays.map((day) => day.day).join(","));
+  const usageDayByDate = Object.fromEntries(usageDays.map((day) => [day.day, day]));
+  eq("usage 2024-01-01 runs == 2", usageDayByDate["2024-01-01"] && usageDayByDate["2024-01-01"].totals.runs.value, 2);
+  eq("usage 2024-01-01 total_tokens == 22", usageDayByDate["2024-01-01"] && usageDayByDate["2024-01-01"].totals.total_tokens.value, 22);
+  eq("usage 2024-01-02 runs == 2", usageDayByDate["2024-01-02"] && usageDayByDate["2024-01-02"].totals.runs.value, 2);
+  check(
+    "usage 2024-01-02 nodes are reviewer+agy",
+    Boolean(usageDayByDate["2024-01-02"]) &&
+      JSON.stringify(usageDayByDate["2024-01-02"].nodes.map((node) => node.node).sort()) ===
+        JSON.stringify(["agy-node", "reviewer"]),
+    usageDayByDate["2024-01-02"] && usageDayByDate["2024-01-02"].nodes.map((node) => node.node).join(","),
+  );
+  check(
+    "usage limitations document explicit metadata and agy unknown",
+    Boolean(usage.json) &&
+      Array.isArray(usage.json.limitations) &&
+      usage.json.limitations.some((item) => /explicit run metadata/i.test(item)) &&
+      usage.json.limitations.some((item) => /agy credit is unknown/i.test(item)),
+  );
+  check(
+    "usage leaks no secrets or filesystem paths",
+    !hasSecret(usage.json) &&
+      !usage.text.includes(usageSecret) &&
+      !usage.text.includes("/Users/chopin/private") &&
+      !usage.text.includes(groveHome) &&
+      !/registry\.json/.test(usage.text),
+  );
+  const usageEmpty = await req("GET", `/api/usage?window=all&project=${encodeURIComponent(USAGE_EMPTY)}`, { token });
+  eq("usage empty project 200", usageEmpty.status, 200);
+  eq("usage empty project name", usageEmpty.json && usageEmpty.json.project, USAGE_EMPTY);
+  eq("usage empty totals runs == 0", usageEmpty.json && usageEmpty.json.totals && usageEmpty.json.totals.runs.value, 0);
+  check("usage empty nodes:[]", Boolean(usageEmpty.json) && Array.isArray(usageEmpty.json.nodes) && usageEmpty.json.nodes.length === 0);
+  check("usage empty days:[]", Boolean(usageEmpty.json) && Array.isArray(usageEmpty.json.days) && usageEmpty.json.days.length === 0);
+  check(
+    "usage empty data is graceful with limitation",
+    Boolean(usageEmpty.json) &&
+      Array.isArray(usageEmpty.json.limitations) &&
+      usageEmpty.json.limitations.some((item) => /no runs matched/i.test(item)),
+  );
+  check("usage project scope does not leak other project node/token values", !/maker|96|999/.test(usageEmpty.text), usageEmpty.text);
+  const usageEmptyByHeader = await req("GET", "/api/usage?window=all", { token, project: USAGE_EMPTY });
+  eq("usage header project scope returns empty project", usageEmptyByHeader.json && usageEmptyByHeader.json.project, USAGE_EMPTY);
+  eq("usage path traversal project -> 400", (await req("GET", `/api/usage?project=${encodeURIComponent(`../${USAGE}`)}`, { token })).status, 400);
+  eq("usage missing project -> 404", (await req("GET", "/api/usage?project=qae2e_missing_usage", { token })).status, 404);
+  eq("usage invalid window -> 400", (await req("GET", `/api/usage?window=forever&project=${encodeURIComponent(USAGE)}`, { token })).status, 400);
 
   // --- /api/cost: by_agent{} + totals{}, token/path non-exposure ---
   eq("cost 401 without token", (await req("GET", "/api/cost")).status, 401);

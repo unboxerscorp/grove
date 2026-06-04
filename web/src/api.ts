@@ -241,6 +241,42 @@ export interface CostSummary {
   by_agent: Record<string, CostAgentMetrics>;
 }
 
+// Usage rollup (web_app.py _usage_payload): node/day breakdown from run metadata.
+// agy credit stays honestly unknown (never fabricated). Metrics reuse CostMetric.
+export interface UsageTotals {
+  runs: CostMetric;
+  input_tokens: CostMetric;
+  output_tokens: CostMetric;
+  total_tokens: CostMetric;
+  cost_usd_estimate: CostMetric;
+  confidence?: string;
+}
+
+export interface UsageNode {
+  node: string;
+  agent: string;
+  totals: UsageTotals;
+  warnings?: string[];
+  credit_remaining?: CostMetric;
+  credit_status?: string;
+  days?: { day: string; totals: UsageTotals }[];
+}
+
+export interface UsageDay {
+  day: string;
+  totals: UsageTotals;
+  nodes: UsageNode[];
+}
+
+export interface UsageReport {
+  project?: string;
+  window?: { name?: string };
+  totals: UsageTotals;
+  nodes: UsageNode[];
+  days: UsageDay[];
+  limitations?: string[];
+}
+
 // Decision inbox (web_app.py _inbox_item_payload). A blocked / ask-human task
 // awaiting a human decision. `answer.endpoint` is the POST target that comments
 // + unblocks the task (operator/admin; team viewers get 403).
@@ -559,6 +595,9 @@ export const api = {
   // Cost/credit usage (project-scoped; 403 for team viewers). Per-agent token +
   // cost metrics carry source/confidence; agy credit may be unknown.
   getCost: () => getJSON<CostSummary>("/api/cost"),
+
+  // Usage rollup (node/day) — project-scoped; 403 for team viewers.
+  getUsage: () => getJSON<UsageReport>("/api/usage"),
 
   // Presence: who's viewing this project (name/role for team auth; anonymous
   // count for local-token). Project-scoped via headers.

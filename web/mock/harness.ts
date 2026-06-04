@@ -479,6 +479,78 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     );
   }
 
+  if (p === "/api/usage") {
+    // Mirrors web_app.py _usage_payload: node/day rollup. agy stays honestly
+    // unknown (credit_remaining null/unknown + warnings) — never fabricated.
+    diag.usageFetched = true;
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const um = (value: number | null, source: string, confidence: string, status?: string) =>
+      status ? { value, source, confidence, status } : { value, source, confidence };
+    // Mirrors web_app.py _usage_from_runs/_usage_*_metric: tokens come from run
+    // metadata (source "run_metadata", confidence "explicit" when present);
+    // tokens stay KNOWN even when cost is unknown. Cost when absent -> source
+    // "estimate"/unknown; agy credit -> source "none"/unknown. (P2 fix: agy
+    // tokens are known from metadata — only cost + credit are honestly unknown.)
+    const tokM = (tok: number | null) =>
+      tok === null ? um(null, "none", "unknown", "unknown") : um(tok, "run_metadata", "explicit");
+    const totals = (runs: number, tok: number | null, usd: number | null) => ({
+      runs: um(runs, "run_metadata", "explicit"),
+      input_tokens: tokM(tok === null ? null : Math.round(tok * 0.8)),
+      output_tokens: tokM(tok === null ? null : Math.round(tok * 0.2)),
+      total_tokens: tokM(tok),
+      cost_usd_estimate: usd === null ? um(null, "estimate", "unknown", "unknown") : um(usd, "run_metadata", "explicit"),
+      confidence: tok === null ? "unknown" : "explicit",
+    });
+    const agyWarn = ["agy credit is unknown because no reliable local credit source is configured"];
+    return Promise.resolve(
+      json({
+        project: proj,
+        generated_at: um(AUDIT_TS0 + 600, "server", "explicit"),
+        window: { name: "7d" },
+        filters: { node: null, agent: null },
+        totals: totals(11, 890123, 8.9),
+        nodes: [
+          {
+            node: "backend",
+            agent: "codex",
+            totals: totals(8, 890123, 8.9),
+            days: [
+              { day: "2026-06-03", totals: totals(3, 300000, 3.0) },
+              { day: "2026-06-04", totals: totals(5, 590123, 5.9) },
+            ],
+          },
+          {
+            node: "agy-1",
+            agent: "agy",
+            // agy tokens ARE known from run metadata (44); only cost + credit are
+            // honestly unknown — never fabricated.
+            totals: totals(3, 44, null),
+            warnings: agyWarn,
+            credit_remaining: um(null, "none", "unknown", "unknown"),
+            credit_status: "unknown",
+            days: [{ day: "2026-06-04", totals: totals(3, 44, null) }],
+          },
+        ],
+        days: [
+          {
+            day: "2026-06-03",
+            totals: totals(3, 300000, 3.0),
+            nodes: [{ node: "backend", agent: "codex", totals: totals(3, 300000, 3.0) }],
+          },
+          {
+            day: "2026-06-04",
+            totals: totals(8, 590123, 5.9),
+            nodes: [
+              { node: "backend", agent: "codex", totals: totals(5, 590123, 5.9) },
+              { node: "agy-1", agent: "agy", totals: totals(3, 44, null), warnings: agyWarn, credit_remaining: um(null, "none", "unknown", "unknown"), credit_status: "unknown" },
+            ],
+          },
+        ],
+        limitations: ["usage rollups only use explicit run metadata fields", "agy credit is unknown without a reliable local credit source"],
+      }),
+    );
+  }
+
   if (p === "/api/me") {
     // Mirrors web_app.py /api/me: member null = local-token (operator); a team
     // "viewer" member drives proactive control-lock in the FE.

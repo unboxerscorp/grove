@@ -1287,6 +1287,45 @@ async function main() {
       cost.fetched &&
       !cost.leak;
 
+    // V15-W2 usage report (GET /api/usage): node/day rollup; agy honestly unknown.
+    await page.waitForSelector(".usage .usage-node", { timeout: 8000 });
+    const usage = await page.evaluate(() => {
+      const agy = document.querySelector('.usage-node[data-node="agy-1"]');
+      const backend = document.querySelector('.usage-node[data-node="backend"]');
+      const backendTok = backend
+        ? (backend.querySelectorAll(".usage-cell .cost-metric__value")[1]?.textContent ?? "").trim()
+        : "";
+      return {
+        present: !!document.querySelector(".usage"),
+        nodes: document.querySelectorAll(".usage-node").length,
+        days: document.querySelectorAll(".usage-day").length,
+        agyPresent: !!agy,
+        agyAgent: agy?.getAttribute("data-usage-agent") ?? "",
+        agyCreditUnknown: !!agy?.querySelector(".cost-credit.is-unknown"),
+        agyCreditText: (agy?.querySelector(".cost-credit__unknown")?.textContent ?? "").trim(),
+        agyWarn: !!agy?.querySelector(".cost-credit__warn"),
+        // cells: [runs, total_tokens, cost]. agy tokens are KNOWN from metadata;
+        // only cost (+ credit) are honestly unknown.
+        agyTok: agy ? (agy.querySelectorAll(".usage-cell .cost-metric__value")[1]?.textContent ?? "").trim() : "",
+        agyCost: agy ? (agy.querySelectorAll(".usage-cell .cost-metric__value")[2]?.textContent ?? "").trim() : "",
+        backendTok,
+        fetched: window.__MOCK__?.usageFetched === true,
+      };
+    });
+    const usageReportOk =
+      usage.present &&
+      usage.nodes >= 2 &&
+      usage.days >= 2 &&
+      usage.agyPresent &&
+      usage.agyAgent === "agy" &&
+      usage.agyCreditUnknown && // honest: ⚠ 알 수 없음 (추정하지 않음)
+      usage.agyCreditText.length > 0 &&
+      usage.agyWarn &&
+      usage.agyTok === "44" && // agy tokens KNOWN from run metadata (not unknown)
+      /알 수 없음|unknown/.test(usage.agyCost) && // only cost is honestly unknown
+      usage.backendTok === "890.1k" && // real backend total_tokens rendered
+      usage.fetched;
+
     // #N1 project switch re-scope + no residue (여정1/5): switching to an
     // isolated project swaps org/board/nodes wholesale — none of the default
     // project's nodes/cards may bleed through — and switching back restores it.
@@ -1414,6 +1453,47 @@ async function main() {
       loadedPath.includes("loaded-proj") &&
       projAfterLoad === "loaded-proj";
 
+    // V15-W2 mobile responsive pass: at 390px the safe surfaces stay usable —
+    // tabs reachable, ExecutionPanel gate/kill-switch fit, node-status detail
+    // reachable, and no page-level horizontal overflow. Restore the viewport
+    // afterwards. (CSS-only; no behaviour change.)
+    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
+    await new Promise((r) => setTimeout(r, 200));
+    // Native clicks: at 390px the tab bar scrolls horizontally, so coordinate
+    // clicks can miss; el.click() still fires the handler (the point here is that
+    // the control is reachable + the layout fits, not pointer hit-testing).
+    await page.$eval('.dr-tab[data-view="exec"]', (el) => el.click());
+    await page.waitForSelector(".exec-gate", { timeout: 8000 });
+    const mobile = await page.evaluate(() => {
+      const vw = 390;
+      const fits = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.right <= vw + 2 && r.left >= -2;
+      };
+      return {
+        execTabActive: !!document.querySelector('.dr-tab[data-view="exec"].is-active'),
+        gateFits: fits(".exec-gate"),
+        ksBtn: !!document.querySelector(".exec-ks__btn"),
+        nodestat: !!document.querySelector(".nodestat"),
+        noHOverflow: document.documentElement.scrollWidth <= vw + 3,
+      };
+    });
+    // node-status detail reachable + fits at mobile width.
+    await page.$eval(".nodestat__more", (el) => el.click());
+    await page.waitForSelector(".nodestat-detail", { timeout: 6000 });
+    const detailFits = await page.evaluate(() => {
+      const el = document.querySelector(".nodestat-detail");
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.right <= 390 + 2 && r.left >= -2;
+    });
+    await page.$eval(".nodestat__more", (el) => el.click()); // collapse
+    await page.setViewport({ width: 1320, height: 860, deviceScaleFactor: 2 }); // restore
+    const mobileOk =
+      mobile.execTabActive && mobile.gateFits && mobile.ksBtn && mobile.nodestat && mobile.noHOverflow && detailFits;
+
     const diag = await page.evaluate(() => {
       const mock = window.__MOCK__ ?? {};
       return {
@@ -1518,6 +1598,8 @@ async function main() {
       slackOk &&
       authOk &&
       costOk &&
+      usageReportOk &&
+      mobileOk &&
       projectOk &&
       wsBindOk &&
       wsKindOk &&
@@ -1626,6 +1708,10 @@ async function main() {
       },
       costOk,
       cost,
+      usageReportOk,
+      usage,
+      mobileOk,
+      mobile: { ...mobile, detailFits },
       delegationEdgesOk,
       deleg: { offBefore: delegOffBefore, ...delegOn, offAfter: delegOffAfter },
       delegateOk,

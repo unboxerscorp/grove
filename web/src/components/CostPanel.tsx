@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
-import type { CostAgentMetrics, CostMetric, CostSummary } from "../api";
+import type { CostAgentMetrics, CostMetric, CostSummary, UsageReport } from "../api";
 import { agentGlyph, cx } from "../constants";
 import { useI18n } from "../i18n";
 import type { TFn } from "../i18n";
@@ -109,6 +109,102 @@ function AgentCard({ agent, item, t }: { agent: string; item: CostAgentMetrics; 
   );
 }
 
+function UsageCell({ label, m, kind, t }: { label: string; m: CostMetric; kind: "tokens" | "cost"; t: TFn }) {
+  return (
+    <div className="usage-cell">
+      <span className="usage-cell__k">{label}</span>
+      <MetricView m={m} kind={kind} t={t} />
+    </div>
+  );
+}
+
+/**
+ * Usage rollup (read-only) — node/day breakdown of runs/tokens/cost. agy stays
+ * honestly unknown (CreditView "⚠ 알 수 없음 (추정하지 않음)" + warnings) — never
+ * fabricated. Consistent with the v1.4 cost panel pattern.
+ */
+function UsageSection({ projectTick, t }: { projectTick: number; t: TFn }) {
+  const [usage, setUsage] = useState<UsageReport | null>(null);
+  const [errCode, setErrCode] = useState<"forbidden" | "error" | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .getUsage()
+      .then((u) => {
+        if (alive) {
+          setUsage(u);
+          setErrCode(null);
+        }
+      })
+      .catch((e: unknown) => {
+        if (!alive) return;
+        setUsage(null);
+        setErrCode(/\b403\b/.test(e instanceof Error ? e.message : "") ? "forbidden" : "error");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectTick]);
+
+  if (errCode === "forbidden") return <div className="usage__msg is-warn">{t("usage.forbidden")}</div>;
+  if (!usage) return null;
+  const nodes = usage.nodes ?? [];
+  const days = usage.days ?? [];
+
+  return (
+    <section className="usage">
+      <h3 className="usage__title">{t("usage.title")}</h3>
+      <p className="usage__note">{t("usage.note")}</p>
+
+      {usage.totals && (
+        <div className="usage-totals" data-usage="totals">
+          <UsageCell label={t("usage.runs")} m={usage.totals.runs} kind="tokens" t={t} />
+          <UsageCell label={t("cost.tokens")} m={usage.totals.total_tokens} kind="tokens" t={t} />
+          <UsageCell label={t("cost.cost")} m={usage.totals.cost_usd_estimate} kind="cost" t={t} />
+        </div>
+      )}
+
+      <div className="usage-group">
+        <div className="usage-group__h">{t("usage.byNode")}</div>
+        {nodes.length === 0 && <div className="usage__msg">{t("usage.empty")}</div>}
+        {nodes.map((n) => (
+          <div key={n.node} className="usage-node" data-node={n.node} data-usage-agent={n.agent}>
+            <div className="usage-node__head">
+              <span className="usage-node__glyph">{agentGlyph(n.agent)}</span>
+              <span className="usage-node__name">{n.node}</span>
+              <span className="usage-node__agent">{n.agent}</span>
+            </div>
+            <div className="usage-row">
+              <UsageCell label={t("usage.runs")} m={n.totals.runs} kind="tokens" t={t} />
+              <UsageCell label={t("cost.tokens")} m={n.totals.total_tokens} kind="tokens" t={t} />
+              <UsageCell label={t("cost.cost")} m={n.totals.cost_usd_estimate} kind="cost" t={t} />
+            </div>
+            {(n.agent === "agy" || n.credit_remaining || (n.warnings?.length ?? 0) > 0) && (
+              <CreditView credit={n.credit_remaining} warnings={n.warnings} t={t} />
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="usage-group">
+        <div className="usage-group__h">{t("usage.byDay")}</div>
+        {days.length === 0 && <div className="usage__msg">{t("usage.empty")}</div>}
+        {days.map((d) => (
+          <div key={d.day} className="usage-day" data-day={d.day}>
+            <span className="usage-day__date">{d.day}</span>
+            <div className="usage-row">
+              <UsageCell label={t("usage.runs")} m={d.totals.runs} kind="tokens" t={t} />
+              <UsageCell label={t("cost.tokens")} m={d.totals.total_tokens} kind="tokens" t={t} />
+              <UsageCell label={t("cost.cost")} m={d.totals.cost_usd_estimate} kind="cost" t={t} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function CostPanel({ projectTick = 0 }: { projectTick?: number }) {
   const { t } = useI18n();
   const [data, setData] = useState<CostSummary | null>(null);
@@ -197,6 +293,8 @@ export function CostPanel({ projectTick = 0 }: { projectTick?: number }) {
             </div>
           </>
         )}
+
+        <UsageSection projectTick={projectTick} t={t} />
       </div>
     </section>
   );
