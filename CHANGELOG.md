@@ -4,6 +4,47 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.21.0] — v1.20 (2026-06-04)
+
+Slack bot intelligence. Auto-started after v1.19.0, then steered by an explicit user request:
+let the Slack bot read a free-form message, judge whether to file a task or just answer, and take
+bug/feedback intake — with Block Kit UX. Default OFF; safety-first; no LLM in the loop.
+
+### Intent triage + intake
+
+- A free-form Slack message → a **deterministic, no-LLM heuristic classifier** → {bug, feedback,
+  task, question, command}. Low-confidence / prompt-injection-style text ("ignore this and create
+  a task…") falls to question/answer-only — never a silent mutation (review-confirmed
+  injection-resistant).
+- **One gated mutation path**: bug/feedback/task produce a Block Kit **preview** only (section +
+  Approve/Reject + confirm dialog); the task is created solely after the one-shot confirm is
+  consumed, via the v1.18-gated task-create. viewer/unmapped can't preview or create; the actor's
+  role is re-validated at confirm; the confirmation store is mutex-guarded (owner-check before pop
+  — no non-owner consume / replay). The created task is `ready` only; previews/tasks are redacted.
+- **Block Kit UX + a live announcement** (per user directive + the ~/dev/notion-slack-sync-server
+  pattern): the triage announcement upserts via a persisted message ts (chat.update in place, not
+  new messages), guarded by a dirty-flag + content SHA-256 so a steady poll does zero redundant
+  updates. Default OFF (--enable-intake); every action audited (actor = Slack identity).
+
+### Dashboard
+
+- The Slack config panel shows a read-only intake card (enabled/disabled/unknown + a triage
+  one-liner; tokens masked); the audit drawer gains a "💬 Slack" chip + slack_intake_create filter
+  so you can see who filed what from Slack. The backend exposes the real intake state
+  (/api/slack/config/status → intake.enabled) — a FE/mock-invented field caught + realigned.
+
+### Quality
+
+- Adversarial review: P0/P1 all GO (deterministic classifier, single gated create path, role
+  re-validate, mutex one-shot confirm, ready-only, redaction, no new dependency); P2 announcement
+  repeat-update (dirty + hash) + the intake.enabled contract drift fixed. 258 py tests; web e2e
+  489/489 (no new HTTP endpoint — intake is connector-side).
+
+### Deferred (→ v1.21)
+
+- Slack thread context / conversational follow-up, NL status queries, optional per-user sandbox
+  v0, retro analytics (see docs/V1_21_BRAINSTORM.md).
+
 ## [0.20.0] — v1.19 (2026-06-04)
 
 Fair sharing. Auto-started after v1.18.0. Now that tailnet peers share one host's agent

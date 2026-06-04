@@ -50,6 +50,13 @@ grove repair --all
   multi-level kill-switch checks, and prepared dispatch lease validation.
 - **Slack safety commands** - Slack `status`, `approve`, `abort`, and `killswitch`
   are default OFF, role-gated, preview-then-confirm, one-shot, audited, and redacted.
+- **Slack intelligent intake** - v1.20 `--enable-intake` is default OFF. A deterministic,
+  no-LLM classifier triages Slack messages into bug, feedback, task request, question,
+  or command. Bug/feedback/task messages produce Block Kit previews and only create
+  board tasks after same-member confirm through the role-gated, audited task-create
+  path; questions stay on the read-only answer path. Injection-like text falls back to
+  question/no task, and the live triage announcement is upserted in place with
+  `chat.update`.
 - **Usage and timeline** - `/api/usage` reports run usage by node/day with source and
   warnings; agy cost/credit is reported as unknown when no local source exists, never
   fabricated. Execution timeline shows step and Gantt-style durations from audit data.
@@ -150,6 +157,10 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
 - Autonomous pickup and guarded execution are default OFF and require explicit gates,
   approval, concurrency 1, kill-switch checks, and prepared dispatch validation.
 - Slack safety commands are default OFF and require role-gated preview/confirm.
+- Slack intelligent intake is default OFF (`--enable-intake`) and no-LLM. It can propose
+  bug/feedback/task previews, but confirmed task creation is role-gated and audited;
+  viewer or unmapped users cannot create tasks. Question handling is read-only, and
+  injection-like text falls back to no task.
 - Multi-machine aggregation is read-only and default OFF.
 - Cross-room handoff is data transfer only and default OFF; receiver-local accept is
   required before any task is created.
