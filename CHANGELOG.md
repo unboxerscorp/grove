@@ -4,6 +4,38 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.22.0] — v1.21 (2026-06-04)
+
+The Slack bot converses. Auto-started after v1.20.0. Read-only — the "just answer" path made
+useful with natural-language status queries + thread context. Deterministic (no LLM); default OFF.
+
+### NL status queries + thread context
+
+- A deterministic, no-LLM keyword parser maps a free-form Slack message → {board summary, blocked,
+  running, nodes, usage/ledger, ambiguous} → a read-only Block Kit answer from the existing
+  store/APIs. Prompt-injection-style text converges to a static "did you mean…" reply (never a
+  wrong action).
+- **Scoped + safe**: usage/ledger answers are operator/admin-only (a viewer is denied, no number
+  leak); board data is read only for config.board (no cross-project leak); answers are redacted
+  (no secret/path/PII); usage counts only explicit run-metadata numbers.
+- **Thread context**: a same-thread follow-up ("details") is interpreted from the prior read-only
+  query, bounded in-memory (TTL 600s, max 200, per-thread). A thread "make a task" is NOT handled
+  read-only — it falls to the v1.20 gated preview→confirm, with the role gate re-checked before
+  execution (a viewer can't inherit an operator's context). No new mutation path.
+- Default OFF (requires command_config + intake_enabled); audited; no new dependency.
+
+### Quality
+
+- Adversarial review: GO, no NO-GO — scope/role leak, thread-mutation-smuggling, injection,
+  read-only, and bounded-context all clean. 264 py tests; web unchanged (connector-side; e2e
+  489/489).
+
+### Deferred (→ v1.22)
+
+- Shared-host ops guardrails: optional per-user sandbox v0, retro analytics/digest, usage/cost
+  trend + anomaly/forecast, notification routing v2, Slack digest/reminder (see
+  docs/V1_22_BRAINSTORM.md).
+
 ## [0.21.0] — v1.20 (2026-06-04)
 
 Slack bot intelligence. Auto-started after v1.19.0, then steered by an explicit user request:

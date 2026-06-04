@@ -57,6 +57,12 @@ grove repair --all
   path; questions stay on the read-only answer path. Injection-like text falls back to
   question/no task, and the live triage announcement is upserted in place with
   `chat.update`.
+- **Slack read-only assistant** - v1.21 keeps bounded thread context and answers
+  deterministic, no-LLM natural-language status questions with Block Kit messages.
+  It can summarize the board, blocked tasks, running tasks, node status, and usage
+  from read-only board/run data. Usage and ledger answers require operator/admin role;
+  viewer scope is denied instead of leaked. Thread follow-ups cannot smuggle task,
+  comment, or unblock mutations.
 - **Usage and timeline** - `/api/usage` reports run usage by node/day with source and
   warnings; agy cost/credit is reported as unknown when no local source exists, never
   fabricated. Execution timeline shows step and Gantt-style durations from audit data.
@@ -161,6 +167,10 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   bug/feedback/task previews, but confirmed task creation is role-gated and audited;
   viewer or unmapped users cannot create tasks. Question handling is read-only, and
   injection-like text falls back to no task.
+- Slack read-only assistant also requires `--enable-intake`. Natural-language answers are
+  deterministic, project-scoped, redacted, and read-only; usage/ledger detail is denied
+  unless the Slack member is operator/admin, and bounded thread context cannot create
+  hidden mutations.
 - Multi-machine aggregation is read-only and default OFF.
 - Cross-room handoff is data transfer only and default OFF; receiver-local accept is
   required before any task is created.
