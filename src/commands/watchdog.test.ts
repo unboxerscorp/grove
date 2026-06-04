@@ -542,6 +542,63 @@ describe("watchdog node health", () => {
     });
   });
 
+  test("does not mark codex idle suggestion and model status screens as hung", async () => {
+    let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
+    const runtime: MockRuntime = {
+      paneText: {
+        "dev10:0.0": "› Summarize recent commits\n\n  gpt-5.5 xhigh · /repo",
+      },
+      transcriptBytes: { "/repo/worker.jsonl": 42 },
+      transcriptMtimeMs: { "/repo/worker.jsonl": nowMs - 301_000 },
+    };
+    const ctx = context(["worker"], runtime);
+    const memory = new Map<string, WatchdogMemory>();
+    const injected = deps(ctx, runtime, () => new Date(nowMs));
+
+    const first = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
+    nowMs += 301_000;
+    const second = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
+
+    expect(healthByNode(first).get("worker")).toMatchObject({
+      health: "healthy",
+      reason: "idle",
+    });
+    expect(healthByNode(second).get("worker")).toMatchObject({
+      health: "healthy",
+      reason: "idle",
+    });
+  });
+
+  test("does not mark antigravity idle shortcut screens as hung", async () => {
+    let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
+    const runtime: MockRuntime = {
+      paneText: {
+        "dev10:0.0": "Gemini\n? for shortcuts\nesc to cancel",
+      },
+      transcriptBytes: { "/repo/worker.jsonl": 42 },
+      transcriptMtimeMs: { "/repo/worker.jsonl": nowMs - 301_000 },
+    };
+    const ctx = context(["worker"], runtime);
+    const worker = ctx.byName.get("worker")!;
+    worker.node.agent = "antigravity";
+    ctx.registry.nodes.worker!.agent = "antigravity";
+    const memory = new Map<string, WatchdogMemory>();
+    const injected = deps(ctx, runtime, () => new Date(nowMs));
+
+    const first = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
+    nowMs += 301_000;
+    const second = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
+
+    expect(healthByNode(first).get("worker")).toMatchObject({
+      health: "healthy",
+      reason: "idle",
+    });
+    expect(healthByNode(second).get("worker")).toMatchObject({
+      health: "healthy",
+      reason: "idle",
+    });
+  });
+
   test("does not mark active panes as hung without transcript output", async () => {
     let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const runtime: MockRuntime = {
@@ -561,6 +618,35 @@ describe("watchdog node health", () => {
     expect(healthByNode(second).get("worker")).toMatchObject({
       health: "healthy",
       reason: "active",
+    });
+  });
+
+  test("marks ambiguous non-pane tmux targets unknown instead of hung", async () => {
+    const nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
+    const runtime: MockRuntime = {
+      paneText: { "dev10:grove-dev": "same output" },
+      transcriptBytes: { "/repo/grove-dev.jsonl": 42 },
+      transcriptMtimeMs: { "/repo/grove-dev.jsonl": nowMs - 301_000 },
+    };
+    const ctx = context(["grove-dev"], runtime);
+    ctx.registry.nodes["grove-dev"]!.tmux_pane = "dev10:grove-dev";
+
+    const snapshot = await collectWatchdogSnapshot(
+      ctx,
+      new Map(),
+      { hungAfterMs: 300_000 },
+      deps(ctx, runtime, () => new Date(nowMs)),
+    );
+
+    expect(healthByNode(snapshot).get("grove-dev")).toMatchObject({
+      health: "unknown",
+      pane_exists: false,
+      reason: "ambiguous-pane-target",
+    });
+    expect(snapshot.counts.unknown).toBe(1);
+    expect(recoveryByNode(snapshot).get("grove-dev")).toMatchObject({
+      action: "none",
+      status: "not_needed",
     });
   });
 

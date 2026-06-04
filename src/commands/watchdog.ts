@@ -25,7 +25,8 @@ export type WatchdogHealth =
   | "login_required"
   | "crashed"
   | "cooldown"
-  | "hung";
+  | "hung"
+  | "unknown";
 
 export interface WatchdogNodeState {
   node: string;
@@ -152,6 +153,10 @@ const LOGIN_REQUIRED_RE =
   /\b(?:login required|not logged in|please log in|please sign in|authentication required|authentication expired|auth expired|token expired|credentials expired)\b/i;
 const ACTIVE_PANE_RE =
   /\b(?:working|thinking|processing|running|streaming|esc\s+to\s+interrupt|press\s+esc\s+to\s+interrupt)\b/i;
+const CODEX_IDLE_RE = /(?:^|\n)\s*[›❯]\s+\S|\bgpt[-\w.]*\s+(?:xhigh|high|medium|low)\b/i;
+const CLAUDE_IDLE_RE = /(?:^|\n)\s*❯\s*(?:$|\S)|bypass permissions/i;
+const ANTIGRAVITY_IDLE_RE = /\?\s*for\s+shortcuts|\bgemini\b|esc\s+to\s+cancel/i;
+const SINGLE_PANE_TARGET_RE = /^(?:%\d+|[^:\s]+:[^:\s]+\.(?:%\d+|\d+))$/;
 const SHELL_COMMANDS = new Set(["zsh", "-zsh", "bash", "-bash", "sh", "fish", "tmux"]);
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-?]*[ -/]*[@-~]`, "g");
 
@@ -208,6 +213,7 @@ function emptyCounts(): Record<WatchdogHealth, number> {
     hung: 0,
     login_required: 0,
     rate_limited: 0,
+    unknown: 0,
   };
 }
 
@@ -332,14 +338,24 @@ function paneLineContent(line: string): string {
     .trim();
 }
 
-function hasIdlePrompt(text: string): boolean {
-  return normalizePaneText(text)
+function hasIdlePrompt(text: string, agent: string): boolean {
+  const normalized = normalizePaneText(text);
+  const hasPromptGlyph = normalized
     .split("\n")
     .some((line) => /^(?:[❯›>]\s*){1,3}$/.test(paneLineContent(line)));
+  if (hasPromptGlyph) return true;
+  if (agent === "codex") return CODEX_IDLE_RE.test(normalized);
+  if (agent === "claude") return CLAUDE_IDLE_RE.test(normalized);
+  if (agent === "antigravity") return ANTIGRAVITY_IDLE_RE.test(normalized);
+  return CODEX_IDLE_RE.test(normalized) || CLAUDE_IDLE_RE.test(normalized);
 }
 
 function hasActiveIndicator(text: string): boolean {
   return ACTIVE_PANE_RE.test(text);
+}
+
+function isSinglePaneTarget(target: string): boolean {
+  return SINGLE_PANE_TARGET_RE.test(target);
 }
 
 function cloneWatchdogMemory(memory: Map<string, WatchdogMemory>): Map<string, WatchdogMemory> {
@@ -419,9 +435,9 @@ function plannedRecoveryActions(
     if (!nodeMemory) continue;
     const recovery = (nodeMemory.recovery ??= {});
 
-    if (node.health === "healthy") {
+    if (node.health === "healthy" || node.health === "unknown") {
       delete nodeMemory.recovery;
-      actions.push(recoveryAction(node, "none", "not_needed", "healthy", dryRun));
+      actions.push(recoveryAction(node, "none", "not_needed", node.health, dryRun));
       continue;
     }
 
@@ -602,6 +618,23 @@ async function nodeState(
   const pane = runtime?.tmux_pane ?? nc.addr;
   const previousMemory = memory.get(nc.node.name);
   const previous = previousMemory ?? { lastActivityMs: nowMs };
+  if (!isSinglePaneTarget(pane)) {
+    const transcript = resolveTranscript(ctx, nc) || runtime?.transcript || "";
+    memory.set(nc.node.name, previous);
+    return {
+      agent: nc.node.agent,
+      health: "unknown",
+      idle_ms: Math.max(0, nowMs - previous.lastActivityMs),
+      last_activity_at: new Date(previous.lastActivityMs).toISOString(),
+      node: nc.node.name,
+      observed_at: now.toISOString(),
+      pane,
+      pane_exists: false,
+      reason: "ambiguous-pane-target",
+      transcript: transcript || runtime?.transcript,
+      transcript_bytes: transcript ? nc.adapter.size(transcript) : 0,
+    };
+  }
 
   if (!(await paneExists(pane, deps))) {
     memory.set(nc.node.name, previous);
@@ -664,7 +697,7 @@ async function nodeState(
   });
 
   const limit = classifyText(combinedText, now);
-  const idlePrompt = hasIdlePrompt(paneText);
+  const idlePrompt = hasIdlePrompt(paneText, nc.node.agent);
   const activeIndicator = hasActiveIndicator(paneText);
   const idleMs = Math.max(0, nowMs - lastActivityMs);
   let health: WatchdogHealth = "healthy";
