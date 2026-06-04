@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -67,16 +68,6 @@ class FakeSlackClient:
         if self.raise_after_post:
             raise RuntimeError("accepted but client failed")
         return ts
-
-    def update_message(
-        self,
-        *,
-        channel: str,
-        ts: str,
-        text: str,
-        blocks: Sequence[Mapping[str, object]] | None = None,
-    ) -> None:
-        self.updates.append((channel, ts, text, list(blocks) if blocks is not None else None))
 
     def find_message_by_metadata(
         self,
@@ -419,17 +410,6 @@ def test_human_gate_malformed_history_pagination_keeps_pending_without_repost(
                     _ = (channel, text, thread_ts, metadata, blocks)
                     return {"ts": "unused"}
 
-                def chat_update(
-                    self,
-                    *,
-                    channel: str,
-                    ts: str,
-                    text: str,
-                    blocks: Sequence[Mapping[str, object]] | None = None,
-                ) -> Mapping[str, object]:
-                    _ = (channel, ts, text, blocks)
-                    return {"ok": True}
-
                 def conversations_history(
                     self,
                     *,
@@ -491,6 +471,61 @@ def test_human_gate_accepted_but_exception_reconciles_next_poll_without_duplicat
     assert len(slack.posts) == 1
     assert slack.posts[0][0] == "C123"
     assert slack.posts[0][2] is None
+    assert store.list_notify_subs(board=board, task_id=task.id)[0].thread_id == "ts-1"
+    assert slack_thread_modes(store, task=task) == [("human_gate", "ts-1")]
+
+
+def test_human_gate_post_success_db_failure_recovers_without_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("grove_bridge.slack.HUMAN_GATE_PENDING_TTL_SECONDS", -1)
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board=board)
+    slack = FakeSlackClient()
+    original_add_notify_sub = store.add_notify_sub
+    fail_next_record = True
+
+    def flaky_add_notify_sub(
+        *,
+        board: str,
+        task_id: str,
+        channel_kind: str,
+        room_id: str,
+        thread_id: str = "",
+        user_id: str | None = None,
+    ) -> object:
+        nonlocal fail_next_record
+        if fail_next_record:
+            fail_next_record = False
+            raise RuntimeError("db failed after slack post")
+        return original_add_notify_sub(
+            board=board,
+            task_id=task_id,
+            channel_kind=channel_kind,
+            room_id=room_id,
+            thread_id=thread_id,
+            user_id=user_id,
+        )
+
+    monkeypatch.setattr(store, "add_notify_sub", flaky_add_notify_sub)
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+
+    with pytest.raises(RuntimeError, match="db failed after slack post"):
+        connector.poll_human_gates()
+    assert len(slack.posts) == 1
+    assert slack_thread_modes(store, task=task) == [("human_gate_pending", f"pending:{task.id}")]
+
+    assert connector.poll_human_gates() == 0
+
+    assert len(slack.posts) == 1
     assert store.list_notify_subs(board=board, task_id=task.id)[0].thread_id == "ts-1"
     assert slack_thread_modes(store, task=task) == [("human_gate", "ts-1")]
 
@@ -609,17 +644,6 @@ def test_slack_sdk_history_lookup_scans_all_pages() -> None:
             _ = (channel, text, thread_ts, metadata, blocks)
             return {"ts": "unused"}
 
-        def chat_update(
-            self,
-            *,
-            channel: str,
-            ts: str,
-            text: str,
-            blocks: Sequence[Mapping[str, object]] | None = None,
-        ) -> Mapping[str, object]:
-            _ = (channel, ts, text, blocks)
-            return {"ok": True}
-
         def conversations_history(
             self,
             *,
@@ -679,17 +703,6 @@ def test_slack_sdk_client_rejects_missing_post_ts_and_bad_history() -> None:
             blocks: Sequence[Mapping[str, object]] | None = None,
         ) -> Mapping[str, object]:
             _ = (channel, text, thread_ts, metadata, blocks)
-            return {"ok": True}
-
-        def chat_update(
-            self,
-            *,
-            channel: str,
-            ts: str,
-            text: str,
-            blocks: Sequence[Mapping[str, object]] | None = None,
-        ) -> Mapping[str, object]:
-            _ = (channel, ts, text, blocks)
             return {"ok": True}
 
         def conversations_history(
@@ -757,6 +770,94 @@ def test_chat_routing_uses_thread_session_and_posts_response(tmp_path: Path) -> 
     assert chat.calls == [
         ("slack:T1:C123:111.222", "channel-node", "summarize status"),
     ]
+    assert slack.posts == [("C123", "grove reply", "111.222")]
+
+
+def test_chat_routing_dedupes_slack_event_id_and_client_msg_id(tmp_path: Path) -> None:
+    slack = FakeSlackClient()
+    chat = FakeChatFacade()
+    connector = SlackConnector(
+        store=SQLiteBoardStore(tmp_path / "board.db"),
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node", channel_nodes={"C123": "chat-node"}),
+    )
+    duplicate_event_id = SlackEvent(
+        team="T1",
+        channel="C123",
+        user="U2",
+        text="<@BOT> summarize status",
+        ts="111.222",
+        thread_ts=None,
+        event_type="app_mention",
+        event_id="Ev123",
+        client_msg_id=None,
+    )
+    duplicate_client_msg_id = SlackEvent(
+        team="T1",
+        channel="C123",
+        user="U2",
+        text="<@BOT> summarize status",
+        ts="111.333",
+        thread_ts=None,
+        event_type="app_mention",
+        event_id=None,
+        client_msg_id="Cm123",
+    )
+
+    assert connector.handle_event(duplicate_event_id)
+    assert connector.handle_event(duplicate_event_id)
+    assert connector.handle_event(duplicate_client_msg_id)
+    assert connector.handle_event(duplicate_client_msg_id)
+
+    assert chat.calls == [
+        ("slack:T1:C123:111.222", "chat-node", "summarize status"),
+        ("slack:T1:C123:111.333", "chat-node", "summarize status"),
+    ]
+    assert slack.posts == [
+        ("C123", "grove reply", "111.222"),
+        ("C123", "grove reply", "111.333"),
+    ]
+
+
+def test_chat_routing_dedupes_cross_delivery_by_client_msg_id(tmp_path: Path) -> None:
+    slack = FakeSlackClient()
+    chat = FakeChatFacade()
+    connector = SlackConnector(
+        store=SQLiteBoardStore(tmp_path / "board.db"),
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node", channel_nodes={"C123": "chat-node"}),
+    )
+    app_mention_delivery = SlackEvent(
+        team="T1",
+        channel="C123",
+        user="U2",
+        text="<@BOT> summarize status",
+        ts="111.222",
+        thread_ts=None,
+        event_type="app_mention",
+        event_id="Ev-app-mention",
+        client_msg_id="Cm-shared-message",
+    )
+    message_delivery = SlackEvent(
+        team="T1",
+        channel="C123",
+        user="U2",
+        text="<@BOT> summarize status",
+        ts="111.222",
+        thread_ts=None,
+        event_type="message",
+        event_id="Ev-message-channel",
+        client_msg_id="Cm-shared-message",
+    )
+
+    assert connector.handle_event(app_mention_delivery)
+    assert connector.handle_event(message_delivery)
+
+    assert chat.calls == [("slack:T1:C123:111.222", "chat-node", "summarize status")]
     assert slack.posts == [("C123", "grove reply", "111.222")]
 
 
@@ -905,7 +1006,14 @@ def command_connector(
     )
 
 
-def slack_event(user: str, text: str, *, ts: str = "444.555") -> SlackEvent:
+def slack_event(
+    user: str,
+    text: str,
+    *,
+    ts: str = "444.555",
+    event_id: str | None = None,
+    client_msg_id: str | None = None,
+) -> SlackEvent:
     return SlackEvent(
         team="T1",
         channel="C123",
@@ -914,6 +1022,8 @@ def slack_event(user: str, text: str, *, ts: str = "444.555") -> SlackEvent:
         ts=ts,
         thread_ts=None,
         event_type="app_mention",
+        event_id=event_id,
+        client_msg_id=client_msg_id,
     )
 
 
@@ -1170,6 +1280,28 @@ def test_slack_intake_preview_confirm_creates_redacted_task(tmp_path: Path) -> N
     assert audit_actor["member_id"] == "member-op"
 
 
+def test_slack_intake_dedupes_event_before_preview_and_task_creation(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    slack = FakeSlackClient()
+    connector = command_connector(store, slack, intake_enabled=True)
+    event = slack_event("UOP", "bug checkout crashes", event_id="Ev-intake-1")
+
+    assert connector.handle_event(event)
+    assert connector.handle_event(event)
+    confirm = confirmation_id(slack.posts[-1][1])
+    assert connector.handle_event(
+        slack_event("UOP", f"confirm {confirm}", ts="444.566", client_msg_id="Cm-confirm-1")
+    )
+    assert connector.handle_event(
+        slack_event("UOP", f"confirm {confirm}", ts="444.567", client_msg_id="Cm-confirm-1")
+    )
+
+    assert len(slack.posts) == 2
+    assert "Preview: create bug task" in slack.posts[0][1]
+    assert "Created task" in slack.posts[1][1]
+    assert len(store.list_tasks(board="main")) == 1
+
+
 def test_slack_intake_block_button_confirm_uses_same_one_shot_gate(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
@@ -1396,49 +1528,24 @@ def test_slack_nl_status_injection_uses_safe_ambiguous_reply(tmp_path: Path) -> 
     assert store.list_tasks(board="main") == []
 
 
-def test_slack_triage_announcement_skips_clean_and_same_hash_updates(tmp_path: Path) -> None:
+def test_slack_intake_task_creation_does_not_publish_live_board_post(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
-    store.create_task(
-        board="main",
-        title="Bug from Slack",
-        body="redacted",
-        assignee=None,
-        metadata={"intake": {"source": "slack", "intent": "bug"}},
-    )
     slack = FakeSlackClient()
     connector = command_connector(store, slack, intake_enabled=True)
 
-    first_ts = connector.upsert_triage_announcement()
-    clean_ts = connector.upsert_triage_announcement()
-    connector._triage_announcement_dirty = True
-    same_hash_ts = connector.upsert_triage_announcement()
-    store.create_task(
-        board="main",
-        title="Feedback from Slack",
-        body="redacted",
-        assignee=None,
-        metadata={"intake": {"source": "slack", "intent": "feedback"}},
-    )
-    connector._triage_announcement_dirty = True
-    second_ts = connector.upsert_triage_announcement()
-    final_clean_ts = connector.upsert_triage_announcement()
+    assert connector.handle_event(slack_event("UOP", "bug checkout crashes"))
+    confirm = confirmation_id(slack.posts[-1][1])
+    assert connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.566"))
 
-    assert first_ts == "ts-1"
-    assert clean_ts == "ts-1"
-    assert same_hash_ts == "ts-1"
-    assert second_ts == "ts-1"
-    assert final_clean_ts == "ts-1"
-    assert len(slack.posts) == 1
-    assert len(slack.updates) == 1
-    assert slack.updates[0][1] == "ts-1"
-    assert slack.blocks[0][1] is not None
-    assert slack.updates[0][3] is not None
-    threads = store.list_slack_threads(mode=slack_module.TRIAGE_ANNOUNCEMENT_MODE)
-    assert [(thread.channel_id, thread.thread_ts) for thread in threads] == [("C123", "ts-1")]
-    assert threads[0].node is not None
+    assert len(store.list_tasks(board="main")) == 1
+    assert len(slack.posts) == 2
+    assert "Preview: create bug task" in slack.posts[0][1]
+    assert "Created task" in slack.posts[1][1]
+    assert slack.updates == []
+    assert store.list_slack_threads() == []
 
 
-def test_slack_digest_upsert_skips_redundant_updates_and_redacts(tmp_path: Path) -> None:
+def test_slack_digest_poll_does_not_publish_live_channel_announcement(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     ready = store.create_task(
         board="main",
@@ -1479,36 +1586,17 @@ def test_slack_digest_upsert_skips_redundant_updates_and_redacts(tmp_path: Path)
         ),
     )
 
-    first_ts = connector.upsert_digest()
-    clean_ts = connector.upsert_digest()
-    connector._digest_dirty = True
-    same_hash_ts = connector.upsert_digest()
+    assert connector.poll_digest() == 0
     store.create_task(board="main", title="New ready", body=None, assignee=None)
-    connector._digest_dirty = True
-    updated_ts = connector.upsert_digest()
+    assert connector.poll_digest() == 0
 
-    assert first_ts == "ts-1"
-    assert clean_ts == "ts-1"
-    assert same_hash_ts == "ts-1"
-    assert updated_ts == "ts-1"
-    assert len(slack.posts) == 1
-    assert len(slack.updates) == 1
-    assert "ready=1 running=1 blocked=1" in slack.posts[0][1]
-    assert "ready=2 running=1 blocked=1" in slack.updates[0][2]
-    rendered = json.dumps([slack.blocks, slack.updates], default=str)
-    assert "agy cost" in rendered
-    assert "unknown" in rendered
-    assert "999.0" not in rendered
-    assert "xoxb-" not in rendered
-    assert "/Users" not in rendered
-    assert "/Applications" not in rendered
-    assert "ada@example.com" not in rendered
-    assert "[pii]" in rendered
+    assert slack.posts == []
+    assert slack.updates == []
+    assert slack.blocks == []
     assert store.get_task(board="main", task_id=ready.id).status == "ready"
     assert store.get_task(board="main", task_id=running.id).status == "running"
     assert store.get_task(board="main", task_id=blocked.id).status == "blocked"
-    audits = store.list_audit_events(board="main", action="digest_post")
-    assert len(audits) == 1
+    assert store.list_audit_events(board="main") == []
 
 
 def test_slack_digest_default_off_and_dry_run_send_nothing(tmp_path: Path) -> None:
@@ -1533,8 +1621,8 @@ def test_slack_digest_default_off_and_dry_run_send_nothing(tmp_path: Path) -> No
         digest_config=SlackDigestConfig(board="main", channel="C123", enabled=True),
     )
 
-    assert default_connector.upsert_digest() is None
-    assert dry_run_connector.upsert_digest() is None
+    assert default_connector.poll_digest() == 0
+    assert dry_run_connector.poll_digest() == 0
     assert default_slack.posts == []
     assert dry_run_slack.posts == []
     assert dry_run_slack.updates == []
@@ -1583,6 +1671,79 @@ def test_slack_digest_reminder_is_bounded_and_read_only(tmp_path: Path) -> None:
     assert len(store.list_comments(board="main", task_id=task.id)) == 0
 
 
+def test_slack_digest_reminder_post_success_db_failure_does_not_repost(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board="main")
+    store.add_notify_sub(
+        board="main",
+        task_id=task.id,
+        channel_kind="slack",
+        room_id="C123",
+        thread_id="human-thread",
+    )
+    clock = MutableClock(now=store.get_task(board="main", task_id=task.id).updated_at + 20)
+    slack = FakeSlackClient()
+    original_upsert_slack_thread = store.upsert_slack_thread
+    fail_actual_record = True
+
+    def flaky_upsert_slack_thread(
+        *,
+        board: str,
+        task_id: str | None,
+        team_id: str,
+        channel_id: str,
+        thread_ts: str,
+        mode: str,
+        node: str | None = None,
+    ) -> object:
+        nonlocal fail_actual_record
+        if mode == slack_module.DIGEST_REMINDER_MODE and thread_ts.startswith("ts-"):
+            if fail_actual_record:
+                fail_actual_record = False
+                raise RuntimeError("db failed after reminder post")
+        return original_upsert_slack_thread(
+            board=board,
+            task_id=task_id,
+            team_id=team_id,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            mode=mode,
+            node=node,
+        )
+
+    monkeypatch.setattr(store, "upsert_slack_thread", flaky_upsert_slack_thread)
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+        digest_config=SlackDigestConfig(
+            board="main",
+            channel="C123",
+            enabled=True,
+            dry_run=False,
+            reminder_enabled=True,
+            reminder_after_seconds=10,
+            max_reminders=1,
+            clock=clock,
+        ),
+    )
+
+    assert connector.poll_digest_reminders() == 0
+    assert len(slack.posts) == 1
+    assert connector.poll_digest_reminders() == 0
+
+    assert len(slack.posts) == 1
+    reminders = store.list_slack_threads(task_id=task.id, mode=slack_module.DIGEST_REMINDER_MODE)
+    assert [(thread.thread_ts, thread.node) for thread in reminders] == [
+        (f"pending:digest_reminder:{task.id}:1", "pending:1")
+    ]
+
+
 def test_slack_digest_config_command_is_operator_only(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
@@ -1626,6 +1787,266 @@ def test_slack_connector_ignores_non_message_events(tmp_path: Path) -> None:
     )
 
 
+def test_slack_connector_ignores_bot_self_and_subtype_messages(tmp_path: Path) -> None:
+    slack = FakeSlackClient()
+    chat = FakeChatFacade()
+    connector = SlackConnector(
+        store=SQLiteBoardStore(tmp_path / "board.db"),
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+        bot_user_id="UBOT",
+    )
+    events = [
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="UBOT",
+            text="<@BOT> loop back",
+            ts="999.001",
+            thread_ts=None,
+            event_type="message",
+        ),
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="<@BOT> bot message",
+            ts="999.002",
+            thread_ts=None,
+            event_type="message",
+            bot_id="B123",
+        ),
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="<@BOT> app message",
+            ts="999.003",
+            thread_ts=None,
+            event_type="message",
+            app_id="A123",
+        ),
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="<@BOT> channel join",
+            ts="999.004",
+            thread_ts=None,
+            event_type="message",
+            subtype="channel_join",
+        ),
+    ]
+
+    assert [connector.handle_event(event) for event in events] == [False, False, False, False]
+    assert chat.calls == []
+    assert slack.posts == []
+
+
+def test_socket_payload_ignores_bot_self_and_subtype_messages() -> None:
+    base_event: dict[str, object] = {
+        "type": "message",
+        "channel": "C123",
+        "user": "U2",
+        "text": "<@BOT> status",
+        "ts": "111.222",
+    }
+
+    assert (
+        slack_module._event_from_socket_payload(
+            {"team_id": "T1", "event": {**base_event, "bot_id": "B123"}},
+            bot_user_id="UBOT",
+        )
+        is None
+    )
+    assert (
+        slack_module._event_from_socket_payload(
+            {"team_id": "T1", "event": {**base_event, "app_id": "A123"}},
+            bot_user_id="UBOT",
+        )
+        is None
+    )
+    assert (
+        slack_module._event_from_socket_payload(
+            {"team_id": "T1", "event": {**base_event, "subtype": "message_changed"}},
+            bot_user_id="UBOT",
+        )
+        is None
+    )
+    assert (
+        slack_module._event_from_socket_payload(
+            {"team_id": "T1", "event": {**base_event, "user": "UBOT"}},
+            bot_user_id="UBOT",
+        )
+        is None
+    )
+
+
+def test_socket_mode_listener_acks_before_event_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        def __init__(self, *, envelope_id: str) -> None:
+            self.envelope_id = envelope_id
+
+    class FakeSocket:
+        def __init__(self, *, app_token: str, web_client: object) -> None:
+            _ = (app_token, web_client)
+            self.socket_mode_request_listeners: list[object] = []
+            self.acks: list[str] = []
+
+        def connect(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def is_connected(self) -> bool:
+            return True
+
+        def send_socket_mode_response(self, response: object) -> None:
+            self.acks.append(cast(FakeResponse, response).envelope_id)
+
+    socket = FakeSocket(app_token="xapp-main", web_client=object())
+
+    def fake_import_module(name: str) -> object:
+        if name == "slack_sdk.socket_mode":
+            return SimpleNamespace(SocketModeClient=lambda **kwargs: socket)
+        if name == "slack_sdk.socket_mode.response":
+            return SimpleNamespace(SocketModeResponse=FakeResponse)
+        if name == "slack_sdk.web":
+            return SimpleNamespace(WebClient=lambda **kwargs: object())
+        raise AssertionError(name)
+
+    connector = SlackConnector(
+        store=SQLiteBoardStore(tmp_path / "board.db"),
+        slack_client=FakeSlackClient(),
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+    )
+    handled: list[SlackEvent] = []
+
+    def handle_event(event: SlackEvent) -> bool:
+        assert socket.acks == ["env-1"]
+        handled.append(event)
+        return True
+
+    monkeypatch.setattr("grove_bridge.slack.importlib.import_module", fake_import_module)
+    monkeypatch.setattr(connector, "handle_event", handle_event)
+
+    built = slack_module._build_socket_client(
+        config=SlackConfig(app_token="xapp-main", bot_token="xoxb-main"),
+        connector=connector,
+    )
+    listener = cast(Callable[[object, object], None], built.socket_mode_request_listeners[0])
+    listener(
+        built,
+        SimpleNamespace(
+            type="events_api",
+            envelope_id="env-1",
+            payload={
+                "team_id": "T1",
+                "event_id": "Ev123",
+                "event": {
+                    "type": "app_mention",
+                    "channel": "C123",
+                    "user": "U2",
+                    "text": "<@BOT> status",
+                    "ts": "111.222",
+                    "client_msg_id": "Cm123",
+                },
+            },
+        ),
+    )
+
+    assert socket.acks == ["env-1"]
+    assert len(handled) == 1
+    assert handled[0].event_id == "Ev123"
+    assert handled[0].client_msg_id == "Cm123"
+
+
+def test_socket_mode_listener_ack_survives_handler_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        def __init__(self, *, envelope_id: str) -> None:
+            self.envelope_id = envelope_id
+
+    class FakeSocket:
+        def __init__(self, *, app_token: str, web_client: object) -> None:
+            _ = (app_token, web_client)
+            self.socket_mode_request_listeners: list[object] = []
+            self.acks: list[str] = []
+
+        def connect(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def is_connected(self) -> bool:
+            return True
+
+        def send_socket_mode_response(self, response: object) -> None:
+            self.acks.append(cast(FakeResponse, response).envelope_id)
+
+    socket = FakeSocket(app_token="xapp-main", web_client=object())
+
+    def fake_import_module(name: str) -> object:
+        if name == "slack_sdk.socket_mode":
+            return SimpleNamespace(SocketModeClient=lambda **kwargs: socket)
+        if name == "slack_sdk.socket_mode.response":
+            return SimpleNamespace(SocketModeResponse=FakeResponse)
+        if name == "slack_sdk.web":
+            return SimpleNamespace(WebClient=lambda **kwargs: object())
+        raise AssertionError(name)
+
+    connector = SlackConnector(
+        store=SQLiteBoardStore(tmp_path / "board.db"),
+        slack_client=FakeSlackClient(),
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+    )
+
+    def handle_event(event: SlackEvent) -> bool:
+        _ = event
+        raise RuntimeError("handler failed")
+
+    monkeypatch.setattr("grove_bridge.slack.importlib.import_module", fake_import_module)
+    monkeypatch.setattr(connector, "handle_event", handle_event)
+
+    built = slack_module._build_socket_client(
+        config=SlackConfig(app_token="xapp-main", bot_token="xoxb-main"),
+        connector=connector,
+    )
+    listener = cast(Callable[[object, object], None], built.socket_mode_request_listeners[0])
+    listener(
+        built,
+        SimpleNamespace(
+            type="events_api",
+            envelope_id="env-1",
+            payload={
+                "team_id": "T1",
+                "event": {
+                    "type": "app_mention",
+                    "channel": "C123",
+                    "user": "U2",
+                    "text": "<@BOT> status",
+                    "ts": "111.222",
+                },
+            },
+        ),
+    )
+
+    assert socket.acks == ["env-1"]
+
+
 def test_status_probe_reports_bot_auth_ok_for_saved_tokens(tmp_path: Path) -> None:
     config_path = tmp_path / "slack.json"
     SlackConfigStore(config_path).save(SlackConfig(app_token="xapp-ok", bot_token="xoxb-ok"))
@@ -1666,6 +2087,9 @@ def test_slack_main_connects_polls_and_closes_socket(
 
         def close(self) -> None:
             self.closed = True
+
+        def is_connected(self) -> bool:
+            return self.connected
 
         def send_socket_mode_response(self, response: object) -> None:
             _ = response
@@ -1714,6 +2138,84 @@ def test_slack_main_connects_polls_and_closes_socket(
     assert socket.closed is True
 
 
+def test_slack_main_reconnects_disconnected_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "slack.json"
+    board_db_path = tmp_path / "board.db"
+    SlackConfigStore(config_path).save(
+        SlackConfig(
+            app_token="xapp-main",
+            bot_token="xoxb-main",
+            default_channel="C123",
+            default_node="chat-node",
+        )
+    )
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.socket_mode_request_listeners: list[object] = []
+            self.connect_count = 0
+            self.closed = False
+            self.connection_checks = 0
+
+        def connect(self) -> None:
+            self.connect_count += 1
+
+        def close(self) -> None:
+            self.closed = True
+
+        def is_connected(self) -> bool:
+            self.connection_checks += 1
+            return self.connection_checks > 1
+
+        def send_socket_mode_response(self, response: object) -> None:
+            _ = response
+
+    socket = FakeSocket()
+
+    def fake_slack_sdk_client(*, bot_token: str) -> FakeSlackClient:
+        assert bot_token == "xoxb-main"
+        return FakeSlackClient()
+
+    def fake_chat_facade() -> FakeChatFacade:
+        return FakeChatFacade()
+
+    def fake_build_socket_client(
+        *,
+        config: SlackConfig,
+        connector: SlackConnector,
+    ) -> FakeSocket:
+        assert config.app_token == "xapp-main"
+        assert connector.human_gate.channel == "C123"
+        return socket
+
+    def stop_after_poll(seconds: float) -> None:
+        assert seconds == 0.1
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(slack_module, "SlackSdkClient", fake_slack_sdk_client)
+    monkeypatch.setattr(slack_module, "GroveServeChatFacade", fake_chat_facade)
+    monkeypatch.setattr(slack_module, "_build_socket_client", fake_build_socket_client)
+    monkeypatch.setattr("grove_bridge.slack.time.sleep", stop_after_poll)
+
+    with pytest.raises(KeyboardInterrupt):
+        slack_module.main(
+            [
+                "--config-path",
+                str(config_path),
+                "--board-db-path",
+                str(board_db_path),
+                "--poll-interval",
+                "0.1",
+            ]
+        )
+
+    assert socket.connect_count == 2
+    assert socket.closed is True
+
+
 def test_slack_main_wires_command_config_when_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1755,6 +2257,9 @@ def test_slack_main_wires_command_config_when_enabled(
 
         def close(self) -> None:
             self.closed = True
+
+        def is_connected(self) -> bool:
+            return self.connected
 
         def send_socket_mode_response(self, response: object) -> None:
             _ = response

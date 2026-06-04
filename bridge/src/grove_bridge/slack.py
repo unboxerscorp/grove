@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib
 import json
 import logging
@@ -13,6 +12,7 @@ import secrets
 import subprocess
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Mapping, MutableSequence, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -29,13 +29,12 @@ HUMAN_GATE_PENDING_TTL_SECONDS = 60
 HUMAN_GATE_MODE = "human_gate"
 HUMAN_GATE_PENDING_MODE = "human_gate_pending"
 HUMAN_GATE_METADATA_EVENT_TYPE = "grove_human_gate"
-TRIAGE_ANNOUNCEMENT_MODE = "triage_announcement"
-DIGEST_ANNOUNCEMENT_MODE = "digest_announcement"
 DIGEST_REMINDER_MODE = "digest_reminder"
 INTAKE_CONFIRM_ACTION_ID = "grove_intake_confirm"
 INTAKE_ANSWER_ONLY_ACTION_ID = "grove_intake_answer_only"
 THREAD_CONTEXT_TTL_SECONDS = 600
 THREAD_CONTEXT_MAX = 200
+SLACK_EVENT_DEDUPE_MAX = 1000
 SLACK_SCOPES = (
     "app_mentions:read",
     "channels:history",
@@ -69,15 +68,6 @@ class SlackClientProtocol(Protocol):
         blocks: Sequence[Mapping[str, object]] | None = None,
     ) -> str: ...
 
-    def update_message(
-        self,
-        *,
-        channel: str,
-        ts: str,
-        text: str,
-        blocks: Sequence[Mapping[str, object]] | None = None,
-    ) -> None: ...
-
     def find_message_by_metadata(
         self,
         *,
@@ -100,15 +90,6 @@ class SlackWebClientProtocol(Protocol):
         text: str,
         thread_ts: str | None = None,
         metadata: Mapping[str, object] | None = None,
-        blocks: Sequence[Mapping[str, object]] | None = None,
-    ) -> Mapping[str, object]: ...
-
-    def chat_update(
-        self,
-        *,
-        channel: str,
-        ts: str,
-        text: str,
         blocks: Sequence[Mapping[str, object]] | None = None,
     ) -> Mapping[str, object]: ...
 
@@ -141,6 +122,8 @@ class SocketClientProtocol(Protocol):
     def connect(self) -> None: ...
 
     def close(self) -> None: ...
+
+    def is_connected(self) -> bool: ...
 
     def send_socket_mode_response(self, response: object) -> None: ...
 
@@ -398,6 +381,11 @@ class SlackEvent:
     ts: str
     thread_ts: str | None
     event_type: str
+    event_id: str | None = None
+    client_msg_id: str | None = None
+    bot_id: str | None = None
+    app_id: str | None = None
+    subtype: str | None = None
 
 
 class SlackConfigStore:
@@ -510,15 +498,15 @@ class SlackSdkClient:
             raise RuntimeError("Slack response did not include ts")
         return ts
 
-    def update_message(
-        self,
-        *,
-        channel: str,
-        ts: str,
-        text: str,
-        blocks: Sequence[Mapping[str, object]] | None = None,
-    ) -> None:
-        self._client.chat_update(channel=channel, ts=ts, text=text, blocks=blocks)
+    def bot_user_id(self) -> str | None:
+        auth_test = getattr(self._client, "auth_test", None)
+        if not callable(auth_test):
+            return None
+        response = cast(Callable[[], object], auth_test)()
+        if not isinstance(response, Mapping):
+            return None
+        user_id = response.get("user_id")
+        return user_id if isinstance(user_id, str) and user_id else None
 
     def find_message_by_metadata(
         self,
@@ -682,6 +670,7 @@ class SlackConnector:
         digest_config: SlackDigestConfig | None = None,
         confirmation_store: SlackConfirmationStore | None = None,
         intent_classifier: SlackIntentClassifier | None = None,
+        bot_user_id: str | None = None,
     ) -> None:
         self.store = store
         self.slack_client = slack_client
@@ -690,6 +679,7 @@ class SlackConnector:
         self.chat_route = chat_route
         self.command_config = command_config
         self.digest_config = digest_config
+        self.bot_user_id = bot_user_id or None
         self.intent_classifier = intent_classifier or BoundedSlackIntentClassifier()
         self.confirmations = confirmation_store or (
             SlackConfirmationStore(
@@ -700,10 +690,9 @@ class SlackConnector:
             else None
         )
         self._locks: dict[str, threading.Lock] = {}
-        self._triage_announcement_dirty = True
-        self._digest_dirty = True
-        self._last_digest_poll_at = 0.0
         self._thread_contexts: dict[str, SlackThreadContext] = {}
+        self._seen_event_keys: set[str] = set()
+        self._seen_event_order: deque[str] = deque()
 
     def poll_human_gates(self) -> int:
         channel = self.human_gate.channel
@@ -825,9 +814,39 @@ class SlackConnector:
             mode=HUMAN_GATE_PENDING_MODE,
         )
 
+    def _event_dedupe_key(self, event: SlackEvent) -> str | None:
+        if event.client_msg_id:
+            return f"client:{event.team}:{event.channel}:{event.client_msg_id}"
+        if event.event_id:
+            return f"event:{event.team}:{event.event_id}"
+        return None
+
+    def _should_ignore_event(self, event: SlackEvent) -> bool:
+        if event.bot_id or event.app_id or event.subtype:
+            return True
+        return self.bot_user_id is not None and event.user == self.bot_user_id
+
+    def _remember_event(self, event: SlackEvent) -> bool:
+        key = self._event_dedupe_key(event)
+        if key is None:
+            return True
+        if key in self._seen_event_keys:
+            LOGGER.info("Slack duplicate event ignored: %s", key)
+            return False
+        self._seen_event_keys.add(key)
+        self._seen_event_order.append(key)
+        while len(self._seen_event_order) > SLACK_EVENT_DEDUPE_MAX:
+            expired = self._seen_event_order.popleft()
+            self._seen_event_keys.discard(expired)
+        return True
+
     def handle_event(self, event: SlackEvent) -> bool:
         if event.event_type not in {"app_mention", "message"}:
             return False
+        if self._should_ignore_event(event):
+            return False
+        if not self._remember_event(event):
+            return True
         thread_ts = event.thread_ts or event.ts
         if event.thread_ts is not None and self._handle_human_reply(event, thread_ts=thread_ts):
             return True
@@ -917,151 +936,13 @@ class SlackConnector:
         self.slack_client.post_message(channel=event.channel, text=result, thread_ts=thread_ts)
         return True
 
-    def upsert_triage_announcement(self, *, channel: str | None = None) -> str | None:
-        config = self.command_config
-        target_channel = channel or self.human_gate.channel
-        if config is None or not config.intake_enabled or target_channel is None:
-            return None
-        existing = self._existing_triage_announcement(channel=target_channel)
-        if existing is not None and not self._triage_announcement_dirty:
-            return existing.thread_ts
-        message = _build_triage_announcement_message(
-            board=config.board,
-            tasks=self.store.list_tasks(board=config.board, limit=50),
-        )
-        content_hash = _block_message_hash(message)
-        if existing is not None:
-            if existing.node == content_hash:
-                self._triage_announcement_dirty = False
-                return existing.thread_ts
-            try:
-                self.slack_client.update_message(
-                    channel=target_channel,
-                    ts=existing.thread_ts,
-                    text=message.text,
-                    blocks=message.blocks,
-                )
-            except Exception:
-                self._triage_announcement_dirty = True
-                raise
-            self.store.upsert_slack_thread(
-                board=config.board,
-                task_id=None,
-                team_id="",
-                channel_id=target_channel,
-                thread_ts=existing.thread_ts,
-                mode=TRIAGE_ANNOUNCEMENT_MODE,
-                node=content_hash,
-            )
-            self._triage_announcement_dirty = False
-            return existing.thread_ts
-        try:
-            ts = self.slack_client.post_message(
-                channel=target_channel,
-                text=message.text,
-                blocks=message.blocks,
-            )
-        except Exception:
-            self._triage_announcement_dirty = True
-            raise
-        self.store.upsert_slack_thread(
-            board=config.board,
-            task_id=None,
-            team_id="",
-            channel_id=target_channel,
-            thread_ts=ts,
-            mode=TRIAGE_ANNOUNCEMENT_MODE,
-            node=content_hash,
-        )
-        self._triage_announcement_dirty = False
-        return ts
-
-    def _existing_triage_announcement(self, *, channel: str) -> SlackThread | None:
-        for thread in self.store.list_slack_threads(mode=TRIAGE_ANNOUNCEMENT_MODE):
-            if thread.task_id is None and thread.channel_id == channel:
-                return thread
-        return None
-
     def poll_digest(self) -> int:
         config = self.digest_config
         if config is None or not config.enabled:
             return 0
-        now = config.clock()
-        sent = 0
-        if now - self._last_digest_poll_at >= config.interval_seconds:
-            self._last_digest_poll_at = now
-            if self.upsert_digest() is not None:
-                sent += 1
-        sent += self.poll_digest_reminders()
-        return sent
-
-    def upsert_digest(self, *, channel: str | None = None) -> str | None:
-        config = self.digest_config
-        if config is None or not config.enabled:
-            return None
-        target_channel = channel or config.channel or self.human_gate.channel
-        if target_channel is None:
-            return None
-        existing = self._existing_digest(channel=target_channel)
-        if config.dry_run:
-            return existing.thread_ts if existing is not None else None
-        if existing is not None and not self._digest_dirty:
-            return existing.thread_ts
-        tasks = self.store.list_tasks(board=config.board, limit=200)
-        message = _build_digest_message(
-            board=config.board,
-            tasks=tasks,
-            runs=self.store.list_runs_for_board(board=config.board),
-            node_names=config.node_names,
-        )
-        content_hash = _block_message_hash(message)
-        if existing is not None:
-            if existing.node == content_hash:
-                self._digest_dirty = False
-                return existing.thread_ts
-            try:
-                self.slack_client.update_message(
-                    channel=target_channel,
-                    ts=existing.thread_ts,
-                    text=message.text,
-                    blocks=message.blocks,
-                )
-            except Exception:
-                self._digest_dirty = True
-                raise
-            self.store.upsert_slack_thread(
-                board=config.board,
-                task_id=None,
-                team_id="",
-                channel_id=target_channel,
-                thread_ts=existing.thread_ts,
-                mode=DIGEST_ANNOUNCEMENT_MODE,
-                node=content_hash,
-            )
-            self._digest_dirty = False
-            self._audit_digest(action="digest_update", status="ok")
-            return existing.thread_ts
-        try:
-            ts = self.slack_client.post_message(
-                channel=target_channel,
-                text=message.text,
-                blocks=message.blocks,
-            )
-        except Exception:
-            self._digest_dirty = True
-            raise
-        self.store.upsert_slack_thread(
-            board=config.board,
-            task_id=None,
-            team_id="",
-            channel_id=target_channel,
-            thread_ts=ts,
-            mode=DIGEST_ANNOUNCEMENT_MODE,
-            node=content_hash,
-        )
-        self._digest_dirty = False
-        self._audit_digest(action="digest_post", status="ok")
-        return ts
+        if config.reminder_enabled:
+            return self.poll_digest_reminders()
+        return 0
 
     def poll_digest_reminders(self) -> int:
         config = self.digest_config
@@ -1096,25 +977,61 @@ class SlackConnector:
                 continue
             step = len(reminders) + 1
             text = _digest_reminder_text(task=task, step=step, max_reminders=config.max_reminders)
-            ts = self.slack_client.post_message(
-                channel=target_channel,
-                text=text,
-                thread_ts=_task_slack_thread_ts(
-                    self.store,
+            pending_thread_ts = _digest_reminder_pending_key(task=task, step=step)
+            try:
+                self.store.upsert_slack_thread(
                     board=config.board,
-                    task=task,
+                    task_id=task.id,
+                    team_id="",
+                    channel_id=target_channel,
+                    thread_ts=pending_thread_ts,
+                    mode=DIGEST_REMINDER_MODE,
+                    node=f"pending:{step}",
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "Slack digest reminder pending record failed: %s",
+                    _safe_log_error(exc),
+                )
+                continue
+            try:
+                ts = self.slack_client.post_message(
                     channel=target_channel,
-                ),
-            )
-            self.store.upsert_slack_thread(
-                board=config.board,
-                task_id=task.id,
-                team_id="",
-                channel_id=target_channel,
-                thread_ts=ts,
-                mode=DIGEST_REMINDER_MODE,
-                node=f"reminder:{step}",
-            )
+                    text=text,
+                    thread_ts=_task_slack_thread_ts(
+                        self.store,
+                        board=config.board,
+                        task=task,
+                        channel=target_channel,
+                    ),
+                )
+            except Exception as exc:
+                LOGGER.warning("Slack digest reminder post failed: %s", _safe_log_error(exc))
+                continue
+            try:
+                self.store.upsert_slack_thread(
+                    board=config.board,
+                    task_id=task.id,
+                    team_id="",
+                    channel_id=target_channel,
+                    thread_ts=ts,
+                    mode=DIGEST_REMINDER_MODE,
+                    node=f"reminder:{step}",
+                )
+                self.store.delete_slack_thread(
+                    board=config.board,
+                    task_id=task.id,
+                    team_id="",
+                    channel_id=target_channel,
+                    thread_ts=pending_thread_ts,
+                    mode=DIGEST_REMINDER_MODE,
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "Slack digest reminder record failed after post: %s",
+                    _safe_log_error(exc),
+                )
+                continue
             self._audit_digest(
                 action="digest_reminder",
                 status="ok",
@@ -1124,12 +1041,6 @@ class SlackConnector:
             )
             sent += 1
         return sent
-
-    def _existing_digest(self, *, channel: str) -> SlackThread | None:
-        for thread in self.store.list_slack_threads(mode=DIGEST_ANNOUNCEMENT_MODE):
-            if thread.task_id is None and thread.channel_id == channel:
-                return thread
-        return None
 
     def _audit_digest(
         self,
@@ -1369,7 +1280,6 @@ class SlackConnector:
             response = _digest_config_status_text(self.digest_config)
         elif action == "enable":
             self.digest_config = replace(self.digest_config, enabled=True)
-            self._digest_dirty = True
             response = "Slack digest enabled."
         elif action == "disable":
             self.digest_config = replace(self.digest_config, enabled=False)
@@ -1379,14 +1289,9 @@ class SlackConnector:
             response = "Slack digest dry-run enabled."
         elif action in {"dry-run-off", "dryrun-off", "live-on"}:
             self.digest_config = replace(self.digest_config, dry_run=False)
-            self._digest_dirty = True
-            response = "Slack digest live sending enabled."
-        elif action == "refresh":
-            self._digest_dirty = True
-            ts = self.upsert_digest(channel=event.channel)
-            response = "Slack digest refresh queued." if ts is not None else "Slack digest dry-run."
+            response = "Slack digest dry-run disabled."
         else:
-            response = "Usage: digest [status|enable|disable|dry-run-on|dry-run-off|refresh]."
+            response = "Usage: digest [status|enable|disable|dry-run-on|dry-run-off]."
         self._audit_slack_command(
             command="digest",
             event=event,
@@ -1743,7 +1648,6 @@ class SlackConnector:
                 "slack": dict(proposal.slack),
             },
         )
-        self._triage_announcement_dirty = True
         self.store.add_audit_event(
             board=config.board,
             kind="audit.task.create",
@@ -2187,31 +2091,55 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_reminders=args.max_reminders,
         node_names=command_node_names,
     )
+    slack_client = SlackSdkClient(bot_token=config.bot_token)
     connector = SlackConnector(
         store=SQLiteBoardStore(args.board_db_path),
-        slack_client=SlackSdkClient(bot_token=config.bot_token),
+        slack_client=slack_client,
         chat_facade=GroveServeChatFacade(),
         human_gate=HumanGateConfig(board=args.board, channel=channel),
         chat_route=ChatRouteConfig(default_node=node),
         command_config=command_config,
         digest_config=digest_config,
+        bot_user_id=_bot_user_id_from_client(slack_client),
     )
     socket_client = _build_socket_client(config=config, connector=connector)
     socket_client.connect()
     try:
         while True:
+            if not _socket_is_connected(socket_client):
+                LOGGER.warning("Slack socket disconnected; reconnecting")
+                try:
+                    socket_client.connect()
+                except Exception as exc:
+                    LOGGER.warning("Slack socket reconnect failed: %s", _safe_log_error(exc))
             connector.poll_human_gates()
-            try:
-                connector.upsert_triage_announcement()
-            except Exception as exc:
-                LOGGER.warning("Slack triage announcement update failed: %s", _safe_log_error(exc))
             try:
                 connector.poll_digest()
             except Exception as exc:
-                LOGGER.warning("Slack digest update failed: %s", _safe_log_error(exc))
+                LOGGER.warning("Slack digest poll failed: %s", _safe_log_error(exc))
             time.sleep(args.poll_interval)
     finally:
         socket_client.close()
+
+
+def _socket_is_connected(socket_client: SocketClientProtocol) -> bool:
+    try:
+        return socket_client.is_connected()
+    except Exception as exc:
+        LOGGER.warning("Slack socket status check failed: %s", _safe_log_error(exc))
+        return True
+
+
+def _bot_user_id_from_client(slack_client: object) -> str | None:
+    bot_user_id = getattr(slack_client, "bot_user_id", None)
+    if not callable(bot_user_id):
+        return None
+    try:
+        user_id = cast(Callable[[], object], bot_user_id)()
+    except Exception as exc:
+        LOGGER.warning("Slack auth.test failed: %s", _safe_log_error(exc))
+        return None
+    return user_id if isinstance(user_id, str) and user_id else None
 
 
 def _build_socket_client(*, config: SlackConfig, connector: SlackConnector) -> SocketClientProtocol:
@@ -2233,32 +2161,54 @@ def _build_socket_client(*, config: SlackConfig, connector: SlackConnector) -> S
     )
 
     def listener(client: SocketClientProtocol, request: SocketRequestProtocol) -> None:
-        if request.type == "events_api":
-            event = _event_from_socket_payload(cast(Mapping[str, object], request.payload))
-            if event is not None:
-                connector.handle_event(event)
-        elif request.type == "interactive" and isinstance(request.payload, Mapping):
-            connector.handle_interaction(cast(Mapping[str, object], request.payload))
-        client.send_socket_mode_response(response_cls(envelope_id=request.envelope_id))
+        try:
+            client.send_socket_mode_response(response_cls(envelope_id=request.envelope_id))
+        except Exception as exc:
+            LOGGER.warning("Slack socket ack failed: %s", _safe_log_error(exc))
+        try:
+            if request.type == "events_api" and isinstance(request.payload, Mapping):
+                event = _event_from_socket_payload(
+                    cast(Mapping[str, object], request.payload),
+                    bot_user_id=connector.bot_user_id,
+                )
+                if event is not None:
+                    connector.handle_event(event)
+            elif request.type == "interactive" and isinstance(request.payload, Mapping):
+                connector.handle_interaction(cast(Mapping[str, object], request.payload))
+        except Exception as exc:
+            LOGGER.warning("Slack socket handler failed: %s", _safe_log_error(exc))
 
     socket_client.socket_mode_request_listeners.append(listener)
     return socket_client
 
 
-def _event_from_socket_payload(payload: Mapping[str, object]) -> SlackEvent | None:
+def _event_from_socket_payload(
+    payload: Mapping[str, object],
+    *,
+    bot_user_id: str | None = None,
+) -> SlackEvent | None:
     raw_event = payload.get("event")
     if not isinstance(raw_event, dict):
         return None
     event = cast(Mapping[str, object], raw_event)
+    bot_id = _mapping_str(event, "bot_id")
+    app_id = _mapping_str(event, "app_id")
+    subtype = _mapping_str(event, "subtype")
+    if bot_id is not None or app_id is not None or subtype is not None:
+        return None
     team = payload.get("team_id")
     channel = event.get("channel")
     user = event.get("user")
     text = event.get("text")
     ts = event.get("ts")
+    if bot_user_id is not None and user == bot_user_id:
+        return None
     if not all(isinstance(value, str) for value in (team, channel, user, text, ts)):
         return None
     thread_ts = event.get("thread_ts")
     event_type = event.get("type")
+    event_id = payload.get("event_id")
+    client_msg_id = event.get("client_msg_id")
     return SlackEvent(
         team=cast(str, team),
         channel=cast(str, channel),
@@ -2267,6 +2217,11 @@ def _event_from_socket_payload(payload: Mapping[str, object]) -> SlackEvent | No
         ts=cast(str, ts),
         thread_ts=thread_ts if isinstance(thread_ts, str) else None,
         event_type=event_type if isinstance(event_type, str) else "message",
+        event_id=event_id if isinstance(event_id, str) else None,
+        client_msg_id=client_msg_id if isinstance(client_msg_id, str) else None,
+        bot_id=bot_id,
+        app_id=app_id,
+        subtype=subtype,
     )
 
 
@@ -2312,6 +2267,11 @@ def _nested_str(mapping: Mapping[str, object], key: str, nested_key: str) -> str
         return None
     nested = value.get(nested_key)
     return nested if isinstance(nested, str) else None
+
+
+def _mapping_str(mapping: Mapping[str, object], key: str) -> str | None:
+    value = mapping.get(key)
+    return value if isinstance(value, str) and value else None
 
 
 def _needs_human(task: Task) -> bool:
@@ -2860,169 +2820,15 @@ def _build_intake_preview_blocks(
     return tuple(blocks)
 
 
-def _build_triage_announcement_message(*, board: str, tasks: Sequence[Task]) -> SlackBlockMessage:
-    intake_tasks = [task for task in tasks if isinstance(task.metadata.get("intake"), Mapping)]
-    by_status = {"ready": 0, "running": 0, "blocked": 0, "done": 0, "other": 0}
-    for task in intake_tasks:
-        if task.status in by_status:
-            by_status[task.status] += 1
-        else:
-            by_status["other"] += 1
-    open_count = (
-        by_status["ready"] + by_status["running"] + by_status["blocked"] + by_status["other"]
-    )
-    header = f"grove triage queue: {board}"
-    progress = _ascii_progress_bar(done=by_status["done"], total=max(1, len(intake_tasks)))
-    recent = "\n".join(
-        f"- `{_safe_slack_text(task.status)}` {_safe_slack_text(task.title)}"
-        for task in intake_tasks[:10]
-    )
-    if not recent:
-        recent = "No Slack intake tasks yet."
-    text = (
-        f"{header}\n"
-        f"open={open_count} ready={by_status['ready']} running={by_status['running']} "
-        f"blocked={by_status['blocked']} done={by_status['done']}\n"
-        f"{recent}"
-    )
-    blocks: list[Mapping[str, object]] = [
-        {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"*Open*: {open_count}  *Ready*: {by_status['ready']}  "
-                    f"*Running*: {by_status['running']}  *Blocked*: {by_status['blocked']}  "
-                    f"*Done*: {by_status['done']}\n`{progress}`"
-                ),
-            },
-        },
-    ]
-    blocks.extend(_mrkdwn_section_blocks(recent))
-    blocks.append(
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "새로고침"},
-                    "action_id": "grove_triage_refresh",
-                    "value": board,
-                }
-            ],
-        }
-    )
-    return SlackBlockMessage(text=text, blocks=tuple(blocks))
-
-
-def _build_digest_message(
-    *,
-    board: str,
-    tasks: Sequence[Task],
-    runs: Sequence[object],
-    node_names: frozenset[str],
-) -> SlackBlockMessage:
-    counts = _task_status_counts(tasks)
-    blocked = [task for task in tasks if task.status == "blocked"]
-    running = [task for task in tasks if task.status == "running"]
-    nodes = sorted(node_names | {task.assignee for task in tasks if task.assignee})
-    node_lines = [
-        f"- `{_safe_slack_text(node)}`: {_node_digest_status(node=node, tasks=tasks)}"
-        for node in nodes[:20]
-    ]
-    if not node_lines:
-        node_lines = ["No exposed nodes are configured."]
-    blocked_lines = _digest_task_lines(blocked, empty="No blocked tasks.")
-    running_lines = _digest_task_lines(running, empty="No running tasks.")
-    agy_line = (
-        "*agy cost*: unknown (not estimated)"
-        if _has_agy_signal(tasks=tasks, runs=runs)
-        else "*agy cost*: unknown"
-    )
-    header = f"grove digest: {board}"
-    summary = (
-        f"*Ready*: {counts['ready']}  *Running*: {counts['running']}  "
-        f"*Blocked*: {counts['blocked']}  *Done*: {counts['done']}  "
-        f"*Other*: {counts['other']}\n"
-        f"{agy_line}\n"
-        "_Read-only notification digest; measured board state only._"
-    )
-    text = (
-        f"{header}\n"
-        f"ready={counts['ready']} running={counts['running']} blocked={counts['blocked']} "
-        f"done={counts['done']} nodes={len(nodes)} agy_cost=unknown"
-    )
-    blocks: list[Mapping[str, object]] = [
-        {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": summary}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "*Blocked*\n" + blocked_lines}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": "*Running*\n" + running_lines}},
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "*Nodes*\n" + "\n".join(node_lines)},
-        },
-    ]
-    return SlackBlockMessage(text=_safe_slack_text(text), blocks=tuple(blocks))
-
-
-def _digest_task_lines(tasks: Sequence[Task], *, empty: str) -> str:
-    if not tasks:
-        return empty
-    lines = [
-        f"- `{_safe_slack_text(task.id)}` {_safe_slack_text(task.title)}"
-        + (f" — {_safe_slack_text(task.assignee)}" if task.assignee else "")
-        for task in tasks[:10]
-    ]
-    if len(tasks) > 10:
-        lines.append(f"...and {len(tasks) - 10} more.")
-    return "\n".join(lines)
-
-
-def _node_digest_status(*, node: str, tasks: Sequence[Task]) -> str:
-    node_tasks = [task for task in tasks if task.assignee == node]
-    if any(task.status == "running" for task in node_tasks):
-        return "running"
-    if any(task.status == "blocked" for task in node_tasks):
-        return "blocked"
-    return "idle"
-
-
-def _has_agy_signal(*, tasks: Sequence[Task], runs: Sequence[object]) -> bool:
-    for task in tasks:
-        if _agent_value(task.metadata) == "agy" or _looks_agy(task.assignee):
-            return True
-    for run in runs:
-        metadata = getattr(run, "metadata", None)
-        node_id = getattr(run, "node_id", None)
-        if isinstance(metadata, Mapping) and _agent_value(metadata) == "agy":
-            return True
-        if _looks_agy(node_id):
-            return True
-    return False
-
-
-def _agent_value(metadata: Mapping[str, object]) -> str | None:
-    raw = metadata.get("agent")
-    if isinstance(raw, str):
-        return raw.strip().lower()
-    raw_nested = metadata.get("node")
-    if isinstance(raw_nested, Mapping):
-        raw_agent = raw_nested.get("agent")
-        if isinstance(raw_agent, str):
-            return raw_agent.strip().lower()
-    return None
-
-
-def _looks_agy(value: object) -> bool:
-    return isinstance(value, str) and value.strip().lower() in {"agy", "antigravity"}
-
-
 def _digest_reminder_text(*, task: Task, step: int, max_reminders: int) -> str:
     kind = "ask-human" if _needs_human(task) else "blocked"
     return _safe_slack_text(
         f"Reminder {step}/{max_reminders}: {kind} task `{task.id}` is still blocked — {task.title}"
     )
+
+
+def _digest_reminder_pending_key(*, task: Task, step: int) -> str:
+    return f"pending:digest_reminder:{task.id}:{step}"
 
 
 def _task_slack_thread_ts(
@@ -3049,20 +2855,6 @@ def _digest_config_status_text(config: SlackDigestConfig) -> str:
     )
 
 
-def _block_message_hash(message: SlackBlockMessage) -> str:
-    payload = {
-        "text": message.text,
-        "blocks": list(message.blocks),
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def _mrkdwn_section_blocks(text: str) -> tuple[Mapping[str, object], ...]:
     remaining = text.strip()
     blocks: list[Mapping[str, object]] = []
@@ -3085,11 +2877,6 @@ def _mrkdwn_section_blocks(text: str) -> tuple[Mapping[str, object], ...]:
             }
         )
     return tuple(blocks)
-
-
-def _ascii_progress_bar(*, done: int, total: int) -> str:
-    filled = round((max(0, done) / max(1, total)) * 10)
-    return "#" * filled + "-" * (10 - filled)
 
 
 def _decode_intake_proposal(args: tuple[str, ...]) -> SlackIntakeProposal | None:
