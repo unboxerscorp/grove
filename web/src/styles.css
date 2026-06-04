@@ -121,6 +121,10 @@ button {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  /* The brand icon is a full-bleed square; round its corners (ratio-based so it
+     scales with the mark size — ~7px at 22px, proportionally rounder when small).
+     drop-shadow on .dr-mark follows the clipped silhouette. */
+  border-radius: 32%;
 }
 
 .dr-brand__text {
@@ -1212,6 +1216,67 @@ button {
   font-size: 10px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+.nodehealth {
+  flex: none;
+  min-width: 72px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(136, 146, 176, 0.28);
+  background: rgba(136, 146, 176, 0.1);
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.nodehealth.is-compact {
+  min-width: 18px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+}
+
+.nodehealth__led {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.nodehealth.is-healthy {
+  border-color: rgba(84, 199, 184, 0.3);
+  background: rgba(84, 199, 184, 0.1);
+  color: var(--teal);
+}
+
+.nodehealth.is-rate_limited,
+.nodehealth.is-cooldown {
+  border-color: rgba(240, 184, 96, 0.34);
+  background: rgba(240, 184, 96, 0.12);
+  color: var(--amber);
+}
+
+.nodehealth.is-login_required,
+.nodehealth.is-crashed {
+  border-color: rgba(255, 107, 107, 0.34);
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--coral);
+}
+
+.nodehealth.is-hung {
+  border-color: rgba(122, 162, 247, 0.34);
+  background: rgba(122, 162, 247, 0.12);
+  color: var(--blue);
 }
 
 .org-node__agent {

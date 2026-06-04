@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { agentGlyph, cx } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { GroveNode } from "../types";
+import { NodeHealthBadge } from "./NodeHealthBadge";
 
 function statusClass(status: string): string {
   switch (status) {
@@ -111,6 +112,7 @@ export function NodeList(props: {
             <span className="dr-node__body">
               <span className="dr-node__top">
                 <span className="dr-node__name">{n.name}</span>
+                <NodeHealthBadge health={n.health} compact />
                 <span className="dr-node__agent" title={n.agent}>
                   {agentGlyph(n.agent)} {n.agent}
                 </span>

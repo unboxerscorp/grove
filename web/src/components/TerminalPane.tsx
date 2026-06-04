@@ -10,6 +10,7 @@ import { useI18n } from "../i18n";
 import type { TFn } from "../i18n";
 import type { NodeConnect } from "../api";
 import type { GroveNode, TerminalFrame } from "../types";
+import { NodeHealthBadge } from "./NodeHealthBadge";
 
 type ConnState = "connecting" | "live" | "reconnecting" | "error";
 
@@ -337,6 +338,7 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
         <div className="dr-term__id">
           <span className={cx("dr-led", conn.cls)} />
           <span className="dr-term__name">{node ? node.name : t("term.noNode")}</span>
+          {node && <NodeHealthBadge health={node.health} />}
           {node && (
             <span className="dr-term__pane">
               {agentGlyph(node.agent)} {node.agent} · {node.tmux_pane}
