@@ -101,6 +101,7 @@ PROJECT_NAME_RE = NODE_NAME_RE
 HANDOFF_ID_RE = re.compile(r"^handoff_[A-Za-z0-9_-]{16,}$")
 JOIN_MEMBER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$")
 NOTIFICATION_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+BOARD_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 STACK_TRACE_RE = re.compile(r"(?i)(traceback|\bfile \"|\bat .+\(.+:\d+:\d+\))")
@@ -140,6 +141,10 @@ STATIC_SUFFIXES = {
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 WILDCARD_BIND_HOSTS = frozenset({"0.0.0.0", "::"})
 TICKET_KINDS = frozenset({"board", "terminal"})
+PROJECT_BOARD_ALIASES = frozenset({"main", "default"})
+DELEGATE_BOARD_ALIASES = frozenset({"dev-room"})
+DELEGATE_BOARD_OWNER_PROJECT = "dev10"
+LEAD_NODE_NAME = "lead"
 
 
 class AuthMode(StrEnum):
@@ -381,6 +386,11 @@ class NotificationRoutingPayload(BaseModel):
     enabled: bool = False
     dry_run: bool = True
     rules: list[NotificationRoutePayload] = Field(default_factory=list, max_length=50)
+
+
+class SavedViewPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    filters: dict[str, object] = Field(default_factory=dict)
 
 
 class WsTicketPayload(BaseModel):
@@ -955,8 +965,21 @@ def create_app(
         project = resolve_project(request)
         boards = _store(request).list_boards()
         if project.from_header:
-            boards = [board for board in boards if board.id == project.board]
+            allowed_boards = {project.board}
+            if project.name == DELEGATE_BOARD_OWNER_PROJECT:
+                allowed_boards.update(DELEGATE_BOARD_ALIASES)
+            boards = [board for board in boards if board.id in allowed_boards]
         return [_board_payload(board) for board in boards]
+
+    @app.get("/api/boards//tasks")
+    def empty_board_tasks_get_endpoint(request: Request) -> None:
+        _require_auth(request)
+        raise HTTPException(status_code=400, detail="board id is required")
+
+    @app.post("/api/boards//tasks")
+    def empty_board_tasks_post_endpoint(request: Request) -> None:
+        _require_operator_state_change(request, detail="task mutation requires operator role")
+        raise HTTPException(status_code=400, detail="board id is required")
 
     @app.get("/api/boards/{board_id}/tasks")
     def board_tasks_endpoint(
@@ -977,6 +1000,145 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="board not found") from exc
         return [_task_payload(task) for task in tasks]
+
+    @app.get("/api/boards/{board_id}/query")
+    def board_query_endpoint(
+        request: Request,
+        board_id: str,
+        status_filter: str | None = Query(default=None, alias="status"),
+        assignee: str | None = Query(default=None),
+        label: str | None = Query(default=None),
+        q: str | None = Query(default=None, max_length=500),
+        cursor: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=100),
+        view: str | None = Query(default=None, max_length=64),
+    ) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        resolved_board = _resolve_board_id(board_id, project=project)
+        filters = _board_query_filters(
+            _store(request),
+            board=resolved_board,
+            view=view,
+            status=status_filter,
+            assignee=assignee,
+            label=label,
+            q=q,
+            limit=limit,
+        )
+        tasks, next_cursor, total = _store(request).query_tasks(
+            board=resolved_board,
+            status=cast(str | None, filters.get("status")),
+            assignee=cast(str | None, filters.get("assignee")),
+            label=cast(str | None, filters.get("label")),
+            text=cast(str | None, filters.get("q")),
+            cursor=cursor,
+            limit=cast(int, filters["limit"]),
+        )
+        return {
+            "project": project.name,
+            "board": resolved_board,
+            "filters": _safe_query_filters(filters),
+            "items": [_query_task_payload(task) for task in tasks],
+            "pagination": {
+                "cursor": cursor,
+                "limit": filters["limit"],
+                "next_cursor": next_cursor,
+                "total": total,
+            },
+        }
+
+    @app.get("/api/boards/{board_id}/views")
+    def board_saved_views_endpoint(request: Request, board_id: str) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        resolved_board = _resolve_board_id(board_id, project=project)
+        views = _store(request).saved_views(board=resolved_board)
+        return {
+            "project": project.name,
+            "board": resolved_board,
+            "views": _saved_view_payloads(views),
+        }
+
+    @app.get("/api/boards/{board_id}/views/{name}")
+    def board_saved_view_endpoint(
+        request: Request,
+        board_id: str,
+        name: str,
+    ) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        resolved_board = _resolve_board_id(board_id, project=project)
+        clean_name = _saved_view_name(name)
+        view_value = _store(request).saved_views(board=resolved_board).get(clean_name)
+        if view_value is None:
+            raise HTTPException(status_code=404, detail="saved view not found")
+        return {
+            "project": project.name,
+            "board": resolved_board,
+            "view": _saved_view_payload(clean_name, view_value),
+        }
+
+    @app.post("/api/boards/{board_id}/views")
+    def save_board_view_endpoint(
+        request: Request,
+        board_id: str,
+        payload: SavedViewPayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="saved view mutation requires operator role",
+        )
+        project = resolve_project(request)
+        resolved_board = _resolve_board_id(board_id, project=project)
+        name = _saved_view_name(payload.name)
+        filters = _saved_view_filters(payload.filters)
+        view_value = _store(request).set_saved_view(
+            board=resolved_board,
+            name=name,
+            filters=filters,
+        )
+        _store(request).add_audit_event(
+            board=resolved_board,
+            kind="audit.board.saved_view",
+            actor=_actor_payload(auth),
+            action="saved-view-upsert",
+            target={"type": "saved_view", "id": name},
+            status="ok",
+            summary=name,
+            payload={"filters": _safe_query_filters(view_value), "project": project.name},
+        )
+        return {
+            "project": project.name,
+            "board": resolved_board,
+            "view": _saved_view_payload(name, view_value),
+        }
+
+    @app.delete("/api/boards/{board_id}/views/{name}")
+    def delete_board_view_endpoint(
+        request: Request,
+        board_id: str,
+        name: str,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="saved view mutation requires operator role",
+        )
+        project = resolve_project(request)
+        resolved_board = _resolve_board_id(board_id, project=project)
+        clean_name = _saved_view_name(name)
+        deleted = _store(request).delete_saved_view(board=resolved_board, name=clean_name)
+        _store(request).add_audit_event(
+            board=resolved_board,
+            kind="audit.board.saved_view",
+            actor=_actor_payload(auth),
+            action="saved-view-delete",
+            target={"type": "saved_view", "id": clean_name},
+            status="ok" if deleted else "missing",
+            summary=clean_name,
+            payload={"project": project.name},
+        )
+        return {"project": project.name, "board": resolved_board, "deleted": deleted}
 
     @app.post("/api/boards/{board_id}/tasks")
     def create_task_endpoint(
@@ -4882,6 +5044,130 @@ def _quota_member_id(value: str, *, config: WebAppConfig) -> str:
     return clean
 
 
+def _board_query_filters(
+    store: SQLiteBoardStore,
+    *,
+    board: str,
+    view: str | None,
+    status: str | None,
+    assignee: str | None,
+    label: str | None,
+    q: str | None,
+    limit: int,
+) -> dict[str, object]:
+    filters: dict[str, object] = {"limit": limit}
+    if view is not None and view.strip():
+        name = _saved_view_name(view)
+        saved = store.saved_views(board=board).get(name)
+        if saved is None:
+            raise HTTPException(status_code=404, detail="saved view not found")
+        filters.update(_saved_view_filters(saved))
+    for key, value in (
+        ("status", status),
+        ("assignee", assignee),
+        ("label", label),
+        ("q", q),
+    ):
+        clean = _optional_query_text(value, field=key)
+        if clean is not None:
+            filters[key] = clean
+    filters["limit"] = _query_limit(filters.get("limit"), fallback=limit)
+    return filters
+
+
+def _saved_view_name(value: str) -> str:
+    clean = value.strip()
+    if NOTIFICATION_TEXT_RE.fullmatch(clean) is None:
+        raise HTTPException(status_code=400, detail="invalid saved view name")
+    return clean
+
+
+def _saved_view_filters(value: Mapping[str, object]) -> dict[str, object]:
+    filters: dict[str, object] = {}
+    for key in ("status", "assignee", "label", "q"):
+        raw = value.get(key)
+        if isinstance(raw, str) and raw.strip():
+            filters[key] = raw.strip()[:500]
+    filters["limit"] = _query_limit(value.get("limit"), fallback=50)
+    return filters
+
+
+def _query_limit(value: object, *, fallback: int) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(1, min(value, 100))
+    return max(1, min(fallback, 100))
+
+
+def _optional_query_text(value: str | None, *, field: str) -> str | None:
+    if value is None:
+        return None
+    clean = value.strip()
+    if not clean:
+        return None
+    if len(clean) > 500:
+        raise HTTPException(status_code=400, detail=f"{field} is too long")
+    if field != "q" and any(ord(char) < 32 for char in clean):
+        raise HTTPException(status_code=400, detail=f"invalid {field}")
+    return clean
+
+
+def _safe_query_filters(filters: Mapping[str, object]) -> dict[str, object]:
+    safe: dict[str, object] = {}
+    for key, value in filters.items():
+        if isinstance(value, str):
+            safe[key] = _safe_public_text(value)
+        elif isinstance(value, int) and not isinstance(value, bool):
+            safe[key] = value
+    return safe
+
+
+def _saved_view_payloads(
+    views: Mapping[str, Mapping[str, object]],
+) -> list[dict[str, object]]:
+    return [_saved_view_payload(name, views[name]) for name in sorted(views)]
+
+
+def _saved_view_payload(name: str, value: Mapping[str, object]) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "name": _safe_public_text(name),
+        "filters": _safe_query_filters(value),
+    }
+    updated_at = value.get("updated_at")
+    if isinstance(updated_at, int) and not isinstance(updated_at, bool):
+        payload["updated_at"] = updated_at
+    return payload
+
+
+def _query_task_payload(task: Task) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": task.id,
+        "title": _safe_public_text(task.title),
+        "status": _safe_public_text(task.status),
+        "body": _safe_public_text(task.body or ""),
+        "priority": task.priority,
+        "created": task.created_at,
+        "updated": task.updated_at,
+        "labels": [_safe_public_text(label) for label in _task_labels(task)],
+    }
+    if task.assignee is not None:
+        payload["assignee"] = _safe_public_text(task.assignee)
+    if task.result is not None:
+        payload["latest_summary"] = _safe_public_text(task.result)
+    return payload
+
+
+def _task_labels(task: Task) -> tuple[str, ...]:
+    raw = task.metadata.get("labels")
+    labels: list[str] = []
+    if isinstance(raw, str) and raw.strip():
+        labels.append(raw.strip())
+    elif isinstance(raw, Sequence) and not isinstance(raw, str | bytes):
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                labels.append(item.strip())
+    return tuple(labels)
+
+
 def _notification_routing_state_from_payload(
     payload: NotificationRoutingPayload,
 ) -> dict[str, object]:
@@ -5152,11 +5438,21 @@ def resolve_project(source: Request | WebSocket) -> ProjectContext:
 
 
 def _resolve_board_id(board_id: str, *, project: ProjectContext) -> str:
+    clean = board_id.strip()
+    if not clean:
+        raise HTTPException(status_code=400, detail="board id is required")
+    if BOARD_NAME_RE.fullmatch(clean) is None:
+        raise HTTPException(status_code=400, detail="invalid board id")
     if not project.from_header:
-        return board_id
-    if board_id in {project.board, "main", "default"}:
+        return clean
+    if clean == project.board or clean in PROJECT_BOARD_ALIASES:
         return project.board
-    raise HTTPException(status_code=404, detail="board not found")
+    if clean in DELEGATE_BOARD_ALIASES and project.name == DELEGATE_BOARD_OWNER_PROJECT:
+        return clean
+    raise HTTPException(
+        status_code=404,
+        detail=f"board {clean!r} not in project {project.name!r}",
+    )
 
 
 def _validated_ticket_scope(
@@ -5466,11 +5762,16 @@ def _registry_node_records(config: WebAppConfig) -> list[dict[str, str]]:
 
 def _org_payload(config: WebAppConfig) -> dict[str, object]:
     nodes = _registry_node_records(config)
+    if not any(node["name"] == LEAD_NODE_NAME for node in nodes):
+        nodes.append(_external_lead_node())
+        nodes = sorted(nodes, key=lambda node: node["name"])
     names = {node["name"] for node in nodes}
     children_by_parent: dict[str, list[str]] = {name: [] for name in names}
     groups: dict[str, list[str]] = {}
+    parent_by_node: dict[str, str] = {}
     for node in nodes:
-        parent = node["parent"]
+        parent = _org_parent(node, names=names)
+        parent_by_node[node["name"]] = parent
         if parent in names:
             children_by_parent[parent].append(node["name"])
         group = node["group"]
@@ -5479,7 +5780,7 @@ def _org_payload(config: WebAppConfig) -> dict[str, object]:
 
     graph_nodes: list[dict[str, object]] = []
     for node in nodes:
-        parent = node["parent"] if node["parent"] in names else ""
+        parent = parent_by_node[node["name"]]
         graph_nodes.append(
             {
                 "name": node["name"],
@@ -5497,15 +5798,39 @@ def _org_payload(config: WebAppConfig) -> dict[str, object]:
 
     return {
         "session": config.registry_session,
-        "roots": sorted(
-            node["name"] for node in nodes if not node["parent"] or node["parent"] not in names
-        ),
+        "roots": sorted(node["name"] for node in nodes if not parent_by_node[node["name"]]),
         "groups": [
-            {"name": group, "nodes": sorted(group_nodes)}
+            {"name": group, "parent": LEAD_NODE_NAME, "nodes": sorted(group_nodes)}
             for group, group_nodes in sorted(groups.items())
         ],
         "nodes": graph_nodes,
     }
+
+
+def _external_lead_node() -> dict[str, str]:
+    return {
+        "name": LEAD_NODE_NAME,
+        "agent": "claude",
+        "tmux_pane": "",
+        "session_id": "",
+        "status": "external",
+        "role": "orchestrator",
+        "parent": "",
+        "group": "",
+        "description": "External lead/orchestrator.",
+    }
+
+
+def _org_parent(node: Mapping[str, str], *, names: set[str]) -> str:
+    name = node["name"]
+    parent = node["parent"]
+    if name == LEAD_NODE_NAME:
+        return ""
+    if parent in names:
+        return parent
+    if node["group"] and LEAD_NODE_NAME in names:
+        return LEAD_NODE_NAME
+    return ""
 
 
 def _node_status(node: Mapping[str, object]) -> str:

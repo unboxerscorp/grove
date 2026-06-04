@@ -624,7 +624,8 @@ def test_project_header_scopes_status_org_nodes_boards_and_tasks(tmp_path: Path)
     assert status.status_code == 200
     assert status.json()["project"] == "dev11"
     assert org.json()["session"] == "dev11"
-    assert [node["name"] for node in org.json()["nodes"]] == ["worker"]
+    assert [node["name"] for node in org.json()["nodes"]] == ["lead", "worker"]
+    assert org.json()["nodes"][0]["status"] == "external"
     assert [node["name"] for node in nodes.json()] == ["worker"]
     assert boards.json() == [{"id": "dev11", "name": "dev11", "task_count": 1}]
     assert [task["id"] for task in tasks.json()] == [dev11_task.id]
@@ -1822,6 +1823,239 @@ def test_notification_routing_endpoint_rejects_team_viewer(tmp_path: Path) -> No
     assert login.status_code == 200
     assert response.status_code == 403
     assert store.notification_routing_state(board="dev10")["configured"] is False
+
+
+def test_board_query_filters_search_paginates_redacts_and_does_not_mutate(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    secret = "xoxb-" + ("q" * 44)
+    first = store.create_task(
+        board="dev10",
+        title=f"Fix login /Users/chopin/private {secret}",
+        body="alice@example.com cannot sign in",
+        assignee="worker",
+        status="ready",
+        priority=10,
+        metadata={"labels": ["bug", "auth"]},
+    )
+    second = store.create_task(
+        board="dev10",
+        title="Login copy polish",
+        body="button label",
+        assignee="worker",
+        status="ready",
+        priority=5,
+        metadata={"labels": ["bug"]},
+    )
+    store.create_task(
+        board="dev10",
+        title="Unrelated task",
+        body="other",
+        assignee="worker",
+        status="ready",
+        metadata={"labels": ["docs"]},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+    before_events = store.list_events_after(cursor=0, limit=100)
+    before_boards = {board.id for board in store.list_boards()}
+
+    page_one = client.get(
+        "/api/boards/dev10/query?status=ready&assignee=worker&label=bug&q=login&limit=1",
+        headers=headers,
+    )
+    payload_one = page_one.json()
+    next_cursor = payload_one["pagination"]["next_cursor"]
+    page_two = client.get(
+        f"/api/boards/dev10/query?status=ready&assignee=worker&label=bug&q=login&limit=1"
+        f"&cursor={next_cursor}",
+        headers=headers,
+    )
+    injection = client.get(
+        "/api/boards/dev10/query?q=%25%27%20OR%201%3D1%20--",
+        headers=headers,
+    )
+    missing = client.get("/api/boards/missing/query?q=anything", headers=headers)
+
+    assert page_one.status_code == 200
+    assert payload_one["pagination"]["total"] == 2
+    assert [item["id"] for item in payload_one["items"]] == [first.id]
+    assert page_two.json()["items"][0]["id"] == second.id
+    rendered = json.dumps(payload_one)
+    assert secret not in rendered
+    assert "/Users/chopin" not in rendered
+    assert "alice@example.com" not in rendered
+    assert "[pii]" in rendered
+    assert injection.status_code == 200
+    assert injection.json()["items"] == []
+    assert injection.json()["pagination"]["total"] == 0
+    assert missing.status_code == 200
+    assert missing.json()["items"] == []
+    assert before_events == store.list_events_after(cursor=0, limit=100)
+    assert before_boards == {board.id for board in store.list_boards()}
+
+
+def test_board_query_respects_project_scope(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(board="dev10", title="Default project task", body=None, assignee=None)
+    dev11 = store.create_task(
+        board="dev11",
+        title="Scoped project task",
+        body=None,
+        assignee=None,
+        metadata={"labels": ["scoped"]},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    scoped_headers = auth_headers(client) | {"X-Grove-Project": "dev11"}
+
+    scoped = client.get("/api/boards/main/query?label=scoped", headers=scoped_headers)
+    cross_board = client.get("/api/boards/dev10/query", headers=scoped_headers)
+
+    assert scoped.status_code == 200
+    assert scoped.json()["project"] == "dev11"
+    assert [item["id"] for item in scoped.json()["items"]] == [dev11.id]
+    assert cross_board.status_code == 404
+    assert cross_board.json()["detail"] == "board 'dev10' not in project 'dev11'"
+
+
+def test_delegate_project_header_can_create_dev_room_board_task(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client) | {"X-Grove-Project": "dev10"}
+
+    created = client.post(
+        "/api/boards/dev-room/tasks",
+        headers=headers,
+        json={"title": "delegate task", "assignee": "worker"},
+    )
+    listed = client.get("/api/boards/dev-room/tasks", headers=headers)
+    boards = client.get("/api/boards", headers=headers)
+
+    assert created.status_code == 200
+    assert created.json()["title"] == "delegate task"
+    assert listed.status_code == 200
+    assert [task["id"] for task in listed.json()] == [created.json()["id"]]
+    assert {board["id"] for board in boards.json()} == {"dev-room"}
+
+
+def test_dev_room_board_is_owned_by_dev10_project_only(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(board="dev-room", title="dev room task", body=None, assignee=None)
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client) | {"X-Grove-Project": "dev11"}
+
+    tasks = client.get("/api/boards/dev-room/tasks", headers=headers)
+    create = client.post(
+        "/api/boards/dev-room/tasks",
+        headers=headers,
+        json={"title": "cross project"},
+    )
+    query = client.get("/api/boards/dev-room/query", headers=headers)
+    views = client.get("/api/boards/dev-room/views", headers=headers)
+    save_view = client.post(
+        "/api/boards/dev-room/views",
+        headers=headers,
+        json={"name": "blocked", "filters": {"status": "blocked"}},
+    )
+    boards = client.get("/api/boards", headers=headers)
+
+    for response in (tasks, create, query, views, save_view):
+        assert response.status_code == 404
+        assert response.json()["detail"] == "board 'dev-room' not in project 'dev11'"
+    assert boards.status_code == 200
+    assert boards.json() == []
+
+
+def test_empty_board_id_tasks_path_returns_400(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/boards//tasks", headers=auth_headers(client))
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "board id is required"
+
+
+def test_board_saved_views_crud_operator_and_viewer_read_only(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(
+        board="dev10",
+        title="Blocked bug",
+        body=None,
+        status="blocked",
+        assignee="worker",
+        metadata={"labels": ["bug"]},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+    secret = "xoxb-" + ("v" * 44)
+
+    created = client.post(
+        "/api/boards/dev10/views",
+        headers=headers,
+        json={
+            "name": "blocked-bugs",
+            "filters": {
+                "status": "blocked",
+                "label": "bug",
+                "q": f"/Users/chopin/{secret}",
+                "limit": 2,
+            },
+        },
+    )
+    listed = client.get("/api/boards/dev10/views", headers=headers)
+    queried = client.get("/api/boards/dev10/query?view=blocked-bugs", headers=headers)
+    updated = client.post(
+        "/api/boards/dev10/views",
+        headers=headers,
+        json={"name": "blocked-bugs", "filters": {"status": "ready", "limit": 5}},
+    )
+    deleted = client.delete("/api/boards/dev10/views/blocked-bugs", headers=headers)
+
+    assert created.status_code == 200
+    assert created.json()["view"]["name"] == "blocked-bugs"
+    assert created.json()["view"]["filters"]["status"] == "blocked"
+    assert listed.json()["views"][0]["name"] == "blocked-bugs"
+    assert queried.status_code == 200
+    assert queried.json()["pagination"]["total"] == 0
+    assert updated.json()["view"]["filters"]["status"] == "ready"
+    assert deleted.json()["deleted"] is True
+    rendered = json.dumps(created.json()) + json.dumps(listed.json())
+    assert secret not in rendered
+    assert "/Users/chopin" not in rendered
+    audits = store.list_audit_events(board="dev10", action="saved-view-upsert")
+    assert len(audits) == 2
+    assert store.list_audit_events(board="dev10", action="saved-view-delete")
+
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    viewer_client = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
+    login = viewer_client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+    csrf = str(login.json()["csrf"])
+    viewer_get = viewer_client.get("/api/boards/dev10/views")
+    viewer_post = viewer_client.post(
+        "/api/boards/dev10/views",
+        headers={CSRF_HEADER: csrf},
+        json={"name": "viewer-view", "filters": {"status": "ready"}},
+    )
+
+    assert login.status_code == 200
+    assert viewer_get.status_code == 200
+    assert viewer_post.status_code == 403
 
 
 def test_retro_analytics_reports_advisory_insights_without_mutating_work(
@@ -3414,8 +3648,8 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
         "session": "dev10",
         "roots": ["lead"],
         "groups": [
-            {"name": "core", "nodes": ["lead", "worker"]},
-            {"name": "verify", "nodes": ["qa"]},
+            {"name": "core", "parent": "lead", "nodes": ["lead", "worker"]},
+            {"name": "verify", "parent": "lead", "nodes": ["qa"]},
         ],
         "nodes": [
             {
@@ -3456,6 +3690,47 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
             },
         ],
     }
+
+
+def test_org_adds_external_lead_for_grouped_workers(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "dev": {
+                "name": "dev",
+                "agent": "codex",
+                "role": "maker",
+                "group": "grove-dev",
+                "tmux_pane": "dev10:1.0",
+            },
+            "reviewer": {
+                "name": "reviewer",
+                "agent": "claude",
+                "role": "reviewer",
+                "group": "review",
+                "tmux_pane": "dev10:1.1",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/org", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    payload = response.json()
+    nodes = {node["name"]: node for node in payload["nodes"]}
+    assert payload["roots"] == ["lead"]
+    assert nodes["lead"]["agent"] == "claude"
+    assert nodes["lead"]["role"] == "orchestrator"
+    assert nodes["lead"]["status"] == "external"
+    assert nodes["lead"]["children"] == ["dev", "reviewer"]
+    assert nodes["dev"]["parent"] == "lead"
+    assert nodes["reviewer"]["parent"] == "lead"
+    assert payload["groups"] == [
+        {"name": "grove-dev", "parent": "lead", "nodes": ["dev"]},
+        {"name": "review", "parent": "lead", "nodes": ["reviewer"]},
+    ]
 
 
 def test_node_autopickup_toggle_persists_and_audits(tmp_path: Path) -> None:

@@ -355,6 +355,92 @@ class SQLiteBoardStore:
             rows = conn.execute(sql, params).fetchall()
         return [_task_from_row(row) for row in rows]
 
+    def query_tasks(
+        self,
+        *,
+        board: str,
+        status: str | None = None,
+        assignee: str | None = None,
+        label: str | None = None,
+        text: str | None = None,
+        cursor: int = 0,
+        limit: int = 50,
+    ) -> tuple[list[Task], int | None, int]:
+        board_id = self._board_id_for_slug(board)
+        if board_id is None:
+            return [], None, 0
+        offset = max(0, cursor)
+        page_size = max(1, min(limit, 100))
+        clauses = ["board_id = ?"]
+        params: list[object] = [board_id]
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if assignee is not None:
+            clauses.append("assignee = ?")
+            params.append(assignee)
+        if label is not None:
+            clauses.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM json_each(tasks.metadata_json, '$.labels')
+                    WHERE json_each.value = ?
+                )
+                """
+            )
+            params.append(label)
+        if text is not None:
+            clauses.append("(title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')")
+            pattern = f"%{_escape_like(text)}%"
+            params.extend([pattern, pattern])
+        where = " AND ".join(clauses)
+        count_sql = f"SELECT COUNT(*) AS count FROM tasks WHERE {where}"
+        page_sql = f"""
+            SELECT * FROM tasks
+            WHERE {where}
+            ORDER BY priority DESC, created_at ASC, id ASC
+            LIMIT ? OFFSET ?
+        """
+        with self._connect() as conn:
+            count_row = conn.execute(count_sql, params).fetchone()
+            total = _row_int(count_row, "count") if count_row is not None else 0
+            rows = conn.execute(page_sql, [*params, page_size, offset]).fetchall()
+        next_cursor = offset + page_size if offset + page_size < total else None
+        return [_task_from_row(row) for row in rows], next_cursor, total
+
+    def saved_views(self, *, board: str) -> dict[str, dict[str, object]]:
+        settings = self._board_settings(board) or {}
+        return _saved_views_from_settings(settings)
+
+    def set_saved_view(
+        self,
+        *,
+        board: str,
+        name: str,
+        filters: Mapping[str, object],
+    ) -> dict[str, object]:
+        now = _now()
+        board_id = self._ensure_board(board)
+        clean = _saved_view_from_mapping(filters, updated_at=now)
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            views = _mutable_saved_views(settings)
+            views[name] = clean
+            self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
+        return clean
+
+    def delete_saved_view(self, *, board: str, name: str) -> bool:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            views = _mutable_saved_views(settings)
+            existed = name in views
+            views.pop(name, None)
+            self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
+        return existed
+
     def get_task(self, *, board: str, task_id: str) -> Task:
         board_id = self._ensure_board(board)
         with self._connect() as conn:
@@ -2550,6 +2636,52 @@ def _execution_tasks(settings: Mapping[str, object]) -> Mapping[str, object]:
 def _quota_settings(settings: Mapping[str, object]) -> Mapping[str, object]:
     raw = settings.get("quota")
     return raw if isinstance(raw, Mapping) else {}
+
+
+def _saved_views_from_settings(settings: Mapping[str, object]) -> dict[str, dict[str, object]]:
+    raw = settings.get("saved_views")
+    if not isinstance(raw, Mapping):
+        return {}
+    views: dict[str, dict[str, object]] = {}
+    for name, value in raw.items():
+        if isinstance(name, str) and isinstance(value, Mapping):
+            views[name] = _saved_view_from_mapping(value)
+    return views
+
+
+def _mutable_saved_views(settings: dict[str, object]) -> dict[str, object]:
+    raw = settings.get("saved_views")
+    if not isinstance(raw, dict):
+        raw = {}
+        settings["saved_views"] = raw
+    return cast(dict[str, object], raw)
+
+
+def _saved_view_from_mapping(
+    raw: Mapping[str, object],
+    *,
+    updated_at: int | None = None,
+) -> dict[str, object]:
+    sanitized = _sanitize_audit_mapping(raw)
+    view: dict[str, object] = {}
+    for key in ("status", "assignee", "label", "q"):
+        value = sanitized.get(key)
+        if isinstance(value, str) and value.strip():
+            view[key] = value.strip()[:500]
+    limit = sanitized.get("limit")
+    if isinstance(limit, int) and not isinstance(limit, bool):
+        view["limit"] = max(1, min(limit, 100))
+    if updated_at is not None:
+        view["updated_at"] = updated_at
+    elif isinstance(sanitized.get("updated_at"), int) and not isinstance(
+        sanitized.get("updated_at"), bool
+    ):
+        view["updated_at"] = sanitized["updated_at"]
+    return view
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _quota_members(settings: Mapping[str, object]) -> Mapping[str, object]:
