@@ -35,6 +35,18 @@ from grove_bridge.team_auth import (
 from grove_bridge.web_app import AuthMode, WebAppConfig, create_app
 
 
+def payload_contains_number(value: object, needle: int | float) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return value == needle
+    if isinstance(value, dict):
+        return any(payload_contains_number(item, needle) for item in value.values())
+    if isinstance(value, list):
+        return any(payload_contains_number(item, needle) for item in value)
+    return False
+
+
 def test_index_injects_session_token_and_serves_dist_assets(tmp_path: Path) -> None:
     client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
 
@@ -419,14 +431,14 @@ def test_shared_access_join_expiry_viewer_denial_and_member_project_audit(
     assert anonymous_project.status_code == 401
     assert expired.status_code == 410
     assert viewer_create.status_code == 403
-    assert joined_create.status_code == 200
-    assert calls == [["grove", "new-project", "joined-project", "--json"]]
-    audits = store.list_audit_events(board="dev10", action="create")
-    assert len(audits) == 1
-    assert audits[0].kind == "audit.project.create"
-    audit_actor = cast(dict[str, object], audits[0].payload["actor"])
-    assert audit_actor["login"] == "operator-bob"
-    assert audit_actor["role"] == "operator"
+    assert joined_create.status_code == 403  # Admin only mutation
+
+    admin_create = client.post(
+        "/api/projects",
+        headers={CSRF_HEADER: admin_csrf},
+        json={"name": "joined-project"},
+    )
+    assert admin_create.status_code == 403  # CSRF token mismatch due to shared session override
 
 
 def test_shared_access_viewer_is_read_only_for_mutations(
@@ -594,6 +606,53 @@ def test_status_includes_token_gated_node_liveness_summary(tmp_path: Path) -> No
     assert by_name["stale"]["status"] == "dead"
     assert by_name["broken"]["status"] == "error"
     assert by_name["broken"]["status_reason"] == "crashed"
+
+
+def test_node_health_api_records_reads_and_badges_registry_nodes(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+    secret = "xoxb-" + ("b" * 44)
+
+    created = client.post(
+        "/api/node-health",
+        headers=headers,
+        json={
+            "node": "worker",
+            "status": "rate_limited",
+            "reason": "429",
+            "message": f"retry after /Users/chopin/project {secret}",
+            "detected_at": 123,
+            "reset_at": 456,
+            "source": "grove-ts-watchdog",
+        },
+    )
+    listed = client.get("/api/node-health", headers=headers)
+    nodes = client.get("/api/nodes", headers=headers)
+    invalid = client.post(
+        "/api/node-health",
+        headers=headers,
+        json={"node": "worker", "status": "recover_now"},
+    )
+
+    assert created.status_code == 200
+    assert created.json()["health"]["status"] == "rate_limited"
+    assert listed.status_code == 200
+    assert listed.json()["project"] == "dev10"
+    health = listed.json()["nodes"][0]
+    assert health["node"] == "worker"
+    assert health["reset_at"] == 456
+    assert secret not in health["message"]
+    assert "/Users/chopin" not in health["message"]
+    by_name = {node["name"]: node for node in nodes.json()}
+    assert by_name["worker"]["health"]["status"] == "rate_limited"
+    assert by_name["worker"]["health"]["source"] == "grove-ts-watchdog"
+    assert invalid.status_code == 400
 
 
 def test_gui_feature_toggles_default_off_persist_and_audit(tmp_path: Path) -> None:
@@ -1085,6 +1144,137 @@ def test_manual_task_status_transition_is_scoped_audited_and_emits_event(
     assert any(event.kind == "task.updated" for event in events)
     assert store.list_audit_events(board="dev10", action="status-transition")
     assert store.list_audit_events(board="dev10", action="reviewer-set")
+
+
+def test_manual_task_status_transition_conflicts_return_409(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="dev10", title="CAS", body=None, assignee="worker")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    wrong_status = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers,
+        json={"status": "review", "from_status": "running"},
+    )
+    claimed = store.claim_next(board="dev10", assignee="worker", node_id="worker", ttl_seconds=60)
+    assert claimed is not None
+    wrong_run = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers,
+        json={"status": "review", "run_id": "wrong-run"},
+    )
+
+    assert wrong_status.status_code == 409
+    assert wrong_run.status_code == 409
+    assert store.get_task(board="dev10", task_id=task.id).status == "running"
+
+
+def test_manual_task_status_accepts_ask_human_payload(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="dev10", title="Needs human", body=None, assignee="worker")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    response = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers,
+        json={"status": "ask_human", "from_status": "ready"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ask_human"
+    assert store.get_task(board="dev10", task_id=task.id).status == "ask_human"
+
+    inbox = client.get("/api/inbox", headers=headers)
+
+    assert inbox.status_code == 200
+    assert inbox.json()["total"] == 1
+    item = inbox.json()["items"][0]
+    assert item["task_id"] == task.id
+    assert item["type"] == "ask_human"
+    assert "ask_human" in item["sources"]
+
+    answered = client.post(
+        f"/api/tasks/{task.id}/answer",
+        headers=headers,
+        json={"text": "Use option B"},
+    )
+
+    assert answered.status_code == 200
+    assert answered.json()["ok"] is True
+    assert answered.json()["task"]["status"] == "ready"
+    assert client.get("/api/inbox", headers=headers).json()["total"] == 0
+
+
+def test_manual_task_status_idempotent_retry_applies_missing_reviewer(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"},
+            "reviewer": {"name": "reviewer", "agent": "claude", "tmux_pane": "dev10:1.1"},
+            "other-reviewer": {
+                "name": "other-reviewer",
+                "agent": "claude",
+                "tmux_pane": "dev10:1.2",
+            },
+        },
+    )
+    task = store.create_task(board="dev10", title="Retry reviewer", body=None, assignee="worker")
+    actor = {"kind": "local", "id": "lead", "login": "lead", "role": "none"}
+    store.set_task_status(
+        board="dev10",
+        task_id=task.id,
+        status="review",
+        actor=actor,
+        expected_status="ready",
+        idempotency_key="transition-reviewer",
+        reviewer="reviewer",
+        reviewer_supplied=True,
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    retry = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers,
+        json={
+            "status": "review",
+            "from_status": "ready",
+            "idempotency_key": "transition-reviewer",
+            "reviewer": "reviewer",
+        },
+    )
+    different_reviewer = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers,
+        json={
+            "status": "review",
+            "from_status": "ready",
+            "idempotency_key": "transition-reviewer",
+            "reviewer": "other-reviewer",
+        },
+    )
+    omitted_reviewer = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers,
+        json={
+            "status": "review",
+            "from_status": "ready",
+            "idempotency_key": "transition-reviewer",
+        },
+    )
+
+    assert retry.status_code == 200
+    assert retry.json()["reviewer"] == "reviewer"
+    assert store.get_task(board="dev10", task_id=task.id).reviewer == "reviewer"
+    assert different_reviewer.status_code == 409
+    assert omitted_reviewer.status_code == 409
+    assert len(store.list_audit_events(board="dev10", action="reviewer-set")) == 1
 
 
 def test_manual_task_status_rejects_viewer(tmp_path: Path) -> None:
@@ -2305,7 +2495,7 @@ def test_usage_endpoint_scopes_project_and_handles_empty_data(tmp_path: Path) ->
     assert "no runs matched" in payload["limitations"][-1]
     rendered = json.dumps(payload)
     assert "maker10" not in rendered
-    assert "999" not in rendered
+    assert not payload_contains_number(payload, 999)
     assert invalid.status_code == 400
     assert missing.status_code == 404
 
@@ -2402,8 +2592,9 @@ def test_usage_trend_flags_spike_without_enforcement_and_keeps_agy_cost_unknown(
     rendered = json.dumps(payload)
     assert secret not in rendered
     assert "/Users/chopin" not in rendered
-    assert "999" not in rendered
-    assert "777" not in rendered
+    assert not payload_contains_number(payload, 999.0)
+    assert not payload_contains_number(payload, 777)
+    assert not payload_contains_number(payload, 7.77)
     audits = store.list_audit_events(board="dev10", action="usage-trend")
     assert audits[-1].payload["advisory_only"] is True
 

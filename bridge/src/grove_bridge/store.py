@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -17,6 +18,9 @@ from typing import cast
 from grove_bridge.auth_status import redact_secret_text
 
 DONE_STATUSES = ("done", "archived")
+NODE_HEALTH_STATUSES = frozenset(
+    {"healthy", "rate_limited", "login_required", "crashed", "cooldown", "hung"}
+)
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
@@ -113,6 +117,20 @@ class NotifySub:
 
 
 @dataclass(frozen=True)
+class NodeHealth:
+    project: str
+    session: str
+    node: str
+    status: str
+    reason: str | None
+    message: str | None
+    detected_at: int
+    reset_at: int | None
+    source: str
+    updated_at: int
+
+
+@dataclass(frozen=True)
 class SlackThread:
     board_id: str
     task_id: str | None
@@ -147,6 +165,10 @@ class BoardEvent:
     kind: str
     payload: dict[str, object]
     created_at: int
+
+
+class TaskTransitionConflict(RuntimeError):
+    """Raised when a manual task transition CAS guard does not match."""
 
 
 class SQLiteBoardStore:
@@ -241,9 +263,18 @@ class SQLiteBoardStore:
         task_id: str,
         status: str,
         actor: Mapping[str, object],
+        expected_status: str | None = None,
+        run_id: str | None = None,
+        idempotency_key: str | None = None,
+        comment: str | None = None,
+        comment_author: str | None = None,
+        reviewer: str | None = None,
+        reviewer_supplied: bool = False,
     ) -> Task:
         now = _now()
         board_id = self._ensure_board(board)
+        clean_key = idempotency_key.strip() if idempotency_key else None
+        clean_key_hash = _idempotency_key_hash(clean_key) if clean_key is not None else None
         with self._connect(immediate=True) as conn:
             row = conn.execute(
                 "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
@@ -252,14 +283,64 @@ class SQLiteBoardStore:
             if row is None:
                 raise KeyError(task_id)
             previous_status = _row_str(row, "status")
+            metadata = _json_dict(_row_optional_str(row, "metadata_json") or "{}")
+            manual_transitions = _manual_transition_history(metadata)
+            manual_transition = metadata.get("manual_transition")
+            if clean_key_hash is not None and clean_key_hash in manual_transitions:
+                manual_transition = manual_transitions[clean_key_hash]
+            if (
+                clean_key is not None
+                and isinstance(manual_transition, Mapping)
+                and (
+                    manual_transition.get("idempotency_key_hash") == clean_key_hash
+                    or manual_transition.get("idempotency_key") == clean_key
+                )
+            ):
+                if (
+                    manual_transition.get("to_status") != status
+                    or (
+                        expected_status is not None
+                        and manual_transition.get("from_status") != expected_status
+                    )
+                    or (run_id is not None and manual_transition.get("run_id") != run_id)
+                    or ((manual_transition.get("reviewer_supplied") is True) != reviewer_supplied)
+                    or (reviewer_supplied and (manual_transition.get("reviewer") != reviewer))
+                ):
+                    raise TaskTransitionConflict(
+                        "idempotency key was already used for a different transition",
+                    )
+                return _task_from_row(row)
+            if expected_status is not None and previous_status != expected_status:
+                raise TaskTransitionConflict(
+                    f"expected status {expected_status!r}, found {previous_status!r}",
+                )
+            current_run_id = _row_optional_str(row, "current_run_id")
+            if run_id is not None and current_run_id != run_id:
+                raise TaskTransitionConflict(
+                    f"expected current run {run_id!r}, found {current_run_id!r}",
+                )
+            if clean_key is not None:
+                transition = {
+                    "idempotency_key_hash": clean_key_hash,
+                    "from_status": previous_status,
+                    "to_status": status,
+                    "run_id": run_id,
+                    "reviewer": reviewer,
+                    "reviewer_supplied": reviewer_supplied,
+                    "at": now,
+                }
+                metadata["manual_transition"] = transition
+                if clean_key_hash is not None:
+                    manual_transitions[clean_key_hash] = transition
+                    metadata["manual_transitions"] = manual_transitions
             if status == "running":
                 conn.execute(
                     """
                     UPDATE tasks
-                    SET status = ?, updated_at = ?
+                    SET status = ?, metadata_json = ?, updated_at = ?
                     WHERE board_id = ? AND id = ?
                     """,
-                    (status, now, board_id, task_id),
+                    (status, _json(metadata), now, board_id, task_id),
                 )
             else:
                 conn.execute(
@@ -269,16 +350,28 @@ class SQLiteBoardStore:
                         claim_lock = NULL,
                         claim_expires = NULL,
                         current_run_id = NULL,
+                        metadata_json = ?,
                         updated_at = ?
                     WHERE board_id = ? AND id = ?
                     """,
-                    (status, now, board_id, task_id),
+                    (status, _json(metadata), now, board_id, task_id),
+                )
+            if comment is not None and comment.strip():
+                author = comment_author or str(actor.get("login") or actor.get("id") or "system")
+                self._add_comment_row(
+                    conn,
+                    board_id=board_id,
+                    task_id=task_id,
+                    author=author,
+                    body=comment,
+                    metadata={"kind": "manual_status_transition"},
+                    now=now,
                 )
             self._add_event(
                 conn,
                 board_id=board_id,
                 task_id=task_id,
-                run_id=None,
+                run_id=run_id,
                 kind="task.updated",
                 payload={"status": status, "previous_status": previous_status},
                 now=now,
@@ -287,7 +380,7 @@ class SQLiteBoardStore:
                 conn,
                 board_id=board_id,
                 task_id=task_id,
-                run_id=None,
+                run_id=run_id,
                 kind="audit.task.status",
                 payload=_audit_payload(
                     actor=actor,
@@ -297,7 +390,12 @@ class SQLiteBoardStore:
                     status="ok",
                     summary=_row_str(row, "title"),
                     ts=now,
-                    extra={"from_status": previous_status, "to_status": status},
+                    extra={
+                        "from_status": previous_status,
+                        "to_status": status,
+                        "run_id": run_id,
+                        "idempotency_key_present": clean_key is not None,
+                    },
                 ),
                 now=now,
             )
@@ -601,6 +699,96 @@ class SQLiteBoardStore:
             raise KeyError(task_id)
         return _task_from_row(row)
 
+    def record_node_health(
+        self,
+        *,
+        project: str,
+        session: str,
+        node: str,
+        status: str,
+        reason: str | None = None,
+        message: str | None = None,
+        detected_at: int | None = None,
+        reset_at: int | None = None,
+        source: str = "watchdog",
+    ) -> NodeHealth:
+        clean_project = _required_public_text(project, field="project")
+        clean_session = _required_public_text(session, field="session")
+        clean_node = _required_public_text(node, field="node")
+        clean_status = status.strip().lower()
+        if clean_status not in NODE_HEALTH_STATUSES:
+            raise ValueError("node health status is invalid")
+        clean_source = _required_public_text(source, field="source")
+        now = _now()
+        detected = now if detected_at is None else int(detected_at)
+        if detected < 0:
+            raise ValueError("detected_at must be non-negative")
+        if reset_at is not None and reset_at < 0:
+            raise ValueError("reset_at must be non-negative")
+        clean_reason = _optional_public_text(reason)
+        clean_message = _optional_public_text(message)
+        with self._connect(immediate=True) as conn:
+            conn.execute(
+                """
+                INSERT INTO node_health (
+                    project, session, node, status, reason, message,
+                    detected_at, reset_at, source, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project, session, node)
+                DO UPDATE SET
+                    status = excluded.status,
+                    reason = excluded.reason,
+                    message = excluded.message,
+                    detected_at = excluded.detected_at,
+                    reset_at = excluded.reset_at,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    clean_project,
+                    clean_session,
+                    clean_node,
+                    clean_status,
+                    clean_reason,
+                    clean_message,
+                    detected,
+                    reset_at,
+                    clean_source,
+                    now,
+                ),
+            )
+        return self.list_node_health(
+            project=clean_project,
+            session=clean_session,
+            node=clean_node,
+        )[0]
+
+    def list_node_health(
+        self,
+        *,
+        project: str | None = None,
+        session: str | None = None,
+        node: str | None = None,
+    ) -> list[NodeHealth]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if project is not None:
+            clauses.append("project = ?")
+            params.append(_required_public_text(project, field="project"))
+        if session is not None:
+            clauses.append("session = ?")
+            params.append(_required_public_text(session, field="session"))
+        if node is not None:
+            clauses.append("node = ?")
+            params.append(_required_public_text(node, field="node"))
+        sql = "SELECT * FROM node_health"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY project ASC, session ASC, node ASC"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_node_health_from_row(row) for row in rows]
+
     def claim_next(
         self,
         *,
@@ -628,6 +816,23 @@ class SQLiteBoardStore:
             clauses.append("id = ?")
             params.append(task_id)
         with self._connect(immediate=True) as conn:
+            active_wip = conn.execute(
+                """
+                SELECT 1
+                FROM tasks
+                LEFT JOIN runs
+                  ON runs.board_id = tasks.board_id
+                 AND runs.id = tasks.current_run_id
+                WHERE tasks.board_id = ?
+                  AND tasks.status = 'running'
+                  AND (tasks.claim_expires IS NULL OR tasks.claim_expires >= ?)
+                  AND (tasks.assignee = ? OR runs.node_id = ?)
+                LIMIT 1
+                """,
+                (board_id, now, node_id, node_id),
+            ).fetchone()
+            if active_wip is not None:
+                return None
             candidate = conn.execute(
                 f"""
                 SELECT id FROM tasks
@@ -974,7 +1179,7 @@ class SQLiteBoardStore:
                 """
                 UPDATE tasks
                 SET status = 'ready', updated_at = ?
-                WHERE board_id = ? AND id = ? AND status = 'blocked'
+                WHERE board_id = ? AND id = ? AND status IN ('blocked', 'ask_human')
                 """,
                 (now, board_id, task_id),
             )
@@ -2635,6 +2840,23 @@ class SQLiteBoardStore:
 
             CREATE INDEX IF NOT EXISTS idx_slack_threads_task
                 ON slack_threads(task_id, mode);
+
+            CREATE TABLE IF NOT EXISTS node_health (
+                project TEXT NOT NULL,
+                session TEXT NOT NULL,
+                node TEXT NOT NULL,
+                status TEXT NOT NULL,
+                reason TEXT,
+                message TEXT,
+                detected_at INTEGER NOT NULL,
+                reset_at INTEGER,
+                source TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(project, session, node)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_node_health_project
+                ON node_health(project, session, status, detected_at);
             """
         )
         self._ensure_task_reviewer_column(conn)
@@ -3181,6 +3403,35 @@ def _safe_text(value: str) -> str:
     return EMAIL_RE.sub("[pii]", without_paths)
 
 
+def _required_public_text(value: object, *, field: str) -> str:
+    clean = _safe_text(str(value).strip())
+    if not clean:
+        raise ValueError(f"{field} is required")
+    return clean[:500]
+
+
+def _optional_public_text(value: object | None) -> str | None:
+    if value is None:
+        return None
+    clean = _safe_text(str(value).strip())
+    return clean[:2000] if clean else None
+
+
+def _idempotency_key_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _manual_transition_history(metadata: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
+    raw = metadata.get("manual_transitions")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        key: value
+        for key, value in raw.items()
+        if isinstance(key, str) and isinstance(value, Mapping)
+    }
+
+
 def _sanitize_audit_mapping(value: Mapping[str, object]) -> dict[str, object]:
     sanitized = _sanitize_audit_value(dict(value))
     return cast(dict[str, object], sanitized)
@@ -3334,6 +3585,21 @@ def _notify_sub_from_row(row: sqlite3.Row) -> NotifySub:
         user_id=_row_optional_str(row, "user_id"),
         last_event_id=_row_optional_str(row, "last_event_id"),
         created_at=_row_int(row, "ts"),
+    )
+
+
+def _node_health_from_row(row: sqlite3.Row) -> NodeHealth:
+    return NodeHealth(
+        project=_row_str(row, "project"),
+        session=_row_str(row, "session"),
+        node=_row_str(row, "node"),
+        status=_row_str(row, "status"),
+        reason=_row_optional_str(row, "reason"),
+        message=_row_optional_str(row, "message"),
+        detected_at=_row_int(row, "detected_at"),
+        reset_at=_row_optional_int(row, "reset_at"),
+        source=_row_str(row, "source"),
+        updated_at=_row_int(row, "updated_at"),
     )
 
 

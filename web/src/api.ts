@@ -13,12 +13,15 @@ import type {
   GuiFeatureKey,
   GuiFeatureUpdate,
   GuiFeatures,
+  NodeHealth,
   Org,
   OrgNode,
   Run,
   Task,
   WsTicket,
 } from "./types";
+
+export type { NodeHealth, NodeHealthStatus } from "./types";
 
 // Canonical FE status keys (v1.29). Raw stored statuses (e.g. "running") map onto
 // these via the workflow aliases below; the board groups + transitions use these.
@@ -247,6 +250,12 @@ export interface AuditPage {
 export interface Health {
   ok: boolean;
   board_ok?: boolean;
+}
+
+export interface NodeHealthResponse {
+  project?: string;
+  session?: string;
+  nodes?: NodeHealth[];
 }
 
 export interface NodePatch {
@@ -1143,6 +1152,18 @@ export const api = {
 
   // Server liveness (unauthenticated; the extra headers are harmless).
   getHealth: () => getJSON<Health>("/api/health"),
+
+  // PR1 watchdog: per-node health map keyed by node name. Absent-tolerant — a
+  // missing endpoint (404, older backend) or any transport error resolves to {}
+  // so the UI degrades to neutral "unknown" badges instead of breaking.
+  getNodeHealth: (): Promise<Record<string, NodeHealth>> =>
+    getJSON<NodeHealthResponse>("/api/node-health")
+      .then((r) => {
+        const map: Record<string, NodeHealth> = {};
+        for (const h of r?.nodes ?? []) if (h && typeof h.node === "string") map[h.node] = h;
+        return map;
+      })
+      .catch(() => ({})),
 
   // Dev-tool auth status.
   getAuthStatus: () => getJSON<AuthTool[]>("/api/auth-status"),

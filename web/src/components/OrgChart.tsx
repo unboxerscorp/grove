@@ -5,9 +5,10 @@ import type { AuditEvent } from "../api";
 import { AGENTS, agentGlyph, COLUMNS, cx, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
-import type { Delegations, MasterMeta, MasterOrg, OrgNode, ProjectLead } from "../types";
+import type { Delegations, MasterMeta, MasterOrg, NodeHealth, OrgNode, ProjectLead } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
 import { GroveMark } from "./GroveMark";
+import { NodeHealthBadge } from "./NodeHealthBadge";
 
 // ---------------------------------------------------------------------------
 // Canvas geometry + helpers
@@ -591,6 +592,7 @@ export function OrgChart(props: {
   const [projectLeads, setProjectLeads] = useState<ProjectLead[]>([]);
   const [orgDeleg, setOrgDeleg] = useState<Delegations | null>(null);
   const [delegMode, setDelegMode] = useState<"current" | "history">("current");
+  const [nodeHealth, setNodeHealth] = useState<Record<string, NodeHealth>>({}); // PR1 watchdog
 
   const [cur, setCur] = useState<Positions>({});
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -652,6 +654,23 @@ export function OrgChart(props: {
       alive = false;
     };
   }, [liveTick, projectTick, reloadKey]);
+
+  // PR1 watchdog: per-node health (display-only). Absent-tolerant via the api
+  // helper — a missing endpoint resolves to {} so nodes show neutral "unknown".
+  // Re-scoped per project; polled so transient states (cooldown/rate_limited) clear.
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      api.getNodeHealth().then((h) => {
+        if (alive) setNodeHealth(h);
+      });
+    void load();
+    const id = setInterval(() => void load(), 10000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [projectTick, reloadKey]);
 
   useEffect(() => {
     if (!boardId) {
@@ -1170,6 +1189,7 @@ export function OrgChart(props: {
                 <div className="org-node__main">
                   <span className={cx("org-node__dot", statusClass(node.status))} />
                   <span className="org-node__name">{node.name}</span>
+                  <NodeHealthBadge health={nodeHealth[node.name] ?? node.health} compact />
                   {(taskCounts[node.name] ?? 0) > 0 && (
                     <span className="org-node__taskbadge" title={t("org.taskCount", { n: taskCounts[node.name] ?? 0 })}>
                       {taskCounts[node.name]}

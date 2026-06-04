@@ -42,14 +42,17 @@ from grove_bridge.slack import (
     slack_manifest,
 )
 from grove_bridge.store import (
+    NODE_HEALTH_STATUSES,
     Board,
     BoardEvent,
     Comment,
+    NodeHealth,
     NotifySub,
     Run,
     SlackThread,
     SQLiteBoardStore,
     Task,
+    TaskTransitionConflict,
 )
 from grove_bridge.team_auth import (
     CSRF_HEADER,
@@ -107,6 +110,8 @@ MANUAL_TASK_STATUS_ALIASES = {
     "complete": "done",
     "completed": "done",
     "blocked": "blocked",
+    "ask_human": "ask_human",
+    "ask_human_pending": "ask_human",
     "archived": "archived",
 }
 WORKFLOW_ALIASES = {
@@ -388,11 +393,25 @@ class TaskCreatePayload(BaseModel):
 
 class TaskStatusPayload(BaseModel):
     status: str = Field(min_length=1, max_length=100)
+    from_status: str | None = Field(default=None, max_length=100)
+    run_id: str | None = Field(default=None, max_length=200)
+    idempotency_key: str | None = Field(default=None, max_length=200)
     reviewer: str | None = Field(default=None, max_length=500)
+    comment: str | None = Field(default=None, max_length=20_000)
 
 
 class TaskReviewerPayload(BaseModel):
     reviewer: str | None = Field(default=None, max_length=500)
+
+
+class NodeHealthPayload(BaseModel):
+    node: str = Field(min_length=1, max_length=100)
+    status: str = Field(min_length=1, max_length=50)
+    reason: str | None = Field(default=None, max_length=500)
+    message: str | None = Field(default=None, max_length=2000)
+    detected_at: int | None = Field(default=None, ge=0)
+    reset_at: int | None = Field(default=None, ge=0)
+    source: str = Field(default="watchdog", min_length=1, max_length=100)
 
 
 class NodeCreatePayload(BaseModel):
@@ -741,6 +760,56 @@ def create_app(
         if detail:
             payload["node_details"] = _node_status_details(project.config)
         return payload
+
+    @app.get("/api/node-health")
+    def node_health_endpoint(
+        request: Request,
+        node: str | None = Query(default=None),
+    ) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        node_name = _optional_node_name(node)
+        entries = _store(request).list_node_health(
+            project=project.name,
+            session=project.config.registry_session,
+            node=node_name,
+        )
+        return {
+            "project": project.name,
+            "session": project.config.registry_session,
+            "nodes": [_node_health_payload(entry) for entry in entries],
+        }
+
+    @app.post("/api/node-health")
+    def record_node_health_endpoint(
+        request: Request,
+        payload: NodeHealthPayload,
+    ) -> dict[str, object]:
+        _require_operator_state_change(
+            request,
+            detail="node health reports require operator role",
+        )
+        project = resolve_project(request)
+        try:
+            entry = _store(request).record_node_health(
+                project=project.name,
+                session=project.config.registry_session,
+                node=_strict_node_name(payload.node),
+                status=_node_health_status(payload.status),
+                reason=payload.reason,
+                message=payload.message,
+                detected_at=payload.detected_at,
+                reset_at=payload.reset_at,
+                source=_node_health_source(payload.source),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=_safe_public_text(str(exc))) from exc
+        return {
+            "ok": True,
+            "project": project.name,
+            "session": project.config.registry_session,
+            "health": _node_health_payload(entry),
+        }
 
     @app.get("/api/gui-features")
     def gui_features_endpoint(request: Request) -> dict[str, object]:
@@ -1142,10 +1211,8 @@ def create_app(
         request: Request,
         payload: ProjectCreatePayload,
     ) -> dict[str, object]:
-        auth = _require_operator_state_change(
-            request,
-            detail="project mutation requires operator role",
-        )
+        auth = _require_state_change(request)
+        _require_project_mutation_access(auth)
         result = _create_project(payload)
         created_name = _project_name_from_result(result, fallback=payload.name)
         created_config = replace(_config(request), registry_session=created_name)
@@ -1183,10 +1250,8 @@ def create_app(
         request: Request,
         payload: ProjectLoadPayload,
     ) -> dict[str, object]:
-        auth = _require_operator_state_change(
-            request,
-            detail="project mutation requires operator role",
-        )
+        auth = _require_state_change(request)
+        _require_project_mutation_access(auth)
         result = _load_project(payload)
         project = resolve_project(request)
         _store(request).add_audit_event(
@@ -1461,19 +1526,47 @@ def create_app(
         task = _task_for_project(_store(request), task_id, project=project)
         board = _store(request).board_slug_for_id(task.board_id)
         status_value = _manual_task_status(payload.status)
-        updated = _store(request).set_task_status(
-            board=board,
-            task_id=task.id,
-            status=status_value,
-            actor=_actor_payload(auth),
+        expected_status = (
+            _manual_task_status(payload.from_status)
+            if payload.from_status is not None and payload.from_status.strip()
+            else None
         )
-        if "reviewer" in payload.model_fields_set:
-            reviewer = _validated_task_reviewer(payload.reviewer, project=project)
+        clean_run_id = payload.run_id.strip() if payload.run_id is not None else None
+        clean_key = (
+            payload.idempotency_key.strip()
+            if payload.idempotency_key is not None and payload.idempotency_key.strip()
+            else None
+        )
+        reviewer_supplied = "reviewer" in payload.model_fields_set
+        reviewer = (
+            _validated_task_reviewer(payload.reviewer, project=project)
+            if reviewer_supplied
+            else None
+        )
+        actor_payload = _actor_payload(auth)
+        comment_author = str(actor_payload.get("login") or actor_payload.get("id") or "operator")
+        try:
+            updated = _store(request).set_task_status(
+                board=board,
+                task_id=task.id,
+                status=status_value,
+                actor=actor_payload,
+                expected_status=expected_status,
+                run_id=clean_run_id,
+                idempotency_key=clean_key,
+                comment=payload.comment,
+                comment_author=comment_author,
+                reviewer=reviewer,
+                reviewer_supplied=reviewer_supplied,
+            )
+        except TaskTransitionConflict as exc:
+            raise HTTPException(status_code=409, detail=_safe_public_text(str(exc))) from exc
+        if reviewer_supplied and updated.reviewer != reviewer:
             updated = _store(request).set_task_reviewer(
                 board=board,
                 task_id=task.id,
                 reviewer=reviewer,
-                actor=_actor_payload(auth),
+                actor=actor_payload,
             )
         return _task_payload(updated)
 
@@ -1544,7 +1637,7 @@ def create_app(
         auth = _require_operator_state_change(request, detail="answer requires operator role")
         project = resolve_project(request)
         task = _task_for_project(_store(request), task_id, project=project)
-        if task.status != "blocked":
+        if task.status not in {"blocked", "ask_human"}:
             raise HTTPException(status_code=409, detail="task is not blocked")
         actor = _actor_payload(auth)
         author = _answer_author(actor)
@@ -1610,7 +1703,17 @@ def create_app(
     @app.get("/api/nodes")
     def nodes_endpoint(request: Request) -> list[dict[str, object]]:
         _require_auth(request)
-        return [_node_payload(node) for node in _registry_nodes(resolve_project(request).config)]
+        project = resolve_project(request)
+        health_by_node = _node_health_by_node(
+            _store(request).list_node_health(
+                project=project.name,
+                session=project.config.registry_session,
+            )
+        )
+        return [
+            _node_payload(node, health=health_by_node.get(str(node["name"])))
+            for node in _registry_nodes(project.config)
+        ]
 
     @app.post("/api/nodes")
     def create_node_endpoint(
@@ -2332,11 +2435,14 @@ def _inbox_payload(
     limit: int,
 ) -> dict[str, object]:
     now = int(time.time())
-    tasks = store.list_tasks(board=project.board, status="blocked")
+    tasks = [
+        *store.list_tasks(board=project.board, status="blocked"),
+        *store.list_tasks(board=project.board, status="ask_human"),
+    ]
     items = [
         _inbox_item_payload(store, task, project=project, now=now)
         for task in tasks
-        if task.status == "blocked"
+        if task.status in {"blocked", "ask_human"}
     ]
     page = items[cursor : cursor + limit]
     next_cursor = cursor + len(page) if cursor + len(page) < len(items) else None
@@ -2375,6 +2481,7 @@ def _inbox_item_payload(
     needs_human = bool(task.metadata.get("needs_human"))
     blocked_since = _inbox_blocked_since(task, blocked_run)
     sources = _inbox_sources(
+        status=task.status,
         needs_human=needs_human,
         human_threads=human_threads,
         pending_threads=pending_threads,
@@ -2445,13 +2552,14 @@ def _inbox_blocked_reason(task: Task, run: Run | None) -> str | None:
 
 def _inbox_sources(
     *,
+    status: str,
     needs_human: bool,
     human_threads: Sequence[SlackThread],
     pending_threads: Sequence[SlackThread],
     notify_subs: Sequence[NotifySub],
 ) -> list[str]:
     sources = ["blocked_task"]
-    if needs_human or human_threads or pending_threads or notify_subs:
+    if status == "ask_human" or needs_human or human_threads or pending_threads or notify_subs:
         sources.append("ask_human")
     if needs_human:
         sources.append("needs_human")
@@ -5191,6 +5299,33 @@ def _safe_public_text(value: object) -> str:
     return EMAIL_RE.sub("[pii]", _safe_log_text(value))
 
 
+def _strict_node_name(value: str) -> str:
+    clean = value.strip()
+    if NODE_NAME_RE.fullmatch(clean) is None:
+        raise HTTPException(status_code=400, detail="node name is invalid")
+    return clean
+
+
+def _optional_node_name(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    return _strict_node_name(value)
+
+
+def _node_health_status(value: str) -> str:
+    clean = value.strip().lower()
+    if clean not in NODE_HEALTH_STATUSES:
+        raise HTTPException(status_code=400, detail="node health status is invalid")
+    return clean
+
+
+def _node_health_source(value: str) -> str:
+    clean = value.strip()
+    if NOTIFICATION_TEXT_RE.fullmatch(clean) is None:
+        raise HTTPException(status_code=400, detail="node health source is invalid")
+    return clean
+
+
 def _safe_log_path(request: Request) -> str:
     route = request.scope.get("route")
     route_path = getattr(route, "path", None)
@@ -5594,7 +5729,10 @@ def _master_chat_facts(
     )
     reviewers = _reviewer_node_names(nodes)
     human_candidates = _human_candidate_names(project.config)
-    blocked = _safe_list_tasks(store, board=project.board, status="blocked")
+    blocked = [
+        *_safe_list_tasks(store, board=project.board, status="blocked"),
+        *_safe_list_tasks(store, board=project.board, status="ask_human"),
+    ]
     return {
         "project": {"selected": project.name, "board": project.board},
         "projects": {"visible": list(_visible_project_names(project))},
@@ -5686,7 +5824,7 @@ def _master_chat_fact_summary(facts: Mapping[str, object]) -> str:
 
 
 def _task_needs_human(task: Task) -> bool:
-    return bool(task.metadata.get("needs_human"))
+    return task.status == "ask_human" or bool(task.metadata.get("needs_human"))
 
 
 def _task_routes_to_human(
@@ -5819,8 +5957,14 @@ def _require_share_access(auth: AuthContext) -> None:
     _require_operator_access(auth, detail="share requires operator role")
 
 
+def _require_admin_access(auth: AuthContext, *, detail: str) -> None:
+    if auth.mode == AuthMode.TEAM_COOKIE:
+        if auth.member is None or auth.member.role != "admin":
+            raise HTTPException(status_code=403, detail=detail)
+
+
 def _require_project_mutation_access(auth: AuthContext) -> None:
-    _require_operator_access(auth, detail="project mutation requires operator role")
+    _require_admin_access(auth, detail="project mutation requires admin role")
 
 
 def _validated_join_name(name: str) -> str:
@@ -7966,8 +8110,34 @@ def _slack_thread_payload(thread: SlackThread) -> dict[str, object]:
     }
 
 
-def _node_payload(node: dict[str, object]) -> dict[str, object]:
-    return node
+def _node_payload(
+    node: dict[str, object],
+    *,
+    health: NodeHealth | None = None,
+) -> dict[str, object]:
+    payload = dict(node)
+    if health is not None:
+        payload["health"] = _node_health_payload(health)
+    return payload
+
+
+def _node_health_by_node(entries: Sequence[NodeHealth]) -> dict[str, NodeHealth]:
+    return {entry.node: entry for entry in entries}
+
+
+def _node_health_payload(entry: NodeHealth) -> dict[str, object]:
+    return {
+        "node": entry.node,
+        "status": entry.status,
+        "reason": entry.reason,
+        "message": entry.message,
+        "detected_at": entry.detected_at,
+        "reset_at": entry.reset_at,
+        "source": entry.source,
+        "project": entry.project,
+        "session": entry.session,
+        "updated_at": entry.updated_at,
+    }
 
 
 def _event_payload(event: BoardEvent) -> dict[str, object]:

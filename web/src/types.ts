@@ -34,6 +34,28 @@ export interface Run {
   summary?: string;
 }
 
+export type NodeHealthStatus =
+  | "healthy"
+  | "rate_limited"
+  | "login_required"
+  | "crashed"
+  | "cooldown"
+  | "hung"
+  | "unknown";
+
+export interface NodeHealth {
+  node: string;
+  status: NodeHealthStatus;
+  reason?: string | null;
+  message?: string | null;
+  detected_at?: number;
+  reset_at?: number | null;
+  source?: string;
+  project?: string;
+  session?: string;
+  updated_at?: number;
+}
+
 export interface GroveNode {
   name: string;
   agent: string;
@@ -53,6 +75,7 @@ export interface GroveNode {
   input_allowed?: boolean;
   exposed?: boolean;
   unavailable_reason?: string;
+  health?: NodeHealth;
 }
 
 export interface OrgNode extends GroveNode {

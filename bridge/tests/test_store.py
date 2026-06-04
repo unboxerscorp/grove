@@ -5,7 +5,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from grove_bridge.store import SQLITE_BUSY_TIMEOUT_MS, SQLiteBoardStore
+from grove_bridge.store import SQLITE_BUSY_TIMEOUT_MS, SQLiteBoardStore, TaskTransitionConflict
 
 
 def test_connections_enable_wal_busy_timeout_and_normal_sync(tmp_path: Path) -> None:
@@ -83,6 +83,150 @@ def test_task_reviewer_column_migrates_and_status_reviewer_updates_audit(
     assert store.list_audit_events(board="main", action="reviewer-change")
 
 
+def test_node_health_persists_upserts_and_redacts_display_text(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    secret = "xoxb-" + ("a" * 44)
+
+    first = store.record_node_health(
+        project="dev10",
+        session="dev10",
+        node="worker",
+        status="rate_limited",
+        reason="429",
+        message=f"reset after /Users/chopin/project {secret}",
+        detected_at=100,
+        reset_at=160,
+        source="grove-ts-watchdog",
+    )
+    second = store.record_node_health(
+        project="dev10",
+        session="dev10",
+        node="worker",
+        status="healthy",
+        reason=None,
+        message=None,
+        detected_at=200,
+        reset_at=None,
+        source="watchdog",
+    )
+    listed = store.list_node_health(project="dev10", session="dev10")
+
+    assert first.status == "rate_limited"
+    assert first.reset_at == 160
+    assert secret not in str(first.message)
+    assert "/Users/chopin" not in str(first.message)
+    assert second.status == "healthy"
+    assert second.reason is None
+    assert len(listed) == 1
+    assert listed[0].detected_at == 200
+
+
+def test_manual_status_transition_requires_expected_status_and_run_id(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="main", title="CAS", body=None, assignee="maker")
+
+    try:
+        store.set_task_status(
+            board="main",
+            task_id=task.id,
+            status="review",
+            actor={"kind": "local", "id": "lead", "login": "lead", "role": "none"},
+            expected_status="running",
+        )
+    except TaskTransitionConflict as exc:
+        assert "expected status" in str(exc)
+    else:
+        raise AssertionError("expected status conflict")
+
+    claimed = store.claim_next(board="main", assignee="maker", node_id="maker", ttl_seconds=60)
+    assert claimed is not None
+    try:
+        store.set_task_status(
+            board="main",
+            task_id=task.id,
+            status="review",
+            actor={"kind": "local", "id": "lead", "login": "lead", "role": "none"},
+            run_id="wrong-run",
+        )
+    except TaskTransitionConflict as exc:
+        assert "current run" in str(exc)
+    else:
+        raise AssertionError("expected run conflict")
+
+
+def test_manual_status_transition_idempotency_key_deduplicates_events_and_comment(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="main", title="Retryable", body=None, assignee=None)
+    actor = {"kind": "local", "id": "lead", "login": "lead", "role": "none"}
+
+    first = store.set_task_status(
+        board="main",
+        task_id=task.id,
+        status="review",
+        actor=actor,
+        expected_status="ready",
+        idempotency_key="transition-1",
+        comment="ready for review",
+        comment_author="lead",
+    )
+    audit_count = len(store.list_audit_events(board="main", action="status-transition"))
+    comment_count = len(store.list_comments(board="main", task_id=task.id))
+    event_count = len(store.list_events_after(cursor=0, limit=100))
+
+    second = store.set_task_status(
+        board="main",
+        task_id=task.id,
+        status="review",
+        actor=actor,
+        expected_status="ready",
+        idempotency_key="transition-1",
+        comment="ready for review",
+        comment_author="lead",
+    )
+
+    assert first.status == "review"
+    assert second.status == "review"
+    assert len(store.list_audit_events(board="main", action="status-transition")) == audit_count
+    assert len(store.list_comments(board="main", task_id=task.id)) == comment_count
+    assert len(store.list_events_after(cursor=0, limit=100)) == event_count
+    done = store.set_task_status(
+        board="main",
+        task_id=task.id,
+        status="done",
+        actor=actor,
+        expected_status="review",
+        idempotency_key="transition-2",
+    )
+    after_done_event_count = len(store.list_events_after(cursor=0, limit=100))
+    delayed_retry = store.set_task_status(
+        board="main",
+        task_id=task.id,
+        status="review",
+        actor=actor,
+        idempotency_key="transition-1",
+    )
+
+    assert done.status == "done"
+    assert delayed_retry.status == "done"
+    assert len(store.list_events_after(cursor=0, limit=100)) == after_done_event_count
+    try:
+        store.set_task_status(
+            board="main",
+            task_id=task.id,
+            status="done",
+            actor=actor,
+            idempotency_key="transition-1",
+        )
+    except TaskTransitionConflict as exc:
+        assert "idempotency key" in str(exc)
+    else:
+        raise AssertionError("expected idempotency key conflict")
+
+
 def test_claim_next_has_one_cas_winner_for_concurrent_claims(tmp_path: Path) -> None:
     db_path = tmp_path / "board.db"
     store = SQLiteBoardStore(db_path)
@@ -115,6 +259,65 @@ def test_claim_next_has_one_cas_winner_for_concurrent_claims(tmp_path: Path) -> 
             assignee="grove:codex",
             node_id="codex-c",
             ttl_seconds=60,
+        )
+        is None
+    )
+
+
+def test_claim_next_limits_one_active_wip_per_node(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    first = store.create_task(board="main", title="First", body=None, assignee="grove:codex")
+    second = store.create_task(board="main", title="Second", body=None, assignee="grove:codex")
+
+    claimed = store.claim_next(
+        board="main",
+        assignee="grove:codex",
+        node_id="codex-a",
+        ttl_seconds=60,
+        task_id=first.id,
+    )
+
+    assert claimed is not None
+    assert (
+        store.claim_next(
+            board="main",
+            assignee="grove:codex",
+            node_id="codex-a",
+            ttl_seconds=60,
+            task_id=second.id,
+        )
+        is None
+    )
+    assert (
+        store.claim_next(
+            board="main",
+            assignee="grove:codex",
+            node_id="codex-b",
+            ttl_seconds=60,
+            task_id=second.id,
+        )
+        is not None
+    )
+
+
+def test_claim_next_counts_manual_running_task_as_node_wip(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    running = store.create_task(board="main", title="Manual", body=None, assignee="codex-a")
+    ready = store.create_task(board="main", title="Queued", body=None, assignee="codex-a")
+    store.set_task_status(
+        board="main",
+        task_id=running.id,
+        status="running",
+        actor={"kind": "local", "id": "lead", "login": "lead", "role": "none"},
+    )
+
+    assert (
+        store.claim_next(
+            board="main",
+            assignee="codex-a",
+            node_id="codex-a",
+            ttl_seconds=60,
+            task_id=ready.id,
         )
         is None
     )
