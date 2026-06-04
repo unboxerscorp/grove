@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import hashlib
+import hmac
 import importlib.metadata
 import json
 import logging
@@ -13,7 +15,7 @@ import re
 import secrets
 import subprocess
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -74,6 +76,16 @@ GROVE_PROJECT_TIMEOUT_SECONDS = 30.0
 TRANSCRIPT_MAX_BYTES = 2_000_000
 MAX_TIMESTAMP_SECONDS = 4_102_444_800
 PRESENCE_ACTIVE_SECONDS = 5 * 60
+SUMMARY_FRESHNESS_SECONDS = 5 * 60
+SUMMARY_CLOCK_SKEW_SECONDS = 60
+SUMMARY_SCHEMA = "grove.summary.v1"
+SUMMARY_ALGORITHM = "hmac-sha256"
+SUMMARY_OTHER_BUCKET = "other"
+SUMMARY_TRUSTED_KEYS_FILENAME = "summary-trusted-keys.json"
+SUMMARY_TASK_STATUSES = frozenset({"ready", "running", "blocked", "done", "archived"})
+SUMMARY_RUN_STATUSES = frozenset({"running", "ok", "blocked", "failed", "released"})
+SUMMARY_NODE_STATUSES = frozenset({"running", "idle", "error", "blocked", "dead", "stale"})
+SUMMARY_NODE_AGENTS = frozenset({"codex", "claude", "antigravity", "agy"})
 TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?P<pane>[0-9]+)$")
 NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 PROJECT_NAME_RE = NODE_NAME_RE
@@ -122,6 +134,9 @@ class WebAppConfig:
     unsafe_bind_token_bootstrap: bool = False
     allowed_hosts: tuple[str, ...] = ()
     auth_mode: AuthMode = AuthMode.LOCAL_TOKEN
+    summary_export_enabled: bool = False
+    summary_freshness_seconds: int = SUMMARY_FRESHNESS_SECONDS
+    summary_trusted_keys_path: Path | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dist_dir", self.dist_dir.expanduser())
@@ -141,6 +156,14 @@ class WebAppConfig:
             _normalize_allowed_hosts(self.allowed_hosts),
         )
         object.__setattr__(self, "auth_mode", AuthMode(self.auth_mode))
+        if self.summary_trusted_keys_path is not None:
+            object.__setattr__(
+                self,
+                "summary_trusted_keys_path",
+                self.summary_trusted_keys_path.expanduser(),
+            )
+        if self.summary_freshness_seconds <= 0:
+            raise ValueError("summary freshness must be positive")
 
 
 @dataclass(frozen=True)
@@ -284,6 +307,10 @@ class WsTicketPayload(BaseModel):
 class LoginPayload(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     secret: str = Field(min_length=1, max_length=5000)
+
+
+class AggregatePayload(BaseModel):
+    summaries: list[dict[str, object]] = Field(default_factory=list, max_length=100)
 
 
 class TicketStore:
@@ -506,6 +533,29 @@ def create_app(
             node_filter=node,
             agent_filter=agent,
         )
+
+    @app.get("/api/summary")
+    def summary_endpoint(
+        request: Request,
+        project_name: str | None = Query(default=None, alias="project"),
+    ) -> dict[str, object]:
+        _require_auth(request)
+        config_value = _config(request)
+        _require_summary_enabled(config_value)
+        project = _cost_project_context(request, project_name)
+        return _signed_summary_payload(_store(request), project=project)
+
+    @app.post("/api/aggregate")
+    def aggregate_endpoint(
+        request: Request,
+        payload: AggregatePayload,
+        project_name: str | None = Query(default=None, alias="project"),
+    ) -> dict[str, object]:
+        _require_auth(request)
+        config_value = _config(request)
+        _require_summary_enabled(config_value)
+        project = _cost_project_context(request, project_name)
+        return _aggregate_summary_payload(project.config, payload)
 
     @app.get("/api/plan")
     def plan_endpoint(
@@ -1795,6 +1845,383 @@ def _usage_limitations(runs: Sequence[Run]) -> list[str]:
     return limitations
 
 
+def _signed_summary_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+) -> dict[str, object]:
+    key = _load_or_create_summary_key(project.config)
+    payload = _summary_payload(store, project=project, generated_at=int(time.time()))
+    return {
+        "algorithm": SUMMARY_ALGORITHM,
+        "key_id": _summary_key_id(key),
+        "payload": payload,
+        "signature": _summary_signature(key, payload),
+    }
+
+
+def _summary_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    generated_at: int,
+) -> dict[str, object]:
+    boards = [board for board in store.list_boards() if board.id == project.board]
+    tasks = store.list_tasks(board=project.board) if boards else []
+    runs = store.list_runs_for_board(board=project.board)
+    nodes = _registry_node_records(project.config)
+    return {
+        "schema": SUMMARY_SCHEMA,
+        "project": project.name,
+        "version": APP_VERSION,
+        "generated_at": generated_at,
+        "summary": {
+            "boards": {"total": len(boards)},
+            "tasks": {
+                "total": len(tasks),
+                "by_status": _summary_counts(
+                    (task.status for task in tasks),
+                    allowed_values=SUMMARY_TASK_STATUSES,
+                ),
+            },
+            "nodes": {
+                "total": len(nodes),
+                "by_status": _summary_counts(
+                    (node["status"] for node in nodes),
+                    allowed_values=SUMMARY_NODE_STATUSES,
+                ),
+                "by_agent": _summary_counts(
+                    (node["agent"] for node in nodes),
+                    allowed_values=SUMMARY_NODE_AGENTS,
+                ),
+            },
+            "runs": {
+                "total": len(runs),
+                "by_status": _summary_counts(
+                    (run.status for run in runs),
+                    allowed_values=SUMMARY_RUN_STATUSES,
+                ),
+            },
+        },
+    }
+
+
+def _aggregate_summary_payload(
+    config: WebAppConfig,
+    payload: AggregatePayload,
+) -> dict[str, object]:
+    trusted_keys = _summary_trusted_keys(config)
+    now = int(time.time())
+    items = [
+        _verify_summary_envelope(
+            item,
+            trusted_keys=trusted_keys,
+            now=now,
+            freshness_seconds=config.summary_freshness_seconds,
+        )
+        for item in payload.summaries
+    ]
+    trusted_fresh = [
+        item["payload"]
+        for item in items
+        if item["trust"] == "trusted" and item["freshness"] == "fresh"
+    ]
+    trusted_stale = [
+        item for item in items if item["trust"] == "trusted" and item["freshness"] == "stale"
+    ]
+    return {
+        "generated_at": _cost_metric(now, source="server", confidence="explicit"),
+        "trust": {
+            "trusted": sum(1 for item in items if item["trust"] == "trusted"),
+            "untrusted": sum(1 for item in items if item["trust"] == "untrusted"),
+            "stale": len(trusted_stale),
+        },
+        "summaries": items,
+        "combined": _combined_summary_payload(trusted_fresh),
+        "limitations": [
+            "aggregate is read-only and does not perform cross-machine control",
+            "stale summaries are excluded from the live combined rollup",
+        ],
+    }
+
+
+def _verify_summary_envelope(
+    envelope: Mapping[str, object],
+    *,
+    trusted_keys: Mapping[str, str],
+    now: int,
+    freshness_seconds: int,
+) -> dict[str, object]:
+    payload = envelope.get("payload")
+    signature = envelope.get("signature")
+    algorithm = envelope.get("algorithm")
+    key_id = envelope.get("key_id")
+    if not isinstance(payload, Mapping) or not isinstance(signature, str):
+        return _untrusted_summary(reason="invalid summary envelope")
+    if algorithm != SUMMARY_ALGORITHM:
+        return _untrusted_summary(reason="unsupported summary algorithm")
+    if not isinstance(key_id, str) or key_id not in trusted_keys:
+        return _untrusted_summary(reason="unknown summary key")
+    key = trusted_keys[key_id]
+    expected = _summary_signature(key, payload)
+    if not hmac.compare_digest(signature, expected):
+        return _untrusted_summary(reason="signature verification failed")
+    public_payload = _summary_public_view(payload)
+    if public_payload is None:
+        return _untrusted_summary(reason="invalid summary payload")
+    generated_at = cast(int, public_payload["generated_at"])
+    if generated_at > now + SUMMARY_CLOCK_SKEW_SECONDS:
+        return _untrusted_summary(reason="summary timestamp is invalid")
+    freshness = "stale" if now - generated_at > freshness_seconds else "fresh"
+    return {
+        "trust": "trusted",
+        "freshness": freshness,
+        "key_id": _safe_log_text(key_id),
+        "project": public_payload["project"],
+        "generated_at": generated_at,
+        "payload": public_payload,
+    }
+
+
+def _untrusted_summary(*, reason: str) -> dict[str, object]:
+    return {
+        "trust": "untrusted",
+        "freshness": "unknown",
+        "reason": _safe_log_text(reason),
+    }
+
+
+def _summary_public_view(payload: Mapping[str, object]) -> dict[str, object] | None:
+    if payload.get("schema") != SUMMARY_SCHEMA:
+        return None
+    project = payload.get("project")
+    version = payload.get("version")
+    generated_at = _summary_int(payload.get("generated_at"))
+    raw_summary = payload.get("summary")
+    if not isinstance(project, str) or not isinstance(version, str) or generated_at is None:
+        return None
+    if not isinstance(raw_summary, Mapping):
+        return None
+    boards = _summary_count_section(raw_summary.get("boards"), keys={})
+    tasks = _summary_count_section(
+        raw_summary.get("tasks"),
+        keys={"by_status": SUMMARY_TASK_STATUSES},
+    )
+    nodes = _summary_count_section(
+        raw_summary.get("nodes"),
+        keys={"by_status": SUMMARY_NODE_STATUSES, "by_agent": SUMMARY_NODE_AGENTS},
+    )
+    runs = _summary_count_section(
+        raw_summary.get("runs"),
+        keys={"by_status": SUMMARY_RUN_STATUSES},
+    )
+    if None in (boards, tasks, nodes, runs):
+        return None
+    return {
+        "schema": SUMMARY_SCHEMA,
+        "project": _safe_log_text(project),
+        "version": _safe_log_text(version),
+        "generated_at": generated_at,
+        "summary": {
+            "boards": boards,
+            "tasks": tasks,
+            "nodes": nodes,
+            "runs": runs,
+        },
+    }
+
+
+def _combined_summary_payload(summaries: Sequence[object]) -> dict[str, object]:
+    payloads = [summary for summary in summaries if isinstance(summary, Mapping)]
+    return {
+        "sources": len(payloads),
+        "projects": sorted(
+            {
+                str(payload.get("project"))
+                for payload in payloads
+                if isinstance(payload.get("project"), str)
+            }
+        ),
+        "boards": _combine_summary_section(payloads, section="boards", keys=()),
+        "tasks": _combine_summary_section(payloads, section="tasks", keys=("by_status",)),
+        "nodes": _combine_summary_section(
+            payloads,
+            section="nodes",
+            keys=("by_status", "by_agent"),
+        ),
+        "runs": _combine_summary_section(payloads, section="runs", keys=("by_status",)),
+    }
+
+
+def _combine_summary_section(
+    payloads: Sequence[Mapping[str, object]],
+    *,
+    section: str,
+    keys: Sequence[str],
+) -> dict[str, object]:
+    total = 0
+    combined: dict[str, object] = {"total": 0}
+    grouped: dict[str, dict[str, int]] = {key: {} for key in keys}
+    for payload in payloads:
+        summary = payload.get("summary")
+        if not isinstance(summary, Mapping):
+            continue
+        raw_section = summary.get(section)
+        if not isinstance(raw_section, Mapping):
+            continue
+        total += _summary_int(raw_section.get("total")) or 0
+        for key in keys:
+            raw_counts = raw_section.get(key)
+            if isinstance(raw_counts, Mapping):
+                _merge_counts(grouped[key], raw_counts)
+    combined["total"] = total
+    for key in keys:
+        combined[key] = dict(sorted(grouped[key].items()))
+    return combined
+
+
+def _merge_counts(
+    target: dict[str, int],
+    source: Mapping[object, object],
+    *,
+    allowed_values: frozenset[str] | None = None,
+) -> None:
+    for raw_key, raw_value in source.items():
+        if not isinstance(raw_key, str):
+            continue
+        value = _summary_int(raw_value)
+        if value is None:
+            continue
+        if allowed_values is None:
+            clean_key = _safe_log_text(raw_key)
+        else:
+            clean_key = _summary_allowed_count_key(raw_key, allowed_values=allowed_values)
+        target[clean_key] = target.get(clean_key, 0) + value
+
+
+def _summary_count_section(
+    value: object,
+    *,
+    keys: Mapping[str, frozenset[str]],
+) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    total = _summary_int(value.get("total"))
+    if total is None:
+        return None
+    section: dict[str, object] = {"total": total}
+    for key, allowed_values in keys.items():
+        raw_counts = value.get(key)
+        if not isinstance(raw_counts, Mapping):
+            return None
+        section[key] = _summary_sanitized_counts(raw_counts, allowed_values=allowed_values)
+    return section
+
+
+def _summary_sanitized_counts(
+    value: Mapping[object, object],
+    *,
+    allowed_values: frozenset[str],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    _merge_counts(counts, value, allowed_values=allowed_values)
+    return dict(sorted(counts.items()))
+
+
+def _summary_counts(values: Iterable[str], *, allowed_values: frozenset[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        key = _summary_allowed_count_key(value, allowed_values=allowed_values)
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _summary_allowed_count_key(value: str, *, allowed_values: frozenset[str]) -> str:
+    normalized = value.strip().lower()
+    if normalized in allowed_values:
+        return normalized
+    return SUMMARY_OTHER_BUCKET
+
+
+def _summary_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    return None
+
+
+def _summary_signature(key: str, payload: Mapping[str, object]) -> str:
+    digest = hmac.new(
+        key.encode("utf-8"),
+        _summary_canonical_json(payload),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"sha256:{digest}"
+
+
+def _summary_canonical_json(payload: Mapping[str, object]) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def _summary_key_id(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
+def _summary_trusted_keys(config: WebAppConfig) -> dict[str, str]:
+    local_key = _load_or_create_summary_key(config)
+    trusted = {_summary_key_id(local_key): local_key}
+    path = _summary_trusted_keys_path(config)
+    if not path.is_file():
+        return trusted
+    path.chmod(0o600)
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return trusted
+    if isinstance(loaded, Mapping) and isinstance(loaded.get("keys"), Mapping):
+        loaded = loaded["keys"]
+    if not isinstance(loaded, Mapping):
+        return trusted
+    for raw_key_id, raw_key in loaded.items():
+        if not isinstance(raw_key_id, str) or not isinstance(raw_key, str):
+            continue
+        if _summary_key_id(raw_key) != raw_key_id:
+            continue
+        trusted[raw_key_id] = raw_key
+    return trusted
+
+
+def _load_or_create_summary_key(config: WebAppConfig) -> str:
+    path = _summary_key_path(config.grove_home, config.registry_session)
+    key = secrets.token_urlsafe(48)
+    try:
+        _create_secret_file_exclusive(path, key + "\n")
+    except FileExistsError:
+        return _read_summary_key(path)
+    return _read_summary_key(path)
+
+
+def _summary_key_path(grove_home: Path, session: str) -> Path:
+    return grove_home / session / "summary-signing-key"
+
+
+def _summary_trusted_keys_path(config: WebAppConfig) -> Path:
+    if config.summary_trusted_keys_path is not None:
+        return config.summary_trusted_keys_path
+    return config.grove_home / config.registry_session / SUMMARY_TRUSTED_KEYS_FILENAME
+
+
+def _read_summary_key(path: Path) -> str:
+    key = path.read_text(encoding="utf-8").strip()
+    if not key:
+        raise ValueError("summary signing key file is empty")
+    path.chmod(0o600)
+    return key
+
+
 def _plan_payload(
     store: SQLiteBoardStore,
     *,
@@ -2837,6 +3264,11 @@ def _require_cost_access(auth: AuthContext) -> None:
     if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
         if auth.member.role == "viewer":
             raise HTTPException(status_code=403, detail="cost requires operator role")
+
+
+def _require_summary_enabled(config: WebAppConfig) -> None:
+    if not config.summary_export_enabled:
+        raise HTTPException(status_code=404, detail="summary export is not enabled")
 
 
 def _require_answer_access(auth: AuthContext) -> None:
@@ -3955,6 +4387,26 @@ def main(argv: list[str] | None = None) -> int:
             "Use team cookie sessions with member login and CSRF instead of local dashboard tokens."
         ),
     )
+    parser.add_argument(
+        "--enable-summary-export",
+        action="store_true",
+        help="Enable signed read-only summary export and aggregation endpoints.",
+    )
+    parser.add_argument(
+        "--summary-freshness-seconds",
+        type=int,
+        default=SUMMARY_FRESHNESS_SECONDS,
+        help="Freshness window for signed summaries accepted by /api/aggregate.",
+    )
+    parser.add_argument(
+        "--summary-trusted-keys",
+        type=Path,
+        default=None,
+        help=(
+            "Optional JSON file with trusted summary signing keys, formatted as "
+            '{"keys":{"<key_id>":"<key>"}}.'
+        ),
+    )
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -3969,6 +4421,9 @@ def main(argv: list[str] | None = None) -> int:
         unsafe_bind_token_bootstrap=args.unsafe_bind,
         allowed_hosts=_normalize_allowed_hosts(args.allow_host),
         auth_mode=AuthMode.TEAM_COOKIE if args.team_auth else AuthMode.LOCAL_TOKEN,
+        summary_export_enabled=args.enable_summary_export,
+        summary_freshness_seconds=args.summary_freshness_seconds,
+        summary_trusted_keys_path=args.summary_trusted_keys,
     )
     app = create_app(config=config)
     started_at = cast(int, app.state.started_at)

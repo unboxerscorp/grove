@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -1339,6 +1341,230 @@ def test_usage_endpoint_scopes_project_and_handles_empty_data(tmp_path: Path) ->
     assert "999" not in rendered
     assert invalid.status_code == 400
     assert missing.status_code == 404
+
+
+def test_summary_endpoint_is_default_off_token_scoped_and_privacy_allowlisted(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    secret = "xoxb-" + ("a" * 44)
+    store.create_task(
+        board="dev10",
+        title=f"Secret title {secret}",
+        body=f"Body must not export /Users/chopin/private/{secret}",
+        assignee="maker10",
+        status="blocked",
+    )
+    store.create_task(
+        board="dev11",
+        title="public count only",
+        body="not exported",
+        assignee=None,
+        status="ready",
+    )
+    store.create_task(
+        board="dev11",
+        title="unknown status count",
+        body="not exported",
+        assignee=None,
+        status=f"/Users/chopin/private/{secret}",
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "maker10": {
+                "name": "maker10",
+                "agent": "codex",
+                "tmux_pane": "dev10:1.0",
+                "description": f"/Users/chopin/private/{secret}",
+                "transcript_path": f"/Users/chopin/private/{secret}.jsonl",
+            }
+        },
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {
+            "maker11": {
+                "name": "maker11",
+                "agent": f"xapp-{secret}",
+                "status": f"/Users/chopin/private/{secret}",
+                "tmux_pane": "dev11:1.0",
+            }
+        },
+    )
+    default_client = make_client(tmp_path, store)
+    client = make_client(tmp_path, store, summary_export_enabled=True)
+    headers = auth_headers(client)
+
+    disabled = default_client.get("/api/summary", headers=auth_headers(default_client))
+    missing_token = client.get("/api/summary")
+    scoped = client.get("/api/summary", headers=headers | {"X-Grove-Project": "dev11"})
+
+    assert disabled.status_code == 404
+    assert missing_token.status_code == 401
+    assert scoped.status_code == 200
+    payload = scoped.json()
+    assert payload["algorithm"] == "hmac-sha256"
+    assert set(payload) == {"algorithm", "key_id", "payload", "signature"}
+    assert payload["payload"]["project"] == "dev11"
+    assert payload["payload"]["summary"]["tasks"]["total"] == 2
+    assert payload["payload"]["summary"]["tasks"]["by_status"] == {"other": 1, "ready": 1}
+    assert payload["payload"]["summary"]["nodes"]["by_status"] == {"other": 1}
+    assert payload["payload"]["summary"]["nodes"]["by_agent"] == {"other": 1}
+    rendered = json.dumps(payload)
+    assert secret not in rendered
+    assert "/Users/chopin" not in rendered
+    assert "Body must not export" not in rendered
+    assert "Secret title" not in rendered
+    assert "transcript" not in rendered.lower()
+    key_path = tmp_path / ".grove" / "dev11" / "summary-signing-key"
+    assert key_path.stat().st_mode & 0o077 == 0
+    aggregate = client.post(
+        "/api/aggregate",
+        headers=headers | {"X-Grove-Project": "dev11"},
+        json={"summaries": [payload]},
+    )
+    wrong_scope = client.post("/api/aggregate", headers=headers, json={"summaries": [payload]})
+    missing_project = client.post(
+        "/api/aggregate?project=missing",
+        headers=headers,
+        json={"summaries": [payload]},
+    )
+    assert aggregate.json()["trust"] == {"trusted": 1, "untrusted": 0, "stale": 0}
+    assert aggregate.json()["combined"]["projects"] == ["dev11"]
+    assert wrong_scope.json()["trust"] == {"trusted": 0, "untrusted": 1, "stale": 0}
+    assert missing_project.status_code == 404
+
+
+def test_aggregate_verifies_signature_and_rejects_tampered_summary(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(board="dev10", title="ready", body=None, assignee=None, status="ready")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"maker": {"name": "maker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    client = make_client(tmp_path, store, summary_export_enabled=True)
+    headers = auth_headers(client)
+    signed = client.get("/api/summary", headers=headers).json()
+    tampered = json.loads(json.dumps(signed))
+    tampered["payload"]["summary"]["tasks"]["total"] = 999
+    unknown_key = json.loads(json.dumps(signed))
+    unknown_key["key_id"] = "unknown-key"
+
+    missing_token = client.post("/api/aggregate", json={"summaries": [signed]})
+    response = client.post(
+        "/api/aggregate",
+        headers=headers,
+        json={"summaries": [signed, tampered, unknown_key]},
+    )
+
+    assert missing_token.status_code == 401
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["trust"] == {"trusted": 1, "untrusted": 2, "stale": 0}
+    assert payload["summaries"][0]["trust"] == "trusted"
+    assert payload["summaries"][1]["trust"] == "untrusted"
+    assert "signature" in payload["summaries"][1]["reason"]
+    assert payload["summaries"][2]["trust"] == "untrusted"
+    assert "unknown summary key" in payload["summaries"][2]["reason"]
+    assert payload["combined"]["sources"] == 1
+    assert payload["combined"]["tasks"]["total"] == 1
+    assert payload["combined"]["tasks"]["by_status"] == {"ready": 1}
+    rendered = json.dumps(payload)
+    assert "999" not in rendered
+
+
+def test_aggregate_trusts_configured_summary_key_id_only(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(board="dev10", title="ready", body=None, assignee=None, status="ready")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"maker": {"name": "maker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    client = make_client(tmp_path, store, summary_export_enabled=True)
+    headers = auth_headers(client)
+    source = client.get("/api/summary", headers=headers).json()
+    trusted_key = "external-summary-key"
+    trusted_key_id = hashlib.sha256(trusted_key.encode("utf-8")).hexdigest()[:16]
+    payload = source["payload"]
+    signature = hmac.new(
+        trusted_key.encode("utf-8"),
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        ),
+        hashlib.sha256,
+    ).hexdigest()
+    external = {
+        "algorithm": "hmac-sha256",
+        "key_id": trusted_key_id,
+        "payload": payload,
+        "signature": f"sha256:{signature}",
+    }
+
+    rejected = client.post("/api/aggregate", headers=headers, json={"summaries": [external]})
+    trusted_keys = tmp_path / "summary-trusted-keys.json"
+    trusted_keys.write_text(json.dumps({"keys": {trusted_key_id: trusted_key}}), encoding="utf-8")
+    trusted_keys.chmod(0o600)
+    trusted_client = make_client(
+        tmp_path,
+        store,
+        summary_export_enabled=True,
+        summary_trusted_keys_path=trusted_keys,
+    )
+    accepted = trusted_client.post(
+        "/api/aggregate",
+        headers=auth_headers(trusted_client),
+        json={"summaries": [external]},
+    )
+
+    assert rejected.json()["trust"] == {"trusted": 0, "untrusted": 1, "stale": 0}
+    assert accepted.json()["trust"] == {"trusted": 1, "untrusted": 0, "stale": 0}
+    assert accepted.json()["combined"]["sources"] == 1
+
+
+def test_aggregate_marks_stale_summary_and_excludes_it_from_live_rollup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(board="dev10", title="ready", body=None, assignee=None, status="ready")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"maker": {"name": "maker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    old_now = 1_700_000_000
+    client = make_client(
+        tmp_path,
+        store,
+        summary_export_enabled=True,
+        summary_freshness_seconds=60,
+    )
+    headers = auth_headers(client)
+    monkeypatch.setattr("grove_bridge.web_app.time.time", lambda: float(old_now))
+    stale_summary = client.get("/api/summary", headers=headers).json()
+    monkeypatch.setattr("grove_bridge.web_app.time.time", lambda: float(old_now + 120))
+
+    response = client.post("/api/aggregate", headers=headers, json={"summaries": [stale_summary]})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["trust"] == {"trusted": 1, "untrusted": 0, "stale": 1}
+    assert payload["summaries"][0]["freshness"] == "stale"
+    assert payload["combined"]["sources"] == 0
+    assert payload["combined"]["tasks"]["total"] == 0
+    assert "stale summaries are excluded" in payload["limitations"][1]
+    monkeypatch.setattr("grove_bridge.web_app.time.time", lambda: float(old_now + 61))
+    future_summary = client.get("/api/summary", headers=headers).json()
+    monkeypatch.setattr("grove_bridge.web_app.time.time", lambda: float(old_now))
+    future = client.post("/api/aggregate", headers=headers, json={"summaries": [future_summary]})
+    assert future.json()["trust"] == {"trusted": 0, "untrusted": 1, "stale": 0}
+    assert "timestamp" in future.json()["summaries"][0]["reason"]
 
 
 def test_plan_endpoint_ranks_candidates_with_role_load_and_cost_signals(
@@ -3362,6 +3588,9 @@ def make_client(
     allowed_hosts: tuple[str, ...] = (),
     auth_mode: AuthMode = AuthMode.LOCAL_TOKEN,
     raise_server_exceptions: bool = True,
+    summary_export_enabled: bool = False,
+    summary_freshness_seconds: int = 300,
+    summary_trusted_keys_path: Path | None = None,
 ) -> TestClient:
     dist = tmp_path / "dist"
     dist.mkdir(exist_ok=True)
@@ -3382,6 +3611,9 @@ def make_client(
         unsafe_bind_token_bootstrap=unsafe_bind_token_bootstrap,
         allowed_hosts=allowed_hosts,
         auth_mode=auth_mode,
+        summary_export_enabled=summary_export_enabled,
+        summary_freshness_seconds=summary_freshness_seconds,
+        summary_trusted_keys_path=summary_trusted_keys_path,
     )
     return TestClient(
         create_app(config=config, store=store),
