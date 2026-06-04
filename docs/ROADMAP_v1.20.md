@@ -46,6 +46,12 @@ v1.18 gated path (role + audit + preview→confirm); the answer path is read-onl
   classifier, the gated task-create helper (preview→confirm, role, audit, redaction), bug/
   feedback flow. Default OFF (extends --enable-commands). Adversarially tested (prompt-injection,
   role bypass, ambiguity→answer, privacy).
+  - **Block Kit UX (user directive)**: compose the bot's messages with Block Kit (section +
+    action buttons + confirm dialog for preview→confirm; overflow/modal where it helps). Reference
+    `~/dev/notion-slack-sync-server` for patterns — especially its **continuously-updated
+    announcement**: persist a message ts in the store and `chat.update` it in place (upsert)
+    rather than posting new messages. grove should have a live, in-place-updating announcement
+    (e.g. a triage/room-status message). Respect the 3000-char section limit + progressive collapse.
 - **V20-W2 brainstorm → v1.21** (grove-arch) — further Slack enhancements (thread context, status
   queries, routing), optional per-user sandbox v0, retro analytics; + keep README current.
 - **Wave-2** — FE (Slack intake config/preview surface; show the bot's decision + correct it) +
