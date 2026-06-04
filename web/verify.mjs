@@ -2432,7 +2432,17 @@ async function main() {
     const groupReexpanded = await page.evaluate(() => !!document.querySelector('.dr-navgroup[data-group="ops"] .dr-tab[data-view="trend"]'));
     // mobile: hamburger visible + sidebar off-canvas; opening it slides in.
     await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
-    await new Promise((r) => setTimeout(r, 200));
+    // the sidebar animates to translateX(-100%) on the desktop->mobile switch;
+    // wait for that slide-OUT to finish before measuring (don't race the 0.22s
+    // transition with a fixed timeout).
+    await page.waitForFunction(
+      () => {
+        const sb = document.querySelector(".dr-sidebar");
+        const r = sb?.getBoundingClientRect();
+        return !!r && r.right <= 2;
+      },
+      { timeout: 4000 },
+    );
     const mobileNav = await page.evaluate(() => {
       const ham = document.querySelector(".dr-hamburger");
       const sb = document.querySelector(".dr-sidebar");
@@ -2469,6 +2479,94 @@ async function main() {
       drawerNav.open &&
       drawerNav.onScreen &&
       drawerNav.scrim;
+
+    // V25-W1 command palette (Cmd-K): open via keyboard + button, list every
+    // view/drawer, fuzzy filter → keyboard select → navigate. NAVIGATION-ONLY
+    // (no mutation), Esc closes + restores focus. (Viewport is desktop here.)
+    // a snapshot of mutation markers proves the palette never mutates.
+    const MUT_KEYS = ["routingPosted", "quotaSet", "handoffAccepted", "execApprove", "execAbort", "aggregated", "joined", "shareIssued", "slackConfig", "createdTask"];
+    const palMutSnap = () => page.evaluate((keys) => JSON.stringify(keys.map((k) => window.__MOCK__?.[k] ?? null)), MUT_KEYS);
+    const palMutBefore = await palMutSnap();
+    // open via Cmd/Ctrl-K
+    await page.keyboard.down("Control");
+    await page.keyboard.press("KeyK");
+    await page.keyboard.up("Control");
+    await page.waitForSelector(".cmdk__panel", { timeout: 6000 });
+    await page.waitForFunction(() => document.activeElement === document.querySelector(".cmdk__input"), { timeout: 8000 });
+    const paletteOpened = await page.evaluate(() => ({
+      panel: !!document.querySelector('.cmdk__panel[role="dialog"]'),
+      listbox: !!document.querySelector('.cmdk__list[role="listbox"]'),
+      // every sidebar view + drawer is listed
+      options: document.querySelectorAll('.cmdk__item[role="option"]').length,
+      // focus moved into the palette input (focus trap)
+      inputFocused: document.activeElement === document.querySelector(".cmdk__input"),
+    }));
+    // fuzzy filter (works regardless of KO/EN labels via the english keyword) +
+    // keyboard select -> view switch.
+    await page.type(".cmdk__input", "ledger");
+    // wait until the filter narrowed so the top match is ledger (don't let Enter
+    // fire against the still-unfiltered list).
+    await page.waitForFunction(
+      () => document.querySelector('.cmdk__item[role="option"]')?.getAttribute("data-cmd") === "view:ledger",
+      { timeout: 6000 },
+    );
+    const filtered = await page.evaluate(() => ({
+      count: document.querySelectorAll('.cmdk__item[role="option"]').length,
+      first: document.querySelector('.cmdk__item[role="option"]')?.getAttribute("data-cmd") ?? "",
+    }));
+    await page.keyboard.press("Enter"); // run the active (top) command
+    await page.waitForSelector('.dr-tab[data-view="ledger"].is-active', { timeout: 6000 });
+    const navLedger = await page.evaluate(() => ({
+      active: !!document.querySelector('.dr-tab[data-view="ledger"].is-active'),
+      closed: !document.querySelector(".cmdk__panel"), // palette closes after select
+    }));
+    // reach a DRAWER via the palette (audit).
+    await page.keyboard.down("Control");
+    await page.keyboard.press("KeyK");
+    await page.keyboard.up("Control");
+    await page.waitForSelector(".cmdk__panel", { timeout: 6000 });
+    await page.type(".cmdk__input", "audit");
+    await page.waitForFunction(() => !!document.querySelector('.cmdk__item[data-cmd="drawer:audit"]'), { timeout: 6000 });
+    await page.$eval('.cmdk__item[data-cmd="drawer:audit"]', (el) => el.click());
+    await page.waitForSelector(".audit-drawer", { timeout: 6000 });
+    const navDrawer = await page.evaluate(() => !!document.querySelector(".audit-drawer"));
+    await page.$eval(".audit-drawer .dr-drawer__close", (el) => el.click());
+    await page.waitForFunction(() => !document.querySelector(".audit-drawer"), { timeout: 6000 });
+    // ↑/↓ keyboard nav changes the active option.
+    await page.keyboard.down("Control");
+    await page.keyboard.press("KeyK");
+    await page.keyboard.up("Control");
+    await page.waitForSelector(".cmdk__panel", { timeout: 6000 });
+    const firstActive = await page.evaluate(() => document.querySelector('.cmdk__item[aria-selected="true"]')?.getAttribute("data-cmd") ?? "");
+    await page.keyboard.press("ArrowDown");
+    const afterDown = await page.evaluate(() => document.querySelector('.cmdk__item[aria-selected="true"]')?.getAttribute("data-cmd") ?? "");
+    // Esc closes the palette.
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector(".cmdk__panel"), { timeout: 6000 });
+    const escClosed = await page.evaluate(() => !document.querySelector(".cmdk__panel"));
+    // open via the BUTTON (real click focuses it), then Esc -> focus restored.
+    await page.click(".cmdk-trigger");
+    await page.waitForSelector(".cmdk__panel", { timeout: 6000 });
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector(".cmdk__panel"), { timeout: 6000 });
+    const focusRestored = await page.evaluate(() => document.activeElement === document.querySelector(".cmdk-trigger"));
+    const palMutAfter = await palMutSnap();
+
+    const commandPaletteOk =
+      paletteOpened.panel &&
+      paletteOpened.listbox &&
+      paletteOpened.options === 17 && // 14 views + 3 drawers
+      paletteOpened.inputFocused &&
+      filtered.count >= 1 &&
+      filtered.first === "view:ledger" &&
+      navLedger.active &&
+      navLedger.closed &&
+      navDrawer && // drawer reachable via palette
+      firstActive !== "" &&
+      afterDown !== firstActive && // ↓ moved the selection
+      escClosed &&
+      focusRestored && // focus returned to the trigger
+      palMutBefore === palMutAfter; // NAVIGATION-ONLY: zero mutations
 
     const diag = await page.evaluate(() => {
       const mock = window.__MOCK__ ?? {};
@@ -2585,6 +2683,7 @@ async function main() {
       routingConfigOk &&
       mobileOk &&
       sidebarNavOk &&
+      commandPaletteOk &&
       projectOk &&
       wsBindOk &&
       wsKindOk &&
@@ -2715,6 +2814,8 @@ async function main() {
       mobile: { ...mobile, detailFits },
       sidebarNavOk,
       sidebar: { ...sidebar, active: sidebarActive, collapsed: groupCollapsed, reexpanded: groupReexpanded, mobileNav, drawerNav },
+      commandPaletteOk,
+      cmdk: { ...paletteOpened, filtered, navLedger, navDrawer, firstActive, afterDown, escClosed, focusRestored, mutClean: palMutBefore === palMutAfter },
       delegationEdgesOk,
       deleg: { offBefore: delegOffBefore, ...delegOn, offAfter: delegOffAfter },
       delegateOk,

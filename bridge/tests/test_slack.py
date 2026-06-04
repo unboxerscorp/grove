@@ -22,6 +22,7 @@ from grove_bridge.slack import (
     SlackConfigStore,
     SlackConfirmationStore,
     SlackConnector,
+    SlackDigestConfig,
     SlackEvent,
     SlackSdkClient,
     mask_token,
@@ -878,6 +879,7 @@ def command_connector(
     clock: MutableClock | None = None,
     intake_enabled: bool = False,
     intake_assignee: str | None = None,
+    digest_config: SlackDigestConfig | None = None,
 ) -> SlackConnector:
     command_clock = clock or MutableClock()
     return SlackConnector(
@@ -899,6 +901,7 @@ def command_connector(
             intake_enabled=intake_enabled,
             intake_assignee=intake_assignee,
         ),
+        digest_config=digest_config,
     )
 
 
@@ -1433,6 +1436,172 @@ def test_slack_triage_announcement_skips_clean_and_same_hash_updates(tmp_path: P
     threads = store.list_slack_threads(mode=slack_module.TRIAGE_ANNOUNCEMENT_MODE)
     assert [(thread.channel_id, thread.thread_ts) for thread in threads] == [("C123", "ts-1")]
     assert threads[0].node is not None
+
+
+def test_slack_digest_upsert_skips_redundant_updates_and_redacts(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    ready = store.create_task(
+        board="main",
+        title="Ready xoxb-" + ("a" * 44),
+        body="See /Users/chopin/private and ada@example.com",
+        assignee="worker",
+        metadata={"agent": "codex"},
+    )
+    running = store.create_task(
+        board="main",
+        title="Running",
+        body=None,
+        assignee="agy",
+        status="running",
+        metadata={"agent": "agy", "cost_usd": 999.0},
+    )
+    blocked = store.create_task(
+        board="main",
+        title="Blocked /Applications/Secret.app ada@example.com",
+        body=None,
+        assignee="worker",
+        status="blocked",
+        metadata={"needs_human": True},
+    )
+    slack = FakeSlackClient()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+        digest_config=SlackDigestConfig(
+            board="main",
+            channel="C123",
+            enabled=True,
+            dry_run=False,
+            node_names=frozenset({"worker", "agy"}),
+        ),
+    )
+
+    first_ts = connector.upsert_digest()
+    clean_ts = connector.upsert_digest()
+    connector._digest_dirty = True
+    same_hash_ts = connector.upsert_digest()
+    store.create_task(board="main", title="New ready", body=None, assignee=None)
+    connector._digest_dirty = True
+    updated_ts = connector.upsert_digest()
+
+    assert first_ts == "ts-1"
+    assert clean_ts == "ts-1"
+    assert same_hash_ts == "ts-1"
+    assert updated_ts == "ts-1"
+    assert len(slack.posts) == 1
+    assert len(slack.updates) == 1
+    assert "ready=1 running=1 blocked=1" in slack.posts[0][1]
+    assert "ready=2 running=1 blocked=1" in slack.updates[0][2]
+    rendered = json.dumps([slack.blocks, slack.updates], default=str)
+    assert "agy cost" in rendered
+    assert "unknown" in rendered
+    assert "999.0" not in rendered
+    assert "xoxb-" not in rendered
+    assert "/Users" not in rendered
+    assert "/Applications" not in rendered
+    assert "ada@example.com" not in rendered
+    assert "[pii]" in rendered
+    assert store.get_task(board="main", task_id=ready.id).status == "ready"
+    assert store.get_task(board="main", task_id=running.id).status == "running"
+    assert store.get_task(board="main", task_id=blocked.id).status == "blocked"
+    audits = store.list_audit_events(board="main", action="digest_post")
+    assert len(audits) == 1
+
+
+def test_slack_digest_default_off_and_dry_run_send_nothing(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(board="main", title="Ready", body=None, assignee=None)
+    default_slack = FakeSlackClient()
+    default_connector = SlackConnector(
+        store=store,
+        slack_client=default_slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+        digest_config=SlackDigestConfig(board="main", channel="C123"),
+    )
+    dry_run_slack = FakeSlackClient()
+    dry_run_connector = SlackConnector(
+        store=store,
+        slack_client=dry_run_slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+        digest_config=SlackDigestConfig(board="main", channel="C123", enabled=True),
+    )
+
+    assert default_connector.upsert_digest() is None
+    assert dry_run_connector.upsert_digest() is None
+    assert default_slack.posts == []
+    assert dry_run_slack.posts == []
+    assert dry_run_slack.updates == []
+
+
+def test_slack_digest_reminder_is_bounded_and_read_only(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board="main")
+    store.add_notify_sub(
+        board="main",
+        task_id=task.id,
+        channel_kind="slack",
+        room_id="C123",
+        thread_id="human-thread",
+    )
+    clock = MutableClock(now=store.get_task(board="main", task_id=task.id).updated_at + 20)
+    slack = FakeSlackClient()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+        digest_config=SlackDigestConfig(
+            board="main",
+            channel="C123",
+            enabled=True,
+            dry_run=False,
+            reminder_enabled=True,
+            reminder_after_seconds=10,
+            max_reminders=1,
+            clock=clock,
+        ),
+    )
+
+    first = connector.poll_digest_reminders()
+    second = connector.poll_digest_reminders()
+
+    assert first == 1
+    assert second == 0
+    assert slack.posts == [("C123", slack.posts[0][1], "human-thread")]
+    assert "Reminder 1/1" in slack.posts[0][1]
+    reminders = store.list_slack_threads(task_id=task.id, mode=slack_module.DIGEST_REMINDER_MODE)
+    assert len(reminders) == 1
+    assert store.get_task(board="main", task_id=task.id).status == "blocked"
+    assert len(store.list_comments(board="main", task_id=task.id)) == 0
+
+
+def test_slack_digest_config_command_is_operator_only(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    slack = FakeSlackClient()
+    connector = command_connector(
+        store,
+        slack,
+        digest_config=SlackDigestConfig(board="main", channel="C123"),
+    )
+
+    assert connector.handle_event(slack_event("UVIEW", "digest enable"))
+    assert connector.digest_config is not None
+    assert connector.digest_config.enabled is False
+    assert "Denied" in slack.posts[-1][1]
+
+    assert connector.handle_event(slack_event("UOP", "digest enable", ts="555.666"))
+    assert connector.digest_config.enabled is True
+    assert "enabled" in slack.posts[-1][1]
+    audits = store.list_audit_events(board="main", action="digest")
+    assert [event.payload["status"] for event in audits] == ["denied", "ok"]
 
 
 def test_slack_connector_ignores_non_message_events(tmp_path: Path) -> None:

@@ -11,6 +11,8 @@ import { PresenceIndicator } from "./components/PresenceIndicator";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { AuthPanel } from "./components/AuthPanel";
 import { AggregationPanel } from "./components/AggregationPanel";
+import { CommandPalette } from "./components/CommandPalette";
+import type { PaletteCommand } from "./components/CommandPalette";
 import { ConnectPanel } from "./components/ConnectPanel";
 import { CostPanel } from "./components/CostPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
@@ -191,6 +193,33 @@ export function App() {
   };
   const drawerOpen = (d: "audit" | "chain" | "inbox") =>
     d === "audit" ? auditOpen : d === "chain" ? chainOpen : inboxOpen;
+
+  // Command palette (Cmd/Ctrl-K): navigation-only jump to any view/drawer.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // Every sidebar view/drawer as a palette command — routing only, no mutation.
+  const paletteCommands: PaletteCommand[] = NAV_GROUPS.flatMap((g) =>
+    g.items.map((it) => {
+      const name = it.kind === "view" ? it.view : it.drawer;
+      return {
+        id: `${it.kind}:${name}`,
+        name,
+        label: t(it.labelKey),
+        group: t(g.labelKey),
+        icon: it.icon,
+        run: it.kind === "view" ? () => onNav(() => setView(it.view)) : () => onNav(() => openDrawer(it.drawer)),
+      };
+    }),
+  );
 
   const loadProjects = useCallback(
     () =>
@@ -448,8 +477,18 @@ export function App() {
           )}
         </div>
 
-        {/* Minimal top bar: presence / health / auth / language only. */}
+        {/* Minimal top bar: command palette / presence / health / auth / language. */}
         <div className="dr-top__right">
+          <button
+            type="button"
+            className="cmdk-trigger"
+            onClick={() => setPaletteOpen(true)}
+            aria-label={t("cmdk.open")}
+            aria-keyshortcuts="Meta+K Control+K"
+            title={t("cmdk.open")}
+          >
+            <span className="cmdk-trigger__icon" aria-hidden="true">⌘K</span>
+          </button>
           <PresenceIndicator liveTick={liveTick} projectTick={projectTick} />
           <HealthDot />
           <span className={cx("dr-auth", AUTH_REQUIRED ? "is-secured" : "is-local")}>
@@ -607,6 +646,10 @@ export function App() {
         onAnswered={() => setLiveTick((x) => x + 1)}
         onClose={() => setInboxOpen(false)}
       />
+      {/* Mount fresh per open so query/selection always start clean. */}
+      {paletteOpen && (
+        <CommandPalette open onClose={() => setPaletteOpen(false)} commands={paletteCommands} />
+      )}
       <OnboardingWizard
         projectCount={projects.length}
         onProjectReady={(name) => {

@@ -14,7 +14,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Mapping, MutableSequence, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
@@ -30,6 +30,8 @@ HUMAN_GATE_MODE = "human_gate"
 HUMAN_GATE_PENDING_MODE = "human_gate_pending"
 HUMAN_GATE_METADATA_EVENT_TYPE = "grove_human_gate"
 TRIAGE_ANNOUNCEMENT_MODE = "triage_announcement"
+DIGEST_ANNOUNCEMENT_MODE = "digest_announcement"
+DIGEST_REMINDER_MODE = "digest_reminder"
 INTAKE_CONFIRM_ACTION_ID = "grove_intake_confirm"
 INTAKE_ANSWER_ONLY_ACTION_ID = "grove_intake_answer_only"
 THREAD_CONTEXT_TTL_SECONDS = 600
@@ -208,6 +210,28 @@ class SlackCommandConfig:
     clock: Callable[[], float] = time.time
     intake_enabled: bool = False
     intake_assignee: str | None = None
+
+
+@dataclass(frozen=True)
+class SlackDigestConfig:
+    board: str
+    channel: str | None = None
+    enabled: bool = False
+    dry_run: bool = True
+    interval_seconds: int = 300
+    reminder_enabled: bool = False
+    reminder_after_seconds: int = 3600
+    max_reminders: int = 1
+    node_names: frozenset[str] = field(default_factory=frozenset)
+    clock: Callable[[], float] = time.time
+
+    def __post_init__(self) -> None:
+        if self.interval_seconds <= 0:
+            raise ValueError("digest interval must be positive")
+        if self.reminder_after_seconds < 0:
+            raise ValueError("reminder window must be non-negative")
+        if self.max_reminders < 0:
+            raise ValueError("max reminders must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -655,6 +679,7 @@ class SlackConnector:
         human_gate: HumanGateConfig,
         chat_route: ChatRouteConfig,
         command_config: SlackCommandConfig | None = None,
+        digest_config: SlackDigestConfig | None = None,
         confirmation_store: SlackConfirmationStore | None = None,
         intent_classifier: SlackIntentClassifier | None = None,
     ) -> None:
@@ -664,6 +689,7 @@ class SlackConnector:
         self.human_gate = human_gate
         self.chat_route = chat_route
         self.command_config = command_config
+        self.digest_config = digest_config
         self.intent_classifier = intent_classifier or BoundedSlackIntentClassifier()
         self.confirmations = confirmation_store or (
             SlackConfirmationStore(
@@ -675,6 +701,8 @@ class SlackConnector:
         )
         self._locks: dict[str, threading.Lock] = {}
         self._triage_announcement_dirty = True
+        self._digest_dirty = True
+        self._last_digest_poll_at = 0.0
         self._thread_contexts: dict[str, SlackThreadContext] = {}
 
     def poll_human_gates(self) -> int:
@@ -954,6 +982,179 @@ class SlackConnector:
                 return thread
         return None
 
+    def poll_digest(self) -> int:
+        config = self.digest_config
+        if config is None or not config.enabled:
+            return 0
+        now = config.clock()
+        sent = 0
+        if now - self._last_digest_poll_at >= config.interval_seconds:
+            self._last_digest_poll_at = now
+            if self.upsert_digest() is not None:
+                sent += 1
+        sent += self.poll_digest_reminders()
+        return sent
+
+    def upsert_digest(self, *, channel: str | None = None) -> str | None:
+        config = self.digest_config
+        if config is None or not config.enabled:
+            return None
+        target_channel = channel or config.channel or self.human_gate.channel
+        if target_channel is None:
+            return None
+        existing = self._existing_digest(channel=target_channel)
+        if config.dry_run:
+            return existing.thread_ts if existing is not None else None
+        if existing is not None and not self._digest_dirty:
+            return existing.thread_ts
+        tasks = self.store.list_tasks(board=config.board, limit=200)
+        message = _build_digest_message(
+            board=config.board,
+            tasks=tasks,
+            runs=self.store.list_runs_for_board(board=config.board),
+            node_names=config.node_names,
+        )
+        content_hash = _block_message_hash(message)
+        if existing is not None:
+            if existing.node == content_hash:
+                self._digest_dirty = False
+                return existing.thread_ts
+            try:
+                self.slack_client.update_message(
+                    channel=target_channel,
+                    ts=existing.thread_ts,
+                    text=message.text,
+                    blocks=message.blocks,
+                )
+            except Exception:
+                self._digest_dirty = True
+                raise
+            self.store.upsert_slack_thread(
+                board=config.board,
+                task_id=None,
+                team_id="",
+                channel_id=target_channel,
+                thread_ts=existing.thread_ts,
+                mode=DIGEST_ANNOUNCEMENT_MODE,
+                node=content_hash,
+            )
+            self._digest_dirty = False
+            self._audit_digest(action="digest_update", status="ok")
+            return existing.thread_ts
+        try:
+            ts = self.slack_client.post_message(
+                channel=target_channel,
+                text=message.text,
+                blocks=message.blocks,
+            )
+        except Exception:
+            self._digest_dirty = True
+            raise
+        self.store.upsert_slack_thread(
+            board=config.board,
+            task_id=None,
+            team_id="",
+            channel_id=target_channel,
+            thread_ts=ts,
+            mode=DIGEST_ANNOUNCEMENT_MODE,
+            node=content_hash,
+        )
+        self._digest_dirty = False
+        self._audit_digest(action="digest_post", status="ok")
+        return ts
+
+    def poll_digest_reminders(self) -> int:
+        config = self.digest_config
+        if (
+            config is None
+            or not config.enabled
+            or not config.reminder_enabled
+            or config.dry_run
+            or config.max_reminders <= 0
+        ):
+            return 0
+        target_channel = config.channel or self.human_gate.channel
+        if target_channel is None:
+            return 0
+        now = int(config.clock())
+        sent = 0
+        for task in self.store.list_tasks(board=config.board, status="blocked"):
+            if task.updated_at + config.reminder_after_seconds > now:
+                continue
+            reminders = [
+                thread
+                for thread in self.store.list_slack_threads(
+                    task_id=task.id,
+                    mode=DIGEST_REMINDER_MODE,
+                )
+                if thread.channel_id == target_channel
+            ]
+            if len(reminders) >= config.max_reminders:
+                continue
+            latest = max((thread.created_at for thread in reminders), default=task.updated_at)
+            if reminders and latest + config.reminder_after_seconds > now:
+                continue
+            step = len(reminders) + 1
+            text = _digest_reminder_text(task=task, step=step, max_reminders=config.max_reminders)
+            ts = self.slack_client.post_message(
+                channel=target_channel,
+                text=text,
+                thread_ts=_task_slack_thread_ts(
+                    self.store,
+                    board=config.board,
+                    task=task,
+                    channel=target_channel,
+                ),
+            )
+            self.store.upsert_slack_thread(
+                board=config.board,
+                task_id=task.id,
+                team_id="",
+                channel_id=target_channel,
+                thread_ts=ts,
+                mode=DIGEST_REMINDER_MODE,
+                node=f"reminder:{step}",
+            )
+            self._audit_digest(
+                action="digest_reminder",
+                status="ok",
+                task_id=task.id,
+                summary=f"reminder {step}",
+                payload={"step": step, "max_reminders": config.max_reminders},
+            )
+            sent += 1
+        return sent
+
+    def _existing_digest(self, *, channel: str) -> SlackThread | None:
+        for thread in self.store.list_slack_threads(mode=DIGEST_ANNOUNCEMENT_MODE):
+            if thread.task_id is None and thread.channel_id == channel:
+                return thread
+        return None
+
+    def _audit_digest(
+        self,
+        *,
+        action: str,
+        status: str,
+        task_id: str | None = None,
+        summary: str | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> None:
+        config = self.digest_config
+        if config is None:
+            return
+        self.store.add_audit_event(
+            board=config.board,
+            kind="audit.slack.digest",
+            actor={"kind": "system", "id": "slack-digest", "login": "slack-digest"},
+            action=_safe_slack_text(action),
+            target={"type": "slack_digest", "id": _safe_slack_text(config.channel or "")},
+            task_id=task_id,
+            status=status,
+            summary=_safe_slack_text(summary or action),
+            payload={str(key): _safe_slack_text(value) for key, value in (payload or {}).items()},
+        )
+
     def _handle_read_only_query(self, event: SlackEvent, *, thread_ts: str) -> bool:
         config = self.command_config
         if config is None or not config.intake_enabled:
@@ -1044,6 +1245,7 @@ class SlackConnector:
             "bug",
             "feedback",
             "task",
+            "digest",
         }:
             return False
         config = self.command_config
@@ -1095,6 +1297,14 @@ class SlackConnector:
                 args=tuple(parts[1:]),
             )
             return True
+        if command == "digest":
+            self._handle_digest_command(
+                event,
+                actor=actor,
+                thread_ts=thread_ts,
+                args=tuple(parts[1:]),
+            )
+            return True
         if actor.role not in {"admin", "operator"}:
             self._audit_slack_command(
                 command=command,
@@ -1117,6 +1327,83 @@ class SlackConnector:
         )
         self.slack_client.post_message(channel=event.channel, text=preview, thread_ts=thread_ts)
         return True
+
+    def _handle_digest_command(
+        self,
+        event: SlackEvent,
+        *,
+        actor: SlackCommandMember,
+        thread_ts: str,
+        args: tuple[str, ...],
+    ) -> None:
+        if actor.role not in {"admin", "operator"}:
+            self._audit_slack_command(
+                command="digest",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="denied",
+                summary="insufficient role",
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Denied: operator or admin role is required for digest config.",
+                thread_ts=thread_ts,
+            )
+            return
+        if self.digest_config is None:
+            self._audit_slack_command(
+                command="digest",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="denied",
+                summary="digest is not configured",
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Slack digest is not configured for this connector.",
+                thread_ts=thread_ts,
+            )
+            return
+        action = args[0].lower() if args else "status"
+        if action == "status":
+            response = _digest_config_status_text(self.digest_config)
+        elif action == "enable":
+            self.digest_config = replace(self.digest_config, enabled=True)
+            self._digest_dirty = True
+            response = "Slack digest enabled."
+        elif action == "disable":
+            self.digest_config = replace(self.digest_config, enabled=False)
+            response = "Slack digest disabled."
+        elif action in {"dry-run-on", "dryrun-on"}:
+            self.digest_config = replace(self.digest_config, dry_run=True)
+            response = "Slack digest dry-run enabled."
+        elif action in {"dry-run-off", "dryrun-off", "live-on"}:
+            self.digest_config = replace(self.digest_config, dry_run=False)
+            self._digest_dirty = True
+            response = "Slack digest live sending enabled."
+        elif action == "refresh":
+            self._digest_dirty = True
+            ts = self.upsert_digest(channel=event.channel)
+            response = "Slack digest refresh queued." if ts is not None else "Slack digest dry-run."
+        else:
+            response = "Usage: digest [status|enable|disable|dry-run-on|dry-run-off|refresh]."
+        self._audit_slack_command(
+            command="digest",
+            event=event,
+            actor=_slack_member_actor(event.user, actor),
+            status="ok",
+            summary=response,
+            payload={
+                "enabled": self.digest_config.enabled,
+                "dry_run": self.digest_config.dry_run,
+                "digest_action": action,
+            },
+        )
+        self.slack_client.post_message(
+            channel=event.channel,
+            text=_safe_slack_text(response),
+            thread_ts=thread_ts,
+        )
 
     def _handle_intake_command(
         self,
@@ -1838,6 +2125,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--poll-interval", type=float, default=5.0)
     parser.add_argument("--enable-commands", action="store_true")
     parser.add_argument("--enable-intake", action="store_true")
+    parser.add_argument("--enable-digest", action="store_true")
+    parser.add_argument("--digest-live", action="store_true")
+    parser.add_argument("--digest-interval", type=int, default=300)
+    parser.add_argument("--enable-reminders", action="store_true")
+    parser.add_argument("--reminder-after-seconds", type=int, default=3600)
+    parser.add_argument("--max-reminders", type=int, default=1)
     parser.add_argument("--intake-assignee")
     parser.add_argument(
         "--command-member",
@@ -1864,6 +2157,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if node is None:
         raise SystemExit("Slack default node is required")
     command_config = None
+    command_node_names: frozenset[str] = frozenset()
+    if args.enable_commands or args.enable_intake or args.enable_digest or args.enable_reminders:
+        command_node_names = _load_command_node_names(args.grove_home, args.session)
     if args.enable_commands or args.enable_intake:
         try:
             members = _parse_command_members(args.command_members)
@@ -1872,10 +2168,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         command_config = SlackCommandConfig(
             board=args.board,
             members=members,
-            node_names=_load_command_node_names(args.grove_home, args.session),
+            node_names=command_node_names,
             intake_enabled=args.enable_intake,
             intake_assignee=args.intake_assignee,
         )
+    digest_config = SlackDigestConfig(
+        board=args.board,
+        channel=channel,
+        enabled=args.enable_digest or args.enable_reminders,
+        dry_run=not args.digest_live,
+        interval_seconds=args.digest_interval,
+        reminder_enabled=args.enable_reminders,
+        reminder_after_seconds=args.reminder_after_seconds,
+        max_reminders=args.max_reminders,
+        node_names=command_node_names,
+    )
     connector = SlackConnector(
         store=SQLiteBoardStore(args.board_db_path),
         slack_client=SlackSdkClient(bot_token=config.bot_token),
@@ -1883,6 +2190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         human_gate=HumanGateConfig(board=args.board, channel=channel),
         chat_route=ChatRouteConfig(default_node=node),
         command_config=command_config,
+        digest_config=digest_config,
     )
     socket_client = _build_socket_client(config=config, connector=connector)
     socket_client.connect()
@@ -1893,6 +2201,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 connector.upsert_triage_announcement()
             except Exception as exc:
                 LOGGER.warning("Slack triage announcement update failed: %s", _safe_log_error(exc))
+            try:
+                connector.poll_digest()
+            except Exception as exc:
+                LOGGER.warning("Slack digest update failed: %s", _safe_log_error(exc))
             time.sleep(args.poll_interval)
     finally:
         socket_client.close()
@@ -2591,6 +2903,139 @@ def _build_triage_announcement_message(*, board: str, tasks: Sequence[Task]) -> 
         }
     )
     return SlackBlockMessage(text=text, blocks=tuple(blocks))
+
+
+def _build_digest_message(
+    *,
+    board: str,
+    tasks: Sequence[Task],
+    runs: Sequence[object],
+    node_names: frozenset[str],
+) -> SlackBlockMessage:
+    counts = _task_status_counts(tasks)
+    blocked = [task for task in tasks if task.status == "blocked"]
+    running = [task for task in tasks if task.status == "running"]
+    nodes = sorted(node_names | {task.assignee for task in tasks if task.assignee})
+    node_lines = [
+        f"- `{_safe_slack_text(node)}`: {_node_digest_status(node=node, tasks=tasks)}"
+        for node in nodes[:20]
+    ]
+    if not node_lines:
+        node_lines = ["No exposed nodes are configured."]
+    blocked_lines = _digest_task_lines(blocked, empty="No blocked tasks.")
+    running_lines = _digest_task_lines(running, empty="No running tasks.")
+    agy_line = (
+        "*agy cost*: unknown (not estimated)"
+        if _has_agy_signal(tasks=tasks, runs=runs)
+        else "*agy cost*: unknown"
+    )
+    header = f"grove digest: {board}"
+    summary = (
+        f"*Ready*: {counts['ready']}  *Running*: {counts['running']}  "
+        f"*Blocked*: {counts['blocked']}  *Done*: {counts['done']}  "
+        f"*Other*: {counts['other']}\n"
+        f"{agy_line}\n"
+        "_Read-only notification digest; measured board state only._"
+    )
+    text = (
+        f"{header}\n"
+        f"ready={counts['ready']} running={counts['running']} blocked={counts['blocked']} "
+        f"done={counts['done']} nodes={len(nodes)} agy_cost=unknown"
+    )
+    blocks: list[Mapping[str, object]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": summary}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Blocked*\n" + blocked_lines}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Running*\n" + running_lines}},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*Nodes*\n" + "\n".join(node_lines)},
+        },
+    ]
+    return SlackBlockMessage(text=_safe_slack_text(text), blocks=tuple(blocks))
+
+
+def _digest_task_lines(tasks: Sequence[Task], *, empty: str) -> str:
+    if not tasks:
+        return empty
+    lines = [
+        f"- `{_safe_slack_text(task.id)}` {_safe_slack_text(task.title)}"
+        + (f" — {_safe_slack_text(task.assignee)}" if task.assignee else "")
+        for task in tasks[:10]
+    ]
+    if len(tasks) > 10:
+        lines.append(f"...and {len(tasks) - 10} more.")
+    return "\n".join(lines)
+
+
+def _node_digest_status(*, node: str, tasks: Sequence[Task]) -> str:
+    node_tasks = [task for task in tasks if task.assignee == node]
+    if any(task.status == "running" for task in node_tasks):
+        return "running"
+    if any(task.status == "blocked" for task in node_tasks):
+        return "blocked"
+    return "idle"
+
+
+def _has_agy_signal(*, tasks: Sequence[Task], runs: Sequence[object]) -> bool:
+    for task in tasks:
+        if _agent_value(task.metadata) == "agy" or _looks_agy(task.assignee):
+            return True
+    for run in runs:
+        metadata = getattr(run, "metadata", None)
+        node_id = getattr(run, "node_id", None)
+        if isinstance(metadata, Mapping) and _agent_value(metadata) == "agy":
+            return True
+        if _looks_agy(node_id):
+            return True
+    return False
+
+
+def _agent_value(metadata: Mapping[str, object]) -> str | None:
+    raw = metadata.get("agent")
+    if isinstance(raw, str):
+        return raw.strip().lower()
+    raw_nested = metadata.get("node")
+    if isinstance(raw_nested, Mapping):
+        raw_agent = raw_nested.get("agent")
+        if isinstance(raw_agent, str):
+            return raw_agent.strip().lower()
+    return None
+
+
+def _looks_agy(value: object) -> bool:
+    return isinstance(value, str) and value.strip().lower() in {"agy", "antigravity"}
+
+
+def _digest_reminder_text(*, task: Task, step: int, max_reminders: int) -> str:
+    kind = "ask-human" if _needs_human(task) else "blocked"
+    return _safe_slack_text(
+        f"Reminder {step}/{max_reminders}: {kind} task `{task.id}` is still blocked — {task.title}"
+    )
+
+
+def _task_slack_thread_ts(
+    store: SQLiteBoardStore,
+    *,
+    board: str,
+    task: Task,
+    channel: str,
+) -> str | None:
+    for sub in store.list_notify_subs(board=board, task_id=task.id):
+        if sub.channel_kind == "slack" and sub.room_id == channel and sub.thread_id:
+            return sub.thread_id
+    for thread in store.list_slack_threads(task_id=task.id, mode=HUMAN_GATE_MODE):
+        if thread.channel_id == channel:
+            return thread.thread_ts
+    return None
+
+
+def _digest_config_status_text(config: SlackDigestConfig) -> str:
+    return _safe_slack_text(
+        "Slack digest: "
+        f"enabled={config.enabled} dry_run={config.dry_run} "
+        f"reminders={config.reminder_enabled} interval={config.interval_seconds}s"
+    )
 
 
 def _block_message_hash(message: SlackBlockMessage) -> str:
