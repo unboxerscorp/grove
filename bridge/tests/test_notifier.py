@@ -40,6 +40,7 @@ def test_notifier_factory_builds_live_local_notifier_and_trims_config() -> None:
             title="Blocked",
             body=None,
             assignee="worker",
+            reviewer=None,
             status="blocked",
             priority=0,
             workspace_kind="scratch",

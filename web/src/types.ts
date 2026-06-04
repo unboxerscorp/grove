@@ -9,8 +9,9 @@ export interface Board {
 export interface Task {
   id: string;
   title: string;
-  status: string;
+  status: string; // RAW backend status (e.g. "running") — canonicalize via workflow aliases
   assignee?: string;
+  reviewer?: string; // v1.29 per-task reviewer (web_app.py Task.reviewer)
   tenant?: string;
   body?: string;
   updated?: string | number;
@@ -72,6 +73,91 @@ export interface AssigneeCandidate {
   default?: boolean;
 }
 
+// v1.29 board workflow (web_app.py _workflow_payload). canonical_statuses +
+// columns drive the board; aliases map raw stored statuses (e.g. "running") onto
+// canonical keys (e.g. "in_progress"). Done is always visible.
+export interface WorkflowColumn {
+  key: string; // canonical column key
+  status: string;
+  stored_status?: string;
+  label: string;
+  raw_statuses: string[];
+  aliases: string[];
+  virtual?: boolean;
+  source?: string;
+}
+export interface WorkflowTransition {
+  from: string;
+  to: string;
+  requires_reason?: boolean;
+}
+export interface BoardWorkflow {
+  project?: string;
+  board?: string;
+  done_visible?: boolean;
+  canonical_statuses: string[];
+  columns: WorkflowColumn[];
+  labels?: Record<string, string>;
+  aliases?: Record<string, string>;
+  allowed_transitions?: WorkflowTransition[];
+  manual_transition?: { endpoint?: string; method?: string; body?: Record<string, unknown> };
+}
+
+// v1.29 cross-project org metadata (web_app.py _org_payload additions).
+export interface ProjectMeta {
+  name: string; // internal name (e.g. "dev10")
+  board: string;
+  display_name: string; // human label (e.g. "grove-dev")
+}
+export interface MasterMeta {
+  id: string;
+  name: string; // "GROVE MASTER"
+  label: string;
+  kind: string; // "master"
+  role?: string;
+  root?: boolean;
+  current_project?: string;
+  chat_target?: { endpoint?: string; origin_surface?: string; project?: string };
+}
+export interface ProjectLead {
+  id: string;
+  name: string; // "lead"
+  label: string; // display_name
+  project: string;
+  display_name: string;
+  status?: string;
+  node_count?: number;
+  current: boolean;
+  switch_target: string;
+  click_action?: { type?: string; project?: string };
+  chat_target?: { endpoint?: string; origin_surface?: string; project?: string };
+}
+export interface DelegationEdge {
+  from: string;
+  to: string;
+  kind: string; // implementation | review_pool | review_claim
+  task_ids?: string[];
+  count?: number;
+  latest_assigned_at?: number;
+  oldest_open_updated_at?: number;
+  stale?: boolean;
+  label?: string;
+}
+export interface DelegationHistoryItem {
+  event_id?: string;
+  cursor?: number;
+  action?: string;
+  from?: string;
+  to?: string;
+  ts?: number;
+  label?: string;
+}
+export interface Delegations {
+  current: DelegationEdge[];
+  history: DelegationHistoryItem[];
+  mode_labels?: { current?: string; history?: string };
+}
+
 export interface Org {
   nodes: OrgNode[];
   roots: string[];
@@ -80,6 +166,12 @@ export interface Org {
   // v1.27: candidate assignees + the default (project-master) for task creation.
   default_assignee?: string;
   assignee_candidates?: AssigneeCandidate[];
+  // v1.29 orch-product additions.
+  project?: ProjectMeta;
+  master?: MasterMeta;
+  project_leads?: ProjectLead[];
+  reviewer_candidates?: AssigneeCandidate[];
+  delegations?: Delegations;
 }
 
 export interface WsTicket {

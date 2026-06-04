@@ -22,6 +22,67 @@ def test_connections_enable_wal_busy_timeout_and_normal_sync(tmp_path: Path) -> 
     assert synchronous == 1
 
 
+def test_task_reviewer_column_migrates_and_status_reviewer_updates_audit(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "board.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                board_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT,
+                assignee TEXT,
+                status TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 0,
+                workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+                workspace_path TEXT,
+                branch_name TEXT,
+                claim_lock TEXT,
+                claim_expires INTEGER,
+                current_run_id TEXT,
+                last_heartbeat_at INTEGER,
+                result TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_by TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+    store = SQLiteBoardStore(db_path)
+    with store._connect() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    task = store.create_task(
+        board="main",
+        title="Needs review",
+        body=None,
+        assignee="maker",
+        reviewer="reviewer",
+    )
+    transitioned = store.set_task_status(
+        board="main",
+        task_id=task.id,
+        status="review",
+        actor={"kind": "local", "id": "lead", "login": "lead", "role": "none"},
+    )
+    changed = store.set_task_reviewer(
+        board="main",
+        task_id=task.id,
+        reviewer="qa",
+        actor={"kind": "local", "id": "lead", "login": "lead", "role": "none"},
+    )
+
+    assert "reviewer" in columns
+    assert task.reviewer == "reviewer"
+    assert transitioned.status == "review"
+    assert changed.reviewer == "qa"
+    assert store.list_audit_events(board="main", action="status-transition")
+    assert store.list_audit_events(board="main", action="reviewer-change")
+
+
 def test_claim_next_has_one_cas_winner_for_concurrent_claims(tmp_path: Path) -> None:
     db_path = tmp_path / "board.db"
     store = SQLiteBoardStore(db_path)

@@ -572,6 +572,7 @@ export function App() {
               projectTick={projectTick}
               onOpenTerminal={pickNode}
               onDelegated={() => setLiveTick((x) => x + 1)}
+              onSwitchProject={switchProject}
             />
           ) : view === "integrations" ? (
             <SlackPanel projectTick={projectTick} />

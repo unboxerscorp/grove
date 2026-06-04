@@ -5,7 +5,7 @@ import type { AuditEvent } from "../api";
 import { AGENTS, agentGlyph, COLUMNS, cx, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
-import type { OrgNode } from "../types";
+import type { Delegations, MasterMeta, OrgNode, ProjectLead } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
 import { GroveMark } from "./GroveMark";
 
@@ -530,8 +530,9 @@ export function OrgChart(props: {
   projectTick: number;
   onOpenTerminal: (pane: string) => void;
   onDelegated?: () => void;
+  onSwitchProject?: (project: string) => void;
 }) {
-  const { boardId, liveTick, projectTick, onOpenTerminal, onDelegated } = props;
+  const { boardId, liveTick, projectTick, onOpenTerminal, onDelegated, onSwitchProject } = props;
   const { t } = useI18n();
 
   const [nodes, setNodes] = useState<OrgNode[]>([]);
@@ -542,6 +543,11 @@ export function OrgChart(props: {
   const [delegEvents, setDelegEvents] = useState<AuditEvent[]>([]);
   const [showDeleg, setShowDeleg] = useState(false); // overlay off by default
   const [taskCounts, setTaskCounts] = useState<Record<string, number>>({});
+  // v1.29 cross-project org + delegation snapshot.
+  const [master, setMaster] = useState<MasterMeta | null>(null);
+  const [projectLeads, setProjectLeads] = useState<ProjectLead[]>([]);
+  const [orgDeleg, setOrgDeleg] = useState<Delegations | null>(null);
+  const [delegMode, setDelegMode] = useState<"current" | "history">("current");
 
   const [cur, setCur] = useState<Positions>({});
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -573,6 +579,9 @@ export function OrgChart(props: {
         setNodes(o.nodes ?? []);
         setRootList(o.roots ?? []);
         setChildrenMap(o.children ?? {});
+        setMaster(o.master ?? null);
+        setProjectLeads(o.project_leads ?? []);
+        setOrgDeleg(o.delegations ?? null);
         setError(null);
       })
       .catch((e: unknown) => {
@@ -837,6 +846,22 @@ export function OrgChart(props: {
     return Array.from(m.values());
   }, [delegEvents, byName]);
 
+  // v1.29: the rendered edges depend on the mode. "current" = live snapshot of
+  // open-task ownership (org.delegations.current); "history" = the cumulative
+  // audit trail (the legacy overlay). They are distinct, never conflated.
+  const delegEdges = useMemo(() => {
+    if (delegMode === "current") {
+      return (orgDeleg?.current ?? [])
+        .filter((e) => byName[e.from] && byName[e.to] && e.from !== e.to)
+        .map((e) => ({ from: e.from, to: e.to, count: e.count ?? (e.task_ids?.length ?? 1), lastTs: e.latest_assigned_at ?? 0 }));
+    }
+    return delegations;
+  }, [delegMode, orgDeleg, delegations, byName]);
+  const delegModeLabel =
+    delegMode === "current"
+      ? (orgDeleg?.mode_labels?.current ?? t("org.delegCurrentLabel"))
+      : (orgDeleg?.mode_labels?.history ?? t("org.delegHistoryLabel"));
+
   // Autonomy (inferred): nodes that self-claimed work appear as the actor of an
   // `autopickup` audit event. No backend per-node autonomy flag is exposed yet,
   // so this is a read-only inference from recent audit (V11-W2).
@@ -868,6 +893,44 @@ export function OrgChart(props: {
 
   return (
     <section className="org">
+      {/* v1.29 cross-project bar: GROVE MASTER root (opens floating chat) + project
+          leads. Current lead expands the tree below; others switch project. */}
+      {(master || projectLeads.length > 0) && (
+        <div className="org-master-bar" role="navigation" aria-label={t("org.crossProject")}>
+          {master && (
+            <button
+              type="button"
+              className="org-master"
+              data-master="1"
+              title={t("org.masterChat")}
+              onClick={() => window.dispatchEvent(new CustomEvent("grove:master-chat:open"))}
+            >
+              <span className="org-master__glyph" aria-hidden="true">◆</span>
+              {master.label || master.name}
+            </button>
+          )}
+          <span className="org-master-bar__arrow" aria-hidden="true">→</span>
+          <div className="org-pleads">
+            {projectLeads.map((pl) => (
+              <button
+                key={pl.id}
+                type="button"
+                data-project={pl.project}
+                className={cx("org-plead", pl.current && "is-current")}
+                aria-current={pl.current ? "true" : undefined}
+                title={pl.current ? t("org.leadCurrent") : t("org.leadSwitch", { p: pl.display_name })}
+                onClick={() => {
+                  if (!pl.current) onSwitchProject?.(pl.switch_target);
+                }}
+              >
+                {pl.display_name}
+                {pl.current && <span className="org-plead__dot" aria-hidden="true" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="org__toolbar">
         <div className="org__lead">
           <GroveMark size={18} className="org__mark" />
@@ -883,8 +946,8 @@ export function OrgChart(props: {
           >
             <span className="org-deleg-toggle__line" aria-hidden="true" />
             {t("org.delegEdges")}
-            {showDeleg && delegations.length > 0 && (
-              <span className="org-deleg-toggle__n">{delegations.length}</span>
+            {showDeleg && delegEdges.length > 0 && (
+              <span className="org-deleg-toggle__n">{delegEdges.length}</span>
             )}
           </button>
           <button type="button" className={cx("org-addbtn", adding && "is-open")} onClick={() => setAdding((v) => !v)}>
@@ -895,8 +958,32 @@ export function OrgChart(props: {
 
       {showDeleg && (
         <div className="org-deleg-legend" role="note">
+          {/* current vs history are distinct modes — labels never imply the audit
+              trail is the live current assignment. */}
+          <div className="org-deleg-mode" role="group" aria-label={t("org.delegMode")}>
+            <button
+              type="button"
+              data-mode="current"
+              className={cx("org-deleg-mode__btn", delegMode === "current" && "is-on")}
+              aria-pressed={delegMode === "current"}
+              onClick={() => setDelegMode("current")}
+            >
+              {t("org.delegCurrent")}
+            </button>
+            <button
+              type="button"
+              data-mode="history"
+              className={cx("org-deleg-mode__btn", delegMode === "history" && "is-on")}
+              aria-pressed={delegMode === "history"}
+              onClick={() => setDelegMode("history")}
+            >
+              {t("org.delegHistory")}
+            </button>
+          </div>
           <span className="org-deleg-legend__swatch" aria-hidden="true" />
-          {delegations.length > 0 ? t("org.delegLegend") : t("org.delegEmpty")}
+          <span className="org-deleg-legend__label" data-mode={delegMode}>
+            {delegModeLabel} · {t("org.delegCount", { n: delegMode === "current" ? delegEdges.length : (orgDeleg?.history?.length ?? delegEdges.length) })}
+          </span>
         </div>
       )}
 
@@ -978,15 +1065,15 @@ export function OrgChart(props: {
             })}
 
             {showDeleg && (
-              <g className="org-deleg-layer">
-                {delegations.map((dl) => {
+              <g className="org-deleg-layer" data-mode={delegMode}>
+                {delegEdges.map((dl) => {
                   const a = posFor(dl.from);
                   const b = posFor(dl.to);
                   const d = delegPath(a, b);
                   return (
                     <path
                       key={`${dl.from}>${dl.to}`}
-                      className="org-deleg-edge"
+                      className={cx("org-deleg-edge", delegMode === "current" && "is-current")}
                       data-deleg={`${dl.from}>${dl.to}`}
                       data-count={dl.count}
                       d={d}

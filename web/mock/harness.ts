@@ -7,8 +7,9 @@
 interface MockTask {
   id: string;
   title: string;
-  status: string;
+  status: string; // RAW stored status (e.g. "running") — FE canonicalizes via workflow aliases
   assignee?: string;
+  reviewer?: string; // v1.29 per-task reviewer
   latest_summary?: string;
   body?: string;
   tenant?: string;
@@ -21,22 +22,23 @@ const BOARDS = [
 
 const TASKS: Record<string, MockTask[]> = {
   grove: [
-    { id: "G-6", title: "Triage incoming agent reports", status: "triage", assignee: "root" },
-    { id: "G-5", title: "Task drawer: comments + runs", status: "todo", assignee: "frontend" },
+    { id: "G-6", title: "Triage incoming agent reports", status: "ready", assignee: "root" },
+    { id: "G-5", title: "Task drawer: comments + runs", status: "ready", assignee: "frontend" },
     {
       id: "G-1",
+      // raw stored status "running" canonicalizes to the in_progress column.
       title: "Stand up the dev-room SPA",
       status: "running",
       assignee: "frontend",
       latest_summary: "wiring the live xterm stream into the cockpit",
     },
-    { id: "G-2", title: "Board event-tail over WebSocket", status: "review", assignee: "backend" },
+    { id: "G-2", title: "Board event-tail over WebSocket", status: "review", assignee: "backend", reviewer: "researcher" },
     { id: "G-4", title: "Single-use ws-ticket auth", status: "ready", assignee: "backend" },
     { id: "G-7", title: "Pane resize policy (read-only beta)", status: "blocked", assignee: "frontend" },
     { id: "G-3", title: "Node registry + tmux pane exposure", status: "done", assignee: "backend" },
   ],
   infra: [
-    { id: "I-1", title: "Static build pipeline", status: "todo", assignee: "docs" },
+    { id: "I-1", title: "Static build pipeline", status: "ready", assignee: "docs" },
     { id: "I-2", title: "Reverse proxy + TLS", status: "running", assignee: "root" },
     { id: "I-3", title: "Nightly backups", status: "done", assignee: "docs" },
   ],
@@ -44,6 +46,65 @@ const TASKS: Record<string, MockTask[]> = {
   // leaves no residue from the default project's boards/tasks.
   "solo-x": [{ id: "S-1", title: "solo task", status: "running", assignee: "solo" }],
 };
+
+// v1.29 workflow contract — mirrors web_app.py WORKFLOW_ALIASES + _workflow_columns
+// + MANUAL_TASK_STATUS_ALIASES. Raw stored statuses map onto canonical keys; the
+// manual PATCH maps canonical inputs back to stored values (in_progress→running).
+const MOCK_WORKFLOW_ALIASES: Record<string, string> = {
+  running: "in_progress",
+  claimed: "in_progress",
+  executing: "in_progress",
+  complete: "done",
+  completed: "done",
+  "ask-human": "ask_human",
+  ask_human_pending: "ask_human",
+};
+const MOCK_MANUAL_STATUS_ALIASES: Record<string, string> = {
+  ready: "ready",
+  in_progress: "running",
+  running: "running",
+  claimed: "running",
+  executing: "running",
+  review: "review",
+  done: "done",
+  complete: "done",
+  completed: "done",
+  blocked: "blocked",
+  // ask_human is intentionally NOT a manual alias (P1): it's a virtual/display-only
+  // column, so a manual PATCH to "ask_human" falls through to 400 invalid status.
+  archived: "archived",
+};
+const MOCK_WORKFLOW_COLUMNS = [
+  { key: "ready", status: "ready", label: "Ready", raw_statuses: ["ready"], aliases: [] as string[], virtual: false },
+  { key: "in_progress", status: "in_progress", stored_status: "running", label: "In Progress", raw_statuses: ["running", "in_progress", "claimed", "executing"], aliases: ["running", "claimed", "executing"], virtual: false },
+  { key: "review", status: "review", label: "Review", raw_statuses: ["review"], aliases: [] as string[], virtual: false },
+  { key: "blocked", status: "blocked", label: "Blocked", raw_statuses: ["blocked"], aliases: [] as string[], virtual: false },
+  { key: "ask_human", status: "ask_human", label: "Ask Human", raw_statuses: ["blocked"], aliases: ["ask-human", "ask_human_pending"], virtual: true, source: "status=blocked and metadata.needs_human=true" },
+  { key: "done", status: "done", label: "Done", raw_statuses: ["done", "complete", "completed"], aliases: ["complete", "completed"], virtual: false },
+];
+function mockWorkflowPayload(project: string, board: string): Record<string, unknown> {
+  return {
+    project,
+    board,
+    done_visible: true,
+    canonical_statuses: MOCK_WORKFLOW_COLUMNS.map((c) => c.key),
+    columns: MOCK_WORKFLOW_COLUMNS,
+    labels: Object.fromEntries(MOCK_WORKFLOW_COLUMNS.map((c) => [c.key, c.label])),
+    aliases: MOCK_WORKFLOW_ALIASES,
+    // No transition targets the virtual ask_human column, and none requires a
+    // reason — mirrors the backend P1 contract.
+    allowed_transitions: [
+      { from: "ready", to: "in_progress", requires_reason: false },
+      { from: "in_progress", to: "review", requires_reason: false },
+      { from: "in_progress", to: "done", requires_reason: false },
+      { from: "review", to: "done", requires_reason: false },
+      { from: "review", to: "in_progress", requires_reason: false },
+      { from: "ready", to: "blocked", requires_reason: false },
+      { from: "blocked", to: "ready", requires_reason: false },
+    ],
+    manual_transition: { endpoint: "/api/tasks/{task_id}/status", method: "PATCH", body: { status: "review", reviewer: "optional-node" } },
+  };
+}
 
 // N1 scope target: switching to this project must re-scope org/board/nodes to a
 // single distinct node with none of the default project's data bleeding through.
@@ -68,6 +129,17 @@ const ORG_NODES: OrgNodeMock[] = [
   { name: "researcher", agent: "claude", role: "리서치", parent: "root", group: "research", tmux_pane: "grove:0.3", session_id: "sess-re", status: "error" },
   { name: "docs", agent: "codex", role: "문서", parent: "backend", group: "build", tmux_pane: "grove:1.0", session_id: "sess-docs", status: "done" },
 ];
+const LEAD_NODE: OrgNodeMock = {
+  name: "lead",
+  agent: "claude",
+  role: "orchestrator",
+  description: "External lead/orchestrator.",
+  parent: null,
+  group: "",
+  tmux_pane: "",
+  session_id: "",
+  status: "external",
+};
 
 // v1.28 access flags — mirror web_app.py NodeRecord + _pane_allowed: a node with
 // a valid worker pane is fully exposed; the LEAD pane (window.pane == 0.0) is
@@ -135,17 +207,19 @@ const ASSIGNEE_CANDIDATES = [
   { name: "lead", agent: "claude", role: "none", status: "external", default: false },
 ];
 
-function buildOrg() {
+function buildOrg(proj = "dev10") {
+  const orgNodes = [...ORG_NODES, LEAD_NODE];
   const children = childMap();
   const groups: Record<string, string[]> = {};
   for (const n of ORG_NODES) if (n.group) (groups[n.group] ??= []).push(n.name);
   return {
-    nodes: ORG_NODES.map((n) => ({ ...n, children: children[n.name] ?? [], ...nodeAccessFlags(n.tmux_pane) })),
-    roots: ORG_NODES.filter((n) => !n.parent).map((n) => n.name),
+    nodes: orgNodes.map((n) => ({ ...n, children: children[n.name] ?? [], ...nodeAccessFlags(n.tmux_pane) })),
+    roots: orgNodes.filter((n) => !n.parent).map((n) => n.name),
     groups,
     children,
     default_assignee: "project-master",
     assignee_candidates: ASSIGNEE_CANDIDATES,
+    ...mockOrgExtras(proj),
   };
 }
 
@@ -161,6 +235,72 @@ function buildSoloOrg() {
     children: {} as Record<string, string[]>,
     default_assignee: "solo",
     assignee_candidates: [{ name: "solo", agent: "claude", role: "혼자", status: "running", default: true }],
+    ...mockOrgExtras(SOLO_PROJECT),
+  };
+}
+
+// v1.29 cross-project org metadata — mirrors web_app.py _org_payload additions:
+// project {name,board,display_name}, GROVE MASTER root, project_leads (current +
+// switch targets), reviewer_candidates, delegations {current(open tasks), history}.
+function mockCanon(raw: string): string {
+  const s = (raw ?? "").trim().toLowerCase().replace(/-/g, "_");
+  return MOCK_WORKFLOW_ALIASES[s] ?? s;
+}
+function mockOrgExtras(proj: string): Record<string, unknown> {
+  const board = proj === SOLO_PROJECT ? "solo-x" : "grove";
+  const open = (TASKS[board] ?? []).filter((t) => mockCanon(t.status) !== "done");
+  type Edge = { from: string; to: string; kind: string; task_ids: string[]; count: number; latest_assigned_at: number; oldest_open_updated_at: number; stale: boolean; label: string };
+  const edges: Record<string, Edge> = {};
+  const add = (from: string, to: string, kind: string, id: string) => {
+    const key = `${from}|${to}|${kind}`;
+    const e = (edges[key] ??= { from, to, kind, task_ids: [], count: 0, latest_assigned_at: AUDIT_TS0, oldest_open_updated_at: AUDIT_TS0, stale: false, label: "Current delegation: open tasks" });
+    e.task_ids.push(id);
+    e.count += 1;
+  };
+  // The mock org's orchestrator node is "root" (grove:0.0) — use it as the edge
+  // source so current-delegation edges resolve against real graph nodes.
+  for (const t of open) {
+    if (t.assignee) add("root", t.assignee, "implementation", t.id);
+    if (t.reviewer) add(t.assignee ?? "root", t.reviewer, "review_pool", t.id);
+  }
+  const current = Object.values(edges).sort((a, b) => (a.from + a.to).localeCompare(b.from + b.to));
+  const history = [
+    { event_id: "de1", cursor: 2, action: "delegate", from: "lead", to: "backend", ts: AUDIT_TS0 + 30, label: "Delegation history: delegate" },
+    { event_id: "de2", cursor: 5, action: "assign", from: "lead", to: "frontend", ts: AUDIT_TS0 + 100, label: "Delegation history: assign" },
+    { event_id: "de3", cursor: 8, action: "reviewer-set", from: "backend", to: "researcher", ts: AUDIT_TS0 + 150, label: "Delegation history: reviewer-set" },
+  ];
+  return {
+    project: { name: proj, board, display_name: projectDisplayName(proj) },
+    master: {
+      id: "grove-master",
+      name: "GROVE MASTER",
+      label: "GROVE MASTER",
+      kind: "master",
+      role: "orchestrator",
+      root: true,
+      current_project: proj,
+      chat_target: { endpoint: "/api/master/chat", origin_surface: "floating_web_chat", project: proj },
+    },
+    project_leads: PROJECTS.map((pr) => ({
+      id: `project:${pr.name}:lead`,
+      name: "lead",
+      label: pr.display_name,
+      project: pr.name,
+      display_name: pr.display_name,
+      status: pr.status,
+      node_count: pr.node_count,
+      current: pr.name === proj,
+      switch_target: pr.name,
+      click_action: { type: "switch_project", project: pr.name },
+      chat_target: { endpoint: "/api/master/chat", origin_surface: "floating_web_chat", project: pr.name },
+    })),
+    reviewer_candidates:
+      proj === SOLO_PROJECT ? [{ name: "solo", agent: "claude", role: "혼자", status: "running", default: true }] : ASSIGNEE_CANDIDATES,
+    delegations: {
+      current,
+      history,
+      mode_labels: { current: "Current delegation: open tasks only", history: "Delegation history: audit trail summary" },
+    },
   };
 }
 
@@ -912,12 +1052,17 @@ interface ProjectMock {
   workspace: string;
   node_count: number;
   status: string;
+  display_name: string;
 }
+// internal name (e.g. dev10) stays the identity; display_name is the human label.
 const PROJECTS: ProjectMock[] = [
-  { name: "dev10", workspace: "~/dev/grove", node_count: 5, status: "running" },
-  { name: "infra-ops", workspace: "~/dev/infra", node_count: 2, status: "idle" },
-  { name: SOLO_PROJECT, workspace: "~/dev/solo", node_count: 1, status: "running" },
+  { name: "dev10", workspace: "~/dev/grove", node_count: 5, status: "running", display_name: "grove-dev" },
+  { name: "infra-ops", workspace: "~/dev/infra", node_count: 2, status: "idle", display_name: "grove-infra" },
+  { name: SOLO_PROJECT, workspace: "~/dev/solo", node_count: 1, status: "running", display_name: "solo-x" },
 ];
+function projectDisplayName(name: string): string {
+  return PROJECTS.find((p) => p.name === name)?.display_name ?? name;
+}
 
 function json(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -1820,19 +1965,21 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const created: MockTask = {
         id: `N-${++taskSeq}`,
         title: payload.title ?? "untitled",
-        status: payload.status || "triage",
+        status: payload.status || "ready",
         assignee: payload.assignee,
+        reviewer: payload.reviewer,
         body: payload.body,
       };
       (TASKS[board] ??= []).unshift(created);
       diag.createdTask = created.title;
       diag.assignedAssignee = created.assignee ?? "";
       // Full record of the last task POST so verify can assert the delegate
-      // contract (assignee + status "ready" + optional body) precisely.
+      // contract (assignee + status "ready" + optional body + reviewer) precisely.
       diag.lastTaskPost = {
         board,
         title: created.title,
         assignee: created.assignee ?? "",
+        reviewer: created.reviewer ?? "",
         status: created.status,
         hasBody: Boolean(created.body),
       };
@@ -1844,6 +1991,50 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     if (status) list = list.filter((t) => t.status === status);
     if (assignee) list = list.filter((t) => (t.assignee ?? "").toLowerCase().includes(assignee.toLowerCase()));
     return Promise.resolve(json(list));
+  }
+
+  m = p.match(/^\/api\/boards\/([^/]+)\/workflow$/);
+  if (m) {
+    // Mirror web_app.py board_workflow_endpoint/_workflow_payload.
+    const rawBoard = decodeURIComponent(m[1]!);
+    const boardProj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const projectBoard = boardProj === SOLO_PROJECT ? "solo-x" : "grove";
+    const board = rawBoard === "default" || rawBoard === "main" ? projectBoard : rawBoard;
+    diag.workflowFetched = board;
+    return Promise.resolve(json(mockWorkflowPayload(boardProj, board)));
+  }
+
+  m = p.match(/^\/api\/tasks\/([^/]+)\/status$/);
+  if (m && method === "PATCH") {
+    // Mirror web_app.py update_task_status_endpoint: operator-only; canonical
+    // status maps to stored (in_progress→running); optional reviewer in same call.
+    if (viewerMode)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "task status mutation requires operator role" }), { status: 403 }));
+    const id = decodeURIComponent(m[1]!);
+    const task = findTask(id);
+    if (!task) return Promise.resolve(new Response(JSON.stringify({ detail: "task not found" }), { status: 404 }));
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as { status?: string; reviewer?: string | null };
+    const canon = String(body.status ?? "").trim().toLowerCase().replace(/-/g, "_");
+    const stored = MOCK_MANUAL_STATUS_ALIASES[canon];
+    if (!stored) return Promise.resolve(new Response(JSON.stringify({ detail: "invalid task status" }), { status: 400 }));
+    task.status = stored;
+    if (body.reviewer !== undefined) task.reviewer = body.reviewer ? body.reviewer : undefined;
+    diag.statusPatched = { id, status: stored, canonical: canon };
+    return Promise.resolve(json({ ...task }));
+  }
+
+  m = p.match(/^\/api\/tasks\/([^/]+)\/reviewer$/);
+  if (m && method === "PATCH") {
+    // Mirror web_app.py update_task_reviewer_endpoint: operator-only; null clears.
+    if (viewerMode)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "task reviewer mutation requires operator role" }), { status: 403 }));
+    const id = decodeURIComponent(m[1]!);
+    const task = findTask(id);
+    if (!task) return Promise.resolve(new Response(JSON.stringify({ detail: "task not found" }), { status: 404 }));
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as { reviewer?: string | null };
+    task.reviewer = body.reviewer ? body.reviewer : undefined;
+    diag.reviewerPatched = { id, reviewer: task.reviewer ?? null };
+    return Promise.resolve(json({ ...task }));
   }
 
   m = p.match(/^\/api\/tasks\/([^/]+)\/answer$/);
@@ -1948,6 +2139,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         workspace: body.clone ? `~/dev/${body.name}` : `~/dev/${body.name}`,
         node_count: 1,
         status: "running",
+        display_name: String(body.display_name ?? body.name ?? "untitled"),
       };
       PROJECTS.push(created);
       return Promise.resolve(json(created));
@@ -1981,7 +2173,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const hdrs = init?.headers as Record<string, string> | undefined;
     const proj = hdrs?.["X-Grove-Project"] ?? "";
     diag.projectHeader = proj;
-    return Promise.resolve(json(proj === SOLO_PROJECT ? buildSoloOrg() : buildOrg()));
+    return Promise.resolve(json(proj === SOLO_PROJECT ? buildSoloOrg() : buildOrg(proj || "dev10")));
   }
 
   if (p === "/api/nodes") {

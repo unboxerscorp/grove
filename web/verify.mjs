@@ -559,14 +559,17 @@ async function main() {
       cards: document.querySelectorAll(".dr-card").length,
     }));
     const boardBatch = await page.evaluate(() => {
-      const cols = Array.from(document.querySelectorAll(".dr-col"));
       return {
         addButtons: document.querySelectorAll(".dr-col__add").length,
-        blockedHasAdd: !!cols[5]?.querySelector(".dr-col__add"),
-        doneHasAdd: !!cols[7]?.querySelector(".dr-col__add"),
+        readyHasAdd: !!document.querySelector('.dr-col[data-col="ready"] .dr-col__add'),
+        progressHasAdd: !!document.querySelector('.dr-col[data-col="in_progress"] .dr-col__add'),
+        reviewHasAdd: !!document.querySelector('.dr-col[data-col="review"] .dr-col__add'),
+        blockedHasAdd: !!document.querySelector('.dr-col[data-col="blocked"] .dr-col__add'),
+        askHumanHasAdd: !!document.querySelector('.dr-col[data-col="ask_human"] .dr-col__add'),
+        doneHasAdd: !!document.querySelector('.dr-col[data-col="done"] .dr-col__add'),
       };
     });
-    await page.$eval(".dr-col:nth-child(7) .dr-col__add", (el) => el.click());
+    await page.$eval('.dr-col[data-col="review"] .dr-col__add', (el) => el.click());
     await page.waitForSelector(".dr-addform", { timeout: 5000 });
     const boardBatchAdd = await page.$eval('.dr-addform select[name="status"]', (el) => el.value);
     await page.$eval(".dr-addform__cancel", (el) => el.click());
@@ -621,7 +624,7 @@ async function main() {
     const addTask = await page.evaluate(() => ({ created: window.__MOCK__?.createdTask ?? "" }));
 
     // Open the task drawer on the first card; assert comments + runs loaded.
-    await page.click(".dr-card");
+    await page.$eval(".dr-card__open", (el) => el.click());
     await page.waitForSelector(".dr-drawer__panel", { timeout: 8000 });
     await page.waitForFunction(
       () =>
@@ -755,7 +758,7 @@ async function main() {
       const card = Array.from(document.querySelectorAll(".dr-card")).find((c) =>
         (c.querySelector(".dr-card__id")?.textContent ?? "").includes("G-2"),
       );
-      card?.click();
+      card?.querySelector(".dr-card__open")?.click();
     });
     await page.waitForSelector(".exec-timeline__item", { timeout: 8000 });
     const timeline = await page.evaluate(() => {
@@ -908,8 +911,8 @@ async function main() {
     // socket is up. COLUMNS: triage,todo,scheduled,ready,running,blocked,review,done.
     await page.waitForSelector(".dr-spark.is-on", { timeout: 8000 });
     const boardLiveSpark = await page.evaluate(() => !!document.querySelector(".dr-spark.is-on"));
-    const RUNNING_COL = 4;
-    const DONE_COL = 7;
+    const RUNNING_COL = 1; // in_progress (canonical order)
+    const DONE_COL = 5;
     const colIndexOf = (id) =>
       page.evaluate((tid) => {
         const cols = Array.from(document.querySelectorAll(".dr-col"));
@@ -936,7 +939,7 @@ async function main() {
         idx,
         id,
       );
-    const claimColBefore = await colIndexOf("G-4"); // seeded as "ready" (3)
+    const claimColBefore = await colIndexOf("G-4"); // ready = column 0
     await page.evaluate(() => window.__MOCK__?.claimTask("G-4"));
     await cardInCol(RUNNING_COL, "G-4");
     const claimCol = await colIndexOf("G-4");
@@ -945,7 +948,7 @@ async function main() {
     const completeCol = await colIndexOf("G-4");
     const boardLiveOk =
       boardLiveSpark === true &&
-      claimColBefore === 3 &&
+      claimColBefore === 0 && // ready is column 0
       claimCol === RUNNING_COL &&
       completeCol === DONE_COL;
 
@@ -975,7 +978,7 @@ async function main() {
 
     // #N4 board WS lifecycle (여정6: WS 재연결·백오프): onopen catch-up reload,
     // non-4401 close -> reconnect, 4401 (auth reject) -> stop the loop.
-    const REVIEW_COL = 6;
+    const REVIEW_COL = 2;
     const boardConnAfterLive = await page.evaluate(() => window.__MOCK__?.boardWsConnects ?? 0);
     // Silently move G-2 (review) -> done with NO board event, then force a
     // reconnect: only the onopen catch-up snapshot reload can surface it in Done.
@@ -1009,12 +1012,12 @@ async function main() {
     // Blocked column and its drawer shows the blocked status pill. (A dedicated
     // "사람 대기" badge + Slack-thread link in the drawer is still a product gap
     // — no SPA UI exists yet; this asserts the blocked visualization that does.)
-    const BLOCKED_COL = 5;
+    const BLOCKED_COL = 3;
     const n2BlockedCol = await colIndexOf("G-7"); // G-7 is seeded status: "blocked"
     await page.evaluate(() => {
       const cards = Array.from(document.querySelectorAll(".dr-card"));
       const target = cards.find((c) => (c.querySelector(".dr-card__id")?.textContent ?? "").includes("G-7"));
-      if (target instanceof HTMLElement) target.click();
+      target?.querySelector(".dr-card__open")?.click();
     });
     await page.waitForSelector(".dr-drawer__panel", { timeout: 8000 });
     const n2Drawer = await page.evaluate(() => ({
@@ -1024,6 +1027,89 @@ async function main() {
     await page.click(".dr-drawer__close");
     await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
     const n2Ok = n2BlockedCol === BLOCKED_COL && n2Drawer.ticket === "G-7" && n2Drawer.hasPill === true;
+
+    // v1.29 manual workflow status (task_d0ed0b8 / task_ae67d): the on-card status
+    // dropdown issues a real PATCH /api/tasks/{id}/status (canonical key) and the
+    // card moves to its new column on the refetch. Drive G-7 (blocked) -> review
+    // via its own card's <select>, then restore it so downstream state is intact.
+    const manualFrom = await colIndexOf("G-7"); // BLOCKED_COL
+    const cardManualOptions = await page.$$eval('.dr-card[data-task="G-7"] .dr-card__status option', (els) =>
+      els.map((el) => el.getAttribute("value") ?? ""),
+    );
+    await page.evaluate(() => {
+      if (window.__MOCK__) window.__MOCK__.statusPatched = null;
+    });
+    await page.select('.dr-card[data-task="G-7"] .dr-card__status', "review");
+    await cardInCol(REVIEW_COL, "G-7");
+    const manualTo = await colIndexOf("G-7");
+    const manualStatusDiag = await page.evaluate(() => window.__MOCK__?.statusPatched ?? null);
+    await page.select('.dr-card[data-task="G-7"] .dr-card__status', "blocked"); // restore
+    await cardInCol(BLOCKED_COL, "G-7");
+    const manualStatusOk =
+      manualFrom === BLOCKED_COL &&
+      manualTo === REVIEW_COL &&
+      !cardManualOptions.includes("ask_human") &&
+      !!manualStatusDiag &&
+      manualStatusDiag.id === "G-7" &&
+      manualStatusDiag.canonical === "review";
+
+    // v1.29 reviewer field (task_c7e0363f): (a) a reviewed card shows the reviewer
+    // badge; (b) the add form carries a reviewer dropdown whose value reaches the
+    // create POST; (c) the drawer reviewer dropdown PATCHes /reviewer and the
+    // drawer reflects it. G-2 was seeded with reviewer "researcher".
+    const reviewerBadge = await page.evaluate(() => {
+      const card = document.querySelector('.dr-card[data-task="G-2"]');
+      const b = card?.querySelector(".dr-card__reviewer");
+      return { present: !!b, reviewer: b?.getAttribute("data-reviewer") ?? "" };
+    });
+    // (b) create with reviewer via the add form.
+    await page.evaluate(() => {
+      if (window.__MOCK__) window.__MOCK__.lastTaskPost = null;
+    });
+    await page.$eval(".dr-addbtn", (el) => el.click());
+    await page.waitForSelector(".dr-addform__reviewer", { timeout: 5000 });
+    await page.type('.dr-addform input[name="title"]', "Reviewed task");
+    await page.select(".dr-addform__reviewer", "researcher");
+    await page.click(".dr-addform__submit");
+    await page.waitForFunction(() => (window.__MOCK__?.lastTaskPost?.reviewer ?? "") === "researcher", {
+      timeout: 6000,
+    });
+    const reviewerCreate = await page.evaluate(() => window.__MOCK__?.lastTaskPost ?? null);
+    // (c) update reviewer via the drawer; assert PATCH + drawer reflection, then clear.
+    await page.evaluate(() => {
+      if (window.__MOCK__) window.__MOCK__.reviewerPatched = null;
+    });
+    await page.$eval('.dr-card[data-task="G-1"] .dr-card__open', (el) => el.click());
+    await page.waitForSelector(".dr-workflow__reviewer", { timeout: 8000 });
+    const drawerManualOptions = await page.$$eval(".dr-workflow__status option", (els) =>
+      els.map((el) => el.getAttribute("value") ?? ""),
+    );
+    await page.select(".dr-workflow__reviewer", "researcher");
+    await page.waitForFunction(
+      () => document.querySelector(".dr-fact[data-reviewer]")?.getAttribute("data-reviewer") === "researcher",
+      { timeout: 6000 },
+    );
+    const reviewerUpdate = await page.evaluate(() => window.__MOCK__?.reviewerPatched ?? null);
+    const drawerReviewer = await page.evaluate(
+      () => document.querySelector(".dr-fact[data-reviewer]")?.getAttribute("data-reviewer") ?? "",
+    );
+    await page.select(".dr-workflow__reviewer", ""); // clear (restore open-task delegation state)
+    await page.click(".dr-drawer__close");
+    await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
+    const reviewerOk =
+      reviewerBadge.present &&
+      reviewerBadge.reviewer === "researcher" &&
+      !!reviewerCreate &&
+      reviewerCreate.reviewer === "researcher" &&
+      !!reviewerUpdate &&
+      reviewerUpdate.id === "G-1" &&
+      reviewerUpdate.reviewer === "researcher" &&
+      drawerReviewer === "researcher";
+    const manualOptionsOk =
+      cardManualOptions.length >= 1 &&
+      drawerManualOptions.length >= 1 &&
+      !cardManualOptions.includes("ask_human") &&
+      !drawerManualOptions.includes("ask_human");
 
     // Interactive org canvas: switch to the Team tab; assert the graph renders
     // (nodes, bezier edges, group legend).
@@ -1080,36 +1166,49 @@ async function main() {
     await page.click(".node-drawer .dr-drawer__close");
     await page.waitForFunction(() => !document.querySelector(".node-drawer"), { timeout: 8000 });
 
-    // V4-W2 delegation overlay: off by default; the toggle reveals a distinct
-    // dashed/arrow layer of actor -> target.node edges (root->backend merged to
-    // count=2), and toggling off hides them again. Run on the clean layout.
+    // V4-W2 + v1.29 delegation overlay: off by default; the toggle reveals
+    // current open-task edges first, then history mode renders the audit-derived
+    // legacy edge set (root->backend merged to count=2). Run on the clean layout.
     const delegToggle = await page.$(".org-deleg-toggle");
     const delegOffBefore = await page.evaluate(() => document.querySelectorAll(".org-deleg-edge").length);
     await page.$eval(".org-deleg-toggle", (el) => el.click());
     await page.waitForFunction(() => document.querySelectorAll(".org-deleg-edge").length >= 1, { timeout: 6000 });
-    const delegOn = await page.evaluate(() => {
+    const delegCurrent = await page.evaluate(() => {
       const edges = Array.from(document.querySelectorAll(".org-deleg-edge"));
       return {
         count: edges.length,
         arrow: edges.some((e) => (e.getAttribute("marker-end") || "").includes("org-deleg-arrow")),
         dashed: edges.some((e) => getComputedStyle(e).strokeDasharray !== "none"),
-        rootBackendCount: document.querySelector('[data-deleg="root>backend"]')?.getAttribute("data-count") ?? "",
+        ids: edges.map((e) => e.getAttribute("data-deleg") ?? ""),
+        fromOrchestrator: edges.some((e) => /^(lead|root)>/.test(e.getAttribute("data-deleg") ?? "")),
         legend: !!document.querySelector(".org-deleg-legend"),
         marker: !!document.querySelector("#org-deleg-arrow"),
+        mode: document.querySelector(".org-deleg-layer")?.getAttribute("data-mode") ?? "",
       };
     });
+    await page.$eval('.org-deleg-mode__btn[data-mode="history"]', (el) => el.click());
+    await page.waitForFunction(() => !!document.querySelector('[data-deleg="root>backend"]'), { timeout: 6000 });
+    const delegHistory = await page.evaluate(() => ({
+      count: document.querySelectorAll(".org-deleg-edge").length,
+      mode: document.querySelector(".org-deleg-layer")?.getAttribute("data-mode") ?? "",
+      rootBackendCount: document.querySelector('[data-deleg="root>backend"]')?.getAttribute("data-count") ?? "",
+    }));
     await page.$eval(".org-deleg-toggle", (el) => el.click());
     await page.waitForFunction(() => document.querySelectorAll(".org-deleg-edge").length === 0, { timeout: 5000 });
     const delegOffAfter = await page.evaluate(() => document.querySelectorAll(".org-deleg-edge").length);
     const delegationEdgesOk =
       !!delegToggle &&
       delegOffBefore === 0 &&
-      delegOn.count >= 1 &&
-      delegOn.arrow &&
-      delegOn.dashed &&
-      delegOn.marker &&
-      delegOn.rootBackendCount === "2" &&
-      delegOn.legend &&
+      delegCurrent.count >= 1 &&
+      delegCurrent.arrow &&
+      delegCurrent.dashed &&
+      delegCurrent.marker &&
+      delegCurrent.legend &&
+      delegCurrent.mode === "current" &&
+      delegCurrent.fromOrchestrator &&
+      delegHistory.count >= 1 &&
+      delegHistory.mode === "history" &&
+      delegHistory.rootBackendCount === "2" &&
       delegOffAfter === 0;
 
     // Drag-intent labels: a read-only probe (snaps back, no PATCH) that checks
@@ -1154,11 +1253,18 @@ async function main() {
     // #4 group exit: drag the now-grouped "backend" far from every node -> {group:null}.
     const farPoint = await page.evaluate(() => {
       const c = document.querySelector(".org-canvas").getBoundingClientRect();
-      let maxRight = c.left;
-      document.querySelectorAll(".org-node").forEach((n) => {
-        maxRight = Math.max(maxRight, n.getBoundingClientRect().right);
+      const centers = Array.from(document.querySelectorAll(".org-node")).map((n) => {
+        const r = n.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
       });
-      return { x: Math.min(maxRight + 240, c.right - 36), y: c.top + 110 };
+      let best = { x: c.right - 36, y: c.bottom - 36, d: -1 };
+      for (let x = c.left + 36; x <= c.right - 36; x += 48) {
+        for (let y = c.top + 36; y <= c.bottom - 36; y += 48) {
+          const d = Math.min(...centers.map((p) => Math.hypot(x - p.x, y - p.y)));
+          if (d > best.d) best = { x, y, d };
+        }
+      }
+      return { x: best.x, y: best.y };
     });
     await dragTo("backend", farPoint.x, farPoint.y);
     await page.waitForFunction(() => /:null$/.test(window.__MOCK__?.patchedGroup ?? ""), { timeout: 6000 });
@@ -1409,6 +1515,18 @@ async function main() {
     await page.$eval('.dr-tab[data-view="integrations"]', (el) => el.click());
     await page.waitForSelector(".slack", { timeout: 8000 });
     const slackStatus0 = await page.$eval(".slack-status__label", (el) => (el.textContent ?? "").trim());
+    const slackGuide = await page.evaluate(() => {
+      const root = document.querySelector(".slack-guide");
+      const text = root?.textContent ?? "";
+      return {
+        present: !!root,
+        commandRows: document.querySelectorAll(".slack-guide__command").length,
+        hasBlockKit: /Block Kit|블록 키트/.test(text),
+        hasBugFeedbackTask: /bug|feedback|task|버그|피드백|태스크/.test(text),
+        hasAnswer: /answer|답만|답변/.test(text),
+        hasIntakeToggle: /enable-intake|intake on|intake off|활성|비활성/.test(text),
+      };
+    });
 
     // manifest download -> GET /api/slack/manifest
     await page.click(".slack-manifest__btn");
@@ -1444,6 +1562,12 @@ async function main() {
     const liveAfterTest = await page.evaluate(() => !!document.querySelector(".slack-status.is-live"));
 
     const slackOk =
+      slackGuide.present &&
+      slackGuide.commandRows >= 4 &&
+      slackGuide.hasBlockKit &&
+      slackGuide.hasBugFeedbackTask &&
+      slackGuide.hasAnswer &&
+      slackGuide.hasIntakeToggle &&
       manifestFetched &&
       validationErr === true &&
       typeof slackCfg.app_token === "string" &&
@@ -2489,7 +2613,7 @@ async function main() {
     await page.waitForSelector('.proj-item[data-project="dev10"]', { timeout: 6000 });
     await page.click('.proj-item[data-project="dev10"]');
     await page.waitForFunction(
-      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "dev10",
+      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "grove-dev",
       { timeout: 6000 },
     );
     await page.waitForFunction(() => document.querySelectorAll(".dr-node").length > 1, { timeout: 8000 });
@@ -2520,7 +2644,7 @@ async function main() {
     const projInitial = await projName();
     await page.click('.proj-item[data-project="infra-ops"]');
     await page.waitForFunction(
-      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "infra-ops",
+      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "grove-infra",
       { timeout: 5000 },
     );
     const projAfterSwitch = await projName();
@@ -2565,8 +2689,8 @@ async function main() {
 
     const projectOk =
       projItems >= 2 &&
-      projInitial === "dev10" &&
-      projAfterSwitch === "infra-ops" &&
+      projInitial === "grove-dev" && // display_name (internal: dev10)
+      projAfterSwitch === "grove-infra" && // display_name (internal: infra-ops)
       newCfg.name === "demo-proj" &&
       projAfterNew === "demo-proj" &&
       loadResult.buckets >= 3 &&
@@ -2924,6 +3048,31 @@ async function main() {
       ),
     );
 
+    // v1.29 cross-project org (task_c2fda5b7): the GROVE MASTER root in the org
+    // chart opens the floating chat via the safe custom event, and a non-current
+    // project-lead chip switches the active project (onSwitchProject -> switchProject).
+    // Close the FAB-opened panel first so the root-driven re-open is unambiguous.
+    await mpage.$eval(".dr-mchat__x", (el) => el.click());
+    await mpage.waitForFunction(() => !document.querySelector(".dr-mchat__panel"), { timeout: 5000 });
+    await mpage.$eval('.dr-tab[data-view="team"]', (el) => el.click());
+    await mpage.waitForSelector(".org-master", { timeout: 8000 });
+    await mpage.$eval(".org-master", (el) => el.click());
+    await mpage.waitForSelector(".dr-mchat__panel", { timeout: 5000 });
+    const masterRootOpensChat = (await mpage.$(".dr-mchat__panel")) !== null;
+    // other project lead -> click switches projects (header display_name flips).
+    const pleadTarget = await mpage.evaluate(
+      () => document.querySelector(".org-plead:not(.is-current)")?.getAttribute("data-project") ?? "",
+    );
+    const projBeforePlead = await mpage.$eval(".proj-switcher__name", (el) => (el.textContent ?? "").trim());
+    await mpage.$eval(".org-plead:not(.is-current)", (el) => el.click());
+    await mpage.waitForFunction(
+      (prev) => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() !== prev,
+      { timeout: 6000 },
+      projBeforePlead,
+    );
+    const projAfterPlead = await mpage.$eval(".proj-switcher__name", (el) => (el.textContent ?? "").trim());
+    const leadSwitchesProject = !!pleadTarget && projAfterPlead !== projBeforePlead;
+
     // operator-only: a viewer mount (?viewer=1) hides the launcher entirely.
     await mpage.goto("file://" + htmlPath + "?viewer=1", { waitUntil: "load" });
     await mpage.waitForSelector(".devroom .dr-brand", { timeout: 8000 });
@@ -2942,6 +3091,8 @@ async function main() {
       },
       preview: mchatPreview,
       denied: mchatDenied,
+      masterRootOpensChat,
+      leadSwitch: { target: pleadTarget, from: projBeforePlead, to: projAfterPlead, switched: leadSwitchesProject },
       viewerHidden: mchatViewerHidden,
       errors: mchatErrors.length,
     };
@@ -2955,6 +3106,8 @@ async function main() {
       mchat.answer.hasAnswer &&
       mchat.preview.hasProposal &&
       mchat.denied &&
+      mchat.masterRootOpensChat &&
+      mchat.leadSwitch.switched &&
       mchat.viewerHidden &&
       mchat.errors === 0;
 
@@ -2985,8 +3138,12 @@ async function main() {
       shellBatch.nested &&
       shellBatch.roots >= 1 &&
       shellBatch.tutorial &&
-      boardBatch.addButtons === 6 &&
+      boardBatch.addButtons === 3 &&
+      boardBatch.readyHasAdd &&
+      boardBatch.progressHasAdd &&
+      boardBatch.reviewHasAdd &&
       boardBatch.blockedHasAdd === false &&
+      boardBatch.askHumanHasAdd === false &&
       boardBatch.doneHasAdd === false &&
       boardBatchAdd === "review" &&
       orgView.taskBadges >= 1;
@@ -3011,7 +3168,7 @@ async function main() {
 
     const ok =
       diag.nodes >= 1 &&
-      board.columns === 8 &&
+      board.columns === 6 && // canonical workflow columns
       board.cards >= 1 &&
       boardCardOk &&
       drawer.runs >= 1 &&
@@ -3028,6 +3185,9 @@ async function main() {
       projModelOk &&
       n1Ok &&
       n2Ok &&
+      manualStatusOk &&
+      manualOptionsOk &&
+      reviewerOk &&
       teamOk &&
       slackOk &&
       slackIntakeOk &&
@@ -3120,6 +3280,22 @@ async function main() {
       backScope,
       n2Ok,
       n2BlockedCol,
+      manualStatusOk,
+      manualOptionsOk,
+      manualStatus: {
+        from: manualFrom,
+        to: manualTo,
+        patched: manualStatusDiag,
+        cardOptions: cardManualOptions,
+        drawerOptions: drawerManualOptions,
+      },
+      reviewerOk,
+      reviewer: {
+        badge: reviewerBadge,
+        create: reviewerCreate ? reviewerCreate.reviewer : null,
+        update: reviewerUpdate,
+        drawer: drawerReviewer,
+      },
       teamOk,
       slackOk,
       slackIntakeOk,
@@ -3191,7 +3367,7 @@ async function main() {
       commandPaletteOk,
       cmdk: { ...paletteOpened, filtered, navLedger, navDrawer, firstActive, afterDown, escClosed, focusRestored, mutClean: palMutBefore === palMutAfter },
       delegationEdgesOk,
-      deleg: { offBefore: delegOffBefore, ...delegOn, offAfter: delegOffAfter },
+      deleg: { offBefore: delegOffBefore, current: delegCurrent, history: delegHistory, offAfter: delegOffAfter },
       delegateOk,
       delegatePost: deleg,
       terminalTicketKind: diag.terminalTicketKind,
@@ -3218,11 +3394,27 @@ async function main() {
     console.log("VERIFY PASS " + JSON.stringify(summary));
     console.log("screenshot: " + shot);
   } finally {
-    await browser.close();
+    await closeBrowser(browser);
   }
 }
 
-main().catch((e) => {
-  console.error("VERIFY FAIL: " + e.message);
-  process.exit(1);
-});
+async function closeBrowser(browser) {
+  const child = typeof browser.process === "function" ? browser.process() : null;
+  try {
+    browser.disconnect();
+  } catch {
+    // Browser cleanup is best-effort; the child process kill below is decisive.
+  }
+  if (child && child.exitCode === null && !child.killed) {
+    child.kill("SIGKILL");
+  }
+}
+
+main()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((e) => {
+    console.error("VERIFY FAIL: " + (e.stack || e.message));
+    process.exit(1);
+  });

@@ -268,7 +268,7 @@ def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Pa
     assert updated.status == "ready"
     comments = store.list_comments(board=board, task_id=task.id)
     assert comments[-1].author == "slack:U1"
-    assert comments[-1].body == "Use branch feature/live."
+    assert comments[-1].body == "ANSWER: Use branch feature/live."
     assert slack.posts[-1] == ("C123", "Recorded your reply and unblocked the task.", "ts-1")
     assert connector.handle_event(
         SlackEvent(

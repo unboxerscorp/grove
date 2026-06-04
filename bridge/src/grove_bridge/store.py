@@ -31,6 +31,7 @@ class Task:
     title: str
     body: str | None
     assignee: str | None
+    reviewer: str | None
     status: str
     priority: int
     workspace_kind: str
@@ -183,6 +184,7 @@ class SQLiteBoardStore:
         title: str,
         body: str | None,
         assignee: str | None,
+        reviewer: str | None = None,
         status: str = "ready",
         priority: int = 0,
         workspace_kind: str = "scratch",
@@ -198,10 +200,10 @@ class SQLiteBoardStore:
             conn.execute(
                 """
                 INSERT INTO tasks (
-                    id, board_id, title, body, assignee, status, priority,
+                    id, board_id, title, body, assignee, reviewer, status, priority,
                     workspace_kind, workspace_path, branch_name, metadata_json,
                     created_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -209,6 +211,7 @@ class SQLiteBoardStore:
                     title,
                     body,
                     assignee,
+                    reviewer,
                     status,
                     priority,
                     workspace_kind,
@@ -230,6 +233,145 @@ class SQLiteBoardStore:
                 now=now,
             )
         return self.get_task(board=board, task_id=task_id)
+
+    def set_task_status(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        status: str,
+        actor: Mapping[str, object],
+    ) -> Task:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            previous_status = _row_str(row, "status")
+            if status == "running":
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = ?, updated_at = ?
+                    WHERE board_id = ? AND id = ?
+                    """,
+                    (status, now, board_id, task_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = ?,
+                        claim_lock = NULL,
+                        claim_expires = NULL,
+                        current_run_id = NULL,
+                        updated_at = ?
+                    WHERE board_id = ? AND id = ?
+                    """,
+                    (status, now, board_id, task_id),
+                )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="task.updated",
+                payload={"status": status, "previous_status": previous_status},
+                now=now,
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="audit.task.status",
+                payload=_audit_payload(
+                    actor=actor,
+                    action="status-transition",
+                    target={"type": "task", "id": task_id},
+                    board=board,
+                    status="ok",
+                    summary=_row_str(row, "title"),
+                    ts=now,
+                    extra={"from_status": previous_status, "to_status": status},
+                ),
+                now=now,
+            )
+            updated = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+        if updated is None:
+            raise KeyError(task_id)
+        return _task_from_row(updated)
+
+    def set_task_reviewer(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        reviewer: str | None,
+        actor: Mapping[str, object],
+    ) -> Task:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            previous_reviewer = _row_optional_str(row, "reviewer")
+            conn.execute(
+                """
+                UPDATE tasks
+                SET reviewer = ?, updated_at = ?
+                WHERE board_id = ? AND id = ?
+                """,
+                (reviewer, now, board_id, task_id),
+            )
+            action = "reviewer-clear" if reviewer is None else "reviewer-set"
+            if previous_reviewer is not None and reviewer is not None:
+                action = "reviewer-change"
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="task.updated",
+                payload={"reviewer": reviewer, "previous_reviewer": previous_reviewer},
+                now=now,
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="audit.task.reviewer",
+                payload=_audit_payload(
+                    actor=actor,
+                    action=action,
+                    target={"type": "task", "id": task_id, "reviewer": reviewer or ""},
+                    board=board,
+                    status="ok",
+                    summary=_row_str(row, "title"),
+                    ts=now,
+                    extra={"from_reviewer": previous_reviewer, "to_reviewer": reviewer},
+                ),
+                now=now,
+            )
+            updated = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+        if updated is None:
+            raise KeyError(task_id)
+        return _task_from_row(updated)
 
     def accept_handoff_task(
         self,
@@ -2397,6 +2539,7 @@ class SQLiteBoardStore:
                 title TEXT NOT NULL,
                 body TEXT,
                 assignee TEXT,
+                reviewer TEXT,
                 status TEXT NOT NULL,
                 priority INTEGER NOT NULL DEFAULT 0,
                 workspace_kind TEXT NOT NULL DEFAULT 'scratch',
@@ -2494,6 +2637,16 @@ class SQLiteBoardStore:
                 ON slack_threads(task_id, mode);
             """
         )
+        self._ensure_task_reviewer_column(conn)
+
+    def _ensure_task_reviewer_column(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+            if row["name"] is not None
+        }
+        if "reviewer" not in columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN reviewer TEXT")
 
     def _parents_satisfied(
         self,
@@ -3096,6 +3249,7 @@ def _task_from_row(row: sqlite3.Row) -> Task:
         title=_row_str(row, "title"),
         body=_row_optional_str(row, "body"),
         assignee=_row_optional_str(row, "assignee"),
+        reviewer=_row_optional_str(row, "reviewer"),
         status=_row_str(row, "status"),
         priority=_row_int(row, "priority"),
         workspace_kind=_row_str(row, "workspace_kind"),
