@@ -1358,6 +1358,18 @@ async function main() {
     await page.$eval('.dr-tab[data-view="integrations"]', (el) => el.click());
     await page.waitForSelector(".slack", { timeout: 8000 });
     const slackStatus0 = await page.$eval(".slack-status__label", (el) => (el.textContent ?? "").trim());
+    const slackGuide = await page.evaluate(() => {
+      const root = document.querySelector(".slack-guide");
+      const text = root?.textContent ?? "";
+      return {
+        present: !!root,
+        commandRows: document.querySelectorAll(".slack-guide__command").length,
+        hasBlockKit: /Block Kit|블록 키트/.test(text),
+        hasBugFeedbackTask: /bug|feedback|task|버그|피드백|태스크/.test(text),
+        hasAnswer: /answer|답만|답변/.test(text),
+        hasIntakeToggle: /enable-intake|intake on|intake off|활성|비활성/.test(text),
+      };
+    });
 
     // manifest download -> GET /api/slack/manifest
     await page.click(".slack-manifest__btn");
@@ -1393,6 +1405,12 @@ async function main() {
     const liveAfterTest = await page.evaluate(() => !!document.querySelector(".slack-status.is-live"));
 
     const slackOk =
+      slackGuide.present &&
+      slackGuide.commandRows >= 4 &&
+      slackGuide.hasBlockKit &&
+      slackGuide.hasBugFeedbackTask &&
+      slackGuide.hasAnswer &&
+      slackGuide.hasIntakeToggle &&
       manifestFetched &&
       validationErr === true &&
       typeof slackCfg.app_token === "string" &&
@@ -3121,7 +3139,11 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error("VERIFY FAIL: " + e.message);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((e) => {
+    console.error("VERIFY FAIL: " + e.message);
+    process.exit(1);
+  });

@@ -1526,6 +1526,70 @@ button {
   color: var(--dim);
 }
 
+.slack-guide {
+  gap: 12px;
+}
+
+.slack-guide__list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.slack-guide__item {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+
+.slack-guide__k {
+  display: block;
+  margin-bottom: 4px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
+.slack-guide__item span:last-child,
+.slack-guide__command span,
+.slack-guide__note {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+.slack-guide__commands {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.slack-guide__command {
+  display: grid;
+  grid-template-columns: minmax(128px, 0.45fr) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.slack-guide__command code {
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--teal);
+}
+
+.slack-guide__note {
+  margin: 0;
+  padding-top: 9px;
+  border-top: 1px dashed var(--line-soft);
+  color: var(--faint);
+}
+
 /* status badge */
 .slack-status {
   display: inline-flex;
@@ -1682,6 +1746,15 @@ button {
 }
 
 @media (max-width: 620px) {
+  .slack-guide__list {
+    grid-template-columns: 1fr;
+  }
+
+  .slack-guide__command {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
   .slack-map {
     grid-template-columns: 1fr;
   }

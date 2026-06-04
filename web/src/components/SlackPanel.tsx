@@ -166,6 +166,13 @@ export function SlackPanel({ projectTick = 0 }: { projectTick?: number }) {
   const st = status?.status ?? "not_configured";
   const hasError = !!status?.last_error;
   const stepIdx = STATUS_ORDER.indexOf(st);
+  const guideCommands = [
+    ["bug: <symptom>", t("slack.guide.cmd.bug")],
+    ["feedback: <note>", t("slack.guide.cmd.feedback")],
+    ["task: <request>", t("slack.guide.cmd.task")],
+    ["confirm <id>", t("slack.guide.cmd.confirm")],
+    ["@node <question>", t("slack.guide.cmd.chat")],
+  ] as const;
 
   // Intake has THREE states, read from the exact backend path `intake.enabled`:
   //   on / off  — the backend reports the boolean
@@ -192,6 +199,34 @@ export function SlackPanel({ projectTick = 0 }: { projectTick?: number }) {
         </header>
 
         <p className="slack__flow">{t("slack.flow")}</p>
+
+        <div className="slack-card slack-guide">
+          <div className="slack-card__title">{t("slack.guide.title")}</div>
+          <p className="slack-card__desc">{t("slack.guide.blockkit")}</p>
+          <div className="slack-guide__list">
+            <div className="slack-guide__item">
+              <span className="slack-guide__k">{t("slack.guide.human.k")}</span>
+              <span>{t("slack.guide.human.v")}</span>
+            </div>
+            <div className="slack-guide__item">
+              <span className="slack-guide__k">{t("slack.guide.answer.k")}</span>
+              <span>{t("slack.guide.answer.v")}</span>
+            </div>
+            <div className="slack-guide__item">
+              <span className="slack-guide__k">{t("slack.guide.intake.k")}</span>
+              <span>{t("slack.guide.intake.v")}</span>
+            </div>
+          </div>
+          <div className="slack-guide__commands" aria-label={t("slack.guide.commands")}>
+            {guideCommands.map(([command, desc]) => (
+              <div className="slack-guide__command" key={command}>
+                <code>{command}</code>
+                <span>{desc}</span>
+              </div>
+            ))}
+          </div>
+          <p className="slack-guide__note">{t("slack.guide.toggle")}</p>
+        </div>
 
         {/* connection status */}
         <div className="slack-card slack-status-card">
