@@ -474,6 +474,108 @@ function hostPressurePayload(): Record<string, unknown> {
   };
 }
 
+// Retro analytics (V22-W2). Mirrors web_app.py /api/retro/analytics EXACTLY:
+// ADVISORY + read-only (mode "advisory", actions []), operator-only (403 viewer),
+// default OFF (404). confidence "low" for small samples. agy credit unknown.
+// quotaEnabled-style toggles let verify exercise enabled/disabled + low/medium.
+let retroAnalyticsEnabled = true;
+diag.setRetroAnalyticsEnabled = (on: boolean): void => {
+  retroAnalyticsEnabled = on;
+};
+let retroLowConfidence = false;
+diag.setRetroLowConfidence = (on: boolean): void => {
+  retroLowConfidence = on;
+};
+// Allowlist theme keywords — mirror web_app.py RETRO_THEME_TERMS.
+const RETRO_THEME_TERMS: Record<string, string[]> = {
+  testing: ["test", "tests", "pytest", "coverage", "flake", "flaky"],
+  blocked: ["blocked", "stuck", "waiting", "dependency"],
+  scope: ["scope", "requirement", "contract"],
+  review: ["review", "reviewer", "feedback"],
+  tooling: ["ruff", "mypy", "pytest", "lint", "format", "tooling"],
+};
+function retroAnalyticsPayload(): Record<string, unknown> {
+  const low = retroLowConfidence;
+  const conf = low ? "low" : "medium";
+  const cm = (v: number, src: string, c = conf) => ledMetric(v, src, c);
+  const theme = (name: string, count: number) => ({ theme: name, count: cm(count, "retro_comments"), keywords: RETRO_THEME_TERMS[name] ?? [] });
+  const outcome = (key: "node" | "role", name: string, vals: [number, number, number, number, number], extra?: Record<string, string>) => ({
+    [key]: name,
+    ...(extra ?? {}),
+    completed: cm(vals[0], "run_metadata"),
+    blocked: cm(vals[1], "run_metadata"),
+    failed: cm(vals[2], "run_metadata"),
+    running: cm(vals[3], "run_metadata"),
+    other: cm(vals[4], "run_metadata"),
+  });
+  const limitations = [
+    "advisory-only: this endpoint does not create tasks, change config, or dispatch work",
+    "themes are deterministic allowlist categories from redacted retro text",
+    "slow patterns use measured run timestamps only",
+    "agy credit is unknown; no credit or cost values are invented",
+  ];
+  if (low) limitations.push("small sample size; confidence is low");
+  const throughput = low
+    ? [{ bucket: "2026-06-03", completed: cm(1, "run_metadata") }]
+    : [
+        { bucket: "2026-05-31", completed: cm(2, "run_metadata") },
+        { bucket: "2026-06-01", completed: cm(3, "run_metadata") },
+        { bucket: "2026-06-02", completed: cm(1, "run_metadata") },
+        { bucket: "2026-06-03", completed: cm(4, "run_metadata") },
+        { bucket: "2026-06-04", completed: cm(3, "run_metadata") },
+      ];
+  const themes = low ? [theme("testing", 1)] : [theme("testing", 4), theme("blocked", 2), theme("review", 1)];
+  return {
+    ok: true,
+    project: "dev10",
+    mode: "advisory",
+    actions: [],
+    generated_at: ledMetric(AUDIT_TS0 + 700, "server", "explicit"),
+    window: { name: "7d" },
+    confidence: conf,
+    sample: {
+      completed_runs: ledMetric(low ? 1 : 13, "run_metadata", "explicit"),
+      retro_comments: ledMetric(low ? 1 : 6, "comments", "explicit"),
+      blocked_tasks: ledMetric(low ? 1 : 2, "tasks", "explicit"),
+    },
+    throughput,
+    themes,
+    patterns: {
+      blocked: {
+        current: ledMetric(low ? 1 : 2, "tasks", "explicit"),
+        by_assignee: low
+          ? [{ assignee: "frontend", count: cm(1, "tasks") }]
+          : [
+              { assignee: "frontend", count: cm(1, "tasks") },
+              { assignee: "backend", count: cm(1, "tasks") },
+            ],
+        blocked_runs: cm(1, "run_metadata"),
+      },
+      slow: {
+        threshold_seconds: ledMetric(3600, "server", "explicit"),
+        count: cm(low ? 0 : 1, "run_metadata"),
+        average_duration_seconds: low ? ledUnknown() : cm(5400, "run_metadata"),
+      },
+    },
+    outcomes: {
+      by_node: low
+        ? [outcome("node", "backend", [1, 1, 0, 0, 0], { role: "backend", agent: "codex" })]
+        : [
+            outcome("node", "backend", [5, 1, 0, 1, 0], { role: "backend", agent: "codex" }),
+            outcome("node", "frontend", [4, 0, 1, 0, 0], { role: "frontend", agent: "claude" }),
+          ],
+      by_role: low
+        ? [outcome("role", "backend", [1, 1, 0, 0, 0])]
+        : [
+            outcome("role", "backend", [5, 1, 0, 1, 0]),
+            outcome("role", "frontend", [4, 0, 1, 0, 0]),
+          ],
+    },
+    cost_signals: { agy_credit: ledUnknown() },
+    limitations,
+  };
+}
+
 const execGateInfo = () => {
   const blocked: string[] = [];
   if (!executionGate.enabled) blocked.push("global-disabled");
@@ -982,6 +1084,17 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     return Promise.resolve(
       json({ auth_mode: "team_cookie", member, csrf: "csrf-" + member.id, expires_at: HANDOFF_NOW + 3600 }),
     );
+  }
+
+  if (p === "/api/retro/analytics") {
+    // Mirrors web_app.py /api/retro/analytics: operator-only (403 viewer), default
+    // OFF (404), ADVISORY read-only. Shape matches _retro_analytics_payload.
+    diag.retroAnalyticsFetches = ((diag.retroAnalyticsFetches as number) ?? 0) + 1;
+    if (!retroAnalyticsEnabled)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "retro analytics is not enabled" }), { status: 404 }));
+    if (viewerMode)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "retro requires operator role" }), { status: 403 }));
+    return Promise.resolve(json(retroAnalyticsPayload()));
   }
 
   if (p === "/api/ledger") {

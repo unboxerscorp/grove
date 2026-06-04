@@ -1940,6 +1940,90 @@ async function main() {
       ledgerNoQuota.editBtns === 0 &&
       ledgerNoQuota.members === 3;
 
+    // V22-W2 retro analytics insights (advisory, read-only): insight cards render
+    // (throughput/themes/patterns/outcomes/cost), advisory banner is explicit,
+    // small-sample -> low-confidence label, operator-only (viewer 403), disabled
+    // (404) degrades gracefully. Mirrors web_app.py /api/retro/analytics.
+    const reenterInsights = async () => {
+      await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
+      await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+      await page.$eval('.dr-tab[data-view="insights"]', (el) => el.click());
+      await page.waitForSelector(".insights", { timeout: 8000 });
+    };
+    await page.$eval('.dr-tab[data-view="insights"]', (el) => el.click());
+    await page.waitForSelector(".insights-advisory", { timeout: 8000 });
+    const insights = await page.evaluate(() => ({
+      advisory: !!document.querySelector(".insights-advisory"),
+      advisoryText: (document.querySelector(".insights-advisory")?.textContent ?? "").trim(),
+      advisoryActions: document.querySelector(".insights-advisory")?.getAttribute("data-actions") ?? "",
+      mode: document.querySelector(".insights-advisory")?.getAttribute("data-mode") ?? "",
+      throughput: !!document.querySelector('.insights-card[data-card="throughput"]'),
+      sparkBars: document.querySelectorAll(".insights-spark__bar").length,
+      themes: document.querySelectorAll(".insights-theme").length,
+      themeNames: Array.from(document.querySelectorAll(".insights-theme")).map((e) => e.getAttribute("data-theme")),
+      patterns: !!document.querySelector('.insights-card[data-card="patterns"]'),
+      outcomeRows: document.querySelectorAll(".insights-outcome").length,
+      // agy cost honestly unknown
+      agyUnknown: !!document.querySelector('.insights-cost [data-agy="unknown"]'),
+      // medium sample -> no low-confidence badge yet
+      lowConfBadge: !!document.querySelector(".insights-badge.is-lowconf"),
+    }));
+    // small sample -> low-confidence label.
+    await page.evaluate(() => window.__MOCK__.setRetroLowConfidence(true));
+    await reenterInsights();
+    await page.waitForSelector(".insights-badge.is-lowconf", { timeout: 8000 });
+    const insightsLow = await page.evaluate(() => ({
+      lowConfBadge: !!document.querySelector(".insights-badge.is-lowconf"),
+      text: (document.querySelector(".insights-badge.is-lowconf")?.textContent ?? "").trim(),
+      advisoryStill: !!document.querySelector(".insights-advisory"), // still advisory
+    }));
+    await page.evaluate(() => window.__MOCK__.setRetroLowConfidence(false));
+    await reenterInsights();
+    // operator-only: a viewer gets a fixed graceful notice (403), no cards.
+    await page.evaluate(() => window.__MOCK__.setViewer(true));
+    await reenterInsights();
+    await page.waitForSelector('.insights-msg[data-err="forbidden"]', { timeout: 8000 });
+    const insightsViewer = await page.evaluate(() => ({
+      forbidden: !!document.querySelector('.insights-msg[data-err="forbidden"]'),
+      cards: document.querySelectorAll(".insights-card").length,
+    }));
+    await page.evaluate(() => window.__MOCK__.setViewer(false));
+    await reenterInsights();
+    // disabled (404): graceful notice, no cards.
+    await page.evaluate(() => window.__MOCK__.setRetroAnalyticsEnabled(false));
+    await reenterInsights();
+    await page.waitForSelector('.insights-msg[data-err="disabled"]', { timeout: 8000 });
+    const insightsDisabled = await page.evaluate(() => ({
+      disabled: !!document.querySelector('.insights-msg[data-err="disabled"]'),
+      cards: document.querySelectorAll(".insights-card").length,
+    }));
+    await page.evaluate(() => window.__MOCK__.setRetroAnalyticsEnabled(true));
+
+    const retroAnalyticsOk =
+      // cards render with the advisory banner (mode advisory, zero actions).
+      insights.advisory &&
+      /참고용|advisory/i.test(insights.advisoryText) &&
+      insights.mode === "advisory" &&
+      insights.advisoryActions === "0" &&
+      insights.throughput &&
+      insights.sparkBars >= 3 &&
+      insights.themes >= 2 &&
+      insights.themeNames.includes("testing") &&
+      insights.patterns &&
+      insights.outcomeRows >= 2 && // by_node + by_role
+      insights.agyUnknown && // agy cost honestly unknown
+      !insights.lowConfBadge && // medium sample: no low-conf label
+      // low-confidence label on small sample (still advisory).
+      insightsLow.lowConfBadge &&
+      /낮은 신뢰도|Low confidence/.test(insightsLow.text) &&
+      insightsLow.advisoryStill &&
+      // operator-only: viewer locked out gracefully (no cards).
+      insightsViewer.forbidden &&
+      insightsViewer.cards === 0 &&
+      // disabled: graceful notice, no cards.
+      insightsDisabled.disabled &&
+      insightsDisabled.cards === 0;
+
     // #N1 project switch re-scope + no residue (여정1/5): switching to an
     // isolated project swaps org/board/nodes wholesale — none of the default
     // project's nodes/cards may bleed through — and switching back restores it.
@@ -2218,6 +2302,7 @@ async function main() {
       handoffOk &&
       sharedAccessOk &&
       ledgerQuotaOk &&
+      retroAnalyticsOk &&
       mobileOk &&
       projectOk &&
       wsBindOk &&
@@ -2339,6 +2424,8 @@ async function main() {
       sharedAccess: { share: shareIssue, presence: connPresence, projOperator, projViewer, joinPrefill, joinBad, joinOk },
       ledgerQuotaOk,
       ledger: { all: ledgerAll, hostNominal, hostSat, quotaBeforeYes, quotaSet, viewer: ledgerViewer, noQuota: ledgerNoQuota },
+      retroAnalyticsOk,
+      retro: { insights, low: insightsLow, viewer: insightsViewer, disabled: insightsDisabled },
       mobileOk,
       mobile: { ...mobile, detailFits },
       delegationEdgesOk,

@@ -19,6 +19,7 @@
 //   - handoff       (signed export, trusted local accept, idempotency, redaction)
 //   - shared-access (one-time joins, viewer read-only, CSRF/origin/host guards)
 //   - ledger/quota  (member ledger, soft quotas, host pressure, no hard-kill)
+//   - retro analytics (operator-only advisory insights, privacy, low-confidence honesty)
 //
 // Each check asserts the CORRECT contract. A failing check is a real defect to
 // report as `# BUG(Pn)` — never relax the assertion to match a bug.
@@ -52,6 +53,8 @@ const HANDOFF_SOURCE = "qae2e_handoff_source"; // created during the handoff che
 const HANDOFF_RECEIVER = "qae2e_handoff_receiver"; // created during the handoff checks as the receiver project
 const SHARE = "qae2e_share"; // created during the shared-access checks
 const LEDGER = "qae2e_ledger"; // created during the ledger/quota checks
+const RETRO = "qae2e_retro"; // created during the retro analytics checks
+const RETRO_OTHER = "qae2e_retro_other"; // second project used to prove retro scope isolation
 const READY_TIMEOUT_MS = 25_000;
 const NODE_LAST_SEEN = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
 
@@ -432,6 +435,35 @@ function seedRunningTask({ database = dbPath, board, title, node, createdBy }) {
   return JSON.parse(out);
 }
 
+function seedRetroAnalyticsData({ database = dbPath, board, secret, email, privatePath, rawPhrase }) {
+  const out = runBridgePython(
+    [
+      "import json, sqlite3, sys",
+      "from pathlib import Path",
+      "from grove_bridge.store import SQLiteBoardStore",
+      "store = SQLiteBoardStore(Path(sys.argv[1]))",
+      "board = sys.argv[2]",
+      "secret = sys.argv[3]",
+      "email = sys.argv[4]",
+      "private_path = sys.argv[5]",
+      "raw_phrase = sys.argv[6]",
+      "retro = store.create_task(board=board, title='retro private source', body=f'{raw_phrase} {secret} {email} {private_path}', assignee='maker', status='done', metadata={'self_retro': True, 'private_path': private_path})",
+      "store.add_comment(board=board, task_id=retro.id, author='retro:maker', body=f'tests were blocked by scope and tooling. {raw_phrase} {secret} {email} {private_path}', metadata={'kind': 'retro', 'node': 'maker'})",
+      "blocked = store.create_task(board=board, title='retro blocked task', body=f'blocked private body {secret}', assignee='maker', status='blocked')",
+      "run_task = store.create_task(board=board, title='retro completed run', body=None, assignee='agy-node')",
+      "claim = store.claim_next(board=board, assignee='agy-node', node_id='agy-node', ttl_seconds=30, task_id=run_task.id)",
+      "if claim is None: raise SystemExit('claim failed')",
+      "metadata = {'node': 'agy-node', 'total_tokens': 13, 'transcript_path': f'{private_path}/retro.jsonl', 'email': email, 'secret_note': secret}",
+      "if not store.complete(board=board, task_id=run_task.id, run_id=claim.run_id, claim_lock=claim.claim_lock, result='done', summary='retro complete', metadata=metadata): raise SystemExit('complete failed')",
+      "with sqlite3.connect(sys.argv[1]) as conn:",
+      "    conn.execute('UPDATE runs SET started_at = ?, ended_at = ? WHERE id = ?', (1704240000, 1704245400, claim.run_id))",
+      "print(json.dumps({'retro_task_id': retro.id, 'blocked_task_id': blocked.id, 'run_task_id': run_task.id}))",
+    ],
+    [database, board, secret, email, privatePath, rawPhrase],
+  );
+  return JSON.parse(out);
+}
+
 function scaffold() {
   mkdirSync(homeDir, { recursive: true });
   mkdirSync(distDir, { recursive: true });
@@ -667,6 +699,7 @@ async function startSharedServer({
   host = "127.0.0.1",
   allowHosts = [],
   enableQuotas = false,
+  enableRetroAnalytics = false,
 } = {}) {
   const port = await freePort();
   sharedBaseUrl = `http://127.0.0.1:${port}`;
@@ -693,6 +726,7 @@ async function startSharedServer({
       joinRole,
     ];
     if (enableQuotas) args.push("--enable-quotas");
+    if (enableRetroAnalytics) args.push("--enable-retro-analytics");
     for (const allowed of allowHosts) args.push("--allow-host", allowed);
   } else {
     args = [
@@ -2987,6 +3021,217 @@ async function run() {
             text.includes(ledgerEmail) ||
             text.includes("secret_hash"),
         ),
+    );
+  } finally {
+    await stopSharedServer();
+  }
+
+  // --- /api/retro/analytics: operator-only advisory analytics, privacy, low-confidence honesty ---
+  const retroOperatorSecret = "retro-operator-secret";
+  const retroViewerSecret = "retro-viewer-secret";
+  const retroSecret = "xoxb-" + "f".repeat(44);
+  const retroEmail = "retro.owner@example.test";
+  const retroPrivatePath = `/Users/chopin/private/${retroSecret}`;
+  const retroRawPhrase = "retro raw sentence must not leak";
+  writeRegistry(RETRO, {
+    maker: { name: "maker", agent: "codex", tmux_pane: `${RETRO}:1.0`, status: "idle", role: "maker" },
+    "agy-node": { name: "agy-node", agent: "agy", tmux_pane: `${RETRO}:1.1`, status: "idle", role: "maker" },
+  });
+  writeRegistry(RETRO_OTHER, {
+    "other-worker": { name: "other-worker", agent: "claude", tmux_pane: `${RETRO_OTHER}:1.0`, status: "idle", role: "maker" },
+  });
+  writeTeamMembers(RETRO, [
+    { id: "retro-operator-1", name: "retro-operator", role: "operator", secret: retroOperatorSecret },
+    { id: "retro-viewer-1", name: "retro-viewer", role: "viewer", secret: retroViewerSecret },
+  ]);
+  const retroSeed = seedRetroAnalyticsData({
+    board: RETRO,
+    secret: retroSecret,
+    email: retroEmail,
+    privatePath: retroPrivatePath,
+    rawPhrase: retroRawPhrase,
+  });
+  check(
+    "seed: retro analytics fixture creates task ids",
+    Boolean(retroSeed.retro_task_id) && Boolean(retroSeed.blocked_task_id) && Boolean(retroSeed.run_task_id),
+    JSON.stringify(retroSeed),
+  );
+  eq(
+    "retro analytics default-off -> 404",
+    (await req("GET", `/api/retro/analytics?window=all&project=${encodeURIComponent(RETRO)}`, { token })).status,
+    404,
+  );
+
+  await startSharedServer({ session: RETRO, joinRole: "viewer", enableRetroAnalytics: true });
+  try {
+    eq("retro analytics 401 without session", (await reqAt(sharedBaseUrl, "GET", "/api/retro/analytics?window=all")).status, 401);
+    const retroOperatorLogin = await reqAt(sharedBaseUrl, "POST", "/api/login", {
+      body: { name: "retro-operator", secret: retroOperatorSecret },
+    });
+    eq("retro analytics operator login 200", retroOperatorLogin.status, 200);
+    const retroOperatorCookie = String(retroOperatorLogin.headers.get("set-cookie") || "").split(";")[0];
+    const retroViewerLogin = await reqAt(sharedBaseUrl, "POST", "/api/login", {
+      body: { name: "retro-viewer", secret: retroViewerSecret },
+    });
+    eq("retro analytics viewer login 200", retroViewerLogin.status, 200);
+    const retroViewerCookie = String(retroViewerLogin.headers.get("set-cookie") || "").split(";")[0];
+    eq(
+      "retro analytics viewer denied",
+      (await reqAt(sharedBaseUrl, "GET", `/api/retro/analytics?window=all&project=${encodeURIComponent(RETRO)}`, {
+        cookie: retroViewerCookie,
+      })).status,
+      403,
+    );
+
+    const beforeRetroTasks = await reqAt(sharedBaseUrl, "GET", `/api/boards/${RETRO}/tasks`, {
+      cookie: retroOperatorCookie,
+      project: RETRO,
+    });
+    eq("retro analytics task snapshot before read 200", beforeRetroTasks.status, 200);
+    const beforeRetroTaskItems = Array.isArray(beforeRetroTasks.json) ? beforeRetroTasks.json : [];
+    const retro = await reqAt(sharedBaseUrl, "GET", `/api/retro/analytics?window=all&project=${encodeURIComponent(RETRO)}`, {
+      cookie: retroOperatorCookie,
+    });
+    eq("retro analytics operator 200 when enabled", retro.status, 200);
+    eq("retro analytics project == retro", retro.json && retro.json.project, RETRO);
+    eq("retro analytics mode advisory", retro.json && retro.json.mode, "advisory");
+    check("retro analytics actions empty", Boolean(retro.json) && Array.isArray(retro.json.actions) && retro.json.actions.length === 0);
+    check("retro analytics generated_at metric", isTaggedMetric(retro.json && retro.json.generated_at));
+    eq("retro analytics window all", retro.json && retro.json.window && retro.json.window.name, "all");
+    eq("retro analytics confidence low", retro.json && retro.json.confidence, "low");
+    eq("retro analytics sample completed_runs == 1", retro.json && retro.json.sample && retro.json.sample.completed_runs.value, 1);
+    eq("retro analytics sample retro_comments == 1", retro.json && retro.json.sample && retro.json.sample.retro_comments.value, 1);
+    eq("retro analytics sample blocked_tasks == 1", retro.json && retro.json.sample && retro.json.sample.blocked_tasks.value, 1);
+    check(
+      "retro analytics limitations mention small sample",
+      Boolean(retro.json) &&
+        Array.isArray(retro.json.limitations) &&
+        retro.json.limitations.some((item) => /small sample size/i.test(item)),
+      retro.json && JSON.stringify(retro.json.limitations),
+    );
+    const retroThroughput = retro.json && Array.isArray(retro.json.throughput) ? retro.json.throughput : [];
+    check(
+      "retro analytics throughput has bucket+completed metric",
+      retroThroughput.length === 1 &&
+        typeof retroThroughput[0].bucket === "string" &&
+        isTaggedMetric(retroThroughput[0].completed) &&
+        retroThroughput[0].completed.value === 1 &&
+        retroThroughput[0].completed.confidence === "low",
+      JSON.stringify(retroThroughput),
+    );
+    const retroThemeAllowlist = new Set(["testing", "blocked", "scope", "review", "tooling"]);
+    const retroThemes = retro.json && Array.isArray(retro.json.themes) ? retro.json.themes : [];
+    const retroThemeNames = retroThemes.map((item) => item.theme);
+    check(
+      "retro analytics themes are allowlist categories only",
+      retroThemes.length >= 1 &&
+        retroThemes.every(
+          (item) =>
+            retroThemeAllowlist.has(item.theme) &&
+            isTaggedMetric(item.count) &&
+            Array.isArray(item.keywords) &&
+            Object.keys(item).every((key) => ["theme", "count", "keywords"].includes(key)),
+        ),
+      JSON.stringify(retroThemes),
+    );
+    check(
+      "retro analytics themes include deterministic category hits",
+      ["testing", "blocked", "scope", "tooling"].every((theme) => retroThemeNames.includes(theme)),
+      retroThemeNames.join(","),
+    );
+    const retroPatterns = retro.json && retro.json.patterns;
+    check(
+      "retro analytics patterns expose blocked+slow metrics",
+      Boolean(retroPatterns) &&
+        isTaggedMetric(retroPatterns.blocked && retroPatterns.blocked.current) &&
+        retroPatterns.blocked.current.value === 1 &&
+        Array.isArray(retroPatterns.blocked.by_assignee) &&
+        isTaggedMetric(retroPatterns.blocked.blocked_runs) &&
+        isTaggedMetric(retroPatterns.slow && retroPatterns.slow.count) &&
+        retroPatterns.slow.count.value === 1 &&
+        isTaggedMetric(retroPatterns.slow.average_duration_seconds),
+      retroPatterns && JSON.stringify(retroPatterns),
+    );
+    const retroOutcomes = retro.json && retro.json.outcomes;
+    const retroOutcomeNodes = retroOutcomes && Array.isArray(retroOutcomes.by_node) ? retroOutcomes.by_node : [];
+    const retroAgyOutcome = retroOutcomeNodes.find((item) => item.node === "agy-node");
+    check(
+      "retro analytics outcomes expose node/role metrics",
+      Boolean(retroOutcomes) &&
+        Array.isArray(retroOutcomes.by_role) &&
+        Boolean(retroAgyOutcome) &&
+        retroAgyOutcome.agent === "agy" &&
+        isTaggedMetric(retroAgyOutcome.completed) &&
+        retroAgyOutcome.completed.value === 1,
+      retroOutcomes && JSON.stringify(retroOutcomes),
+    );
+    const retroAgyCredit = retro.json && retro.json.cost_signals && retro.json.cost_signals.agy_credit;
+    eq("retro analytics agy credit value unknown/null", retroAgyCredit && retroAgyCredit.value, null);
+    eq("retro analytics agy credit confidence unknown", retroAgyCredit && retroAgyCredit.confidence, "unknown");
+    eq("retro analytics agy credit status unknown", retroAgyCredit && retroAgyCredit.status, "unknown");
+    check(
+      "retro analytics limitations avoid agy cost invention",
+      Boolean(retro.json) &&
+        Array.isArray(retro.json.limitations) &&
+        retro.json.limitations.some((item) => /no credit or cost values are invented/i.test(item)),
+      retro.json && JSON.stringify(retro.json.limitations),
+    );
+    check(
+      "retro analytics response leaks no raw text/secret/path/pii",
+      !hasSecret(retro.json) &&
+        !retro.text.includes(retroSecret) &&
+        !retro.text.includes(retroEmail) &&
+        !retro.text.includes(retroPrivatePath) &&
+        !retro.text.includes(retroRawPhrase) &&
+        !retro.text.includes("transcript_path") &&
+        !retro.text.includes("private body"),
+      retro.text.slice(0, 240),
+    );
+    const afterRetroTasks = await reqAt(sharedBaseUrl, "GET", `/api/boards/${RETRO}/tasks`, {
+      cookie: retroOperatorCookie,
+      project: RETRO,
+    });
+    const afterRetroTaskItems = Array.isArray(afterRetroTasks.json) ? afterRetroTasks.json : [];
+    eq("retro analytics read leaves task count unchanged", afterRetroTaskItems.length, beforeRetroTaskItems.length);
+    check(
+      "retro analytics read does not change seeded task statuses",
+      beforeRetroTaskItems.length === afterRetroTaskItems.length &&
+        beforeRetroTaskItems.every((before) => {
+          const after = afterRetroTaskItems.find((item) => item.id === before.id);
+          return Boolean(after) && after.status === before.status;
+        }),
+      JSON.stringify(afterRetroTaskItems.map((item) => [item.id, item.status])),
+    );
+
+    const retroOther = await reqAt(sharedBaseUrl, "GET", `/api/retro/analytics?window=all&project=${encodeURIComponent(RETRO_OTHER)}`, {
+      cookie: retroOperatorCookie,
+    });
+    eq("retro analytics other project 200", retroOther.status, 200);
+    eq("retro analytics other project name", retroOther.json && retroOther.json.project, RETRO_OTHER);
+    check(
+      "retro analytics other project does not leak retro data",
+      Boolean(retroOther.json) &&
+        Array.isArray(retroOther.json.themes) &&
+        retroOther.json.themes.length === 0 &&
+        !retroOther.text.includes(retroSecret) &&
+        !retroOther.text.includes(retroRawPhrase) &&
+        !retroOther.text.includes("agy-node") &&
+        !retroOther.text.includes("maker"),
+      retroOther.text,
+    );
+    eq(
+      "retro analytics path traversal project -> 400",
+      (await reqAt(sharedBaseUrl, "GET", `/api/retro/analytics?window=all&project=${encodeURIComponent(`../${RETRO}`)}`, {
+        cookie: retroOperatorCookie,
+      })).status,
+      400,
+    );
+    eq(
+      "retro analytics missing project -> 404",
+      (await reqAt(sharedBaseUrl, "GET", "/api/retro/analytics?window=all&project=qae2e_missing_retro", {
+        cookie: retroOperatorCookie,
+      })).status,
+      404,
     );
   } finally {
     await stopSharedServer();

@@ -353,6 +353,58 @@ export interface QuotaUpdateResult {
   quota: QuotaState;
 }
 
+// Retro analytics (web_app.py /api/retro/analytics). ADVISORY, READ-ONLY:
+// operator-only, default OFF (404). `mode:"advisory"` + `actions:[]` — it never
+// creates tasks or dispatches work. `confidence` is "low" for small samples; all
+// metrics reuse CostMetric (agy credit stays honestly unknown, never invented).
+export interface RetroThroughputBucket {
+  bucket: string; // YYYY-MM-DD
+  completed: CostMetric;
+}
+export interface RetroTheme {
+  theme: string;
+  count: CostMetric;
+  keywords: string[];
+}
+export interface RetroBlockedAssignee {
+  assignee: string;
+  count: CostMetric;
+}
+export interface RetroPatterns {
+  blocked: { current: CostMetric; by_assignee: RetroBlockedAssignee[]; blocked_runs: CostMetric };
+  slow: { threshold_seconds: CostMetric; count: CostMetric; average_duration_seconds: CostMetric };
+}
+export interface RetroOutcomeItem {
+  node?: string;
+  role?: string;
+  agent?: string;
+  completed: CostMetric;
+  blocked: CostMetric;
+  failed: CostMetric;
+  running: CostMetric;
+  other: CostMetric;
+}
+export interface RetroOutcomes {
+  by_node: RetroOutcomeItem[];
+  by_role: RetroOutcomeItem[];
+}
+export interface RetroAnalytics {
+  ok: boolean;
+  project?: string;
+  mode: string; // "advisory"
+  actions: unknown[]; // always [] — advisory never acts
+  generated_at?: CostMetric;
+  window?: { name?: string };
+  confidence: string; // "low" | "medium"
+  sample: { completed_runs: CostMetric; retro_comments: CostMetric; blocked_tasks: CostMetric };
+  throughput: RetroThroughputBucket[];
+  themes: RetroTheme[];
+  patterns: RetroPatterns;
+  outcomes: RetroOutcomes;
+  cost_signals: { agy_credit: CostMetric };
+  limitations?: string[];
+}
+
 // Cross-room handoff (web_app.py). export → signed allowlist package (task →
 // {title,body,priority,labels}); accept → verify (trust/freshness) + EXPLICIT
 // accept → local task (idempotent by handoff_id, receiver TTL). Default OFF.
@@ -764,6 +816,10 @@ export const api = {
   // Per-member ledger (runs/tokens/cost + soft quota + host pressure). viewer =
   // self-only, operator = all members. Read-only; cost/agy stay honestly unknown.
   getLedger: () => getJSON<LedgerReport>("/api/ledger"),
+
+  // Retro analytics insights (operator only; 404 when --enable-retro-analytics
+  // is off). ADVISORY + read-only — never creates/dispatches anything.
+  getRetroAnalytics: () => getJSON<RetroAnalytics>("/api/retro/analytics"),
 
   // Set a member's SOFT budget (operator only; 404 when --enable-quotas is off,
   // 403 for viewers). Never hard-kills — exceeding only throttles new work.
