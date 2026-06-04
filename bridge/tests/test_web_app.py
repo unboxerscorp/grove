@@ -655,6 +655,135 @@ def test_node_health_api_records_reads_and_badges_registry_nodes(tmp_path: Path)
     assert invalid.status_code == 400
 
 
+def test_decision_ledger_api_quorum_and_dispatch_idempotency(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "maker": {"name": "maker", "agent": "codex", "tmux_pane": "dev10:1.0"},
+            "reviewer": {"name": "reviewer", "agent": "claude", "tmux_pane": "dev10:1.1"},
+        },
+    )
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_team_member(
+        tmp_path,
+        name="codex",
+        secret="codex-secret",
+        role="operator",
+        member_id="member-codex",
+    )
+    write_team_member(
+        tmp_path,
+        name="claude",
+        secret="claude-secret",
+        role="operator",
+        member_id="member-claude",
+        append=True,
+    )
+    write_team_member(
+        tmp_path,
+        name="agy",
+        secret="agy-secret",
+        role="operator",
+        member_id="member-agy",
+        append=True,
+    )
+    client = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
+    codex_login = client.post("/api/login", json={"name": "codex", "secret": "codex-secret"})
+    codex_headers = {CSRF_HEADER: str(codex_login.json()["csrf"])}
+
+    proposed = client.post(
+        "/api/decisions/proposals",
+        headers=codex_headers,
+        json={
+            "proposer": "codex",
+            "title": "Build delegated task",
+            "body": "Create the child board task.",
+            "assignee": "maker",
+            "reviewer": "reviewer",
+        },
+    )
+    proposal_id = proposed.json()["id"]
+    first_vote = client.post(
+        f"/api/decisions/{proposal_id}/votes",
+        headers=codex_headers,
+        json={"voter": "codex", "approve": True},
+    )
+    impersonated_vote = client.post(
+        f"/api/decisions/{proposal_id}/votes",
+        headers=codex_headers,
+        json={"voter": "claude", "approve": True},
+    )
+    duplicate_vote = client.post(
+        f"/api/decisions/{proposal_id}/votes",
+        headers=codex_headers,
+        json={"voter": "codex", "approve": True},
+    )
+    claude_login = client.post("/api/login", json={"name": "claude", "secret": "claude-secret"})
+    claude_headers = {CSRF_HEADER: str(claude_login.json()["csrf"])}
+    second_vote = client.post(
+        f"/api/decisions/{proposal_id}/votes",
+        headers=claude_headers,
+        json={"voter": "claude", "approve": True, "reason": "ship it"},
+    )
+    ledger = client.get("/api/decisions")
+    dispatch = client.post(
+        f"/api/decisions/{proposal_id}/dispatch",
+        headers=claude_headers,
+        json={"idempotency_key": "dispatch-once"},
+    )
+    retry = client.post(
+        f"/api/decisions/{proposal_id}/dispatch",
+        headers=claude_headers,
+        json={"idempotency_key": "dispatch-once"},
+    )
+
+    assert codex_login.status_code == 200
+    assert claude_login.status_code == 200
+    assert proposed.status_code == 200
+    assert proposed.json()["status"] == "pending"
+    assert first_vote.json()["status"] == "pending"
+    assert impersonated_vote.status_code == 403
+    assert duplicate_vote.status_code == 409
+    assert second_vote.status_code == 200
+    assert second_vote.json()["status"] == "approved"
+    assert second_vote.json()["result"]["approved"] is True
+    assert second_vote.json()["result"]["missing"] == ["agy"]
+    assert ledger.json()["quorum"] == {
+        "members": ["codex", "claude", "agy"],
+        "required": 2,
+        "mode": "2_of_3",
+    }
+    assert ledger.json()["items"][0]["id"] == proposal_id
+    assert dispatch.status_code == 200
+    assert dispatch.json()["created"] is True
+    assert retry.status_code == 200
+    assert retry.json()["created"] is False
+    assert retry.json()["task"]["id"] == dispatch.json()["task"]["id"]
+    assert len(store.list_tasks(board="dev10")) == 1
+    assert store.list_audit_events(board="dev10", action="decision-propose")
+    assert store.list_audit_events(board="dev10", action="decision-vote")
+    assert store.list_audit_events(board="dev10", action="decision-dispatch")
+
+
+def test_decision_ledger_mutation_rejects_viewer(tmp_path: Path) -> None:
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        auth_mode=AuthMode.TEAM_COOKIE,
+    )
+    login = client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+
+    response = client.post(
+        "/api/decisions/proposals",
+        headers={CSRF_HEADER: str(login.json()["csrf"])},
+        json={"proposer": "codex", "title": "No mutation"},
+    )
+
+    assert response.status_code == 403
+
+
 def test_gui_feature_toggles_default_off_persist_and_audit(tmp_path: Path) -> None:
     db_path = tmp_path / "board.db"
     store = SQLiteBoardStore(db_path)

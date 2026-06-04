@@ -5,7 +5,12 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from grove_bridge.store import SQLITE_BUSY_TIMEOUT_MS, SQLiteBoardStore, TaskTransitionConflict
+from grove_bridge.store import (
+    SQLITE_BUSY_TIMEOUT_MS,
+    DecisionConflict,
+    SQLiteBoardStore,
+    TaskTransitionConflict,
+)
 
 
 def test_connections_enable_wal_busy_timeout_and_normal_sync(tmp_path: Path) -> None:
@@ -119,6 +124,83 @@ def test_node_health_persists_upserts_and_redacts_display_text(tmp_path: Path) -
     assert second.reason is None
     assert len(listed) == 1
     assert listed[0].detected_at == 200
+
+
+def test_decision_ledger_quorum_and_dispatch_lock_are_idempotent(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    proposal = store.create_decision_proposal(
+        board="main",
+        proposer="codex",
+        title="Implement child task",
+        body="Do the work.",
+        target_assignee="maker",
+        reviewer="reviewer",
+        metadata={"labels": ["triage"]},
+    )
+
+    first_vote = store.record_decision_vote(
+        board="main",
+        proposal_id=proposal.id,
+        voter="codex",
+        approve=True,
+    )
+    try:
+        store.record_decision_vote(
+            board="main",
+            proposal_id=proposal.id,
+            voter="codex",
+            approve=False,
+        )
+    except DecisionConflict as exc:
+        assert "already voted" in str(exc)
+    else:
+        raise AssertionError("expected duplicate vote conflict")
+    approved = store.record_decision_vote(
+        board="main",
+        proposal_id=proposal.id,
+        voter="claude",
+        approve=True,
+        reason="looks good",
+    )
+    dispatch = store.dispatch_decision(
+        board="main",
+        proposal_id=proposal.id,
+        idempotency_key="dispatch-once",
+        actor={"kind": "local", "id": "lead", "login": "lead", "role": "none"},
+    )
+    retry = store.dispatch_decision(
+        board="main",
+        proposal_id=proposal.id,
+        idempotency_key="dispatch-once",
+        actor={"kind": "local", "id": "lead", "login": "lead", "role": "none"},
+    )
+
+    assert proposal.status == "pending"
+    assert first_vote.status == "pending"
+    assert approved.status == "approved"
+    assert dispatch.created is True
+    assert retry.created is False
+    assert retry.task.id == dispatch.task.id
+    assert dispatch.task.status == "ready"
+    assert dispatch.task.title == "Implement child task"
+    assert dispatch.task.assignee == "maker"
+    assert dispatch.task.reviewer == "reviewer"
+    decision_metadata = dispatch.task.metadata["decision"]
+    assert isinstance(decision_metadata, dict)
+    assert decision_metadata["proposal_id"] == proposal.id
+    assert store.get_decision_proposal(board="main", proposal_id=proposal.id).status == "dispatched"
+    assert len(store.list_tasks(board="main")) == 1
+    try:
+        store.dispatch_decision(
+            board="main",
+            proposal_id=proposal.id,
+            idempotency_key="different",
+            actor={"kind": "local", "id": "lead", "login": "lead", "role": "none"},
+        )
+    except DecisionConflict as exc:
+        assert "different key" in str(exc)
+    else:
+        raise AssertionError("expected dispatch key conflict")
 
 
 def test_manual_status_transition_requires_expected_status_and_run_id(

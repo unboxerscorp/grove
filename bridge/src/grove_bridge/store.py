@@ -18,6 +18,8 @@ from typing import cast
 from grove_bridge.auth_status import redact_secret_text
 
 DONE_STATUSES = ("done", "archived")
+DECISION_VOTERS = ("codex", "claude", "agy")
+DECISION_QUORUM = 2
 NODE_HEALTH_STATUSES = frozenset(
     {"healthy", "rate_limited", "login_required", "crashed", "cooldown", "hung"}
 )
@@ -156,6 +158,47 @@ class Board:
 
 
 @dataclass(frozen=True)
+class DecisionProposal:
+    id: str
+    board_id: str
+    proposer: str
+    title: str
+    body: str | None
+    target_assignee: str | None
+    reviewer: str | None
+    status: str
+    metadata: dict[str, object]
+    created_at: int
+    updated_at: int
+
+
+@dataclass(frozen=True)
+class DecisionVote:
+    proposal_id: str
+    voter: str
+    approve: bool
+    reason: str | None
+    created_at: int
+    updated_at: int
+
+
+@dataclass(frozen=True)
+class DecisionDispatchLock:
+    proposal_id: str
+    idempotency_key_hash: str
+    task_id: str
+    created_at: int
+
+
+@dataclass(frozen=True)
+class DecisionDispatchResult:
+    proposal: DecisionProposal
+    dispatch: DecisionDispatchLock
+    task: Task
+    created: bool
+
+
+@dataclass(frozen=True)
 class BoardEvent:
     cursor: int
     id: str
@@ -169,6 +212,10 @@ class BoardEvent:
 
 class TaskTransitionConflict(RuntimeError):
     """Raised when a manual task transition CAS guard does not match."""
+
+
+class DecisionConflict(RuntimeError):
+    """Raised when a decision-ledger CAS guard does not match."""
 
 
 class SQLiteBoardStore:
@@ -788,6 +835,337 @@ class SQLiteBoardStore:
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [_node_health_from_row(row) for row in rows]
+
+    def create_decision_proposal(
+        self,
+        *,
+        board: str,
+        proposer: str,
+        title: str,
+        body: str | None = None,
+        target_assignee: str | None = None,
+        reviewer: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> DecisionProposal:
+        now = _now()
+        board_id = self._ensure_board(board)
+        proposal_id = _new_id("decision")
+        clean_proposer = _decision_voter(proposer)
+        clean_title = _required_public_text(title, field="title")
+        clean_body = _optional_public_text(body)
+        clean_assignee = _optional_public_text(target_assignee)
+        clean_reviewer = _optional_public_text(reviewer)
+        clean_metadata = _sanitize_audit_mapping(metadata or {})
+        with self._connect(immediate=True) as conn:
+            conn.execute(
+                """
+                INSERT INTO decision_proposals (
+                    id, board_id, proposer, title, body, target_assignee,
+                    reviewer, status, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                """,
+                (
+                    proposal_id,
+                    board_id,
+                    clean_proposer,
+                    clean_title,
+                    clean_body,
+                    clean_assignee,
+                    clean_reviewer,
+                    _json(clean_metadata),
+                    now,
+                    now,
+                ),
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=None,
+                run_id=None,
+                kind="decision.proposed",
+                payload={"proposal_id": proposal_id, "proposer": clean_proposer},
+                now=now,
+            )
+        return self.get_decision_proposal(board=board, proposal_id=proposal_id)
+
+    def get_decision_proposal(self, *, board: str, proposal_id: str) -> DecisionProposal:
+        board_id = self._ensure_board(board)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM decision_proposals WHERE board_id = ? AND id = ?",
+                (board_id, proposal_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(proposal_id)
+        return _decision_proposal_from_row(row)
+
+    def list_decision_proposals(
+        self,
+        *,
+        board: str,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> list[DecisionProposal]:
+        board_id = self._board_id_for_slug(board)
+        if board_id is None:
+            return []
+        clauses = ["board_id = ?"]
+        params: list[object] = [board_id]
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status.strip().lower())
+        sql = (
+            "SELECT * FROM decision_proposals WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY created_at DESC, id DESC"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(1, min(limit, 500)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_decision_proposal_from_row(row) for row in rows]
+
+    def record_decision_vote(
+        self,
+        *,
+        board: str,
+        proposal_id: str,
+        voter: str,
+        approve: bool,
+        reason: str | None = None,
+    ) -> DecisionProposal:
+        now = _now()
+        board_id = self._ensure_board(board)
+        clean_voter = _decision_voter(voter)
+        clean_reason = _optional_public_text(reason)
+        with self._connect(immediate=True) as conn:
+            proposal = conn.execute(
+                "SELECT * FROM decision_proposals WHERE board_id = ? AND id = ?",
+                (board_id, proposal_id),
+            ).fetchone()
+            if proposal is None:
+                raise KeyError(proposal_id)
+            if _row_str(proposal, "status") == "dispatched":
+                raise DecisionConflict("decision already dispatched")
+            existing = conn.execute(
+                "SELECT created_at FROM decision_votes WHERE proposal_id = ? AND voter = ?",
+                (proposal_id, clean_voter),
+            ).fetchone()
+            if existing is not None:
+                raise DecisionConflict("decision voter already voted")
+            conn.execute(
+                """
+                INSERT INTO decision_votes (
+                    proposal_id, voter, approve, reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (proposal_id, clean_voter, 1 if approve else 0, clean_reason, now, now),
+            )
+            votes = conn.execute(
+                "SELECT * FROM decision_votes WHERE proposal_id = ?",
+                (proposal_id,),
+            ).fetchall()
+            next_status = _decision_status_for_votes(
+                [_decision_vote_from_row(row) for row in votes]
+            )
+            conn.execute(
+                """
+                UPDATE decision_proposals
+                SET status = ?, updated_at = ?
+                WHERE board_id = ? AND id = ?
+                """,
+                (next_status, now, board_id, proposal_id),
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=None,
+                run_id=None,
+                kind="decision.voted",
+                payload={
+                    "proposal_id": proposal_id,
+                    "voter": clean_voter,
+                    "approve": approve,
+                    "status": next_status,
+                },
+                now=now,
+            )
+            updated = conn.execute(
+                "SELECT * FROM decision_proposals WHERE board_id = ? AND id = ?",
+                (board_id, proposal_id),
+            ).fetchone()
+        if updated is None:
+            raise KeyError(proposal_id)
+        return _decision_proposal_from_row(updated)
+
+    def list_decision_votes(self, *, proposal_id: str) -> list[DecisionVote]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM decision_votes
+                WHERE proposal_id = ?
+                ORDER BY voter ASC
+                """,
+                (proposal_id,),
+            ).fetchall()
+        return [_decision_vote_from_row(row) for row in rows]
+
+    def decision_dispatch_lock(self, *, proposal_id: str) -> DecisionDispatchLock | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM decision_dispatch_locks WHERE proposal_id = ?",
+                (proposal_id,),
+            ).fetchone()
+        return None if row is None else _decision_dispatch_from_row(row)
+
+    def dispatch_decision(
+        self,
+        *,
+        board: str,
+        proposal_id: str,
+        idempotency_key: str,
+        actor: Mapping[str, object],
+    ) -> DecisionDispatchResult:
+        now = _now()
+        board_id = self._ensure_board(board)
+        clean_key = idempotency_key.strip()
+        if not clean_key:
+            raise ValueError("idempotency_key is required")
+        key_hash = _idempotency_key_hash(clean_key)
+        created = False
+        with self._connect(immediate=True) as conn:
+            proposal_row = conn.execute(
+                "SELECT * FROM decision_proposals WHERE board_id = ? AND id = ?",
+                (board_id, proposal_id),
+            ).fetchone()
+            if proposal_row is None:
+                raise KeyError(proposal_id)
+            proposal = _decision_proposal_from_row(proposal_row)
+            existing = conn.execute(
+                "SELECT * FROM decision_dispatch_locks WHERE proposal_id = ?",
+                (proposal_id,),
+            ).fetchone()
+            if existing is not None:
+                dispatch = _decision_dispatch_from_row(existing)
+                if dispatch.idempotency_key_hash != key_hash:
+                    raise DecisionConflict("decision already dispatched with a different key")
+                task_row = conn.execute(
+                    "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                    (board_id, dispatch.task_id),
+                ).fetchone()
+                if task_row is None:
+                    raise RuntimeError("dispatch task disappeared")
+                return DecisionDispatchResult(
+                    proposal=proposal,
+                    dispatch=dispatch,
+                    task=_task_from_row(task_row),
+                    created=False,
+                )
+            if proposal.status != "approved":
+                raise DecisionConflict("decision is not approved")
+            task_id = _new_id("task")
+            metadata = dict(proposal.metadata)
+            metadata["decision"] = {
+                "proposal_id": proposal.id,
+                "idempotency_key_hash": key_hash,
+                "dispatched_at": now,
+            }
+            actor_id = str(actor.get("login") or actor.get("id") or "operator")
+            conn.execute(
+                """
+                INSERT INTO tasks (
+                    id, board_id, title, body, assignee, reviewer, status, priority,
+                    workspace_kind, workspace_path, branch_name, metadata_json,
+                    created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 0, 'scratch', NULL, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    board_id,
+                    proposal.title,
+                    proposal.body,
+                    proposal.target_assignee,
+                    proposal.reviewer,
+                    _json(metadata),
+                    actor_id,
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO decision_dispatch_locks (
+                    proposal_id, idempotency_key_hash, task_id, created_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (proposal_id, key_hash, task_id, now),
+            )
+            conn.execute(
+                """
+                UPDATE decision_proposals
+                SET status = 'dispatched', updated_at = ?
+                WHERE board_id = ? AND id = ?
+                """,
+                (now, board_id, proposal_id),
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="task.created",
+                payload={"status": "ready", "decision_id": proposal_id},
+                now=now,
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="decision.dispatched",
+                payload={"proposal_id": proposal_id, "task_id": task_id},
+                now=now,
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="audit.decision.dispatch",
+                payload=_audit_payload(
+                    actor=actor,
+                    action="decision-dispatch",
+                    target={"type": "decision", "id": proposal_id},
+                    board=board,
+                    status="ok",
+                    summary=proposal.title,
+                    ts=now,
+                    extra={"task_id": task_id},
+                ),
+                now=now,
+            )
+            dispatch_row = conn.execute(
+                "SELECT * FROM decision_dispatch_locks WHERE proposal_id = ?",
+                (proposal_id,),
+            ).fetchone()
+            task_row = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+            proposal_row = conn.execute(
+                "SELECT * FROM decision_proposals WHERE board_id = ? AND id = ?",
+                (board_id, proposal_id),
+            ).fetchone()
+            created = True
+        if dispatch_row is None or task_row is None or proposal_row is None:
+            raise RuntimeError("dispatch rows disappeared")
+        return DecisionDispatchResult(
+            proposal=_decision_proposal_from_row(proposal_row),
+            dispatch=_decision_dispatch_from_row(dispatch_row),
+            task=_task_from_row(task_row),
+            created=created,
+        )
 
     def claim_next(
         self,
@@ -2857,6 +3235,41 @@ class SQLiteBoardStore:
 
             CREATE INDEX IF NOT EXISTS idx_node_health_project
                 ON node_health(project, session, status, detected_at);
+
+            CREATE TABLE IF NOT EXISTS decision_proposals (
+                id TEXT PRIMARY KEY,
+                board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+                proposer TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT,
+                target_assignee TEXT,
+                reviewer TEXT,
+                status TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_decision_proposals_board
+                ON decision_proposals(board_id, status, created_at);
+
+            CREATE TABLE IF NOT EXISTS decision_votes (
+                proposal_id TEXT NOT NULL REFERENCES decision_proposals(id) ON DELETE CASCADE,
+                voter TEXT NOT NULL,
+                approve INTEGER NOT NULL,
+                reason TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(proposal_id, voter)
+            );
+
+            CREATE TABLE IF NOT EXISTS decision_dispatch_locks (
+                proposal_id TEXT PRIMARY KEY
+                    REFERENCES decision_proposals(id) ON DELETE CASCADE,
+                idempotency_key_hash TEXT NOT NULL,
+                task_id TEXT NOT NULL REFERENCES tasks(id),
+                created_at INTEGER NOT NULL
+            );
             """
         )
         self._ensure_task_reviewer_column(conn)
@@ -3417,6 +3830,23 @@ def _optional_public_text(value: object | None) -> str | None:
     return clean[:2000] if clean else None
 
 
+def _decision_voter(value: str) -> str:
+    clean = value.strip().lower()
+    if clean not in DECISION_VOTERS:
+        raise ValueError("decision voter is invalid")
+    return clean
+
+
+def _decision_status_for_votes(votes: list[DecisionVote]) -> str:
+    approvals = sum(1 for vote in votes if vote.approve)
+    rejections = sum(1 for vote in votes if not vote.approve)
+    if approvals >= DECISION_QUORUM:
+        return "approved"
+    if rejections >= DECISION_QUORUM:
+        return "rejected"
+    return "pending"
+
+
 def _idempotency_key_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -3600,6 +4030,42 @@ def _node_health_from_row(row: sqlite3.Row) -> NodeHealth:
         reset_at=_row_optional_int(row, "reset_at"),
         source=_row_str(row, "source"),
         updated_at=_row_int(row, "updated_at"),
+    )
+
+
+def _decision_proposal_from_row(row: sqlite3.Row) -> DecisionProposal:
+    return DecisionProposal(
+        id=_row_str(row, "id"),
+        board_id=_row_str(row, "board_id"),
+        proposer=_row_str(row, "proposer"),
+        title=_row_str(row, "title"),
+        body=_row_optional_str(row, "body"),
+        target_assignee=_row_optional_str(row, "target_assignee"),
+        reviewer=_row_optional_str(row, "reviewer"),
+        status=_row_str(row, "status"),
+        metadata=_json_dict(row["metadata_json"]),
+        created_at=_row_int(row, "created_at"),
+        updated_at=_row_int(row, "updated_at"),
+    )
+
+
+def _decision_vote_from_row(row: sqlite3.Row) -> DecisionVote:
+    return DecisionVote(
+        proposal_id=_row_str(row, "proposal_id"),
+        voter=_row_str(row, "voter"),
+        approve=bool(_row_int(row, "approve")),
+        reason=_row_optional_str(row, "reason"),
+        created_at=_row_int(row, "created_at"),
+        updated_at=_row_int(row, "updated_at"),
+    )
+
+
+def _decision_dispatch_from_row(row: sqlite3.Row) -> DecisionDispatchLock:
+    return DecisionDispatchLock(
+        proposal_id=_row_str(row, "proposal_id"),
+        idempotency_key_hash=_row_str(row, "idempotency_key_hash"),
+        task_id=_row_str(row, "task_id"),
+        created_at=_row_int(row, "created_at"),
     )
 
 

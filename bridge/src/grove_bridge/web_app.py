@@ -42,10 +42,17 @@ from grove_bridge.slack import (
     slack_manifest,
 )
 from grove_bridge.store import (
+    DECISION_QUORUM,
+    DECISION_VOTERS,
     NODE_HEALTH_STATUSES,
     Board,
     BoardEvent,
     Comment,
+    DecisionConflict,
+    DecisionDispatchLock,
+    DecisionDispatchResult,
+    DecisionProposal,
+    DecisionVote,
     NodeHealth,
     NotifySub,
     Run,
@@ -412,6 +419,25 @@ class NodeHealthPayload(BaseModel):
     detected_at: int | None = Field(default=None, ge=0)
     reset_at: int | None = Field(default=None, ge=0)
     source: str = Field(default="watchdog", min_length=1, max_length=100)
+
+
+class DecisionProposalPayload(BaseModel):
+    proposer: str = Field(min_length=1, max_length=50)
+    title: str = Field(min_length=1, max_length=500)
+    body: str | None = Field(default=None, max_length=20_000)
+    assignee: str | None = Field(default=None, max_length=500)
+    reviewer: str | None = Field(default=None, max_length=500)
+    metadata: dict[str, object] | None = None
+
+
+class DecisionVotePayload(BaseModel):
+    voter: str | None = Field(default=None, max_length=50)
+    approve: bool
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class DecisionDispatchPayload(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=200)
 
 
 class NodeCreatePayload(BaseModel):
@@ -1186,6 +1212,149 @@ def create_app(
     def auth_status_endpoint(request: Request) -> list[dict[str, object]]:
         _require_auth(request)
         return [tool_status.to_payload() for tool_status in collect_auth_status()]
+
+    @app.get("/api/decisions")
+    def decision_ledger_endpoint(
+        request: Request,
+        status_filter: str | None = Query(default=None, alias="status"),
+    ) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        proposals = _store(request).list_decision_proposals(
+            board=project.board,
+            status=status_filter,
+        )
+        return {
+            "project": project.name,
+            "board": project.board,
+            "quorum": _decision_quorum_payload(),
+            "items": [
+                _decision_payload(_store(request), proposal, project=project)
+                for proposal in proposals
+            ],
+        }
+
+    @app.post("/api/decisions/proposals")
+    def create_decision_proposal_endpoint(
+        request: Request,
+        payload: DecisionProposalPayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="decision mutation requires operator role",
+        )
+        project = resolve_project(request)
+        assignee = _validated_task_assignee(payload.assignee, project=project)
+        reviewer = _validated_task_reviewer(payload.reviewer, project=project)
+        try:
+            proposal = _store(request).create_decision_proposal(
+                board=project.board,
+                proposer=_decision_member(payload.proposer),
+                title=payload.title,
+                body=payload.body,
+                target_assignee=assignee,
+                reviewer=reviewer,
+                metadata=payload.metadata,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=_safe_public_text(str(exc))) from exc
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.decision.propose",
+            actor=_actor_payload(auth),
+            action="decision-propose",
+            target={"type": "decision", "id": proposal.id},
+            payload={"proposer": proposal.proposer, "status": proposal.status},
+            summary=proposal.title,
+        )
+        return _decision_payload(_store(request), proposal, project=project)
+
+    @app.get("/api/decisions/{proposal_id}")
+    def decision_detail_endpoint(request: Request, proposal_id: str) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        try:
+            proposal = _store(request).get_decision_proposal(
+                board=project.board,
+                proposal_id=proposal_id,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="decision not found") from exc
+        return _decision_payload(_store(request), proposal, project=project)
+
+    @app.post("/api/decisions/{proposal_id}/votes")
+    def vote_decision_endpoint(
+        request: Request,
+        proposal_id: str,
+        payload: DecisionVotePayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="decision mutation requires operator role",
+        )
+        project = resolve_project(request)
+        voter = _decision_voter_from_auth(auth)
+        if payload.voter is not None and payload.voter.strip():
+            requested_voter = _decision_member(payload.voter)
+            if requested_voter != voter:
+                raise HTTPException(
+                    status_code=403,
+                    detail="decision voter does not match authenticated identity",
+                )
+        try:
+            proposal = _store(request).record_decision_vote(
+                board=project.board,
+                proposal_id=proposal_id,
+                voter=voter,
+                approve=payload.approve,
+                reason=payload.reason,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="decision not found") from exc
+        except DecisionConflict as exc:
+            raise HTTPException(status_code=409, detail=_safe_public_text(str(exc))) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=_safe_public_text(str(exc))) from exc
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.decision.vote",
+            actor=_actor_payload(auth),
+            action="decision-vote",
+            target={"type": "decision", "id": proposal.id},
+            payload={
+                "voter": voter,
+                "approve": payload.approve,
+                "status": proposal.status,
+            },
+            summary=proposal.title,
+        )
+        return _decision_payload(_store(request), proposal, project=project)
+
+    @app.post("/api/decisions/{proposal_id}/dispatch")
+    def dispatch_decision_endpoint(
+        request: Request,
+        proposal_id: str,
+        payload: DecisionDispatchPayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="decision dispatch requires operator role",
+        )
+        project = resolve_project(request)
+        try:
+            result = _store(request).dispatch_decision(
+                board=project.board,
+                proposal_id=proposal_id,
+                idempotency_key=payload.idempotency_key,
+                actor=_actor_payload(auth),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="decision not found") from exc
+        except DecisionConflict as exc:
+            raise HTTPException(status_code=409, detail=_safe_public_text(str(exc))) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=_safe_public_text(str(exc))) from exc
+        return _decision_dispatch_payload(_store(request), result, project=project)
 
     @app.post("/api/master/chat")
     def master_chat_endpoint(
@@ -8137,6 +8306,113 @@ def _node_health_payload(entry: NodeHealth) -> dict[str, object]:
         "project": entry.project,
         "session": entry.session,
         "updated_at": entry.updated_at,
+    }
+
+
+def _decision_member(value: str) -> str:
+    clean = value.strip().lower()
+    if clean not in DECISION_VOTERS:
+        raise HTTPException(status_code=400, detail="decision member is invalid")
+    return clean
+
+
+def _decision_voter_from_auth(auth: AuthContext) -> str:
+    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
+        clean = auth.member.name.strip().lower()
+        if clean in DECISION_VOTERS:
+            return clean
+    raise HTTPException(
+        status_code=403,
+        detail="decision voting requires authenticated triumvirate member identity",
+    )
+
+
+def _decision_payload(
+    store: SQLiteBoardStore,
+    proposal: DecisionProposal,
+    *,
+    project: ProjectContext,
+) -> dict[str, object]:
+    votes = store.list_decision_votes(proposal_id=proposal.id)
+    dispatch = store.decision_dispatch_lock(proposal_id=proposal.id)
+    return {
+        "id": proposal.id,
+        "project": project.name,
+        "board": project.board,
+        "proposer": proposal.proposer,
+        "title": proposal.title,
+        "body": proposal.body,
+        "assignee": proposal.target_assignee,
+        "reviewer": proposal.reviewer,
+        "status": proposal.status,
+        "metadata": proposal.metadata,
+        "created_at": proposal.created_at,
+        "updated_at": proposal.updated_at,
+        "votes": [_decision_vote_payload(vote) for vote in votes],
+        "result": _decision_result_payload(votes),
+        "dispatch": _decision_dispatch_lock_payload(dispatch),
+    }
+
+
+def _decision_vote_payload(vote: DecisionVote) -> dict[str, object]:
+    return {
+        "voter": vote.voter,
+        "approve": vote.approve,
+        "reason": vote.reason,
+        "created_at": vote.created_at,
+        "updated_at": vote.updated_at,
+    }
+
+
+def _decision_result_payload(votes: Sequence[DecisionVote]) -> dict[str, object]:
+    approved_by = [vote.voter for vote in votes if vote.approve]
+    rejected_by = [vote.voter for vote in votes if not vote.approve]
+    voted = {vote.voter for vote in votes}
+    return {
+        "members": list(DECISION_VOTERS),
+        "required": DECISION_QUORUM,
+        "approve_count": len(approved_by),
+        "reject_count": len(rejected_by),
+        "approved": len(approved_by) >= DECISION_QUORUM,
+        "rejected": len(rejected_by) >= DECISION_QUORUM,
+        "approved_by": approved_by,
+        "rejected_by": rejected_by,
+        "missing": [member for member in DECISION_VOTERS if member not in voted],
+    }
+
+
+def _decision_quorum_payload() -> dict[str, object]:
+    return {
+        "members": list(DECISION_VOTERS),
+        "required": DECISION_QUORUM,
+        "mode": "2_of_3",
+    }
+
+
+def _decision_dispatch_lock_payload(
+    dispatch: DecisionDispatchLock | None,
+) -> dict[str, object] | None:
+    if dispatch is None:
+        return None
+    return {
+        "proposal_id": dispatch.proposal_id,
+        "task_id": dispatch.task_id,
+        "created_at": dispatch.created_at,
+    }
+
+
+def _decision_dispatch_payload(
+    store: SQLiteBoardStore,
+    result: DecisionDispatchResult,
+    *,
+    project: ProjectContext,
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "created": result.created,
+        "decision": _decision_payload(store, result.proposal, project=project),
+        "dispatch": _decision_dispatch_lock_payload(result.dispatch),
+        "task": _task_payload(result.task),
     }
 
 
