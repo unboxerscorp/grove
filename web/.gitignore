@@ -3,3 +3,4 @@ dist/
 mock/harness.js
 mock/harness.js.map
 mock/verify-screenshot.png
+web/e2e/artifacts/
