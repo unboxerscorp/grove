@@ -18,7 +18,7 @@ import secrets
 import subprocess
 import sys
 import time
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -175,6 +175,7 @@ DELEGATE_BOARD_ALIASES = frozenset({"dev-room"})
 DELEGATE_BOARD_OWNER_PROJECT = "dev10"
 LEAD_NODE_NAME = "lead"
 PROJECT_MASTER_NODE_NAME = "project-master"
+MASTER_BOARD_STATUSES = ("ready", "running", "blocked", "done", "archived")
 
 
 class AuthMode(StrEnum):
@@ -5260,6 +5261,7 @@ def _handle_master_chat_request(
     rendered = _jsonable(response)
     if not isinstance(rendered, dict):
         raise HTTPException(status_code=503, detail="master chat returned invalid response")
+    _enrich_master_chat_answer(rendered, _store(request), project=project)
     return rendered
 
 
@@ -5350,11 +5352,174 @@ def _master_request_id(value: str | None, *, prefix: str) -> str:
 
 def _visible_project_names(project: ProjectContext) -> tuple[str, ...]:
     names = {project.name}
-    for payload in _project_payloads(project.config):
-        name = payload.get("name")
-        if isinstance(name, str) and name.strip():
-            names.add(name.strip())
+    names.update(_project_registry_names(project.config))
     return tuple(sorted(names))
+
+
+def _visible_project_names_for_config(config: WebAppConfig) -> list[str]:
+    names = {config.registry_session}
+    names.update(_project_registry_names(config))
+    return sorted(names)
+
+
+def _project_registry_names(config: WebAppConfig) -> set[str]:
+    if not config.grove_home.is_dir():
+        return set()
+    return {
+        registry_path.parent.name
+        for registry_path in config.grove_home.glob("*/registry.json")
+        if registry_path.parent.name
+    }
+
+
+def _enrich_master_chat_answer(
+    rendered: dict[str, object],
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+) -> None:
+    if rendered.get("response_type") != "answer":
+        return
+    answer = rendered.get("answer")
+    if not isinstance(answer, dict):
+        return
+    facts = _master_chat_facts(store, project=project)
+    metadata = answer.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata["facts"] = facts
+    answer["metadata"] = metadata
+    answer["text"] = _master_chat_answer_text(answer.get("text"), facts)
+
+
+def _master_chat_facts(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+) -> dict[str, object]:
+    org = _org_payload(project.config)
+    org_nodes = org.get("nodes", [])
+    nodes = (
+        [node for node in org_nodes if isinstance(node, dict)]
+        if isinstance(org_nodes, list)
+        else []
+    )
+    reviewers = _reviewer_node_names(nodes)
+    human_candidates = _human_candidate_names(project.config)
+    blocked = _safe_list_tasks(store, board=project.board, status="blocked")
+    return {
+        "project": {"selected": project.name, "board": project.board},
+        "projects": {"visible": list(_visible_project_names(project))},
+        "org": {
+            "node_count": len(nodes),
+            "roots": org.get("roots", []),
+            "project_master": {
+                "name": PROJECT_MASTER_NODE_NAME,
+                "present": _project_master_exists(project.config),
+                "default_assignee": _default_assignee(project.config) == PROJECT_MASTER_NODE_NAME,
+            },
+        },
+        "board": {
+            "status_counts": {
+                status: len(_safe_list_tasks(store, board=project.board, status=status))
+                for status in MASTER_BOARD_STATUSES
+            }
+        },
+        "reviewers": {"count": len(reviewers), "nodes": reviewers},
+        "human": {
+            "assignee_candidates": human_candidates,
+            "reviewers": [name for name in human_candidates if name in reviewers],
+            "ask_human_count": sum(
+                1
+                for task in blocked
+                if _task_routes_to_human(
+                    store,
+                    task=task,
+                    human_names=human_candidates,
+                )
+            ),
+            "needs_human_count": sum(1 for task in blocked if _task_needs_human(task)),
+            "inbox_endpoint": "/api/inbox",
+            "answer_endpoint": "/api/tasks/{task_id}/answer",
+        },
+        "delegation": _master_delegation_payload(project.config),
+    }
+
+
+def _safe_list_tasks(
+    store: SQLiteBoardStore,
+    *,
+    board: str,
+    status: str | None = None,
+) -> list[Task]:
+    try:
+        return store.list_tasks(board=board, status=status)
+    except KeyError:
+        return []
+
+
+def _master_chat_answer_text(value: object, facts: Mapping[str, object]) -> str:
+    base = value if isinstance(value, str) else ""
+    summary = _master_chat_fact_summary(facts)
+    if not base or "future web route should attach" in base:
+        return summary
+    return f"{base}\n\n{summary}"
+
+
+def _master_chat_fact_summary(facts: Mapping[str, object]) -> str:
+    project = cast(Mapping[str, object], facts["project"])
+    board = cast(Mapping[str, object], facts["board"])
+    status_counts = cast(Mapping[str, object], board["status_counts"])
+    reviewers = cast(Mapping[str, object], facts["reviewers"])
+    human = cast(Mapping[str, object], facts["human"])
+    org = cast(Mapping[str, object], facts["org"])
+    projects = cast(Mapping[str, object], facts["projects"])
+    project_master = cast(Mapping[str, object], org["project_master"])
+    status_line = ", ".join(
+        f"{status}={status_counts.get(status, 0)}" for status in MASTER_BOARD_STATUSES
+    )
+    reviewer_nodes = cast(Sequence[object], reviewers.get("nodes", ()))
+    human_nodes = cast(Sequence[object], human.get("assignee_candidates", ()))
+    visible_projects = cast(Sequence[object], projects.get("visible", ()))
+    reviewer_suffix = (
+        f" ({', '.join(str(node) for node in reviewer_nodes)})" if reviewer_nodes else ""
+    )
+    human_suffix = ", ".join(str(node) for node in human_nodes) if human_nodes else "none"
+    return (
+        f"Project {project['selected']} board {project['board']}. "
+        f"Reviewers: {reviewers['count']}{reviewer_suffix}. "
+        f"Board tasks: {status_line}. "
+        f"Human queue: ask-human={human['ask_human_count']}, "
+        f"needs_human={human['needs_human_count']}; human nodes: {human_suffix}. "
+        f"Master route: {project_master['name']} "
+        f"{'present' if project_master['present'] else 'missing'}. "
+        f"Projects: {', '.join(str(name) for name in visible_projects)}."
+    )
+
+
+def _task_needs_human(task: Task) -> bool:
+    return bool(task.metadata.get("needs_human"))
+
+
+def _task_routes_to_human(
+    store: SQLiteBoardStore,
+    *,
+    task: Task,
+    human_names: Collection[str] = (),
+) -> bool:
+    if _task_needs_human(task):
+        return True
+    if task.assignee in human_names:
+        return True
+    if _is_human_name(task.assignee):
+        return True
+    if store.list_notify_subs(board=task.board_id, task_id=task.id):
+        return True
+    return any(
+        thread.mode in {HUMAN_GATE_MODE, HUMAN_GATE_PENDING_MODE}
+        for thread in store.list_slack_threads(task_id=task.id)
+        if thread.board_id == task.board_id
+    )
 
 
 def _record_master_audit_events(
@@ -6389,7 +6554,7 @@ def _registry_node_records(config: WebAppConfig) -> list[NodeRecord]:
                 parent=_mapping_string(node, "parent") or "",
                 group=_mapping_string(node, "group") or "",
                 description=_mapping_string(node, "description") or "",
-                kind="registry",
+                kind=_node_kind_for_registry(node),
                 config=config,
             )
         )
@@ -6436,7 +6601,7 @@ def _node_record(
 
 
 def _node_record_status(status: str, *, reason: str, kind: str) -> str:
-    if kind == "meta" or not reason:
+    if kind in {"human", "meta"} or not reason:
         return status
     clean = status.strip().lower()
     if clean in {"dead", "stale", "error", "blocked"}:
@@ -6447,6 +6612,8 @@ def _node_record_status(status: str, *, reason: str, kind: str) -> str:
 def _node_unavailable_reason(pane: str, *, kind: str, config: WebAppConfig) -> str:
     if kind == "meta":
         return "meta node has no pane"
+    if kind == "human":
+        return "human node has no pane"
     if not pane:
         return "no live pane"
     match = TMUX_PANE_RE.fullmatch(pane)
@@ -6498,13 +6665,22 @@ def _assignee_candidate_payload(
     *,
     default: str,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "name": node["name"],
         "agent": node["agent"],
         "role": node["role"],
         "status": node["status"],
         "default": node["name"] == default,
     }
+    if _is_human_node_mapping(node):
+        payload["human"] = True
+        payload["reviewer"] = _is_reviewer_node(node)
+        payload["inbox"] = {
+            "endpoint": "/api/inbox",
+            "answer_endpoint": "/api/tasks/{task_id}/answer",
+            "route": node["name"],
+        }
+    return payload
 
 
 def _validated_task_assignee(value: str | None, *, project: ProjectContext) -> str | None:
@@ -6758,8 +6934,41 @@ def _org_payload(
         "nodes": graph_nodes,
         "default_assignee": _default_assignee(config),
         "assignee_candidates": _assignee_candidates(config),
+        "master_org": _master_org_payload(config),
         "reviewer_candidates": _reviewer_candidates(config),
         "delegations": _delegation_payload(store, project=project) if store is not None else {},
+    }
+
+
+def _master_org_payload(config: WebAppConfig) -> dict[str, object]:
+    human_candidates = _human_candidate_names(config)
+    return {
+        "name": "GROVE MASTER",
+        "scope": "cross_project",
+        "selected_project": config.registry_session,
+        "visible_projects": _visible_project_names_for_config(config),
+        "project_master": {
+            "name": PROJECT_MASTER_NODE_NAME,
+            "present": _project_master_exists(config),
+            "default_assignee": _default_assignee(config) == PROJECT_MASTER_NODE_NAME,
+        },
+        "delegation": _master_delegation_payload(config),
+        "human": {
+            "assignee_candidates": human_candidates,
+            "reviewers": _human_reviewer_names(config),
+            "inbox_endpoint": "/api/inbox",
+            "answer_endpoint": "/api/tasks/{task_id}/answer",
+        },
+    }
+
+
+def _master_delegation_payload(config: WebAppConfig) -> dict[str, object]:
+    return {
+        "default_assignee": _default_assignee(config),
+        "create_task_endpoint": "/api/boards/{board_id}/tasks",
+        "watch_endpoint": "/ws/board",
+        "watch_ticket_endpoint": "/api/ws-ticket",
+        "watch_ticket_kind": "board",
     }
 
 
@@ -7339,6 +7548,60 @@ def _mapping_float(mapping: Mapping[str, object], key: str) -> float | None:
     if isinstance(value, int | float) and not isinstance(value, bool):
         return float(value)
     return None
+
+
+def _is_human_name(value: str | None) -> bool:
+    return bool(value and value.startswith("human-"))
+
+
+def _is_human_node_mapping(node: Mapping[str, object]) -> bool:
+    return (
+        _mapping_string(node, "agent") == "human"
+        or _mapping_string(node, "kind") == "human"
+        or _mapping_string(node, "group") == "human"
+        or _is_human_name(_mapping_string(node, "name"))
+    )
+
+
+def _node_kind_for_registry(node: Mapping[str, object]) -> str:
+    return "human" if _is_human_node_mapping(node) else "registry"
+
+
+def _is_reviewer_node(node: Mapping[str, object]) -> bool:
+    role = (_mapping_string(node, "role") or "").casefold()
+    group = (_mapping_string(node, "group") or "").casefold()
+    name = (_mapping_string(node, "name") or "").casefold()
+    return "review" in role or "review" in group or "review" in name
+
+
+def _reviewer_node_names(nodes: Sequence[Mapping[str, object]]) -> list[str]:
+    return sorted(
+        name
+        for node in nodes
+        if _is_reviewer_node(node)
+        for name in [_mapping_string(node, "name")]
+        if name is not None
+    )
+
+
+def _human_candidate_names(config: WebAppConfig) -> list[str]:
+    return sorted(
+        name
+        for node in _org_node_records(config)
+        if _is_human_node_mapping(node)
+        for name in [_mapping_string(node, "name")]
+        if name is not None
+    )
+
+
+def _human_reviewer_names(config: WebAppConfig) -> list[str]:
+    return sorted(
+        name
+        for node in _org_node_records(config)
+        if _is_human_node_mapping(node) and _is_reviewer_node(node)
+        for name in [_mapping_string(node, "name")]
+        if name is not None
+    )
 
 
 def _board_payload(board: Board) -> dict[str, object]:

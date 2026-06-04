@@ -66,6 +66,38 @@ export interface AssigneeCandidate {
   role?: string;
   status?: string;
   default?: boolean;
+  human?: boolean;
+  reviewer?: boolean;
+  inbox?: {
+    endpoint?: string;
+    answer_endpoint?: string;
+    route?: string;
+  };
+}
+
+export interface MasterOrg {
+  name: string;
+  scope: string;
+  selected_project: string;
+  visible_projects: string[];
+  project_master: {
+    name: string;
+    present: boolean;
+    default_assignee: boolean;
+  };
+  delegation: {
+    default_assignee: string;
+    create_task_endpoint: string;
+    watch_endpoint: string;
+    watch_ticket_endpoint: string;
+    watch_ticket_kind: string;
+  };
+  human: {
+    assignee_candidates: string[];
+    reviewers: string[];
+    inbox_endpoint: string;
+    answer_endpoint: string;
+  };
 }
 
 // v1.29 board workflow (web_app.py _workflow_payload). canonical_statuses +
@@ -161,6 +193,7 @@ export interface Org {
   // v1.27: candidate assignees + the default (project-master) for task creation.
   default_assignee?: string;
   assignee_candidates?: AssigneeCandidate[];
+  master_org?: MasterOrg;
   // v1.29 orch-product additions.
   project?: ProjectMeta;
   master?: MasterMeta;

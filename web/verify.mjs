@@ -108,7 +108,7 @@ async function main() {
 
     // V2-W4 node status heatmap (from GET /api/status) + server health dot
     // (GET /api/health). Mock summary mirrors _node_liveness_summary:
-    // running=2, idle=2, stale=0, error=1, total=5 — error is its OWN bucket,
+    // running=2, idle=3, stale=0, error=1, total=6 — error is its OWN bucket,
     // NOT folded into stale, and idle is the backend's count (not derived).
     await page.waitForFunction(
       () => /\d/.test(document.querySelector(".nodestat__chip.is-running")?.textContent ?? ""),
@@ -132,10 +132,10 @@ async function main() {
       statusBar.segs === 4 && // running/idle/stale/error
       statusBar.errSeg && // dedicated error segment in the bar
       num(statusBar.running) === 2 &&
-      num(statusBar.idle) === 2 && // backend idle, not folded from error
+      num(statusBar.idle) === 3 && // backend idle, not folded from error; human-as-node is idle/external
       num(statusBar.error) === 1 && // error is its own bucket
       num(statusBar.stale) === 0 &&
-      /5/.test(statusBar.total) &&
+      /6/.test(statusBar.total) &&
       statusBar.healthOk;
 
     // V8-W1 presence indicator (GET /api/presence): team mode (default) → member
@@ -1069,6 +1069,42 @@ async function main() {
       legend: document.querySelectorAll(".org-legend__item").length,
       descs: document.querySelectorAll(".org-node__desc").length,
     }));
+    const masterOrgInitial = await page.evaluate(() => ({
+      root: !!document.querySelector(".master-org__root"),
+      human: /human\s+1/.test(document.querySelector(".master-org")?.textContent ?? ""),
+      projectButtons: Array.from(document.querySelectorAll(".master-org__project")).map(
+        (el) => el.getAttribute("data-project") ?? "",
+      ),
+    }));
+    await page.click(".master-org__root");
+    await page.waitForSelector(".dr-mchat__panel", { timeout: 5000 });
+    const masterRootChatOpen = (await page.$(".dr-mchat__panel")) !== null;
+    await page.click(".dr-mchat__x");
+    await page.waitForFunction(() => !document.querySelector(".dr-mchat__panel"), { timeout: 5000 });
+    await page.click('.master-org__project[data-project="infra-ops"]');
+    await page.waitForFunction(
+      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "grove-infra",
+      { timeout: 6000 },
+    );
+    const masterProjectSwitch = await page.evaluate(() => ({
+      current: (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim(),
+      header: window.__MOCK__?.projectHeader ?? "",
+    }));
+    await page.click(".proj-switcher__btn");
+    await page.waitForSelector('.proj-item[data-project="dev10"]', { timeout: 6000 });
+    await page.click('.proj-item[data-project="dev10"]');
+    await page.waitForFunction(
+      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "grove-dev",
+      { timeout: 6000 },
+    );
+    await page.waitForSelector(".org-node", { timeout: 8000 });
+    const masterOrgOk =
+      masterOrgInitial.root &&
+      masterOrgInitial.human &&
+      masterOrgInitial.projectButtons.includes("infra-ops") &&
+      masterRootChatOpen &&
+      masterProjectSwitch.current === "grove-infra" &&
+      masterProjectSwitch.header === "infra-ops";
 
     // V11-W2 autonomy visibility (org): a node that self-claimed (autopickup
     // actor in the audit) shows an inferred "⚡ auto" badge — read-only.
@@ -1177,9 +1213,9 @@ async function main() {
     await page.mouse.down();
     await glide(fStart.x, fStart.y, dC0.x, dC0.y); // over docs -> reparent
     const badgeReparent = await badge();
-    await glide(dC0.x, dC0.y, rC0.x + 132, rC0.y); // near researcher -> group
+    await glide(dC0.x, dC0.y, rC0.x, rC0.y + 132); // near researcher -> group
     const badgeGroup = await badge();
-    await glide(rC0.x + 132, rC0.y, rC0.x + 320, rC0.y); // far empty -> snap back
+    await glide(rC0.x, rC0.y + 132, rC0.x + 320, rC0.y + 132); // far empty -> snap back
     await page.mouse.up();
     await settle();
     const dragLabelsOk =
@@ -1188,10 +1224,10 @@ async function main() {
       /is-group/.test(badgeGroup.cls) &&
       badgeGroup.text.length > 0;
 
-    // #2 proximity grouping (initial layout: "researcher" is rightmost, so the
-    // space to its right is empty): drag "backend" there -> PATCH {group}.
+    // #2 proximity grouping: drag "backend" near "researcher" into empty space
+    // below the card -> PATCH {group}. The human node can occupy the right side.
     const resC = await center("researcher");
-    await dragTo("backend", resC.x + 132, resC.y);
+    await dragTo("backend", resC.x, resC.y + 132);
     await page.waitForFunction(() => /:research$/.test(window.__MOCK__?.patchedGroup ?? ""), { timeout: 6000 });
     const patchedGroup = await page.evaluate(() => window.__MOCK__?.patchedGroup ?? "");
     await settle();
@@ -2927,6 +2963,7 @@ async function main() {
         origin: window.__MOCK__?.masterChatOrigin ?? "",
         userSent: !!document.querySelector('.dr-mchat__row[data-role="user"][data-status="sent"]'),
         masterText: masters[masters.length - 1] ?? "",
+        factText: (document.querySelector(".dr-mchat__facts")?.textContent ?? "").trim(),
       };
     });
 
@@ -3006,6 +3043,7 @@ async function main() {
         origin: mchatAnswer.origin,
         userSent: mchatAnswer.userSent,
         hasAnswer: /follow up/.test(mchatAnswer.masterText),
+        hasFacts: /reviewers\s+2/.test(mchatAnswer.factText) && /ask-human\s+1/.test(mchatAnswer.factText),
       },
       preview: mchatPreview,
       denied: mchatDenied,
@@ -3022,6 +3060,7 @@ async function main() {
       mchat.answer.origin === "floating_web_chat" &&
       mchat.answer.userSent &&
       mchat.answer.hasAnswer &&
+      mchat.answer.hasFacts &&
       mchat.preview.hasProposal &&
       mchat.denied &&
       mchat.masterRootOpensChat &&
@@ -3055,6 +3094,7 @@ async function main() {
       orgView.nodes >= 1 &&
       orgView.edges >= 1 &&
       orgView.legend >= 1 &&
+      masterOrgOk &&
       dragLabelsOk &&
       cutAffordance &&
       cutParent === "docs->null" &&

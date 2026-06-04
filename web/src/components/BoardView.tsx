@@ -119,6 +119,7 @@ function AddTaskForm(props: { boardId: string; onCreated: () => void; onClose: (
             <option key={c.name} value={c.name}>
               {c.name}
               {c.default ? ` · ${t("add.master")}` : c.role ? ` · ${c.role}` : ""}
+              {c.human ? " · human" : c.reviewer ? " · reviewer" : ""}
             </option>
           ))}
         </select>
