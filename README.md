@@ -49,6 +49,14 @@ grove repair --all
   filters, full-text search over task title/body, pagination, and live board results.
   Operators can save named board views; results are project-scoped, role-aware, and
   redacted.
+- **Immortal task board** - v1.29 makes the board render every registered task:
+  canonical workflow columns `ready`, `in_progress`, `review`, `blocked`,
+  `ask_human`, and `done` are always visible, unknown statuses fall into a catch-all
+  column, and completed work remains on the board instead of vanishing.
+- **Status discipline and review** - tasks move through ready/start, in-progress,
+  review, and done, with blocked/ask-human as explicit side states. Manual status
+  changes and reviewer changes use the board as source of truth; each task can carry
+  an assignee plus a per-task reviewer so reviewers can pull from the review column.
 - **GROVE MASTER chat preview** - v1.28 adds `POST /api/master/chat` and a
   bottom-right MasterChat widget. It uses deterministic, no-LLM classification to
   answer read-only questions or render an action proposal preview. It is preview-only:
@@ -63,10 +71,15 @@ grove repair --all
   connection strings only for nodes in the current project scope.
 - **Perfect node sync** - v1.28 makes `/api/nodes` and the org chart surface every
   registry/meta node, including `lead` and `project-master`. Nodes without a usable
-  pane are shown as unavailable with a reason instead of silently disappearing.
+  pane are shown as unavailable with a reason instead of silently disappearing. v1.29
+  adds a tmux/registry reconciler so orphan panes are adopted and dead panes are marked
+  rather than hidden.
 - **Lead as a real node** - the project lead is a project-scoped real node, such as
   `dev10:0.0`, not a synthetic placeholder. Its terminal can be viewed read-only when
   allowed, while web-to-node input to the lead/orchestrator pane stays blocked.
+- **Cross-project MASTER polish** - the org surface is moving toward a single mental
+  model: GROVE MASTER at the top, project leads beneath it, then project-master,
+  workers, and reviewers. MASTER chat remains preview-only.
 - **Board card clarity** - board cards show task titles as primary text with long
   titles/summaries wrapping instead of widening columns.
 - **Channels and ask-human** - Slack integration and web/chat paths route work and
@@ -90,7 +103,10 @@ grove repair --all
   capability, load, and cost signals. It never claims, delegates, or spawns by itself.
 - **Guarded autonomy** - autonomous pickup and the guarded execution loop are shipped
   but default OFF. Execution requires both gates, an approval step, concurrency 1,
-  multi-level kill-switch checks, and prepared dispatch lease validation.
+  multi-level kill-switch checks, and prepared dispatch lease validation. v1.29
+  supports enabling autopickup across nodes through the global and per-node gates, so
+  assigned ready work can be picked up and answered on the board when the operator
+  opts in.
 - **Slack safety commands** - Slack `status`, `approve`, `abort`, and `killswitch`
   are default OFF, role-gated, preview-then-confirm, one-shot, audited, and redacted.
 - **Slack intelligent intake** - v1.20 `--enable-intake` is default OFF. A deterministic,
@@ -140,6 +156,9 @@ grove repair --all
   per-member usage rolls up measured runs/tokens/cost, operator-set soft quotas warn
   and queue/throttle instead of hard-killing running work, and host-pressure signals
   show when local capacity is saturated. agy cost stays unknown when no local source exists.
+- **Release hardening** - v1.29 expands backend and real-server e2e coverage around
+  board visibility, status aliases, task/reviewer mutations, project scope,
+  validation negatives, concurrency, and viewer/operator gates.
 
 ## Concepts
 
@@ -245,6 +264,14 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   role-aware, and redacted. Missing boards or saved views return clear 404s; dev-room
   board access stays inside the owning project and rejects cross-project board IDs.
   Saving or deleting named views is the operator-gated, audited exception.
+- The v1.29 board model is "registered tasks do not disappear." Every status renders
+  into a canonical column or catch-all, `done` stays visible, and terminal task buckets
+  are limited to done/deleted/cancelled/deferred in the product model. Deletion is
+  admin-only soft-delete when exposed; no hard-delete path is part of normal task flow.
+- Manual task status and reviewer changes are board mutations. They require the same
+  operator/admin state-change gate, project scope, CSRF/Origin protections, and audit
+  trail as other dashboard mutations; virtual states such as `ask_human` are display
+  states, not hidden alternate stores.
 - The dashboard follows a 1:1:1 project model: one project, one tmux session, one
   board. The `"default"` alias resolves to the active project board, not a global
   board picker. New task forms require choosing an assignee from project candidates;

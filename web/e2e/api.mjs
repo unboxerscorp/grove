@@ -400,7 +400,7 @@ function completeUsageRun({ database = dbPath, board, node, metadata, startedAt 
   );
 }
 
-function createTaskWithMetadata({ database = dbPath, board, title, body, assignee, priority = 0, metadata = {} }) {
+function createTaskWithMetadata({ database = dbPath, board, title, body, assignee, priority = 0, metadata = {}, status = "ready" }) {
   const out = runBridgePython(
     [
       "import json, sys",
@@ -408,7 +408,7 @@ function createTaskWithMetadata({ database = dbPath, board, title, body, assigne
       "from grove_bridge.store import SQLiteBoardStore",
       "body = None if sys.argv[4] == '__NONE__' else sys.argv[4]",
       "assignee = None if sys.argv[5] == '__NONE__' else sys.argv[5]",
-      "task = SQLiteBoardStore(Path(sys.argv[1])).create_task(board=sys.argv[2], title=sys.argv[3], body=body, assignee=assignee, priority=int(sys.argv[6]), metadata=json.loads(sys.argv[7]))",
+      "task = SQLiteBoardStore(Path(sys.argv[1])).create_task(board=sys.argv[2], title=sys.argv[3], body=body, assignee=assignee, status=sys.argv[8], priority=int(sys.argv[6]), metadata=json.loads(sys.argv[7]))",
       "print(json.dumps({'id': task.id}))",
     ],
     [
@@ -419,6 +419,7 @@ function createTaskWithMetadata({ database = dbPath, board, title, body, assigne
       assignee === null || assignee === undefined ? "__NONE__" : assignee,
       String(priority),
       JSON.stringify(metadata),
+      status,
     ],
   );
   return JSON.parse(out).id;
@@ -1020,9 +1021,12 @@ async function run() {
   );
   const allBoards = await req("GET", "/api/boards", { token });
   const allSlugs = (allBoards.json || []).map((b) => b.id);
+  // v1.27 "1:1:1 board model" (commit 930c59d): board ids "main"/"default" alias
+  // to the project's session board rather than creating a separate board, so an
+  // unscoped POST to /api/boards/main/tasks lands on the session board.
   check(
-    "unscoped /api/boards lists all boards (main+alpha)",
-    allSlugs.includes("main") && allSlugs.includes(ALPHA),
+    "unscoped /api/boards: session board only; 'main' aliases to it (v1.27 1:1:1 model)",
+    allSlugs.includes(ALPHA) && !allSlugs.includes("main"),
     allSlugs.join(","),
   );
   const scoped = await req("GET", "/api/boards", { token, project: ALPHA });
@@ -2048,17 +2052,23 @@ async function run() {
     },
   });
   eq("seed: summary ready task 200", summaryReadySeed.status, 200);
-  const summaryOtherSeed = await req("POST", `/api/boards/${SUMMARY}/tasks`, {
-    token,
-    project: SUMMARY,
-    body: {
-      title: "summary other status",
-      body: `transcript ${summaryPrivatePath}/turn.jsonl must not export`,
-      assignee: summaryAgentSecret,
-      status: summaryPrivatePath,
-    },
+  // v1.28: HTTP create now validates status (_manual_task_status -> 400 on an
+  // out-of-allowlist value). The summary "other" bucket must still classify
+  // store-level/legacy arbitrary statuses, so inject this one through the store
+  // directly (the path-valued status + secret assignee/body stay as the
+  // redaction probes the summary allowlist must scrub).
+  const summaryOtherTaskId = createTaskWithMetadata({
+    board: SUMMARY,
+    title: "summary other status",
+    body: `transcript ${summaryPrivatePath}/turn.jsonl must not export`,
+    assignee: summaryAgentSecret,
+    status: summaryPrivatePath,
   });
-  eq("seed: summary other task 200", summaryOtherSeed.status, 200);
+  check(
+    "seed: summary other-status task (store-injected; HTTP create rejects invalid status)",
+    typeof summaryOtherTaskId === "string" && summaryOtherTaskId.length > 0,
+    summaryOtherTaskId,
+  );
   const defaultOffSummary = await req("GET", `/api/summary?project=${encodeURIComponent(SUMMARY)}`, { token });
   check("summary default-off rejects when export is disabled", [403, 404].includes(defaultOffSummary.status), defaultOffSummary.status);
 
@@ -3881,6 +3891,113 @@ async function run() {
     "cost exposes no filesystem paths (no GROVE_HOME/workspace/registry leak)",
     !cost.text.includes(groveHome) && !cost.text.includes(`/tmp/${ALPHA}`) && !/registry\.json/.test(cost.text),
     cost.text.slice(0, 160),
+  );
+
+  // === task-only-comms pipeline: status transitions + ANSWER + durable comments
+  // (pivot priority, previously uncovered: answer=0). Pure-HTTP against the real
+  // server (LOCAL_TOKEN = operator). blocked -> ANSWER -> ready, comment persists.
+  const taskPath = (id, sub = "") => `/api/tasks/${encodeURIComponent(id)}${sub}`;
+  const ansSeed = await req("POST", `/api/boards/${ALPHA}/tasks`, {
+    token,
+    project: ALPHA,
+    body: { title: "e2e answer-pipeline task", assignee: "worker" },
+  });
+  eq("answer: seed task 200", ansSeed.status, 200);
+  const ansTaskId = (ansSeed.json && ansSeed.json.id) || "";
+  check("answer: seed returns id", typeof ansTaskId === "string" && ansTaskId.length > 0, ansTaskId);
+
+  // status transition: ready -> running (alias "in_progress"); persists + validates.
+  const toRunning = await req("PATCH", taskPath(ansTaskId, "/status"), {
+    token,
+    project: ALPHA,
+    body: { status: "in_progress" },
+  });
+  eq("answer: PATCH status in_progress 200", toRunning.status, 200);
+  eq("answer: status alias in_progress -> running", toRunning.json && toRunning.json.status, "running");
+  eq(
+    "answer: PATCH invalid status -> 400 (v1.28 _manual_task_status)",
+    (await req("PATCH", taskPath(ansTaskId, "/status"), { token, project: ALPHA, body: { status: "/etc/passwd" } })).status,
+    400,
+  );
+  eq(
+    "answer: PATCH status 401 without token",
+    (await req("PATCH", taskPath(ansTaskId, "/status"), { project: ALPHA, body: { status: "ready" } })).status,
+    401,
+  );
+  eq(
+    "answer: PATCH status 403 foreign Origin (CSRF)",
+    (await req("PATCH", taskPath(ansTaskId, "/status"), { token, project: ALPHA, body: { status: "ready" }, origin: "http://evil.example" })).status,
+    403,
+  );
+
+  // ANSWER requires status==blocked: a non-blocked task -> 409.
+  eq(
+    "answer: POST answer on a non-blocked task -> 409",
+    (await req("POST", taskPath(ansTaskId, "/answer"), { token, project: ALPHA, body: { text: "premature" } })).status,
+    409,
+  );
+  const toBlocked = await req("PATCH", taskPath(ansTaskId, "/status"), { token, project: ALPHA, body: { status: "blocked" } });
+  eq("answer: PATCH status blocked 200", toBlocked.status, 200);
+  eq("answer: task is blocked", toBlocked.json && toBlocked.json.status, "blocked");
+  const ANSWER_TEXT = "resolved: proceed with the worker route";
+  const answered = await req("POST", taskPath(ansTaskId, "/answer"), { token, project: ALPHA, body: { text: ANSWER_TEXT } });
+  eq("answer: POST answer on a blocked task 200", answered.status, 200);
+  check("answer: response ok:true", Boolean(answered.json) && answered.json.ok === true);
+  eq("answer: task transitions blocked -> ready", answered.json && answered.json.task && answered.json.task.status, "ready");
+  check(
+    "answer: response carries the answer comment",
+    Boolean(answered.json) && answered.json.comment && answered.json.comment.body === ANSWER_TEXT,
+    answered.json && answered.json.comment && answered.json.comment.body,
+  );
+  const afterComments = await req("GET", taskPath(ansTaskId, "/comments"), { token, project: ALPHA });
+  eq("answer: GET comments 200", afterComments.status, 200);
+  check(
+    "answer: answer comment is durable in the comments list",
+    Array.isArray(afterComments.json) && afterComments.json.some((c) => c.body === ANSWER_TEXT),
+    afterComments.json && afterComments.json.length,
+  );
+  eq(
+    "answer: re-answering a now-ready task -> 409",
+    (await req("POST", taskPath(ansTaskId, "/answer"), { token, project: ALPHA, body: { text: "again" } })).status,
+    409,
+  );
+  eq("answer: 401 without token", (await req("POST", taskPath(ansTaskId, "/answer"), { project: ALPHA, body: { text: "x" } })).status, 401);
+  eq(
+    "answer: 403 foreign Origin",
+    (await req("POST", taskPath(ansTaskId, "/answer"), { token, project: ALPHA, body: { text: "x" }, origin: "http://evil.example" })).status,
+    403,
+  );
+  eq("answer: nonexistent task -> 404", (await req("POST", taskPath("task_nope_zzz", "/answer"), { token, project: ALPHA, body: { text: "x" } })).status, 404);
+  eq(
+    "answer: cross-project task (alpha task under beta) -> 404 (scope isolation)",
+    (await req("POST", taskPath(ansTaskId, "/answer"), { token, project: BETA, body: { text: "x" } })).status,
+    404,
+  );
+  check("answer: pipeline leaks no secrets", !hasSecret(answered.json) && !hasSecret(afterComments.json));
+
+  // durable comments + a bounded CONCURRENCY probe: parallel writes to one task
+  // must all persist (no lost update). SQLite WAL serializes writers safely.
+  const cSeed = await req("POST", `/api/boards/${ALPHA}/tasks`, { token, project: ALPHA, body: { title: "e2e concurrent-comments task" } });
+  const cTaskId = (cSeed.json && cSeed.json.id) || "";
+  eq("comments: direct POST 401 without token", (await req("POST", taskPath(cTaskId, "/comments"), { project: ALPHA, body: { author: "qa", body: "hi" } })).status, 401);
+  eq(
+    "comments: direct POST 403 foreign Origin",
+    (await req("POST", taskPath(cTaskId, "/comments"), { token, project: ALPHA, body: { author: "qa", body: "hi" }, origin: "http://evil.example" })).status,
+    403,
+  );
+  const N = 6;
+  const parallelPosts = await Promise.all(
+    Array.from({ length: N }, (_, i) =>
+      req("POST", taskPath(cTaskId, "/comments"), { token, project: ALPHA, body: { author: "qa", body: `concurrent-${i}` } }),
+    ),
+  );
+  check("comments: all parallel POSTs return 200", parallelPosts.every((r) => r.status === 200), parallelPosts.map((r) => r.status).join(","));
+  const cList = await req("GET", taskPath(cTaskId, "/comments"), { token, project: ALPHA });
+  const cBodies = new Set((cList.json || []).map((c) => c.body));
+  check(
+    "comments: every concurrent comment is durably persisted (no lost update)",
+    cList.status === 200 && Array.from({ length: N }, (_, i) => `concurrent-${i}`).every((b) => cBodies.has(b)),
+    (cList.json || []).length,
   );
 }
 

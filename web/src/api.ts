@@ -5,12 +5,45 @@
 // header on upgrade, so every WS connect first POSTs /api/ws-ticket for a
 // short-lived single-use ticket and connects with ?ticket=.
 
-import type { Board, Comment, GroveNode, Org, OrgNode, Run, Task, WsTicket } from "./types";
+import type { Board, BoardWorkflow, Comment, GroveNode, Org, OrgNode, Run, Task, WsTicket } from "./types";
+
+// Canonical FE status keys (v1.29). Raw stored statuses (e.g. "running") map onto
+// these via the workflow aliases below; the board groups + transitions use these.
+export const CANONICAL_STATUSES = ["ready", "in_progress", "review", "blocked", "ask_human", "done"] as const;
+
+// Mirrors web_app.py WORKFLOW_ALIASES. Used as a fallback when the live workflow
+// payload is unavailable; otherwise prefer the workflow's own alias map.
+const WORKFLOW_ALIASES: Record<string, string> = {
+  running: "in_progress",
+  claimed: "in_progress",
+  executing: "in_progress",
+  complete: "done",
+  completed: "done",
+  "ask-human": "ask_human",
+  ask_human_pending: "ask_human",
+};
+
+/** Map a raw backend task status to its canonical workflow key (e.g. running →
+ *  in_progress). Prefers the live workflow's alias/column map; falls back to the
+ *  static alias table. Unknown statuses pass through unchanged. */
+export function canonicalStatus(raw: string | undefined, workflow?: BoardWorkflow | null): string {
+  const s = (raw ?? "").trim().toLowerCase().replace(/-/g, "_");
+  if (!s) return "ready";
+  if (workflow) {
+    if (workflow.aliases && s in workflow.aliases) return workflow.aliases[s]!;
+    for (const col of workflow.columns ?? []) {
+      if (col.key === s) return col.key;
+      if ((col.raw_statuses ?? []).map((r) => r.replace(/-/g, "_")).includes(s)) return col.key;
+    }
+  }
+  return WORKFLOW_ALIASES[s] ?? s;
+}
 
 export interface NewTask {
   title: string;
   body?: string;
   assignee?: string;
+  reviewer?: string; // v1.29 optional per-task reviewer
   status?: string;
   priority?: number | string;
 }
@@ -682,10 +715,11 @@ export interface Presence {
 }
 
 export interface Project {
-  name: string; // = session
+  name: string; // = session (internal identity, e.g. "dev10")
   workspace: string;
   node_count: number;
   status: string;
+  display_name?: string; // v1.29 human label (e.g. "grove-dev"); falls back to name
 }
 
 export interface NewProject {
@@ -837,6 +871,7 @@ export const api = {
     };
     if (payload.body != null && payload.body !== "") body.body = payload.body;
     if (payload.assignee != null && payload.assignee !== "") body.assignee = payload.assignee;
+    if (payload.reviewer != null && payload.reviewer !== "") body.reviewer = payload.reviewer; // v1.29
     const res = await fetch(`/api/boards/${enc(boardId)}/tasks`, {
       method: "POST",
       headers: headers({ "Content-Type": "application/json" }),
@@ -844,6 +879,38 @@ export const api = {
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`create task: HTTP ${res.status}`);
+    return (await res.json()) as Task;
+  },
+
+  // v1.29 board workflow: canonical columns/labels/aliases/transitions. The board
+  // falls back to local canonical columns if this 404s on an older backend.
+  getWorkflow: (boardId: string) => getJSON<BoardWorkflow>(`/api/boards/${enc(boardId)}/workflow`),
+
+  // v1.29 manual status transition (operator only). Send a CANONICAL key
+  // (ready|in_progress|review|blocked|ask_human|done); backend stores via aliases
+  // (in_progress→running). Optionally set a reviewer in the same call.
+  async setTaskStatus(taskId: string, status: string, reviewer?: string | null): Promise<Task> {
+    const body: Record<string, unknown> = { status };
+    if (reviewer !== undefined) body.reviewer = reviewer;
+    const res = await fetch(`/api/tasks/${enc(taskId)}/status`, {
+      method: "PATCH",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`task status: HTTP ${res.status}`);
+    return (await res.json()) as Task;
+  },
+
+  // v1.29 set/clear a task's reviewer (operator only). null clears it.
+  async setTaskReviewer(taskId: string, reviewer: string | null): Promise<Task> {
+    const res = await fetch(`/api/tasks/${enc(taskId)}/reviewer`, {
+      method: "PATCH",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ reviewer }),
+    });
+    if (!res.ok) throw new Error(`task reviewer: HTTP ${res.status}`);
     return (await res.json()) as Task;
   },
 

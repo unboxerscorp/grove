@@ -5144,3 +5144,46 @@ button {
 /* V28: nodes with no terminal (terminal_allowed=false) are non-selectable */
 .dr-node.is-locked { opacity: 0.5; cursor: not-allowed; }
 .dr-node.is-locked:hover { border-color: var(--line); transform: none; }
+
+/* ── v1.29 orch-product: board status/reviewer, workflow, cross-project org ──── */
+.dr-card__open { display: block; width: 100%; text-align: left; background: transparent; border: 0; padding: 0; color: inherit; }
+.dr-card__status {
+  width: 100%; font-family: var(--mono); font-size: 10.5px; padding: 3px 6px;
+  border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: var(--dim);
+}
+.dr-card__reviewer {
+  display: inline-flex; align-items: center; gap: 3px; font-family: var(--mono); font-size: 9.5px;
+  color: var(--amber); border: 1px solid rgba(240, 184, 96, 0.4); border-radius: 999px; padding: 0 7px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.dr-workflow__row { display: flex; flex-wrap: wrap; gap: 12px; }
+.dr-workflow__field { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.dr-workflow__k { font-family: var(--mono); font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.dr-workflow__err { font-family: var(--mono); font-size: 10.5px; color: var(--coral); margin-top: 6px; }
+
+/* cross-project bar (org chart) */
+.org-master-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+.org-master {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.04em;
+  color: var(--amber); background: rgba(240, 184, 96, 0.1); border: 1px solid rgba(240, 184, 96, 0.45);
+  border-radius: 8px; padding: 5px 11px;
+}
+.org-master:hover { background: rgba(240, 184, 96, 0.18); }
+.org-master__glyph { font-size: 11px; }
+.org-master-bar__arrow { color: var(--faint); }
+.org-pleads { display: flex; flex-wrap: wrap; gap: 6px; }
+.org-plead {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px;
+}
+.org-plead:hover { color: var(--text); border-color: rgba(84, 199, 184, 0.4); }
+.org-plead.is-current { color: var(--teal); border-color: rgba(84, 199, 184, 0.5); cursor: default; }
+.org-plead__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--teal); }
+
+/* delegation mode (current vs history) */
+.org-deleg-mode { display: inline-flex; gap: 2px; border: 1px solid var(--line); border-radius: 999px; padding: 2px; margin-right: 8px; }
+.org-deleg-mode__btn { font-family: var(--mono); font-size: 10px; color: var(--faint); background: transparent; border: 0; border-radius: 999px; padding: 2px 9px; }
+.org-deleg-mode__btn.is-on { color: var(--ink); background: var(--teal); font-weight: 700; }
+.org-deleg-legend__label { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+.org-deleg-edge.is-current { opacity: 0.95; }
