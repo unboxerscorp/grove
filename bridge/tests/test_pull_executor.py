@@ -558,6 +558,77 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
     assert execution["state"] == "complete"
 
 
+def test_run_once_does_not_claim_second_task_when_node_has_current_wip(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    running_task = store.create_task(board="main", title="Running", body=None, assignee="codex-a")
+    current = store.claim_next(board="main", assignee="codex-a", node_id="codex-a", ttl_seconds=60)
+    assert current is not None
+    assert current.task.id == running_task.id
+    ready_task = store.create_task(board="main", title="Queued", body=None, assignee="codex-a")
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="should not dispatch",
+            stderr="",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        max_tasks_per_tick=1,
+    )
+
+    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+
+    assert result.claimed == 0
+    assert result.scanned == 1
+    assert store.get_task(board="main", task_id=running_task.id).status == "running"
+    assert store.get_task(board="main", task_id=ready_task.id).status == "ready"
+    assert runner.calls == []
+
+
+def test_run_once_releases_stale_wip_before_node_admission(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(board="main", title="Stale", body=None, assignee="codex-a")
+    store.create_task(board="main", title="Queued", body=None, assignee="codex-a")
+    stale = store.claim_next(board="main", assignee="codex-a", node_id="codex-a", ttl_seconds=-1)
+    assert stale is not None
+    runner = FakeRunner(
+        GroveRunResult(
+            node="codex-a",
+            returncode=0,
+            stdout="not approved yet",
+            stderr="",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        max_tasks_per_tick=1,
+    )
+
+    result = PullExecutor(config=config, store=store, grove_runner=runner).run_once()
+
+    assert result.stale_released == 1
+    assert result.claimed == 1
+    assert len(store.list_tasks(board="main", assignee="codex-a", status="running")) == 1
+
+
 def test_approved_execution_requires_autopickup_gate(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = store.create_task(
@@ -1325,7 +1396,7 @@ def _approved_guarded_claim(
 def test_guarded_execution_rejects_second_concurrent_task(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     first = _approved_guarded_claim(store, title="First")
-    second = _approved_guarded_claim(store, title="Second")
+    second = store.create_task(board="main", title="Second", body=None, assignee="codex-a")
 
     assert store.try_mark_execution_executing(
         board="main",
@@ -1333,13 +1404,17 @@ def test_guarded_execution_rejects_second_concurrent_task(tmp_path: Path) -> Non
         run_id=first.run_id,
         node="codex-a",
     )
-    assert not store.try_mark_execution_executing(
-        board="main",
-        task_id=second.task.id,
-        run_id=second.run_id,
-        node="codex-a",
+    assert (
+        store.claim_next(
+            board="main",
+            assignee="codex-a",
+            node_id="codex-a",
+            ttl_seconds=300,
+            task_id=second.id,
+        )
+        is None
     )
-    assert store.task_execution_state(board="main", task_id=second.task.id)["state"] == "approved"
+    assert store.task_execution_state(board="main", task_id=second.id)["state"] == "none"
 
 
 def test_store_execution_transition_requires_autopickup_node_gate(tmp_path: Path) -> None:

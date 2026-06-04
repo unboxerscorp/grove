@@ -2405,3 +2405,40 @@ def record_human_gate_pending(store: SQLiteBoardStore, *, board: str, task: Task
 
 def slack_thread_modes(store: SQLiteBoardStore, *, task: Task) -> list[tuple[str, str]]:
     return [(thread.mode, thread.thread_ts) for thread in store.list_slack_threads(task_id=task.id)]
+
+
+def test_slack_sdk_client_post_message_slackresponse() -> None:
+    # BUG(P2): SlackSdkClient.post_message rejects real slack_sdk SlackResponse
+    class FakeSlackResponse:
+        def get(self, key: str, default: object = None) -> object:
+            if key == "ts":
+                return "12345.67890"
+            return default
+
+    class FakeWebClient:
+        def chat_postMessage(
+            self,
+            *,
+            channel: str,
+            text: str,
+            thread_ts: str | None = None,
+            metadata: Mapping[str, object] | None = None,
+            blocks: Sequence[Mapping[str, object]] | None = None,
+        ) -> object:
+            return FakeSlackResponse()
+
+        def conversations_history(
+            self,
+            *,
+            channel: str,
+            limit: int,
+            oldest: str | None = None,
+            inclusive: bool = True,
+            cursor: str | None = None,
+        ) -> Mapping[str, object]:
+            return {}
+
+    slack = object.__new__(SlackSdkClient)
+    slack._client = FakeWebClient()
+    ts = slack.post_message(channel="C123", text="hello")
+    assert ts == "12345.67890"

@@ -20,9 +20,11 @@ import { cmdSession } from "./commands/session.js";
 import { cmdSpawn } from "./commands/spawn.js";
 import { cmdStatus } from "./commands/status.js";
 import { cmdTail } from "./commands/tail.js";
+import { cmdTask, type TaskAction } from "./commands/task.js";
 import { cmdUp } from "./commands/up.js";
 import { cmdWaitCommand } from "./commands/wait.js";
 import { cmdWatch } from "./commands/watch.js";
+import { cmdWatchdog } from "./commands/watchdog.js";
 import { rawVariadicMessage } from "./util/argv.js";
 import { err } from "./util/log.js";
 
@@ -157,6 +159,37 @@ program
     ),
   );
 
+const taskCommand = program
+  .command("task")
+  .description("transition a grove board task through the hybrid task flow");
+
+function taskTransitionCommand(action: TaskAction, description: string): void {
+  taskCommand
+    .command(`${action} <task_id>`)
+    .description(description)
+    .option("--board <board>", "target board slug", "default")
+    .option("--session <session>", "target grove session/project")
+    .option("--allow-remote", "allow sending the dashboard token to a non-loopback grove-web URL")
+    .option("--from-status <status>", "expected previous task status")
+    .option("--run-id <id>", "task run id for idempotent executor updates")
+    .option("--idempotency-key <key>", "idempotency key for repeat-safe transitions")
+    .option("--comment <text>", "status transition comment")
+    .option("--reviewer <node>", "reviewer node for review transitions")
+    .option("-c, --config <file>", "path to grove.yaml")
+    .option("--json", "print the updated task as JSON")
+    .action(
+      run((taskId: string, opts: Record<string, unknown>) =>
+        cmdTask(action, taskId, withConfig(opts)),
+      ),
+    );
+}
+
+taskTransitionCommand("start", "mark a board task as running");
+taskTransitionCommand("done", "mark a board task as done");
+taskTransitionCommand("review", "mark a board task as ready for review");
+taskTransitionCommand("block", "mark a board task as blocked");
+taskTransitionCommand("ask-human", "mark a board task as waiting for human input");
+
 program
   .command("send <node> <message...>")
   .description("give a node a task (non-blocking)")
@@ -196,6 +229,15 @@ program
   .description("append durable turn completion events for all configured node transcripts")
   .option("-c, --config <file>", "path to grove.yaml")
   .action(run((opts: Record<string, unknown>) => cmdWatch(withConfig(opts))));
+
+program
+  .command("watchdog")
+  .description("inspect node health and plan staggered recovery from tmux pane/transcript output")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .option("--execute", "perform one due recovery action; default is dry-run")
+  .option("--hung-after <dur>", "mark a node hung after no pane/transcript output", "10m")
+  .option("--json", "print the node_health payload as JSON")
+  .action(run((opts: Record<string, unknown>) => cmdWatchdog(withConfig(opts))));
 
 program
   .command("gather <nodes...>")
