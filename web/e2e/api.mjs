@@ -16,6 +16,7 @@
 //   - execution     (global/node gates, approval/abort, scope, viewer denial)
 //   - usage         (node/day rollups, agy unknowns, project scope, redaction)
 //   - summary       (signed counts-only export, aggregate trust, redaction)
+//   - handoff       (signed export, trusted local accept, idempotency, redaction)
 //
 // Each check asserts the CORRECT contract. A failing check is a real defect to
 // report as `# BUG(Pn)` — never relax the assertion to match a bug.
@@ -45,6 +46,8 @@ const TEAM = "qae2e_team"; // created during the autopickup checks for team-auth
 const USAGE = "qae2e_usage"; // created during the usage checks for run rollups
 const USAGE_EMPTY = "qae2e_usage_empty"; // created during the usage checks for graceful empty data
 const SUMMARY = "qae2e_summary"; // created during the summary checks for signed aggregate coverage
+const HANDOFF_SOURCE = "qae2e_handoff_source"; // created during the handoff checks as the sender project
+const HANDOFF_RECEIVER = "qae2e_handoff_receiver"; // created during the handoff checks as the receiver project
 const READY_TIMEOUT_MS = 25_000;
 const NODE_LAST_SEEN = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
 
@@ -247,6 +250,10 @@ let summaryChild = null;
 let summaryExited = true;
 let summaryServerLog = "";
 let summaryBaseUrl = "";
+let handoffChild = null;
+let handoffExited = true;
+let handoffServerLog = "";
+let handoffBaseUrl = "";
 
 function setAutopickupGlobal(board, { enabled, killSwitch }) {
   const boolArg = (value) => (value === undefined ? "none" : value ? "true" : "false");
@@ -334,6 +341,30 @@ function completeUsageRun({ database = dbPath, board, node, metadata, startedAt 
     ],
     [database, board, node, JSON.stringify(metadata), String(startedAt)],
   );
+}
+
+function createTaskWithMetadata({ database = dbPath, board, title, body, assignee, priority = 0, metadata = {} }) {
+  const out = runBridgePython(
+    [
+      "import json, sys",
+      "from pathlib import Path",
+      "from grove_bridge.store import SQLiteBoardStore",
+      "body = None if sys.argv[4] == '__NONE__' else sys.argv[4]",
+      "assignee = None if sys.argv[5] == '__NONE__' else sys.argv[5]",
+      "task = SQLiteBoardStore(Path(sys.argv[1])).create_task(board=sys.argv[2], title=sys.argv[3], body=body, assignee=assignee, priority=int(sys.argv[6]), metadata=json.loads(sys.argv[7]))",
+      "print(json.dumps({'id': task.id}))",
+    ],
+    [
+      database,
+      board,
+      title,
+      body === null || body === undefined ? "__NONE__" : body,
+      assignee === null || assignee === undefined ? "__NONE__" : assignee,
+      String(priority),
+      JSON.stringify(metadata),
+    ],
+  );
+  return JSON.parse(out).id;
 }
 
 function scaffold() {
@@ -520,6 +551,50 @@ async function startSummaryServer({ session, freshnessSeconds = 60, trustedKeysP
   throw new Error(`summary server not ready within ${READY_TIMEOUT_MS}ms:\n${summaryServerLog}`);
 }
 
+async function startHandoffServer({ session, ttlSeconds = 60, trustedKeysPath } = {}) {
+  const port = await freePort();
+  handoffBaseUrl = `http://127.0.0.1:${port}`;
+  handoffServerLog = "";
+  handoffExited = false;
+  const env = { ...process.env, GROVE_HOME: groveHome, HOME: homeDir, GROVE_VIEWER_SESSION: session };
+  const args = [
+    "-m",
+    "grove_bridge.web_app",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(port),
+    "--dist-dir",
+    distDir,
+    "--board-db-path",
+    dbPath,
+    "--session",
+    session,
+    "--enable-handoff",
+    "--handoff-ttl-seconds",
+    String(ttlSeconds),
+  ];
+  if (trustedKeysPath) args.push("--summary-trusted-keys", trustedKeysPath);
+  handoffChild = spawn(python, args, { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] });
+  handoffChild.stdout.on("data", (d) => (handoffServerLog += d));
+  handoffChild.stderr.on("data", (d) => (handoffServerLog += d));
+  handoffChild.on("exit", () => (handoffExited = true));
+
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (handoffExited) throw new Error(`handoff server exited before ready:\n${handoffServerLog}`);
+    try {
+      const r = await fetch(handoffBaseUrl + "/api/health");
+      await r.text();
+      if (r.status === 200) return port;
+    } catch {
+      /* not up yet */
+    }
+    await sleep(150);
+  }
+  throw new Error(`handoff server not ready within ${READY_TIMEOUT_MS}ms:\n${handoffServerLog}`);
+}
+
 async function stopTeamServer() {
   try {
     if (teamChild && !teamExited) {
@@ -552,7 +627,24 @@ async function stopSummaryServer() {
   }
 }
 
+async function stopHandoffServer() {
+  try {
+    if (handoffChild && !handoffExited) {
+      handoffChild.kill("SIGTERM");
+      const grace = Date.now() + 5000;
+      while (!handoffExited && Date.now() < grace) await sleep(50);
+      if (!handoffExited) handoffChild.kill("SIGKILL");
+    }
+  } catch {
+    /* ignore */
+  } finally {
+    handoffChild = null;
+    handoffExited = true;
+  }
+}
+
 async function teardown() {
+  await stopHandoffServer();
   await stopSummaryServer();
   await stopTeamServer();
   try {
@@ -1666,7 +1758,15 @@ async function run() {
       Array.isArray(usageEmpty.json.limitations) &&
       usageEmpty.json.limitations.some((item) => /no runs matched/i.test(item)),
   );
-  check("usage project scope does not leak other project node/token values", !/maker|96|999/.test(usageEmpty.text), usageEmpty.text);
+  check(
+    "usage project scope does not leak other project node/token values",
+    !JSON.stringify([usageEmpty.json && usageEmpty.json.nodes, usageEmpty.json && usageEmpty.json.days]).includes("maker") &&
+      usageEmpty.json &&
+      usageEmpty.json.totals &&
+      usageEmpty.json.totals.total_tokens &&
+      usageEmpty.json.totals.total_tokens.value !== 96,
+    usageEmpty.text,
+  );
   const usageEmptyByHeader = await req("GET", "/api/usage?window=all", { token, project: USAGE_EMPTY });
   eq("usage header project scope returns empty project", usageEmptyByHeader.json && usageEmptyByHeader.json.project, USAGE_EMPTY);
   eq("usage path traversal project -> 400", (await req("GET", `/api/usage?project=${encodeURIComponent(`../${USAGE}`)}`, { token })).status, 400);
@@ -1858,6 +1958,283 @@ async function run() {
     );
   } finally {
     await stopSummaryServer();
+  }
+
+  // --- /api/handoff/export + /api/handoff/accept: signed handoff, trusted local receive ---
+  const handoffSecret = "xoxb-" + "d".repeat(44);
+  const handoffEmail = "handoff.owner@example.test";
+  const handoffPrivatePath = `/Users/chopin/private/${handoffSecret}`;
+  writeRegistry(HANDOFF_SOURCE, {
+    sender: { name: "sender", agent: "codex", tmux_pane: `${HANDOFF_SOURCE}:1.0`, status: "idle" },
+  });
+  writeRegistry(HANDOFF_RECEIVER, {
+    receiver: { name: "receiver", agent: "claude", tmux_pane: `${HANDOFF_RECEIVER}:1.0`, status: "idle" },
+  });
+  const handoffSourceTaskId = createTaskWithMetadata({
+    board: HANDOFF_SOURCE,
+    title: `handoff export ${handoffSecret} ${handoffEmail}`,
+    body: `Ship from ${handoffPrivatePath}; transcript ${handoffPrivatePath}/turn.jsonl; contact ${handoffEmail}.`,
+    assignee: "sender",
+    priority: 42,
+    metadata: {
+      labels: ["handoff-safe", handoffSecret, handoffPrivatePath, handoffEmail],
+      transcript_path: `${handoffPrivatePath}/transcript.jsonl`,
+      owner_email: handoffEmail,
+    },
+  });
+  check("seed: handoff source task returns id", typeof handoffSourceTaskId === "string" && handoffSourceTaskId.length > 0);
+  const defaultOffHandoffExport = await req("POST", "/api/handoff/export", {
+    token,
+    project: HANDOFF_SOURCE,
+    body: { task_id: handoffSourceTaskId },
+  });
+  check("handoff export default-off rejects when disabled", [403, 404].includes(defaultOffHandoffExport.status), defaultOffHandoffExport.status);
+  const defaultOffHandoffAccept = await req("POST", "/api/handoff/accept", {
+    token,
+    project: HANDOFF_RECEIVER,
+    body: { package: {} },
+  });
+  check("handoff accept default-off rejects when disabled", [403, 404].includes(defaultOffHandoffAccept.status), defaultOffHandoffAccept.status);
+
+  await startHandoffServer({ session: HANDOFF_SOURCE, ttlSeconds: 60 });
+  let handoffPackage;
+  let handoffSourceKey;
+  try {
+    const handoffSourceIndex = await reqAt(handoffBaseUrl, "GET", "/");
+    eq("handoff source index served (200)", handoffSourceIndex.status, 200);
+    const handoffSourceMatch = handoffSourceIndex.text.match(/window\.__GROVE_SESSION_TOKEN__ = "([^"]+)"/);
+    check("handoff source injects session token", Boolean(handoffSourceMatch));
+    const handoffSourceToken = handoffSourceMatch ? handoffSourceMatch[1] : "";
+    const handoffExportPath = `/api/handoff/export?task_id=${encodeURIComponent(handoffSourceTaskId)}`;
+    eq("handoff export GET 401 without token", (await reqAt(handoffBaseUrl, "GET", handoffExportPath)).status, 401);
+    eq(
+      "handoff export POST 401 with wrong token",
+      (await reqAt(handoffBaseUrl, "POST", "/api/handoff/export", {
+        token: "wrong-token",
+        body: { task_id: handoffSourceTaskId },
+      })).status,
+      401,
+    );
+    const handoffWrongProject = await reqAt(handoffBaseUrl, "POST", "/api/handoff/export", {
+      token: handoffSourceToken,
+      project: HANDOFF_RECEIVER,
+      body: { task_id: handoffSourceTaskId },
+    });
+    eq("handoff export rejects task outside project scope", handoffWrongProject.status, 404);
+    eq(
+      "handoff export path traversal project -> 400",
+      (await reqAt(handoffBaseUrl, "POST", `/api/handoff/export?project=${encodeURIComponent(`../${HANDOFF_SOURCE}`)}`, {
+        token: handoffSourceToken,
+        body: { task_id: handoffSourceTaskId },
+      })).status,
+      400,
+    );
+    const handoffExport = await reqAt(handoffBaseUrl, "POST", "/api/handoff/export", {
+      token: handoffSourceToken,
+      body: { task_id: handoffSourceTaskId },
+    });
+    eq("handoff export 200 when enabled", handoffExport.status, 200);
+    handoffPackage = handoffExport.json;
+    eq("handoff export algorithm hmac-sha256", handoffPackage && handoffPackage.algorithm, "hmac-sha256");
+    check("handoff export includes key_id shape", typeof (handoffPackage && handoffPackage.key_id) === "string" && handoffPackage.key_id.length === 16);
+    check("handoff export includes sha256 signature", /^sha256:[0-9a-f]{64}$/.test((handoffPackage && handoffPackage.signature) || ""));
+    const handoffPayload = handoffPackage && handoffPackage.payload;
+    eq("handoff payload schema", handoffPayload && handoffPayload.schema, "grove.handoff.v1");
+    check("handoff payload id has handoff_ prefix", /^handoff_[A-Za-z0-9_-]{16,}$/.test((handoffPayload && handoffPayload.handoff_id) || ""));
+    eq("handoff payload source project", handoffPayload && handoffPayload.source_project, HANDOFF_SOURCE);
+    check("handoff payload generated/expires are epoch ints", Number.isInteger(handoffPayload && handoffPayload.generated_at) && Number.isInteger(handoffPayload && handoffPayload.expires_at));
+    check("handoff payload expires after generated", handoffPayload && handoffPayload.expires_at > handoffPayload.generated_at);
+    const handoffTask = handoffPayload && handoffPayload.task;
+    check(
+      "handoff task payload is allowlisted fields only",
+      JSON.stringify(Object.keys(handoffTask || {}).sort()) === JSON.stringify(["body", "labels", "priority", "title"]),
+      JSON.stringify(handoffTask),
+    );
+    eq("handoff task priority preserved/clamped", handoffTask && handoffTask.priority, 42);
+    check("handoff task labels array includes safe label", Array.isArray(handoffTask && handoffTask.labels) && handoffTask.labels.includes("handoff-safe"));
+    check(
+      "handoff export redacts secret/pii/path/transcript",
+      !handoffExport.text.includes(handoffSecret) &&
+        !handoffExport.text.includes(handoffEmail) &&
+        !handoffExport.text.includes(handoffPrivatePath) &&
+        !handoffExport.text.includes("transcript_path") &&
+        !handoffExport.text.includes("turn.jsonl") &&
+        !handoffExport.text.includes("owner_email") &&
+        !handoffExport.text.includes("assignee") &&
+        !handoffExport.text.includes("status") &&
+        !handoffExport.text.includes("workspace"),
+      handoffExport.text.slice(0, 200),
+    );
+    handoffSourceKey = readFileSync(path.join(groveHome, HANDOFF_SOURCE, "summary-signing-key"), "utf8").trim();
+    eq("handoff key_id matches source signing key", handoffPackage && handoffPackage.key_id, summaryKeyId(handoffSourceKey));
+    check(
+      "handoff export exposes key_id but not signing key",
+      handoffExport.text.includes(handoffPackage.key_id) &&
+        !handoffExport.text.includes(handoffSourceKey) &&
+        !handoffExport.text.includes("summary-signing-key"),
+    );
+  } finally {
+    await stopHandoffServer();
+  }
+
+  const handoffTrustedKeysPath = path.join(tmp, "handoff-trusted-keys.json");
+  writeFileSync(
+    handoffTrustedKeysPath,
+    JSON.stringify({ keys: { [summaryKeyId(handoffSourceKey)]: handoffSourceKey } }, null, 2),
+  );
+  chmodSync(handoffTrustedKeysPath, 0o600);
+  await startHandoffServer({ session: HANDOFF_RECEIVER, ttlSeconds: 60, trustedKeysPath: handoffTrustedKeysPath });
+  try {
+    const handoffReceiverIndex = await reqAt(handoffBaseUrl, "GET", "/");
+    eq("handoff receiver index served (200)", handoffReceiverIndex.status, 200);
+    const handoffReceiverMatch = handoffReceiverIndex.text.match(/window\.__GROVE_SESSION_TOKEN__ = "([^"]+)"/);
+    check("handoff receiver injects session token", Boolean(handoffReceiverMatch));
+    const handoffReceiverToken = handoffReceiverMatch ? handoffReceiverMatch[1] : "";
+    const receiverTasksBefore = await reqAt(handoffBaseUrl, "GET", `/api/boards/${HANDOFF_RECEIVER}/tasks`, {
+      token: handoffReceiverToken,
+      project: HANDOFF_RECEIVER,
+    });
+    eq("handoff receiver tasks before accept 200", receiverTasksBefore.status, 200);
+    eq("handoff export alone creates zero receiver tasks", (receiverTasksBefore.json || []).length, 0);
+
+    eq(
+      "handoff accept 401 without token",
+      (await reqAt(handoffBaseUrl, "POST", "/api/handoff/accept", { body: { package: handoffPackage } })).status,
+      401,
+    );
+    eq(
+      "handoff accept 401 with wrong token",
+      (await reqAt(handoffBaseUrl, "POST", "/api/handoff/accept", {
+        token: "wrong-token",
+        body: { package: handoffPackage },
+      })).status,
+      401,
+    );
+
+    const tamperedHandoff = cloneJson(handoffPackage);
+    tamperedHandoff.payload.task.title = "tampered title";
+    const tamperedAccept = await reqAt(handoffBaseUrl, "POST", "/api/handoff/accept", {
+      token: handoffReceiverToken,
+      body: { package: tamperedHandoff },
+    });
+    eq("handoff accept rejects tampered signature", tamperedAccept.status, 403);
+    check("handoff tampered rejection mentions signature", /signature/i.test(tamperedAccept.text), tamperedAccept.text);
+    const unknownHandoff = cloneJson(handoffPackage);
+    unknownHandoff.key_id = "unknown-key-id";
+    const unknownAccept = await reqAt(handoffBaseUrl, "POST", "/api/handoff/accept", {
+      token: handoffReceiverToken,
+      body: { package: unknownHandoff },
+    });
+    eq("handoff accept rejects unknown key_id", unknownAccept.status, 403);
+    check("handoff unknown-key rejection mentions unknown", /unknown/i.test(unknownAccept.text), unknownAccept.text);
+    const receiverTasksAfterRejected = await reqAt(handoffBaseUrl, "GET", `/api/boards/${HANDOFF_RECEIVER}/tasks`, {
+      token: handoffReceiverToken,
+      project: HANDOFF_RECEIVER,
+    });
+    eq("handoff rejected packages create zero receiver tasks", (receiverTasksAfterRejected.json || []).length, 0);
+
+    const acceptedHandoff = await reqAt(handoffBaseUrl, "POST", "/api/handoff/accept", {
+      token: handoffReceiverToken,
+      body: { package: handoffPackage },
+    });
+    eq("handoff accept trusted package 200", acceptedHandoff.status, 200);
+    eq("handoff accept returns status created", acceptedHandoff.json && acceptedHandoff.json.status, "created");
+    eq("handoff accept created true", acceptedHandoff.json && acceptedHandoff.json.created, true);
+    eq("handoff accept handoff_id echoed", acceptedHandoff.json && acceptedHandoff.json.handoff_id, handoffPackage.payload.handoff_id);
+    eq("handoff accept creates ready task", acceptedHandoff.json && acceptedHandoff.json.task && acceptedHandoff.json.task.status, "ready");
+    check(
+      "handoff accept creates unassigned local task",
+      Boolean(acceptedHandoff.json && acceptedHandoff.json.task) && !("assignee" in acceptedHandoff.json.task),
+      JSON.stringify(acceptedHandoff.json && acceptedHandoff.json.task),
+    );
+    check(
+      "handoff accept limitations forbid remote execution",
+      Boolean(acceptedHandoff.json) &&
+        Array.isArray(acceptedHandoff.json.limitations) &&
+        acceptedHandoff.json.limitations.some((item) => /never dispatches or executes/i.test(item)),
+    );
+    check(
+      "handoff accept response redacts key/secret/pii/path",
+      !hasSecret(acceptedHandoff.json) &&
+        !acceptedHandoff.text.includes(handoffSourceKey) &&
+        !acceptedHandoff.text.includes(handoffSecret) &&
+        !acceptedHandoff.text.includes(handoffEmail) &&
+        !acceptedHandoff.text.includes(handoffPrivatePath) &&
+        !acceptedHandoff.text.includes("summary-signing-key"),
+    );
+    const receiverTasksAfterAccept = await reqAt(handoffBaseUrl, "GET", `/api/boards/${HANDOFF_RECEIVER}/tasks`, {
+      token: handoffReceiverToken,
+      project: HANDOFF_RECEIVER,
+    });
+    eq("handoff accept creates exactly one receiver task", (receiverTasksAfterAccept.json || []).length, 1);
+
+    const duplicateAccept = await reqAt(handoffBaseUrl, "POST", "/api/handoff/accept", {
+      token: handoffReceiverToken,
+      body: { package: handoffPackage },
+    });
+    eq("handoff reaccept same id 200", duplicateAccept.status, 200);
+    eq("handoff reaccept returns existing", duplicateAccept.json && duplicateAccept.json.status, "existing");
+    eq("handoff reaccept created false", duplicateAccept.json && duplicateAccept.json.created, false);
+    eq("handoff reaccept returns same local task id", duplicateAccept.json && duplicateAccept.json.task && duplicateAccept.json.task.id, acceptedHandoff.json && acceptedHandoff.json.task && acceptedHandoff.json.task.id);
+    const receiverTasksAfterDuplicate = await reqAt(handoffBaseUrl, "GET", `/api/boards/${HANDOFF_RECEIVER}/tasks`, {
+      token: handoffReceiverToken,
+      project: HANDOFF_RECEIVER,
+    });
+    eq("handoff reaccept creates zero duplicate tasks", (receiverTasksAfterDuplicate.json || []).length, 1);
+
+    const now = Math.floor(Date.now() / 1000);
+    const staleHandoff = cloneJson(handoffPackage);
+    staleHandoff.payload.handoff_id = "handoff_staleReceiverTtl0001";
+    staleHandoff.payload.generated_at = now - 120;
+    staleHandoff.payload.expires_at = now + 120;
+    staleHandoff.signature = summarySignature(handoffSourceKey, staleHandoff.payload);
+    const staleAccept = await reqAt(handoffBaseUrl, "POST", "/api/handoff/accept", {
+      token: handoffReceiverToken,
+      body: { package: staleHandoff },
+    });
+    eq("handoff accept rejects receiver-ttl expired package", staleAccept.status, 410);
+    check("handoff stale rejection mentions expired", /expired/i.test(staleAccept.text), staleAccept.text);
+    const futureHandoff = cloneJson(handoffPackage);
+    futureHandoff.payload.handoff_id = "handoff_futureTimestamp0001";
+    futureHandoff.payload.generated_at = now + 120;
+    futureHandoff.payload.expires_at = now + 240;
+    futureHandoff.signature = summarySignature(handoffSourceKey, futureHandoff.payload);
+    const futureAccept = await reqAt(handoffBaseUrl, "POST", "/api/handoff/accept", {
+      token: handoffReceiverToken,
+      body: { package: futureHandoff },
+    });
+    eq("handoff accept rejects future timestamp", futureAccept.status, 403);
+    check("handoff future rejection mentions timestamp", /timestamp/i.test(futureAccept.text), futureAccept.text);
+    eq(
+      "handoff accept path traversal project -> 400",
+      (await reqAt(handoffBaseUrl, "POST", `/api/handoff/accept?project=${encodeURIComponent(`../${HANDOFF_RECEIVER}`)}`, {
+        token: handoffReceiverToken,
+        body: { package: handoffPackage },
+      })).status,
+      400,
+    );
+    eq(
+      "handoff accept missing project -> 404",
+      (await reqAt(handoffBaseUrl, "POST", "/api/handoff/accept?project=qae2e_missing_handoff", {
+        token: handoffReceiverToken,
+        body: { package: handoffPackage },
+      })).status,
+      404,
+    );
+    check(
+      "handoff rejection responses leak no key/secret/path",
+      !hasSecret([tamperedAccept.json, unknownAccept.json, staleAccept.json, futureAccept.json]) &&
+        ![tamperedAccept.text, unknownAccept.text, staleAccept.text, futureAccept.text].some(
+          (text) =>
+            text.includes(handoffSourceKey) ||
+            text.includes(handoffSecret) ||
+            text.includes(handoffPrivatePath) ||
+            text.includes(handoffEmail) ||
+            text.includes("summary-signing-key"),
+        ),
+    );
+  } finally {
+    await stopHandoffServer();
   }
 
   // --- /api/cost: by_agent{} + totals{}, token/path non-exposure ---

@@ -690,6 +690,36 @@ async function main() {
         durText: (document.querySelector(".exec-timeline__dur")?.textContent ?? "").trim(),
       };
     });
+    // V17-W2 handoff EXPORT: from the open task drawer, generate a SIGNED
+    // package. The copyable JSON carries the signature (receiver needs it to
+    // verify); the human meta line shows only handoff_id + key_id (never the
+    // signing key). Read-only: exporting must not mutate the receiver/sender.
+    await page.$eval(".handoff-export__btn", (el) => el.click());
+    await page.waitForSelector('.handoff-pkg[data-handoff="export"]', { timeout: 8000 });
+    const hExport = await page.evaluate(() => {
+      const ta = document.querySelector(".handoff-export__json");
+      const jsonText = ta ? ta.value : "";
+      let parsed = null;
+      try {
+        parsed = JSON.parse(jsonText);
+      } catch {
+        /* ignore */
+      }
+      const meta = document.querySelector(".handoff-pkg__meta")?.textContent ?? "";
+      return {
+        shown: !!document.querySelector('.handoff-pkg[data-handoff="export"]'),
+        idShown: /^handoff_[A-Za-z0-9_-]{16,}$/.test(document.querySelector(".handoff-pkg__id")?.textContent ?? ""),
+        keyShown: /room-alpha/.test(document.querySelector(".handoff-pkg__key")?.textContent ?? ""),
+        copyBtn: !!document.querySelector(".handoff-export__copy"),
+        // human meta line shows key_id but never the raw signature digest.
+        metaNoSig: !/hs_[0-9a-f]/.test(meta),
+        jsonText,
+        keyId: parsed?.key_id ?? "",
+        hasSig: typeof parsed?.signature === "string" && parsed.signature.length > 0,
+        handoffId: parsed?.payload?.handoff_id ?? "",
+        exported: window.__MOCK__?.handoffExported ?? "",
+      };
+    });
     await page.click(".dr-drawer__close");
     await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
     const execTimelineOk =
@@ -1414,6 +1444,122 @@ async function main() {
       aggDisabled.rooms === 0 &&
       /비활성|disabled/.test(aggDisabled.text);
 
+    // V17-W2 handoff ACCEPT (receiver-local = human decision): paste the SIGNED
+    // package exported above -> local preview (title + freshness) -> an EXPLICIT
+    // accept (confirm) is the ONLY path that creates a local task. Nothing is
+    // created/run before the confirm. Re-accepting the same package is idempotent
+    // (existing, not a 2nd task). A tampered package is rejected with a FIXED
+    // message and never records an acceptance. Default-OFF degrades gracefully.
+    const setHandoffPaste = (v) =>
+      page.$eval(
+        ".handoff-paste__input",
+        (el, val) => {
+          const d = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value");
+          d.set.call(el, val);
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        },
+        v,
+      );
+    await page.$eval('.dr-tab[data-view="handoff"]', (el) => el.click());
+    await page.waitForSelector(".handoff-paste__input", { timeout: 8000 });
+    // paste the valid package + preview (NO POST yet).
+    await setHandoffPaste(hExport.jsonText);
+    await page.$eval(".handoff-preview__btn", (el) => el.click());
+    await page.waitForSelector('.handoff-preview[data-handoff="preview"]', { timeout: 8000 });
+    const hPreview = await page.evaluate(() => ({
+      shown: !!document.querySelector('.handoff-preview[data-handoff="preview"]'),
+      fresh: !!document.querySelector(".handoff-fresh.is-fresh"),
+      title: (document.querySelector(".handoff-preview__title")?.textContent ?? "").trim(),
+      acceptBtn: !!document.querySelector(".handoff-accept__btn"),
+      accepted: window.__MOCK__?.handoffAccepted ?? null, // accept-前 mutation 0
+    }));
+    // click accept -> CONFIRM appears; still NO POST (two-step gate).
+    await page.$eval(".handoff-accept__btn", (el) => el.click());
+    await page.waitForSelector(".handoff-accept__yes", { timeout: 6000 });
+    const hPreConfirm = await page.evaluate(() => window.__MOCK__?.handoffAccepted ?? null);
+    // confirm -> POST -> created (local task).
+    await page.$eval(".handoff-accept__yes", (el) => el.click());
+    await page.waitForSelector('.handoff-result.is-trusted[data-status="created"]', { timeout: 8000 });
+    const hCreated = await page.evaluate(() => ({
+      status: document.querySelector(".handoff-result")?.getAttribute("data-status") ?? "",
+      text: (document.querySelector(".handoff-result")?.textContent ?? "").trim(),
+      accepted: window.__MOCK__?.handoffAccepted ?? null,
+    }));
+    // re-accept the SAME package -> idempotent "existing" (no duplicate task).
+    await page.$eval(".handoff-preview__btn", (el) => el.click());
+    await page.waitForSelector('.handoff-preview[data-handoff="preview"]', { timeout: 6000 });
+    await page.$eval(".handoff-accept__btn", (el) => el.click());
+    await page.waitForSelector(".handoff-accept__yes", { timeout: 6000 });
+    await page.$eval(".handoff-accept__yes", (el) => el.click());
+    await page.waitForSelector('.handoff-result.is-trusted[data-status="existing"]', { timeout: 8000 });
+    const hExisting = await page.evaluate(() => ({
+      status: document.querySelector(".handoff-result")?.getAttribute("data-status") ?? "",
+      created: window.__MOCK__?.handoffAccepted?.created ?? null,
+    }));
+    // TAMPER: flip a payload field -> signature mismatch -> rejected (fixed msg).
+    const tampered = JSON.parse(hExport.jsonText);
+    tampered.payload.task.title = (tampered.payload.task.title ?? "") + " (tampered)";
+    await setHandoffPaste(JSON.stringify(tampered));
+    await page.$eval(".handoff-preview__btn", (el) => el.click());
+    await page.waitForSelector('.handoff-preview[data-handoff="preview"]', { timeout: 6000 });
+    await page.$eval(".handoff-accept__btn", (el) => el.click());
+    await page.waitForSelector(".handoff-accept__yes", { timeout: 6000 });
+    const acceptedBeforeTamper = await page.evaluate(() => JSON.stringify(window.__MOCK__?.handoffAccepted ?? null));
+    await page.$eval(".handoff-accept__yes", (el) => el.click());
+    await page.waitForSelector(".handoff-result.is-rejected", { timeout: 8000 });
+    const hReject = await page.evaluate(() => ({
+      reject: document.querySelector(".handoff-result.is-rejected")?.getAttribute("data-reject") ?? "",
+      text: (document.querySelector(".handoff-result.is-rejected")?.textContent ?? "").trim(),
+      accepted: JSON.stringify(window.__MOCK__?.handoffAccepted ?? null), // unchanged by a tampered accept
+    }));
+    // default-OFF graceful: handoff disabled -> fixed disabled notice, no task.
+    await page.evaluate(() => window.__MOCK__.setHandoffEnabled(false));
+    await page.$eval(".handoff-preview__btn", (el) => el.click());
+    await page.waitForSelector('.handoff-preview[data-handoff="preview"]', { timeout: 6000 });
+    await page.$eval(".handoff-accept__btn", (el) => el.click());
+    await page.waitForSelector(".handoff-accept__yes", { timeout: 6000 });
+    await page.$eval(".handoff-accept__yes", (el) => el.click());
+    await page.waitForSelector('.handoff-result.is-rejected[data-reject="disabled"]', { timeout: 8000 });
+    const hDisabled = await page.evaluate(() => ({
+      reject: document.querySelector(".handoff-result.is-rejected")?.getAttribute("data-reject") ?? "",
+      text: (document.querySelector(".handoff-result.is-rejected")?.textContent ?? "").trim(),
+    }));
+    await page.evaluate(() => window.__MOCK__.setHandoffEnabled(true)); // restore
+    const handoffOk =
+      // export: signed package shown, copyable JSON carries the signature, human
+      // meta exposes key_id only (never the signing digest).
+      hExport.shown &&
+      hExport.idShown &&
+      hExport.keyShown &&
+      hExport.copyBtn &&
+      hExport.hasSig &&
+      hExport.keyId === "room-alpha" &&
+      hExport.metaNoSig &&
+      /^handoff_[A-Za-z0-9_-]{16,}$/.test(hExport.handoffId) &&
+      hExport.exported === hExport.handoffId &&
+      // accept preview: shown + fresh, and ZERO mutation before the explicit confirm.
+      hPreview.shown &&
+      hPreview.fresh &&
+      hPreview.title.length > 0 &&
+      hPreview.acceptBtn &&
+      hPreview.accepted === null && // no POST after preview
+      hPreConfirm === null && // no POST after clicking accept (confirm pending)
+      // created only on explicit confirm.
+      hCreated.status === "created" &&
+      hCreated.accepted?.created === true &&
+      /수락됨|Accepted/.test(hCreated.text) &&
+      // idempotent re-accept of the same package.
+      hExisting.status === "existing" &&
+      hExisting.created === false &&
+      // tampered -> rejected with a FIXED message, no secret leaked, ledger intact.
+      hReject.reject === "rejected" &&
+      /거부|Rejected/.test(hReject.text) &&
+      !/hs_[0-9a-f]/.test(hReject.text) &&
+      acceptedBeforeTamper === hReject.accepted &&
+      // default-OFF graceful.
+      hDisabled.reject === "disabled" &&
+      /비활성|disabled/.test(hDisabled.text);
+
     // #N1 project switch re-scope + no residue (여정1/5): switching to an
     // isolated project swaps org/board/nodes wholesale — none of the default
     // project's nodes/cards may bleed through — and switching back restores it.
@@ -1688,6 +1834,7 @@ async function main() {
       costOk &&
       usageReportOk &&
       aggViewOk &&
+      handoffOk &&
       mobileOk &&
       projectOk &&
       wsBindOk &&
@@ -1801,6 +1948,8 @@ async function main() {
       usage,
       aggViewOk,
       agg: { ...agg, disabled: aggDisabled },
+      handoffOk,
+      handoff: { export: hExport, preview: hPreview, preConfirm: hPreConfirm, created: hCreated, existing: hExisting, reject: hReject, disabled: hDisabled },
       mobileOk,
       mobile: { ...mobile, detailFits },
       delegationEdgesOk,

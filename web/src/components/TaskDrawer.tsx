@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { actorLabel, api } from "../api";
-import type { AuditEvent, PlanCandidate, PlanResult } from "../api";
-import { cx, initials, statusColor } from "../constants";
+import type { AuditEvent, HandoffPackage, PlanCandidate, PlanResult } from "../api";
+import { cx, fmtAgo, initials, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
 import type { Comment, Run, Task } from "../types";
@@ -113,6 +113,69 @@ function ExecutionTimeline({ taskId, t }: { taskId: string; t: TFn }) {
 
 function fmtScore(v: number | null | undefined): string {
   return typeof v === "number" ? v.toFixed(2) : "—";
+}
+
+/**
+ * Hand a task off to another room: generate a SIGNED handoff package (read-only —
+ * the receiver decides whether to accept). The copyable JSON carries the
+ * signature (needed for the receiver to verify); the human preview shows only
+ * key_id + allowlist fields, never the signing key. Default-OFF → 404 notice.
+ */
+function HandoffExport({ taskId, t }: { taskId: string; t: TFn }) {
+  const [pkg, setPkg] = useState<HandoffPackage | null>(null);
+  const [state, setState] = useState<"idle" | "loading" | "disabled" | "error">("idle");
+  const [copied, setCopied] = useState(false);
+
+  const doExport = () => {
+    setState("loading");
+    api
+      .exportHandoff(taskId)
+      .then((p) => {
+        setPkg(p);
+        setState("idle");
+      })
+      .catch((e: unknown) => {
+        const m = e instanceof Error ? e.message : "";
+        setState(/\b404\b/.test(m) ? "disabled" : "error");
+      });
+  };
+
+  const json = pkg ? JSON.stringify(pkg, null, 2) : "";
+  const copy = () => {
+    void navigator.clipboard?.writeText(json).catch(() => {});
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <section className="dr-drawer__section handoff-export">
+      <h3 className="dr-drawer__h">{t("handoff.exportTitle")}</h3>
+      {!pkg && (
+        <button type="button" className="dr-btn dr-btn--ghost handoff-export__btn" disabled={state === "loading"} onClick={doExport}>
+          {state === "loading" ? t("handoff.exporting") : t("handoff.export")}
+        </button>
+      )}
+      {state === "disabled" && <div className="handoff-msg is-warn">{t("handoff.disabled")}</div>}
+      {state === "error" && <div className="handoff-msg is-error">{t("handoff.exportError")}</div>}
+      {pkg && (
+        <div className="handoff-pkg" data-handoff="export">
+          <div className="handoff-pkg__meta">
+            <span className="handoff-pkg__id">{pkg.payload.handoff_id}</span>
+            <span className="handoff-pkg__key">{t("handoff.key")}: {pkg.key_id}</span>
+            {typeof pkg.payload.expires_at === "number" && (
+              <span className="handoff-pkg__exp">{t("handoff.expires")} {fmtAgo(pkg.payload.expires_at)}</span>
+            )}
+          </div>
+          <div className="handoff-pkg__task">{pkg.payload.task?.title}</div>
+          <textarea className="dr-input handoff-export__json" name="handoffJson" readOnly rows={4} value={json} spellCheck={false} />
+          <button type="button" className="dr-btn dr-btn--primary handoff-export__copy" onClick={copy}>
+            {copied ? t("handoff.copied") : t("handoff.copy")}
+          </button>
+          <p className="handoff-export__note">{t("handoff.exportNote")}</p>
+        </div>
+      )}
+    </section>
+  );
 }
 
 /**
@@ -455,6 +518,8 @@ export function TaskDrawer(props: {
             </section>
 
             <ExecutionTimeline taskId={task.id} t={t} />
+
+            <HandoffExport taskId={task.id} t={t} />
 
             <PlannerPanel
               taskId={task.id}

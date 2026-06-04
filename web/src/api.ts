@@ -277,6 +277,31 @@ export interface UsageReport {
   limitations?: string[];
 }
 
+// Cross-room handoff (web_app.py). export → signed allowlist package (task →
+// {title,body,priority,labels}); accept → verify (trust/freshness) + EXPLICIT
+// accept → local task (idempotent by handoff_id, receiver TTL). Default OFF.
+export interface HandoffPackage {
+  algorithm: string;
+  key_id: string;
+  payload: {
+    schema?: string;
+    handoff_id?: string;
+    source_project?: string;
+    generated_at?: number;
+    expires_at?: number;
+    task?: { title?: string; body?: string | null; priority?: number; labels?: string[] };
+  };
+  signature: string;
+}
+
+export interface HandoffAcceptResult {
+  status: string; // "created" | "existing"
+  created: boolean;
+  handoff_id: string;
+  task?: { id: string; title?: string; status?: string };
+  limitations?: string[];
+}
+
 // Cross-room aggregation (web_app.py). GET /api/summary returns a signed
 // allowlist summary; POST /api/aggregate verifies a set of summaries by key_id
 // trust + freshness and returns a READ-ONLY combined rollup (trusted+fresh only).
@@ -640,6 +665,30 @@ export const api = {
 
   // Usage rollup (node/day) — project-scoped; 403 for team viewers.
   getUsage: () => getJSON<UsageReport>("/api/usage"),
+
+  // Cross-room handoff (default OFF → 404). export = signed package; accept =
+  // verify + EXPLICIT accept → local task (idempotent).
+  async exportHandoff(taskId: string): Promise<HandoffPackage> {
+    const res = await fetch("/api/handoff/export", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ task_id: taskId }),
+    });
+    if (!res.ok) throw new Error(`handoff-export: HTTP ${res.status}`);
+    return (await res.json()) as HandoffPackage;
+  },
+
+  async acceptHandoff(pkg: HandoffPackage): Promise<HandoffAcceptResult> {
+    const res = await fetch("/api/handoff/accept", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ package: pkg }),
+    });
+    if (!res.ok) throw new Error(`handoff-accept: HTTP ${res.status}`);
+    return (await res.json()) as HandoffAcceptResult;
+  },
 
   // Cross-room aggregation (read-only). 404 when summary export is disabled.
   getSummary: () => getJSON<SignedSummary>("/api/summary"),

@@ -13,6 +13,7 @@ import { AuthPanel } from "./components/AuthPanel";
 import { AggregationPanel } from "./components/AggregationPanel";
 import { CostPanel } from "./components/CostPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
+import { HandoffPanel } from "./components/HandoffPanel";
 import { HealthDot } from "./components/HealthDot";
 import { NodeStatusBar } from "./components/NodeStatusBar";
 import { OrgChart } from "./components/OrgChart";
@@ -24,7 +25,7 @@ import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
-type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "agg" | "auth";
+type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "agg" | "handoff" | "auth";
 
 function GroveMark() {
   return (
@@ -349,6 +350,14 @@ export function App() {
             </button>
             <button
               type="button"
+              data-view="handoff"
+              className={cx("dr-tab", view === "handoff" && "is-active")}
+              onClick={() => setView("handoff")}
+            >
+              {t("tab.handoff")}
+            </button>
+            <button
+              type="button"
               data-view="auth"
               className={cx("dr-tab", view === "auth" && "is-active")}
               onClick={() => setView("auth")}
@@ -429,6 +438,8 @@ export function App() {
             <CostPanel projectTick={projectTick} />
           ) : view === "agg" ? (
             <AggregationPanel projectTick={projectTick} />
+          ) : view === "handoff" ? (
+            <HandoffPanel projectTick={projectTick} onAccepted={() => setLiveTick((x) => x + 1)} />
           ) : view === "auth" ? (
             <AuthPanel />
           ) : (

@@ -312,6 +312,31 @@ diag.setSummaryEnabled = (on: boolean): void => {
 // Aggregation reference clock + freshness window (mirrors web_app.py 300s).
 const AGG_NOW = AUDIT_TS0 + 1000;
 const AGG_FRESHNESS = 300;
+
+// Handoff (V17-W2): export task -> signed allowlist package; receiver-local
+// accept after explicit human decision. Mirrors web_app.py /api/handoff/*:
+// signed envelope {algorithm, key_id, payload, signature}, trust = key_id in
+// allowlist + signature match, expiry by payload + receiver ttl, idempotent by
+// handoff_id. default OFF on the real backend — mock defaults ON so the panel
+// is exercisable; diag.setHandoffEnabled(false) reproduces the disabled path.
+let handoffEnabled = true;
+diag.setHandoffEnabled = (on: boolean): void => {
+  handoffEnabled = on;
+};
+const HANDOFF_NOW = AUDIT_TS0 + 1000; // accept reference clock (epoch seconds)
+const HANDOFF_TTL = 86_400; // receiver ttl (seconds)
+const HANDOFF_TRUSTED = new Set(["room-alpha"]); // allowlisted signer key_ids
+const acceptedHandoffs = new Set<string>(); // idempotency ledger (handoff_id)
+let handoffSeq = 0;
+// Deterministic stand-in for HMAC-SHA256 over key_id + canonical payload. Any
+// mutation of payload (tampering) flips the digest; recompute-and-compare on
+// accept is what rejects tampered packages. Stable across parse->stringify.
+function mockHandoffSig(keyId: string, payload: unknown): string {
+  const s = keyId + "|" + JSON.stringify(payload);
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
+  return "hs_" + (h >>> 0).toString(16).padStart(8, "0");
+}
 const execGateInfo = () => {
   const blocked: string[] = [];
   if (!executionGate.enabled) blocked.push("global-disabled");
@@ -692,6 +717,84 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         limitations: [
           "aggregate is read-only and does not perform cross-machine control",
           "stale summaries are excluded from the live combined rollup",
+        ],
+      }),
+    );
+  }
+
+  if (p === "/api/handoff/export" && method === "POST") {
+    // Mirrors web_app.py /api/handoff/export: a task -> signed package whose
+    // payload is an ALLOWLIST projection (title/body/priority/labels only) plus
+    // a key_id; the signing secret never appears (signature is opaque). 404 when
+    // handoff is off. Read-only: exporting mutates nothing on the sender.
+    if (!handoffEnabled) {
+      return Promise.resolve(new Response(JSON.stringify({ detail: "handoff is not enabled" }), { status: 404 }));
+    }
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as { task_id?: string };
+    const taskId = body.task_id ?? "G-4";
+    const task = findTask(taskId) ?? { id: taskId, title: `task ${taskId}`, status: "ready" };
+    const handoff_id = "handoff_pkg" + String(++handoffSeq).padStart(13, "0");
+    // far-future expiry so receiver-local freshness reads "valid" regardless of
+    // wall clock; accept still validates against the fixed HANDOFF_NOW clock.
+    const payload = {
+      schema: "grove.handoff.v1",
+      handoff_id,
+      source_project: proj,
+      generated_at: HANDOFF_NOW,
+      expires_at: 4_102_444_800,
+      task: {
+        title: task.title,
+        body: task.body ?? null,
+        priority: 0,
+        labels: ["handoff", task.status],
+      },
+    };
+    diag.handoffExported = handoff_id;
+    return Promise.resolve(
+      json({ algorithm: "hmac-sha256", key_id: "room-alpha", payload, signature: mockHandoffSig("room-alpha", payload) }),
+    );
+  }
+
+  if (p === "/api/handoff/accept" && method === "POST") {
+    // Mirrors web_app.py /api/handoff/accept: verify trust (key_id allowlist +
+    // signature) and freshness, then create a local task ONLY on this explicit
+    // call. tampered/unknown-key -> 403; expired -> 410; disabled -> 404. The
+    // reason strings mirror _verify_handoff_envelope; fixed-message only, no raw
+    // payload/secret echoed. Idempotent by handoff_id (created vs existing).
+    const reject = (status: number, detail: string) =>
+      Promise.resolve(new Response(JSON.stringify({ detail }), { status }));
+    if (!handoffEnabled) return reject(404, "handoff is not enabled");
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as { package?: Record<string, unknown> };
+    const pkg = (body.package ?? {}) as Record<string, unknown>;
+    if (typeof pkg.payload !== "object" || pkg.payload === null || typeof pkg.signature !== "string")
+      return reject(403, "invalid handoff envelope");
+    if (pkg.algorithm !== "hmac-sha256") return reject(403, "unsupported handoff algorithm");
+    if (typeof pkg.key_id !== "string" || !HANDOFF_TRUSTED.has(pkg.key_id)) return reject(403, "unknown handoff key");
+    if (pkg.signature !== mockHandoffSig(pkg.key_id, pkg.payload))
+      return reject(403, "handoff signature verification failed");
+    const pl = pkg.payload as Record<string, unknown>;
+    const hid = pl.handoff_id;
+    if (pl.schema !== "grove.handoff.v1" || typeof hid !== "string" || !/^handoff_[A-Za-z0-9_-]{16,}$/.test(hid))
+      return reject(403, "invalid handoff payload");
+    const gen = Number(pl.generated_at) || 0;
+    const exp = Number(pl.expires_at) || 0;
+    if (gen > HANDOFF_NOW + 60) return reject(403, "handoff timestamp is invalid");
+    if (exp < HANDOFF_NOW) return reject(410, "handoff package expired");
+    if (gen + HANDOFF_TTL < HANDOFF_NOW) return reject(410, "handoff package expired by receiver ttl");
+    const ptask = (pl.task ?? {}) as Record<string, unknown>;
+    const existing = acceptedHandoffs.has(hid);
+    if (!existing) acceptedHandoffs.add(hid);
+    diag.handoffAccepted = { id: hid, created: !existing };
+    return Promise.resolve(
+      json({
+        status: existing ? "existing" : "created",
+        created: !existing,
+        handoff_id: hid,
+        task: { id: "H-" + hid.slice(-4), title: ptask.title ?? "", status: "ready" },
+        limitations: [
+          "accept created a local task only; nothing was executed",
+          "the receiver controls the local lifecycle from here",
         ],
       }),
     );
