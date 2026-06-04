@@ -3810,6 +3810,57 @@ def test_aggregate_verifies_signature_and_rejects_tampered_summary(tmp_path: Pat
     assert trusted_tasks["total"] == 1
 
 
+def test_aggregate_requires_team_operator(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(board="dev10", title="ready", body=None, assignee=None, status="ready")
+    write_team_member(tmp_path, name="viewer", secret="viewer-secret", role="viewer")
+    write_team_member(
+        tmp_path,
+        name="operator",
+        secret="operator-secret",
+        role="operator",
+        member_id="member-operator",
+        append=True,
+    )
+    viewer = make_client(
+        tmp_path,
+        store,
+        auth_mode=AuthMode.TEAM_COOKIE,
+        summary_export_enabled=True,
+    )
+    operator = make_client(
+        tmp_path,
+        store,
+        auth_mode=AuthMode.TEAM_COOKIE,
+        summary_export_enabled=True,
+    )
+    viewer_login = viewer.post("/api/login", json={"name": "viewer", "secret": "viewer-secret"})
+    operator_login = operator.post(
+        "/api/login",
+        json={"name": "operator", "secret": "operator-secret"},
+    )
+    summary = operator.get("/api/summary").json()
+
+    viewer_response = viewer.post(
+        "/api/aggregate",
+        headers={CSRF_HEADER: str(viewer_login.json()["csrf"])},
+        json={"summaries": [summary]},
+    )
+    operator_response = operator.post(
+        "/api/aggregate",
+        headers={CSRF_HEADER: str(operator_login.json()["csrf"])},
+        json={"summaries": [summary]},
+    )
+
+    assert viewer_login.status_code == 200
+    assert operator_login.status_code == 200
+    assert viewer_response.status_code == 403
+    assert operator_response.status_code == 200
+    assert operator_response.json()["trust"] == {"trusted": 1, "untrusted": 0, "stale": 0}
+
+
 def test_aggregate_trusts_configured_summary_key_id_only(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     store.create_task(board="dev10", title="ready", body=None, assignee=None, status="ready")
@@ -6422,6 +6473,43 @@ def test_ws_ticket_binds_project_from_request_header(tmp_path: Path) -> None:
     assert grant.project.name == "dev11"
     assert grant.kind == "board"
     assert grant.pane_id is None
+
+
+def test_ws_ticket_requires_team_operator(tmp_path: Path) -> None:
+    write_team_member(tmp_path, name="viewer", secret="viewer-secret", role="viewer")
+    write_team_member(
+        tmp_path,
+        name="operator",
+        secret="operator-secret",
+        role="operator",
+        member_id="member-operator",
+        append=True,
+    )
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    viewer = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
+    operator = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
+    viewer_login = viewer.post("/api/login", json={"name": "viewer", "secret": "viewer-secret"})
+    operator_login = operator.post(
+        "/api/login",
+        json={"name": "operator", "secret": "operator-secret"},
+    )
+
+    viewer_response = viewer.post(
+        "/api/ws-ticket",
+        headers={CSRF_HEADER: str(viewer_login.json()["csrf"])},
+        json={"kind": "board"},
+    )
+    operator_response = operator.post(
+        "/api/ws-ticket",
+        headers={CSRF_HEADER: str(operator_login.json()["csrf"])},
+        json={"kind": "board"},
+    )
+
+    assert viewer_login.status_code == 200
+    assert operator_login.status_code == 200
+    assert viewer_response.status_code == 403
+    assert operator_response.status_code == 200
+    assert operator_response.json()["kind"] == "board"
 
 
 def test_ws_ticket_uses_query_fallback_when_body_is_empty(tmp_path: Path) -> None:

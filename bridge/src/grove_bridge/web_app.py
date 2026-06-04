@@ -1140,7 +1140,7 @@ def create_app(
         payload: AggregatePayload,
         project_name: str | None = Query(default=None, alias="project"),
     ) -> dict[str, object]:
-        _require_auth(request)
+        _require_operator_state_change(request, detail="aggregate requires operator role")
         project = _cost_project_context(request, project_name)
         _require_gui_feature_enabled(
             _store(request),
@@ -2245,7 +2245,7 @@ def create_app(
         kind: str = Query(default="board"),
         pane_id: str | None = Query(default=None),
     ) -> dict[str, object]:
-        _require_state_change(request)
+        _require_operator_state_change(request, detail="websocket ticket requires operator role")
         project = resolve_project(request)
         requested_kind, requested_pane = _ws_ticket_request_scope(
             payload,

@@ -116,9 +116,8 @@ def test_exhaustive_api_tier1_harness(tmp_path: Path, monkeypatch: pytest.Monkey
         assert c.get("/api/inbox", headers=h).status_code == 200
 
     # 7. Terminal ticket / send auth
-    # viewer 403 (BUG: currently returns 200)
     res_v = v_c.post("/api/ws-ticket", headers=v_h)
-    assert res_v.status_code == 200  # BUG: Should be 403
+    assert res_v.status_code == 403
     res_o = o_c.post("/api/ws-ticket", headers=o_h)
     assert res_o.status_code == 200
 
@@ -143,9 +142,8 @@ def test_exhaustive_api_tier1_harness(tmp_path: Path, monkeypatch: pytest.Monkey
     assert res_v.status_code == 403
 
     # 11. Aggregation / Handoff
-    # viewer 403 for aggregate POST (BUG: returns 200)
     res_v = v_c.post("/api/aggregate", json={"group": "all"}, headers=v_h)
-    assert res_v.status_code == 200  # BUG: Should be 403
+    assert res_v.status_code == 403
     res_v = v_c.post("/api/handoff/export", json={"task_id": task_id}, headers=v_h)
     assert res_v.status_code == 403
 
