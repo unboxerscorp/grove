@@ -787,6 +787,7 @@ def test_rest_creates_task_on_board(tmp_path: Path) -> None:
             "title": "New task",
             "body": "Task details",
             "assignee": "lead",
+            "reviewer": "lead",
             "status": "blocked",
             "priority": 7,
         },
@@ -797,8 +798,12 @@ def test_rest_creates_task_on_board(tmp_path: Path) -> None:
     assert task["title"] == "New task"
     assert task["body"] == "Task details"
     assert task["assignee"] == "lead"
+    assert task["reviewer"] == "lead"
     assert task["status"] == "blocked"
-    assert store.get_task(board="dev10", task_id=task["id"]).priority == 7
+    stored = store.get_task(board="dev10", task_id=task["id"])
+    assert stored.priority == 7
+    assert stored.reviewer == "lead"
+    assert store.list_audit_events(board="dev10", action="reviewer-set")
 
 
 def test_no_header_default_board_alias_maps_to_default_project_board(tmp_path: Path) -> None:
@@ -815,6 +820,199 @@ def test_no_header_default_board_alias_maps_to_default_project_board(tmp_path: P
     task = store.get_task(board="dev10", task_id=created.json()["id"])
     assert task.title == "Default alias task"
     assert store.list_tasks(board="default") == []
+
+
+def test_task_reviewer_payloads_list_detail_query_and_update(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"},
+            "reviewer": {"name": "reviewer", "agent": "claude", "tmux_pane": "dev10:1.1"},
+            "qa": {"name": "qa", "agent": "claude", "tmux_pane": "dev10:1.2"},
+        },
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    created = client.post(
+        "/api/boards/main/tasks",
+        headers=headers,
+        json={"title": "Review me", "assignee": "worker", "reviewer": "reviewer"},
+    )
+    task_id = created.json()["id"]
+    listed = client.get("/api/boards/main/tasks", headers=headers)
+    detail = client.get(f"/api/tasks/{task_id}", headers=headers)
+    queried = client.get("/api/boards/main/query?q=Review", headers=headers)
+    changed = client.patch(
+        f"/api/tasks/{task_id}/reviewer",
+        headers=headers,
+        json={"reviewer": "qa"},
+    )
+
+    assert created.status_code == 200
+    assert created.json()["reviewer"] == "reviewer"
+    assert listed.status_code == 200
+    assert listed.json()[0]["reviewer"] == "reviewer"
+    assert detail.status_code == 200
+    assert detail.json()["reviewer"] == "reviewer"
+    assert queried.status_code == 200
+    assert queried.json()["items"][0]["reviewer"] == "reviewer"
+    assert changed.status_code == 200
+    assert changed.json()["reviewer"] == "qa"
+    assert store.get_task(board="dev10", task_id=task_id).reviewer == "qa"
+    assert store.list_audit_events(board="dev10", action="reviewer-set")
+    assert store.list_audit_events(board="dev10", action="reviewer-change")
+
+
+def test_manual_task_status_transition_is_scoped_audited_and_emits_event(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"},
+            "reviewer": {"name": "reviewer", "agent": "claude", "tmux_pane": "dev10:1.1"},
+        },
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"other": {"name": "other", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+    )
+    task = store.create_task(board="dev10", title="Stateful", body=None, assignee="worker")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    running = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers,
+        json={"status": "in_progress"},
+    )
+    reviewed = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers,
+        json={"status": "review", "reviewer": "reviewer"},
+    )
+    wrong_project = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers | {"X-Grove-Project": "dev11"},
+        json={"status": "done"},
+    )
+    invalid = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers,
+        json={"status": "unknown"},
+    )
+    events = store.list_events_after(cursor=0, limit=100)
+
+    assert running.status_code == 200
+    assert running.json()["status"] == "running"
+    assert reviewed.status_code == 200
+    assert reviewed.json()["status"] == "review"
+    assert reviewed.json()["reviewer"] == "reviewer"
+    assert wrong_project.status_code == 404
+    assert invalid.status_code == 400
+    assert store.get_task(board="dev10", task_id=task.id).status == "review"
+    assert any(event.kind == "task.updated" for event in events)
+    assert store.list_audit_events(board="dev10", action="status-transition")
+    assert store.list_audit_events(board="dev10", action="reviewer-set")
+
+
+def test_manual_task_status_rejects_viewer(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="dev10", title="Viewer blocked", body=None, assignee=None)
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    client = make_client(
+        tmp_path,
+        store,
+        auth_mode=AuthMode.TEAM_COOKIE,
+    )
+    login = client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+
+    response = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers={CSRF_HEADER: str(login.json()["csrf"])},
+        json={"status": "done"},
+    )
+
+    assert login.status_code == 200
+    assert response.status_code == 403
+    assert store.get_task(board="dev10", task_id=task.id).status == "ready"
+
+
+def test_done_tasks_are_visible_in_board_listing_without_filter(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    ready = store.create_task(board="dev10", title="Ready", body=None, assignee=None)
+    done = store.create_task(board="dev10", title="Done", body=None, assignee=None, status="done")
+    client = make_client(tmp_path, store)
+
+    listed = client.get("/api/boards/main/tasks", headers=auth_headers(client))
+    ready_only = client.get("/api/boards/main/tasks?status=ready", headers=auth_headers(client))
+
+    assert listed.status_code == 200
+    assert {task["id"] for task in listed.json()} == {ready.id, done.id}
+    assert ready_only.status_code == 200
+    assert [task["id"] for task in ready_only.json()] == [ready.id]
+
+
+def test_board_workflow_payload_is_project_scoped_and_aliases_statuses(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    response = client.get("/api/boards/main/workflow", headers=headers)
+    scoped = client.get(
+        "/api/boards/dev10/workflow",
+        headers=headers | {"X-Grove-Project": "dev11"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["project"] == "dev10"
+    assert payload["board"] == "dev10"
+    assert payload["done_visible"] is True
+    assert payload["canonical_statuses"] == [
+        "ready",
+        "in_progress",
+        "review",
+        "blocked",
+        "ask_human",
+        "done",
+    ]
+    assert payload["aliases"]["claimed"] == "in_progress"
+    assert payload["aliases"]["executing"] == "in_progress"
+    assert payload["aliases"]["complete"] == "done"
+    assert payload["aliases"]["completed"] == "done"
+    columns = {column["key"]: column for column in payload["columns"]}
+    assert columns["in_progress"]["stored_status"] == "running"
+    assert columns["ask_human"]["virtual"] is True
+    assert columns["done"]["raw_statuses"] == ["done", "complete", "completed"]
+    transitions = payload["allowed_transitions"]
+    assert all(transition["to"] != "ask_human" for transition in transitions)
+    assert all(transition["from"] != "ask_human" for transition in transitions)
+    assert all(transition["requires_reason"] is False for transition in transitions)
+    supported_statuses = {"ready", "in_progress", "review", "blocked", "done"}
+    assert all(transition["from"] in supported_statuses for transition in transitions)
+    assert all(transition["to"] in supported_statuses for transition in transitions)
+    assert {"from": "review", "to": "done", "requires_reason": False} in payload[
+        "allowed_transitions"
+    ]
+    assert payload["manual_transition"]["endpoint"] == "/api/tasks/{task_id}/status"
+    assert scoped.status_code == 404
+    assert scoped.json()["detail"] == "board 'dev10' not in project 'dev11'"
 
 
 def test_task_create_coerces_nullable_fields_and_rejects_invalid_payloads(
@@ -2701,7 +2899,7 @@ def test_ledger_self_scope_quota_permissions_default_off_and_project_scope(
     assert viewer_quota.status_code == 403
     assert scoped.status_code == 200
     assert scoped.json()["members"][0]["totals"]["total_tokens"]["value"] == 999
-    assert "100" not in json.dumps(scoped.json())
+    assert all(item["totals"]["total_tokens"]["value"] != 100 for item in scoped.json()["members"])
     assert missing_token.status_code == 401
 
 
@@ -3665,6 +3863,77 @@ def test_projects_endpoint_lists_registry_sessions_with_tmux_status(
     ]
 
 
+def test_org_includes_master_and_cross_project_leads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"lead": {"name": "lead", "agent": "claude", "tmux_pane": "dev10:0.0"}},
+        workspace="/repo/dev10",
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"project-master": {"name": "project-master", "agent": "claude"}},
+        workspace="/repo/dev11",
+        display_name="Client Project /Users/chopin/secret xoxb-" + ("s" * 44),
+    )
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/org", headers=auth_headers(client))
+    scoped = client.get(
+        "/api/org",
+        headers=auth_headers(client) | {"X-Grove-Project": "dev11"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["master"] == {
+        "id": "grove-master",
+        "name": "GROVE MASTER",
+        "label": "GROVE MASTER",
+        "kind": "master",
+        "role": "orchestrator",
+        "root": True,
+        "current_project": "dev10",
+        "chat_target": {
+            "endpoint": "/api/master/chat",
+            "origin_surface": "floating_web_chat",
+            "project": "dev10",
+        },
+    }
+    assert payload["project"]["display_name"] == "grove-dev"
+    leads = {lead["project"]: lead for lead in payload["project_leads"]}
+    assert leads["dev10"]["display_name"] == "grove-dev"
+    assert leads["dev10"]["current"] is True
+    assert leads["dev10"]["switch_target"] == "dev10"
+    assert leads["dev10"]["chat_target"]["endpoint"] == "/api/master/chat"
+    assert leads["dev11"]["display_name"] == "Client Project [path] [redacted]"
+    assert leads["dev11"]["current"] is False
+    assert leads["dev11"]["switch_target"] == "dev11"
+    assert scoped.status_code == 200
+    scoped_leads = {lead["project"]: lead for lead in scoped.json()["project_leads"]}
+    assert scoped.json()["project"]["display_name"] == "Client Project [path] [redacted]"
+    assert scoped_leads["dev11"]["current"] is True
+    assert scoped_leads["dev10"]["current"] is False
+    rendered = json.dumps(response.json()) + json.dumps(scoped.json())
+    assert "/Users/chopin" not in rendered
+    assert "xoxb-" not in rendered
+
+
 def test_create_project_invokes_new_project_with_literal_argv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3679,7 +3948,7 @@ def test_create_project_invokes_new_project_with_literal_argv(
         timeout: float,
         check: bool,
     ) -> subprocess.CompletedProcess[str]:
-        if args[:3] == ["tmux", "has-session", "-t"]:
+        if args and args[0] == "tmux":
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
         calls.append(
             {
@@ -3757,6 +4026,11 @@ def test_create_project_invokes_new_project_with_literal_argv(
         headers=auth_headers(client) | {"X-Grove-Project": "new-dev"},
     )
     assert org.status_code == 200
+    assert org.json()["project"] == {
+        "name": "new-dev",
+        "board": "new-dev",
+        "display_name": "new-dev",
+    }
     assert org.json()["default_assignee"] == "project-master"
     assert [candidate["name"] for candidate in org.json()["assignee_candidates"]] == [
         "project-master",
@@ -4026,6 +4300,11 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
     payload = response.json()
     nodes = {node["name"]: node for node in payload["nodes"]}
     assert payload["session"] == "dev10"
+    assert payload["project"] == {
+        "name": "dev10",
+        "board": "dev10",
+        "display_name": "grove-dev",
+    }
     assert payload["roots"] == ["hidden", "lead", "lead-pane"]
     assert payload["groups"] == [
         {"name": "core", "parent": "lead", "nodes": ["lead", "worker"]},
@@ -4053,6 +4332,81 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
         "qa",
         "worker",
     ]
+    assert [candidate["name"] for candidate in payload["reviewer_candidates"]] == [
+        "lead",
+        "hidden",
+        "lead-pane",
+        "qa",
+        "worker",
+    ]
+
+
+def test_org_distinguishes_current_delegation_snapshot_from_history(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    open_task = store.create_task(
+        board="dev10",
+        title="Build active",
+        body=None,
+        assignee="worker",
+        created_by="lead",
+    )
+    done_task = store.create_task(
+        board="dev10",
+        title="Build done",
+        body=None,
+        assignee="worker",
+        status="done",
+        created_by="lead",
+    )
+    review_task = store.create_task(
+        board="dev10",
+        title="Review active",
+        body=None,
+        assignee="maker",
+        reviewer="reviewer",
+        status="review",
+        created_by="lead",
+    )
+    store.add_audit_event(
+        board="dev10",
+        kind="audit.task.assign",
+        actor={"kind": "local", "id": "lead", "login": "lead", "role": "none"},
+        action="assign",
+        target={"type": "task", "id": open_task.id, "node": "worker"},
+        task_id=open_task.id,
+        payload={"to_node": "worker"},
+        summary=open_task.title,
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"},
+            "maker": {"name": "maker", "agent": "codex", "tmux_pane": "dev10:1.1"},
+            "reviewer": {"name": "reviewer", "agent": "claude", "tmux_pane": "dev10:1.2"},
+        },
+    )
+    client = make_client(tmp_path, store)
+
+    response = client.get("/api/org", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    delegations = response.json()["delegations"]
+    current = {(edge["from"], edge["to"], edge["kind"]): edge for edge in delegations["current"]}
+    assert current[("lead", "worker", "implementation")]["task_ids"] == [open_task.id]
+    assert done_task.id not in current[("lead", "worker", "implementation")]["task_ids"]
+    assert current[("lead", "maker", "implementation")]["task_ids"] == [review_task.id]
+    assert current[("maker", "reviewer", "review_pool")]["task_ids"] == [review_task.id]
+    assert delegations["mode_labels"] == {
+        "current": "Current delegation: open tasks only",
+        "history": "Delegation history: audit trail summary",
+    }
+    assert delegations["history"][0]["action"] == "assign"
+    assert delegations["history"][0]["to"] == "worker"
+    assert delegations["history"][0]["task_id"] == open_task.id
+    assert "Delegation history" in delegations["history"][0]["label"]
 
 
 def test_org_adds_external_lead_for_grouped_workers(tmp_path: Path) -> None:
@@ -4257,7 +4611,10 @@ def test_node_connect_info_is_read_only_and_project_scoped(tmp_path: Path) -> No
     write_registry(
         tmp_path,
         "dev10",
-        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"}},
+        {
+            "lead": {"name": "lead", "agent": "claude", "tmux_pane": "dev10:0.0"},
+            "worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"},
+        },
     )
     write_registry(
         tmp_path,
@@ -4268,6 +4625,7 @@ def test_node_connect_info_is_read_only_and_project_scoped(tmp_path: Path) -> No
     before_events = store.list_events_after(cursor=0, limit=100)
 
     response = client.get("/api/nodes/worker/connect", headers=auth_headers(client))
+    lead = client.get("/api/nodes/lead/connect", headers=auth_headers(client))
     scoped = client.get(
         "/api/nodes/worker/connect",
         headers=auth_headers(client) | {"X-Grove-Project": "dev11"},
@@ -4283,6 +4641,7 @@ def test_node_connect_info_is_read_only_and_project_scoped(tmp_path: Path) -> No
             "select_pane": "tmux select-pane -t dev10:2.0",
         },
     }
+    assert lead.status_code == 404
     assert scoped.status_code == 404
     assert store.list_events_after(cursor=0, limit=100) == before_events
 
@@ -5737,6 +6096,7 @@ def write_registry(
     nodes: dict[str, dict[str, object]],
     *,
     workspace: str | None = None,
+    display_name: str | None = None,
 ) -> None:
     registry = {
         "session": session,
@@ -5744,6 +6104,8 @@ def write_registry(
     }
     if workspace is not None:
         registry["workspace"] = workspace
+    if display_name is not None:
+        registry["display_name"] = display_name
     path = tmp_path / ".grove" / session / "registry.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(registry), encoding="utf-8")

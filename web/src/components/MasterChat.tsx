@@ -184,6 +184,14 @@ export function MasterChat() {
     };
   }, []);
 
+  // Open the floating chat on a global event (e.g. clicking GROVE MASTER in the
+  // org chart). Navigation-safe: only opens the panel, never mutates.
+  useEffect(() => {
+    const onOpen = () => setOpen(true);
+    window.addEventListener("grove:master-chat:open", onOpen);
+    return () => window.removeEventListener("grove:master-chat:open", onOpen);
+  }, []);
+
   // Upsert by id — append new, replace existing in place (the persisted
   // live-update contract).
   const upsert = useCallback<Upsert>((m) => {
