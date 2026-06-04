@@ -1,6 +1,6 @@
 import { loadContext, nodeOf } from "../context.js";
 import { type FanInMode, renderFanInJson, waitForFanIn } from "../fanin.js";
-import { clearPending, waitForCompletion } from "../ops.js";
+import { clearPending, resolvePending, waitForCompletion } from "../ops.js";
 import { color, err, info } from "../util/log.js";
 import { parseDuration } from "../util/time.js";
 
@@ -13,7 +13,7 @@ export async function cmdWait(
   const timeoutMs = parseDuration(opts.timeout, 30 * 60_000);
   // Use the baseline recorded by `send`/`ask` so a turn that finished between
   // submit and now is still detected (instead of baselining at wait-time).
-  const pending = ctx.registry.nodes[nc.node.name]?.pending;
+  const pending = resolvePending(ctx, nc);
   info(`waiting for ${color.bold(name)} …`);
   const res = await waitForCompletion(ctx, nc, {
     timeoutMs,

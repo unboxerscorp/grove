@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 
 import type { Context, NodeCtx } from "./context.js";
 import { eventLogSize, readTurnEventsSince } from "./events.js";
-import { type NodeRuntime, saveRegistry } from "./registry.js";
+import { type NodeRuntime, saveRegistry, updateRegistryNode } from "./registry.js";
 import {
   capturePane,
   hasSession,
@@ -28,8 +28,39 @@ const SHELLS = new Set(["zsh", "-zsh", "bash", "-bash", "sh", "fish", "tmux"]);
 const BP_START = "\x1b[200~";
 const BP_END = "\x1b[201~";
 
+export interface PendingBinding {
+  sessionId: string;
+  transcript: string;
+  previous?: {
+    sessionId?: string;
+    transcript?: string;
+  };
+}
+
+function snapshotRecord(snapshot: Map<string, number>): Record<string, number> {
+  const record: Record<string, number> = {};
+  for (const [transcript, marker] of snapshot) {
+    if (Number.isFinite(marker)) record[transcript] = marker;
+  }
+  return record;
+}
+
 function transcriptHasContent(nc: NodeCtx, transcript: string): boolean {
   return nc.adapter.size(transcript) > 0;
+}
+
+function shouldApplyDetectedBinding(
+  latest: NodeRuntime | undefined,
+  previous: PendingBinding["previous"],
+): boolean {
+  if (!latest) return true;
+  if (latest.sessionId && latest.sessionId !== (previous?.sessionId ?? "")) return false;
+  if (latest.transcript && latest.transcript !== (previous?.transcript ?? "")) return false;
+  return true;
+}
+
+function isConfiguredNode(ctx: Context, nodeName: string): boolean {
+  return ctx.nodes.some((node) => node.name === nodeName);
 }
 
 /** Best-effort transcript path for a node: registry → known session id. */
@@ -53,31 +84,123 @@ export function recordPending(
   nc: NodeCtx,
   transcript: string,
   fromOffset: number,
-  opts: { eventLogDir?: string; eventLogOffset?: number } = {},
+  opts: {
+    eventLogDir?: string;
+    eventLogOffset?: number;
+    binding?: PendingBinding;
+  } = {},
 ): void {
-  const prev = ctx.registry.nodes[nc.node.name] ?? {
+  const inMemory = ctx.registry.nodes[nc.node.name];
+  const fallback = {
     name: nc.node.name,
     agent: nc.node.agent,
   };
   const eventLogDir = opts.eventLogDir ?? eventsDir(ctx.config.session);
-  ctx.registry.nodes[nc.node.name] = {
-    ...prev,
-    pending: {
-      transcript,
-      fromOffset,
-      submittedAt: new Date().toISOString(),
-      eventLogOffset: opts.eventLogOffset ?? eventLogSize(eventLogDir),
-    },
+  const pending = {
+    transcript,
+    fromOffset,
+    submittedAt: new Date().toISOString(),
+    eventLogOffset: opts.eventLogOffset ?? eventLogSize(eventLogDir),
   };
-  saveRegistry(ctx.registry);
+  updateRegistryNode(
+    ctx.registry,
+    nc.node.name,
+    (latest) => {
+      const merged: NodeRuntime = { ...(latest ?? inMemory ?? fallback) };
+      merged.name = latest?.name ?? inMemory?.name ?? nc.node.name;
+      merged.agent = latest?.agent ?? inMemory?.agent ?? nc.node.agent;
+      if (opts.binding && shouldApplyDetectedBinding(latest, opts.binding.previous)) {
+        merged.sessionId = opts.binding.sessionId;
+        merged.transcript = opts.binding.transcript;
+      } else if (!latest && inMemory?.transcript === transcript) {
+        merged.transcript = inMemory.transcript;
+        if (inMemory.sessionId) merged.sessionId = inMemory.sessionId;
+      }
+      return { ...merged, pending };
+    },
+    { allowCreate: isConfiguredNode(ctx, nc.node.name) },
+  );
+}
+
+/** Record a submit baseline before the agent has exposed a transcript path.
+ *  Later wait/send probing can resolve the detected transcript from snapshot. */
+export function recordProvisionalPending(
+  ctx: Context,
+  nc: NodeCtx,
+  fromOffset: number,
+  opts: {
+    eventLogDir?: string;
+    eventLogOffset?: number;
+    snapshot: Map<string, number>;
+  },
+): void {
+  const inMemory = ctx.registry.nodes[nc.node.name];
+  const fallback = {
+    name: nc.node.name,
+    agent: nc.node.agent,
+  };
+  const eventLogDir = opts.eventLogDir ?? eventsDir(ctx.config.session);
+  const pending = {
+    fromOffset,
+    submittedAt: new Date().toISOString(),
+    eventLogOffset: opts.eventLogOffset ?? eventLogSize(eventLogDir),
+    provisional: true,
+    snapshot: snapshotRecord(opts.snapshot),
+  };
+  updateRegistryNode(
+    ctx.registry,
+    nc.node.name,
+    (latest) => {
+      const merged: NodeRuntime = { ...(latest ?? inMemory ?? fallback) };
+      merged.name = latest?.name ?? inMemory?.name ?? nc.node.name;
+      merged.agent = latest?.agent ?? inMemory?.agent ?? nc.node.agent;
+      return { ...merged, pending };
+    },
+    { allowCreate: isConfiguredNode(ctx, nc.node.name) },
+  );
+}
+
+function snapshotMap(pending: NodeRuntime["pending"]): Map<string, number> | undefined {
+  if (!pending?.snapshot) return undefined;
+  return new Map(Object.entries(pending.snapshot));
+}
+
+export function resolvePending(ctx: Context, nc: NodeCtx): NodeRuntime["pending"] {
+  const runtime = ctx.registry.nodes[nc.node.name];
+  const pending = runtime?.pending;
+  if (!pending || pending.transcript) return pending;
+  const snapshot = snapshotMap(pending);
+  if (!snapshot) return pending;
+  const detected = nc.adapter.detectNew(nc.node.cwd, snapshot);
+  if (!detected) return pending;
+  const previous: PendingBinding["previous"] = {};
+  if (runtime?.sessionId) previous.sessionId = runtime.sessionId;
+  if (runtime?.transcript) previous.transcript = runtime.transcript;
+  recordPending(ctx, nc, detected.transcript, 0, {
+    binding: {
+      ...detected,
+      previous,
+    },
+    ...(pending.eventLogOffset === undefined ? {} : { eventLogOffset: pending.eventLogOffset }),
+  });
+  return ctx.registry.nodes[nc.node.name]?.pending ?? pending;
 }
 
 /** Drop a node's in-flight baseline once its turn has been collected. */
 export function clearPending(ctx: Context, nc: NodeCtx): void {
   const rt = ctx.registry.nodes[nc.node.name];
   if (rt?.pending) {
-    delete rt.pending;
-    saveRegistry(ctx.registry);
+    updateRegistryNode(
+      ctx.registry,
+      nc.node.name,
+      (latest) => {
+        const current = latest ?? rt;
+        const next = { ...current };
+        delete next.pending;
+        return next;
+      },
+      { allowCreate: isConfiguredNode(ctx, nc.node.name) },
+    );
   }
 }
 

@@ -28,10 +28,12 @@ export interface NodeRuntime {
    *  `wait` scans from before the response (fixes the send→wait race).
    *  Set by send/ask, cleared on completion. */
   pending?: {
-    transcript: string;
+    transcript?: string;
     fromOffset: number;
     submittedAt: string;
     eventLogOffset?: number;
+    provisional?: boolean;
+    snapshot?: Record<string, number>;
   };
 }
 

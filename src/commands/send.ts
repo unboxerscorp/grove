@@ -1,12 +1,24 @@
 import { loadContext, nodeOf } from "../context.js";
 import { eventLogSize } from "../events.js";
-import { recordPending, resolveTranscript, submitMessage } from "../ops.js";
+import {
+  type PendingBinding,
+  recordPending,
+  recordProvisionalPending,
+  resolveTranscript,
+  submitMessage,
+} from "../ops.js";
 import { color, info, warn } from "../util/log.js";
 import { eventsDir } from "../util/paths.js";
 import { poll } from "../util/time.js";
 
 const SUBMISSION_WRITE_TIMEOUT_MS = 8000;
 const SUBMISSION_WRITE_INTERVAL_MS = 150;
+
+interface PendingSubmission {
+  transcript: string;
+  fromOffset: number;
+  binding?: PendingBinding;
+}
 
 export async function cmdSend(
   name: string,
@@ -18,10 +30,26 @@ export async function cmdSend(
   // Capture the baseline before the response lands so a later `grove wait`
   // scans from here, not from wait-time.
   const before = nc.adapter.snapshot(nc.node.cwd);
+  const previousRuntime = ctx.registry.nodes[nc.node.name];
+  const previousBinding: PendingBinding["previous"] = {};
+  if (previousRuntime?.sessionId) previousBinding.sessionId = previousRuntime.sessionId;
+  if (previousRuntime?.transcript) previousBinding.transcript = previousRuntime.transcript;
   const transcript = resolveTranscript(ctx, nc);
   const fromOffset = transcript ? nc.adapter.size(transcript) : 0;
   const eventLogDir = eventsDir(ctx.config.session);
   const eventLogOffset = eventLogSize(eventLogDir);
+  if (transcript) {
+    recordPending(ctx, nc, transcript, fromOffset, {
+      eventLogDir,
+      eventLogOffset,
+    });
+  } else {
+    recordProvisionalPending(ctx, nc, 0, {
+      eventLogDir,
+      eventLogOffset,
+      snapshot: before,
+    });
+  }
   await submitMessage(nc, message);
 
   const submitted = await poll(
@@ -40,7 +68,11 @@ export async function cmdSend(
           sessionId: detected.sessionId,
           transcript: detected.transcript,
         };
-        return { transcript: detected.transcript, fromOffset: 0 };
+        return {
+          binding: { ...detected, previous: previousBinding },
+          transcript: detected.transcript,
+          fromOffset: 0,
+        };
       }
       return null;
     },
@@ -51,16 +83,20 @@ export async function cmdSend(
     },
   );
 
-  const pending = submitted.value ?? (transcript ? { transcript, fromOffset } : null);
+  const pending: PendingSubmission | null =
+    submitted.value ?? (transcript ? { transcript, fromOffset } : null);
   if (!pending) {
-    warn(`${name}: submission unconfirmed; no transcript resolved`);
+    warn(`${name}: submission unconfirmed; provisional pending recorded`);
     return;
   }
 
-  recordPending(ctx, nc, pending.transcript, pending.fromOffset, {
-    eventLogDir,
-    eventLogOffset,
-  });
+  if (pending.binding || !transcript) {
+    recordPending(ctx, nc, pending.transcript, pending.fromOffset, {
+      binding: pending.binding,
+      eventLogDir,
+      eventLogOffset,
+    });
+  }
   if (!submitted.value) {
     info(`${name}: submission unconfirmed; pending recorded`);
   }

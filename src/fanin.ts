@@ -1,8 +1,8 @@
 import type { Context, NodeCtx } from "./context.js";
 import type { GroveTurnEvent } from "./events.js";
 import { eventLogPath, eventLogSize, readTurnEventsSince } from "./events.js";
-import { resolveTranscript } from "./ops.js";
-import { saveRegistry } from "./registry.js";
+import { resolvePending, resolveTranscript } from "./ops.js";
+import { updateRegistryNode } from "./registry.js";
 import { eventsDir } from "./util/paths.js";
 import { waitForChangeOrTimeout } from "./util/watch.js";
 
@@ -108,15 +108,15 @@ function buildStates(ctx: Context, names: string[], eventLogDir: string): NodeWa
       const known = [...ctx.byName.keys()].join(", ") || "(none)";
       throw new Error(`unknown node "${name}". known nodes: ${known}`);
     }
-    const runtime = ctx.registry.nodes[name];
-    const transcript = runtime?.pending?.transcript ?? resolveTranscript(ctx, nc);
+    const pending = resolvePending(ctx, nc);
+    const transcript = pending?.transcript ?? resolveTranscript(ctx, nc);
     if (!transcript) {
       throw new Error(
         `"${name}": no session transcript resolved — run \`grove up\` (or \`fleet repair\`) first`,
       );
     }
-    const fromOffset = runtime?.pending?.fromOffset ?? nc.adapter.size(transcript);
-    const eventLogOffset = runtime?.pending?.eventLogOffset ?? eventLogSize(eventLogDir);
+    const fromOffset = pending?.fromOffset ?? nc.adapter.size(transcript);
+    const eventLogOffset = pending?.eventLogOffset ?? eventLogSize(eventLogDir);
     const partialState = { name, nc, transcript };
     return {
       name,
@@ -139,6 +139,10 @@ function pendingForState(state: NodeWaitState): FanInPendingResult {
   };
 }
 
+function isConfiguredNode(ctx: Context, nodeName: string): boolean {
+  return ctx.nodes.some((node) => node.name === nodeName);
+}
+
 function finalizeResult(
   ctx: Context,
   mode: FanInMode,
@@ -147,16 +151,23 @@ function finalizeResult(
   deadlineExceeded: boolean,
   nextEventLogOffset: number,
 ): FanInResult {
-  let registryChanged = false;
   for (const state of states) {
     if (!state.terminal) continue;
     const runtime = ctx.registry.nodes[state.name];
     if (runtime?.pending) {
-      delete runtime.pending;
-      registryChanged = true;
+      updateRegistryNode(
+        ctx.registry,
+        state.name,
+        (latest) => {
+          const current = latest ?? runtime;
+          const next = { ...current };
+          delete next.pending;
+          return next;
+        },
+        { allowCreate: isConfiguredNode(ctx, state.name) },
+      );
     }
   }
-  if (registryChanged) saveRegistry(ctx.registry);
 
   const completed = order.filter((item) => item.status === "done");
   const failed = order.filter((item) => item.status === "failed");
