@@ -4,6 +4,44 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.20.0] — v1.19 (2026-06-04)
+
+Fair sharing. Auto-started after v1.18.0. Now that tailnet peers share one host's agent
+capacity, attribute it per-member and soft-limit it — soft by default, default OFF.
+
+### Per-user ledger + soft quotas
+
+- **GET /api/ledger** (token + project-scoped) rolls up runs/tokens/cost per member —
+  attributed via task created_by (server-recorded; no forgeable member key in run metadata). A
+  viewer/member sees only their own; operator/admin see all. agy stays honest (cost unknown,
+  not estimated); member id/name + run metadata are redacted (no secret/path/email/body).
+- **POST /api/quota** (--enable-quotas, default OFF; 404 when off) lets an operator/admin set a
+  per-member soft budget (CSRF + Origin + operator gate; persisted).
+- **Soft by default**: exceeding a quota returns a soft_throttle signal with hard_kill:false and
+  NEVER kills a running task — the execution abort/terminate paths don't reference quota at all
+  (the e2e verifies a running task survives a quota set). Hard enforcement stays a separate,
+  future opt-in. A read-only host-pressure signal shows running/capacity/ratio (no PID/path).
+  Quota changes are audited.
+
+### Ledger dashboard
+
+- A ledger panel: per-member usage (operator all, member/viewer own), my-budget vs the soft
+  limit with an explicit "soft-throttle — new work delayed, running work not stopped" note, a
+  host-pressure indicator (warns on saturation), and a confirm-gated operator quota control
+  (viewers/members read-only; quotas-off renders a graceful notice).
+
+### Quality
+
+- Reviewer: GO, no NO-GO — NO-hard-kill confirmed (UI + e2e), ledger scope + attribution + agy
+  honesty + non-exposure + quota role-gate all clean. 251 py tests; web e2e 489/489 (+60).
+
+### Deferred (→ v1.20)
+
+- **Slack bot intelligence** (user request): bug/feedback intake + free-form message intent
+  triage (file a task vs. just answer), reusing the gated task-create path (role + audit +
+  preview→confirm), default OFF. Plus optional per-user sandbox v0, retro analytics (see
+  docs/V1_20_SLACK_BRAINSTORM.md, docs/V1_20_BRAINSTORM.md).
+
 ## [0.19.0] — v1.18 (2026-06-04)
 
 Tailnet multi-user — a shared room on your tailnet. Auto-started after v1.17.0, then steered

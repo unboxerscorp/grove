@@ -63,6 +63,10 @@ grove repair --all
   peers join with per-user identity, roles, CSRF-protected sessions, and audit. Work
   uses the host machine's local CLI credentials and capacity; it is not public internet
   access and not per-user sandboxing.
+- **Per-user ledger and soft quotas** - v1.19 shared-host fairness is default OFF:
+  per-member usage rolls up measured runs/tokens/cost, operator-set soft quotas warn
+  and queue/throttle instead of hard-killing running work, and host-pressure signals
+  show when local capacity is saturated. agy cost stays unknown when no local source exists.
 
 ## Concepts
 
@@ -151,6 +155,9 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   required before any task is created.
 - Cost numbers are source-tagged. agy credit/cost is unknown unless locally available;
   grove does not invent estimates.
+- Per-user resource ledgers and quotas are default OFF, project-scoped, role-gated,
+  and audited. Operators/admins configure quotas; viewers remain read-only. Quota
+  pressure is soft by default: warn, queue, or slow new work, but do not kill running tasks.
 - The dashboard and APIs are served by `grove-web`, not `grove serve`. Tailnet
   shared-access belongs to `grove-web --shared-access --allow-host <host>`.
 
