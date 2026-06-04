@@ -277,6 +277,79 @@ export interface UsageReport {
   limitations?: string[];
 }
 
+// Per-member ledger (web_app.py /api/ledger). Reuses UsageTotals (runs/tokens/
+// cost as CostMetric — cost + agy credit stay honestly unknown, never invented).
+// scope "self" (viewer = own only) vs "all" (operator). A SOFT quota only warns:
+// `hard_kill` is always false and running tasks are never killed.
+export interface LedgerMember {
+  id: string;
+  name?: string | null;
+  role: string; // "viewer" | "operator" | "admin" | "unknown"
+}
+
+export interface QuotaSoftThrottle {
+  active: boolean;
+  action: string; // "queue-delay" | "none"
+  reasons: string[]; // subset of ("runs"|"tokens"|"cost")
+  hard_kill: boolean; // always false — soft throttle, never a kill
+}
+
+export interface QuotaState {
+  configured: boolean;
+  enabled: boolean;
+  mode: string; // "soft"
+  hard_kill: boolean; // false
+  status: string; // "exceeded" | "ok" | "disabled"
+  soft_throttle: QuotaSoftThrottle;
+  soft_run_limit?: number;
+  soft_token_limit?: number;
+  soft_cost_usd?: number;
+  updated_at?: number;
+  cost_warning?: string;
+}
+
+export interface LedgerMemberRollup {
+  member: LedgerMember;
+  totals: UsageTotals;
+  quota: QuotaState;
+  warnings?: string[];
+}
+
+export interface HostPressure {
+  status: string; // "saturated" | "nominal"
+  running: CostMetric;
+  capacity: CostMetric;
+  ratio: CostMetric;
+  load_1m?: CostMetric;
+  blocked_tasks?: CostMetric;
+}
+
+export interface LedgerReport {
+  project?: string;
+  generated_at?: CostMetric;
+  window?: { name?: string };
+  scope: string; // "self" | "all"
+  quota_enabled: boolean;
+  members: LedgerMemberRollup[];
+  host_pressure: HostPressure;
+  limitations?: string[];
+}
+
+export interface QuotaUpdateBody {
+  member_id: string;
+  enabled?: boolean;
+  soft_run_limit?: number | null;
+  soft_token_limit?: number | null;
+  soft_cost_usd?: number | null;
+}
+
+export interface QuotaUpdateResult {
+  ok: boolean;
+  project?: string;
+  member: LedgerMember;
+  quota: QuotaState;
+}
+
 // Cross-room handoff (web_app.py). export → signed allowlist package (task →
 // {title,body,priority,labels}); accept → verify (trust/freshness) + EXPLICIT
 // accept → local task (idempotent by handoff_id, receiver TTL). Default OFF.
@@ -684,6 +757,23 @@ export const api = {
 
   // Usage rollup (node/day) — project-scoped; 403 for team viewers.
   getUsage: () => getJSON<UsageReport>("/api/usage"),
+
+  // Per-member ledger (runs/tokens/cost + soft quota + host pressure). viewer =
+  // self-only, operator = all members. Read-only; cost/agy stay honestly unknown.
+  getLedger: () => getJSON<LedgerReport>("/api/ledger"),
+
+  // Set a member's SOFT budget (operator only; 404 when --enable-quotas is off,
+  // 403 for viewers). Never hard-kills — exceeding only throttles new work.
+  async setQuota(body: QuotaUpdateBody): Promise<QuotaUpdateResult> {
+    const res = await fetch("/api/quota", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`/api/quota: HTTP ${res.status}`);
+    return (await res.json()) as QuotaUpdateResult;
+  },
 
   // Cross-room handoff (default OFF → 404). export = signed package; accept =
   // verify + EXPLICIT accept → local task (idempotent).

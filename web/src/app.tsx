@@ -15,6 +15,7 @@ import { ConnectPanel } from "./components/ConnectPanel";
 import { CostPanel } from "./components/CostPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { HandoffPanel } from "./components/HandoffPanel";
+import { LedgerPanel } from "./components/LedgerPanel";
 import { HealthDot } from "./components/HealthDot";
 import { NodeStatusBar } from "./components/NodeStatusBar";
 import { OrgChart } from "./components/OrgChart";
@@ -26,7 +27,7 @@ import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
-type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "agg" | "handoff" | "connect" | "auth";
+type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "ledger" | "agg" | "handoff" | "connect" | "auth";
 
 // A share URL deep-links as <index>?join=<code> (web_app.py _share_url). Read the
 // code once at startup so opening a share link lands on the join screen with the
@@ -393,6 +394,14 @@ export function App() {
             </button>
             <button
               type="button"
+              data-view="ledger"
+              className={cx("dr-tab", view === "ledger" && "is-active")}
+              onClick={() => setView("ledger")}
+            >
+              {t("tab.ledger")}
+            </button>
+            <button
+              type="button"
               data-view="agg"
               className={cx("dr-tab", view === "agg" && "is-active")}
               onClick={() => setView("agg")}
@@ -495,6 +504,8 @@ export function App() {
             />
           ) : view === "cost" ? (
             <CostPanel projectTick={projectTick} />
+          ) : view === "ledger" ? (
+            <LedgerPanel projectTick={projectTick} onChanged={() => setLiveTick((x) => x + 1)} />
           ) : view === "agg" ? (
             <AggregationPanel projectTick={projectTick} />
           ) : view === "handoff" ? (

@@ -354,6 +354,106 @@ const SHARE_EXPIRED_CODE = "grove-expired-0002"; // always 410 (expiry path)
 const joinCodes = new Set<string>([SHARE_DEMO_CODE]); // live one-time codes
 const joinedNames = new Set<string>(["root"]); // existing member names -> 409 on collision
 let joinSeq = 0;
+
+// Per-member ledger + soft quota + host pressure (V19-W2). Mirrors web_app.py
+// /api/ledger + /api/quota + _host_pressure_payload. quota default ON so the
+// operator control is exercisable; diag.setQuotaEnabled(false) -> 404 + the
+// graceful disabled notice. diag.setHostSaturated(true) flips the pressure warn.
+// agy member -> cost/credit honestly unknown; soft quota NEVER hard-kills.
+let quotaEnabled = true;
+diag.setQuotaEnabled = (on: boolean): void => {
+  quotaEnabled = on;
+};
+let hostSaturated = false;
+diag.setHostSaturated = (on: boolean): void => {
+  hostSaturated = on;
+};
+type LedMetric = { value: number | null; source: string; confidence: string; status?: string };
+const ledMetric = (value: number, source: string, confidence: string): LedMetric => ({ value, source, confidence });
+const ledUnknown = (source = "none"): LedMetric => ({ value: null, source, confidence: "unknown", status: "unknown" });
+type QuotaSeed = {
+  configured: boolean;
+  enabled: boolean;
+  soft_run_limit?: number;
+  soft_token_limit?: number;
+  soft_cost_usd?: number;
+  updated_at?: number;
+};
+// member_id -> operator-set soft quota. Seeded so verify sees an exceeded case.
+const quotaStates: Record<string, QuotaSeed> = {
+  "m-alice": { configured: true, enabled: true, soft_run_limit: 50, soft_token_limit: 1_000_000, updated_at: AUDIT_TS0 },
+  "m-bob": { configured: true, enabled: true, soft_run_limit: 20, updated_at: AUDIT_TS0 }, // 30 runs > 20 -> throttle
+};
+const LEDGER_MEMBERS: Record<string, { name: string; role: string }> = {
+  "m-alice": { name: "alice", role: "operator" },
+  "m-bob": { name: "bob", role: "operator" },
+  "m-carol": { name: "carol", role: "viewer" },
+  v1: { name: "viewer1", role: "viewer" },
+};
+function quotaPublic(memberId: string, runs: number, totalTokens: number | null): Record<string, unknown> {
+  const st = quotaEnabled ? quotaStates[memberId] : undefined;
+  const configured = !!st?.configured;
+  const enabled = quotaEnabled && !!st?.enabled && configured;
+  const reasons: string[] = [];
+  if (enabled && st) {
+    if (st.soft_run_limit != null && runs > st.soft_run_limit) reasons.push("runs");
+    if (st.soft_token_limit != null && totalTokens != null && totalTokens > st.soft_token_limit) reasons.push("tokens");
+    // cost is honestly unknown -> never counts as a cost exceed.
+  }
+  const exceeded = reasons.length > 0;
+  const payload: Record<string, unknown> = {
+    configured,
+    enabled,
+    mode: "soft",
+    hard_kill: false,
+    status: exceeded ? "exceeded" : enabled ? "ok" : "disabled",
+    soft_throttle: { active: exceeded, action: exceeded ? "queue-delay" : "none", reasons, hard_kill: false },
+  };
+  if (st?.soft_run_limit != null) payload.soft_run_limit = st.soft_run_limit;
+  if (st?.soft_token_limit != null) payload.soft_token_limit = st.soft_token_limit;
+  if (st?.soft_cost_usd != null) payload.soft_cost_usd = st.soft_cost_usd;
+  if (st?.updated_at != null) payload.updated_at = st.updated_at;
+  if (enabled && st?.soft_cost_usd != null) payload.cost_warning = "cost usage is unknown; cost quota is warning-only";
+  return payload;
+}
+function ledgerRollup(memberId: string, runs: number, totalTokens: number | null, agy: boolean): Record<string, unknown> {
+  const known = totalTokens != null;
+  const quota = quotaPublic(memberId, runs, totalTokens);
+  const warnings: string[] = [];
+  if (agy) warnings.push("agy credit is unknown because no reliable local credit source is configured");
+  const throttle = quota.soft_throttle as { active?: boolean } | undefined;
+  if (throttle?.active) warnings.push("soft quota exceeded; new work may be delayed, running tasks are not killed");
+  if (typeof quota.cost_warning === "string") warnings.push(quota.cost_warning);
+  const meta = LEDGER_MEMBERS[memberId] ?? { name: "", role: "unknown" };
+  const rollup: Record<string, unknown> = {
+    member: { id: memberId, name: meta.name || null, role: meta.role },
+    totals: {
+      runs: ledMetric(runs, "run_metadata", "explicit"),
+      input_tokens: known ? ledMetric(Math.round(totalTokens * 0.6), "run_metadata", "explicit") : ledUnknown(),
+      output_tokens: known ? ledMetric(Math.round(totalTokens * 0.4), "run_metadata", "explicit") : ledUnknown(),
+      total_tokens: known ? ledMetric(totalTokens, "run_metadata", "explicit") : ledUnknown(),
+      cost_usd_estimate: ledUnknown("estimate"), // cost honestly unknown — never invented
+      confidence: known ? "explicit" : "unknown",
+    },
+    quota,
+  };
+  if (warnings.length) rollup.warnings = [...new Set(warnings)].sort();
+  return rollup;
+}
+function hostPressurePayload(): Record<string, unknown> {
+  const running = hostSaturated ? 6 : 4;
+  const capacity = 5;
+  const ratio = Math.round((running / capacity) * 1000) / 1000;
+  return {
+    status: ratio >= 1 ? "saturated" : "nominal",
+    running: ledMetric(running, "run_metadata", "explicit"),
+    capacity: ledMetric(capacity, "registry", "inferred"),
+    ratio: ledMetric(ratio, "run_metadata+registry", "inferred"),
+    load_1m: ledMetric(2.5, "os", "explicit"),
+    blocked_tasks: ledMetric(1, "board", "explicit"),
+  };
+}
+
 const execGateInfo = () => {
   const blocked: string[] = [];
   if (!executionGate.enabled) blocked.push("global-disabled");
@@ -861,6 +961,69 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     diag.joined = { name: cleanName, role: member.role };
     return Promise.resolve(
       json({ auth_mode: "team_cookie", member, csrf: "csrf-" + member.id, expires_at: HANDOFF_NOW + 3600 }),
+    );
+  }
+
+  if (p === "/api/ledger") {
+    // Mirrors web_app.py /api/ledger: per-member runs/tokens/cost rollup. viewer
+    // = self-only (scope "self"); operator = all (scope "all"). cost + agy credit
+    // stay honestly unknown; soft quota never hard-kills (hard_kill:false).
+    diag.ledgerFetches = ((diag.ledgerFetches as number) ?? 0) + 1;
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const members = viewerMode
+      ? [ledgerRollup("v1", 4, 5_000, false)] // self only
+      : [
+          ledgerRollup("m-alice", 12, 340_000, false),
+          ledgerRollup("m-bob", 30, 890_000, true), // agy -> unknown cost/credit; 30>20 -> throttle
+          ledgerRollup("m-carol", 3, 12_000, false),
+        ];
+    return Promise.resolve(
+      json({
+        project: proj,
+        generated_at: ledMetric(AUDIT_TS0, "server", "explicit"),
+        window: { name: "7d" },
+        scope: viewerMode ? "self" : "all",
+        quota_enabled: quotaEnabled,
+        members,
+        host_pressure: hostPressurePayload(),
+        limitations: [
+          "ledger uses explicit run metadata and task creator attribution only",
+          "soft quota never hard-kills running tasks",
+          "agy credit and missing cost fields remain unknown; no costs are invented",
+        ],
+      }),
+    );
+  }
+
+  if (p === "/api/quota" && method === "POST") {
+    // Mirrors web_app.py /api/quota: operator-only soft budget. 404 when quotas
+    // are off; 403 for viewers. Sets a member's soft limits — never a hard kill.
+    if (!quotaEnabled)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "quota is not enabled" }), { status: 404 }));
+    if (viewerMode)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "quota requires operator role" }), { status: 403 }));
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as {
+      member_id?: string;
+      enabled?: boolean;
+      soft_run_limit?: number | null;
+      soft_token_limit?: number | null;
+      soft_cost_usd?: number | null;
+    };
+    const memberId = typeof body.member_id === "string" && body.member_id ? body.member_id : "m-alice";
+    const seed: QuotaSeed = { configured: true, enabled: body.enabled !== false, updated_at: AUDIT_TS0 + 2000 };
+    if (typeof body.soft_run_limit === "number") seed.soft_run_limit = body.soft_run_limit;
+    if (typeof body.soft_token_limit === "number") seed.soft_token_limit = body.soft_token_limit;
+    if (typeof body.soft_cost_usd === "number") seed.soft_cost_usd = body.soft_cost_usd;
+    quotaStates[memberId] = seed;
+    diag.quotaSet = { member: memberId, ...seed };
+    const meta = LEDGER_MEMBERS[memberId] ?? { name: "", role: "unknown" };
+    return Promise.resolve(
+      json({
+        ok: true,
+        project: (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10",
+        member: { id: memberId, name: meta.name || null, role: meta.role },
+        quota: quotaPublic(memberId, 0, null), // fresh quota uses unknown usage
+      }),
     );
   }
 

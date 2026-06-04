@@ -1709,6 +1709,128 @@ async function main() {
       joinOk.joined?.name === "jiwoo" &&
       join2Errors.length === 0;
 
+    // V19-W2 ledger/quota: per-member runs/tokens/cost (read-only) + soft budget
+    // + host pressure. Mirrors web_app.py /api/ledger + /api/quota. Asserts: agy
+    // cost honestly unknown, soft-throttle (never hard-kill), host-pressure warn,
+    // operator-only quota set (explicit confirm), viewer lock, quotas-off notice.
+    const reenterLedger = async () => {
+      await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
+      await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+      await page.$eval('.dr-tab[data-view="ledger"]', (el) => el.click());
+      await page.waitForSelector(".ledger-host", { timeout: 8000 });
+    };
+    await page.$eval('.dr-tab[data-view="ledger"]', (el) => el.click());
+    await page.waitForSelector(".ledger-member", { timeout: 8000 });
+    const readMembers = () =>
+      page.evaluate(() => {
+        const read = (id) => {
+          const el = document.querySelector(`.ledger-member[data-member="${id}"]`);
+          if (!el) return null;
+          return {
+            role: el.getAttribute("data-role"),
+            throttle: !!el.querySelector(".ledger-throttle.is-active"),
+            throttleNote: (el.querySelector(".ledger-throttle__note")?.textContent ?? "").trim(),
+            budgetOk: !!el.querySelector(".ledger-budget__ok"),
+            unknown: el.querySelectorAll(".ledger-metric.is-unknown").length, // cost is honestly unknown
+            warnAgy: Array.from(el.querySelectorAll(".ledger-warn")).some((w) => /agy/i.test(w.textContent ?? "")),
+            editBtn: !!el.querySelector(".ledger-quota__edit"),
+            readonly: !!el.querySelector(".ledger-quota__readonly"),
+          };
+        };
+        return {
+          count: document.querySelectorAll(".ledger-member").length,
+          scope: document.querySelector(".ledger__scope")?.getAttribute("data-scope") ?? "",
+          alice: read("m-alice"),
+          bob: read("m-bob"),
+          carol: read("m-carol"),
+        };
+      });
+    const ledgerAll = await readMembers();
+    // host pressure: nominal first.
+    const hostNominal = await page.evaluate(() => ({
+      present: !!document.querySelector(".ledger-host"),
+      status: document.querySelector(".ledger-host")?.getAttribute("data-status") ?? "",
+      saturatedClass: !!document.querySelector(".ledger-host.is-saturated"),
+    }));
+    // flip host to saturated -> warn color.
+    await page.evaluate(() => window.__MOCK__.setHostSaturated(true));
+    await reenterLedger();
+    const hostSat = await page.evaluate(() => ({
+      status: document.querySelector(".ledger-host")?.getAttribute("data-status") ?? "",
+      saturatedClass: !!document.querySelector(".ledger-host.is-saturated"),
+      warnBadge: !!document.querySelector(".ledger-host__badge.is-warn"),
+    }));
+    await page.evaluate(() => window.__MOCK__.setHostSaturated(false));
+    await reenterLedger();
+
+    // operator quota control: set carol's soft budget (edit -> save -> CONFIRM -> POST).
+    await page.$eval('.ledger-member[data-member="m-carol"] .ledger-quota__edit', (el) => el.click());
+    await page.waitForSelector('.ledger-member[data-member="m-carol"] .ledger-quota__run', { timeout: 6000 });
+    await page.type('.ledger-member[data-member="m-carol"] .ledger-quota__run', "10");
+    await page.$eval('.ledger-member[data-member="m-carol"] .ledger-quota__save', (el) => el.click());
+    await page.waitForSelector('.ledger-member[data-member="m-carol"] .ledger-quota__yes', { timeout: 6000 });
+    const quotaBeforeYes = await page.evaluate(() => window.__MOCK__?.quotaSet ?? null); // no POST before confirm
+    await page.$eval('.ledger-member[data-member="m-carol"] .ledger-quota__yes', (el) => el.click());
+    await page.waitForFunction(() => window.__MOCK__?.quotaSet?.member === "m-carol", { timeout: 8000 });
+    const quotaSet = await page.evaluate(() => window.__MOCK__?.quotaSet ?? null);
+
+    // viewer lock: self scope only + read-only (no quota control).
+    await page.evaluate(() => window.__MOCK__.setViewer(true));
+    await reenterLedger();
+    await page.waitForFunction(() => (document.querySelector(".ledger__scope")?.getAttribute("data-scope") ?? "") === "self", { timeout: 8000 });
+    const ledgerViewer = await page.evaluate(() => ({
+      scope: document.querySelector(".ledger__scope")?.getAttribute("data-scope") ?? "",
+      members: document.querySelectorAll(".ledger-member").length,
+      editBtns: document.querySelectorAll(".ledger-quota__edit").length, // hidden for viewers
+      readonly: document.querySelectorAll(".ledger-quota__readonly").length,
+    }));
+    await page.evaluate(() => window.__MOCK__.setViewer(false));
+    await reenterLedger();
+
+    // quotas-off: graceful notice, no quota controls.
+    await page.evaluate(() => window.__MOCK__.setQuotaEnabled(false));
+    await reenterLedger();
+    await page.waitForSelector(".ledger-quota__disabled", { timeout: 8000 });
+    const ledgerNoQuota = await page.evaluate(() => ({
+      disabled: !!document.querySelector(".ledger-quota__disabled"),
+      editBtns: document.querySelectorAll(".ledger-quota__edit").length,
+      members: document.querySelectorAll(".ledger-member").length, // ledger still renders
+    }));
+    await page.evaluate(() => window.__MOCK__.setQuotaEnabled(true));
+
+    const ledgerQuotaOk =
+      // operator sees all members; cost honestly unknown; agy warning surfaced.
+      ledgerAll.count === 3 &&
+      ledgerAll.scope === "all" &&
+      ledgerAll.alice?.unknown >= 1 && // cost unknown
+      ledgerAll.bob?.unknown >= 1 &&
+      ledgerAll.bob?.warnAgy && // agy credit unknown surfaced
+      // soft-throttle is a WARNING only (bob over run limit), alice within budget.
+      ledgerAll.bob?.throttle &&
+      /중단 아님|not killed/.test(ledgerAll.bob?.throttleNote ?? "") &&
+      ledgerAll.alice?.budgetOk &&
+      !ledgerAll.alice?.throttle &&
+      // host pressure: nominal -> saturated warn.
+      hostNominal.present &&
+      hostNominal.status === "nominal" &&
+      !hostNominal.saturatedClass &&
+      hostSat.status === "saturated" &&
+      hostSat.saturatedClass &&
+      hostSat.warnBadge &&
+      // operator quota set: explicit confirm gate (no POST before confirm).
+      quotaBeforeYes === null &&
+      quotaSet?.member === "m-carol" &&
+      quotaSet?.soft_run_limit === 10 &&
+      // viewer: self scope, single member, NO quota control (read-only).
+      ledgerViewer.scope === "self" &&
+      ledgerViewer.members === 1 &&
+      ledgerViewer.editBtns === 0 &&
+      ledgerViewer.readonly >= 1 &&
+      // quotas off: graceful notice, controls gone, ledger still renders.
+      ledgerNoQuota.disabled &&
+      ledgerNoQuota.editBtns === 0 &&
+      ledgerNoQuota.members === 3;
+
     // #N1 project switch re-scope + no residue (여정1/5): switching to an
     // isolated project swaps org/board/nodes wholesale — none of the default
     // project's nodes/cards may bleed through — and switching back restores it.
@@ -1985,6 +2107,7 @@ async function main() {
       aggViewOk &&
       handoffOk &&
       sharedAccessOk &&
+      ledgerQuotaOk &&
       mobileOk &&
       projectOk &&
       wsBindOk &&
@@ -2102,6 +2225,8 @@ async function main() {
       handoff: { export: hExport, preview: hPreview, preConfirm: hPreConfirm, created: hCreated, existing: hExisting, reject: hReject, disabled: hDisabled },
       sharedAccessOk,
       sharedAccess: { share: shareIssue, presence: connPresence, projOperator, projViewer, joinPrefill, joinBad, joinOk },
+      ledgerQuotaOk,
+      ledger: { all: ledgerAll, hostNominal, hostSat, quotaBeforeYes, quotaSet, viewer: ledgerViewer, noQuota: ledgerNoQuota },
       mobileOk,
       mobile: { ...mobile, detailFits },
       delegationEdgesOk,

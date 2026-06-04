@@ -4497,3 +4497,73 @@ button {
 .proj-menu__readonly {
   font-size: 11px; color: var(--faint); padding: 7px 10px; font-style: italic;
 }
+
+/* ── ledger / quota (V19-W2): per-member runs/tokens/cost + soft budget ─────── */
+.ledger { display: flex; flex-direction: column; min-height: 0; width: 100%; }
+.ledger__scroll {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 14px;
+  max-width: 860px; width: 100%; margin: 0 auto; padding: 4px 2px 24px;
+}
+.ledger__head { display: flex; align-items: center; gap: 10px; }
+.ledger__title-wrap { display: flex; align-items: center; gap: 10px; }
+.ledger__mark { color: var(--teal); }
+.ledger__title { margin: 0; font-size: 16px; font-weight: 700; }
+.ledger__scope {
+  margin-left: auto; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--faint); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px;
+}
+.ledger__note { margin: 0; font-size: 12px; color: var(--faint); }
+.ledger-msg { font-family: var(--mono); font-size: 11px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--line); color: var(--faint); }
+.ledger-msg.is-error { color: var(--coral); border-color: rgba(229, 115, 99, 0.4); }
+.ledger-msg.is-warn { color: var(--amber); border-color: rgba(240, 184, 96, 0.4); background: rgba(240, 184, 96, 0.06); }
+
+/* host pressure */
+.ledger-host { display: flex; flex-direction: column; gap: 9px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
+.ledger-host.is-saturated { border-color: rgba(229, 115, 99, 0.5); background: rgba(229, 115, 99, 0.06); }
+.ledger-host__head { display: flex; align-items: center; gap: 10px; }
+.ledger-host__title { font-size: 12.5px; font-weight: 700; }
+.ledger-host__badge { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--teal); border: 1px solid rgba(84, 199, 184, 0.4); border-radius: 999px; padding: 1px 9px; }
+.ledger-host__badge.is-warn { color: var(--coral); border-color: rgba(229, 115, 99, 0.5); }
+.ledger-host__grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 640px) { .ledger-host__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ledger-host__ratio { font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--text); }
+.ledger-host__ratio.is-warn { color: var(--coral); }
+
+/* member rows */
+.ledger-members { display: flex; flex-direction: column; gap: 10px; }
+.ledger-member { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
+.ledger-member__head { display: flex; align-items: center; gap: 8px; }
+.ledger-member__role { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+.ledger-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.ledger-chip__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+.ledger-chip.is-admin .ledger-chip__dot { background: var(--coral); }
+.ledger-chip.is-operator .ledger-chip__dot { background: var(--teal); }
+.ledger-chip.is-viewer .ledger-chip__dot { background: var(--amber); }
+.ledger-member__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.ledger-cell { display: flex; flex-direction: column; gap: 3px; }
+.ledger-cell__k { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.ledger-metric { font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--text); }
+.ledger-metric.is-unknown { font-size: 11.5px; font-weight: 500; color: var(--amber); }
+
+/* budget + soft-throttle */
+.ledger-budget { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 11.5px; padding-top: 4px; border-top: 1px dashed var(--line); }
+.ledger-budget.is-none { color: var(--faint); }
+.ledger-budget__k { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.ledger-budget__limit { font-family: var(--mono); color: var(--dim); }
+.ledger-budget__ok { color: var(--teal); font-family: var(--mono); font-size: 11px; }
+.ledger-throttle { display: inline-flex; align-items: center; gap: 6px; color: var(--coral); font-family: var(--mono); font-size: 11px; font-weight: 600; }
+.ledger-throttle__note { color: var(--faint); font-weight: 400; }
+.ledger-warn { font-family: var(--mono); font-size: 10.5px; color: var(--amber); line-height: 1.5; }
+
+/* operator quota control */
+.ledger-quota__edit { align-self: flex-start; font-size: 11px; padding: 3px 10px; }
+.ledger-quota__readonly { font-size: 11px; color: var(--faint); font-style: italic; }
+.ledger-quota__disabled { font-family: var(--mono); font-size: 11px; color: var(--amber); border: 1px solid rgba(240, 184, 96, 0.4); background: rgba(240, 184, 96, 0.06); padding: 8px 10px; border-radius: 9px; }
+.ledger-quota__form { display: flex; flex-direction: column; gap: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 10px; }
+.ledger-quota__fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.ledger-quota__field { display: flex; flex-direction: column; gap: 3px; }
+.ledger-quota__k { font-family: var(--mono); font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.ledger-quota__actions, .ledger-quota__confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ledger-quota__q { font-family: var(--mono); font-size: 11px; color: var(--amber); }
+.ledger-quota__yes, .ledger-quota__no, .ledger-quota__save, .ledger-quota__cancel { font-size: 11px; padding: 3px 10px; }

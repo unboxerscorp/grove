@@ -18,6 +18,7 @@
 //   - summary       (signed counts-only export, aggregate trust, redaction)
 //   - handoff       (signed export, trusted local accept, idempotency, redaction)
 //   - shared-access (one-time joins, viewer read-only, CSRF/origin/host guards)
+//   - ledger/quota  (member ledger, soft quotas, host pressure, no hard-kill)
 //
 // Each check asserts the CORRECT contract. A failing check is a real defect to
 // report as `# BUG(Pn)` — never relax the assertion to match a bug.
@@ -50,6 +51,7 @@ const SUMMARY = "qae2e_summary"; // created during the summary checks for signed
 const HANDOFF_SOURCE = "qae2e_handoff_source"; // created during the handoff checks as the sender project
 const HANDOFF_RECEIVER = "qae2e_handoff_receiver"; // created during the handoff checks as the receiver project
 const SHARE = "qae2e_share"; // created during the shared-access checks
+const LEDGER = "qae2e_ledger"; // created during the ledger/quota checks
 const READY_TIMEOUT_MS = 25_000;
 const NODE_LAST_SEEN = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
 
@@ -120,6 +122,9 @@ function writeTeamViewer(session, { name, secret }) {
   writeTeamMember(session, { name, secret, role: "viewer", id: "viewer-1" });
 }
 function writeTeamMember(session, { name, secret, role, id = `${role}-1` }) {
+  writeTeamMembers(session, [{ name, secret, role, id }]);
+}
+function writeTeamMembers(session, members) {
   const dir = path.join(groveHome, session);
   mkdirSync(dir, { recursive: true });
   const membersPath = path.join(dir, "members.json");
@@ -127,15 +132,13 @@ function writeTeamMember(session, { name, secret, role, id = `${role}-1` }) {
     membersPath,
     JSON.stringify(
       {
-        members: [
-          {
-            id,
-            name,
-            role,
-            enabled: true,
-            secret_hash: teamSecretHash(secret),
-          },
-        ],
+        members: members.map((member) => ({
+          id: member.id,
+          name: member.name,
+          role: member.role,
+          enabled: member.enabled ?? true,
+          secret_hash: teamSecretHash(member.secret),
+        })),
       },
       null,
       2,
@@ -412,6 +415,23 @@ function createTaskWithMetadata({ database = dbPath, board, title, body, assigne
   return JSON.parse(out).id;
 }
 
+function seedRunningTask({ database = dbPath, board, title, node, createdBy }) {
+  const out = runBridgePython(
+    [
+      "import json, sys",
+      "from pathlib import Path",
+      "from grove_bridge.store import SQLiteBoardStore",
+      "store = SQLiteBoardStore(Path(sys.argv[1]))",
+      "task = store.create_task(board=sys.argv[2], title=sys.argv[3], body=None, assignee=sys.argv[4], created_by=sys.argv[5])",
+      "claim = store.claim_next(board=sys.argv[2], assignee=sys.argv[4], node_id=sys.argv[4], ttl_seconds=300, task_id=task.id)",
+      "if claim is None: raise SystemExit('claim failed')",
+      "print(json.dumps({'task_id': claim.task.id, 'run_id': claim.run_id, 'status': claim.task.status}))",
+    ],
+    [database, board, title, node, createdBy],
+  );
+  return JSON.parse(out);
+}
+
 function scaffold() {
   mkdirSync(homeDir, { recursive: true });
   mkdirSync(distDir, { recursive: true });
@@ -646,6 +666,7 @@ async function startSharedServer({
   joinTtlSeconds,
   host = "127.0.0.1",
   allowHosts = [],
+  enableQuotas = false,
 } = {}) {
   const port = await freePort();
   sharedBaseUrl = `http://127.0.0.1:${port}`;
@@ -671,6 +692,7 @@ async function startSharedServer({
       "--shared-join-role",
       joinRole,
     ];
+    if (enableQuotas) args.push("--enable-quotas");
     for (const allowed of allowHosts) args.push("--allow-host", allowed);
   } else {
     args = [
@@ -682,7 +704,7 @@ async function startSharedServer({
         "from grove_bridge.team_auth import TeamJoinCodeStore",
         "from grove_bridge.web_app import WebAppConfig, create_app",
         "allow_hosts = tuple(item for item in sys.argv[6].split(',') if item)",
-        "config = WebAppConfig(dist_dir=Path(sys.argv[1]), board_db_path=Path(sys.argv[2]), grove_home=Path(os.environ['GROVE_HOME']), registry_session=sys.argv[3], host=sys.argv[4], port=int(sys.argv[5]), allowed_hosts=allow_hosts, shared_access=True, shared_join_role=sys.argv[7])",
+        "config = WebAppConfig(dist_dir=Path(sys.argv[1]), board_db_path=Path(sys.argv[2]), grove_home=Path(os.environ['GROVE_HOME']), registry_session=sys.argv[3], host=sys.argv[4], port=int(sys.argv[5]), allowed_hosts=allow_hosts, shared_access=True, shared_join_role=sys.argv[7], quota_enabled=(sys.argv[9] == 'true'))",
         "app = create_app(config=config)",
         "app.state.team_join_code_store = TeamJoinCodeStore(ttl_seconds=int(sys.argv[8]))",
         "uvicorn.run(app, host=config.host, port=config.port)",
@@ -695,6 +717,7 @@ async function startSharedServer({
       allowHosts.join(","),
       joinRole,
       String(joinTtlSeconds),
+      enableQuotas ? "true" : "false",
     ];
   }
   sharedChild = spawn(python, args, { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -2642,6 +2665,329 @@ async function run() {
     });
     eq("join expired code -> 410", expiredJoin.status, 410);
     check("expired join response does not echo code", !expiredJoin.text.includes(shortShare.json && shortShare.json.code));
+  } finally {
+    await stopSharedServer();
+  }
+
+  // --- /api/ledger + /api/quota: member rollups, soft quota, host pressure ---
+  const ledgerOwnerId = "operator-ledger-1";
+  const ledgerViewerId = "viewer-ledger-1";
+  const ledgerOtherId = "other-ledger-1";
+  const ledgerOwnerSecret = "ledger-owner-secret";
+  const ledgerViewerSecret = "ledger-viewer-secret";
+  const ledgerSecret = "xoxb-" + "e".repeat(44);
+  const ledgerEmail = "ledger.owner@example.test";
+  const ledgerPrivatePath = `/Users/chopin/private/${ledgerSecret}`;
+  writeRegistry(LEDGER, {
+    owner: { name: "owner", agent: "codex", tmux_pane: `${LEDGER}:1.0`, status: "idle" },
+    "agy-node": { name: "agy-node", agent: "agy", tmux_pane: `${LEDGER}:1.1`, status: "idle" },
+    other: { name: "other", agent: "claude", tmux_pane: `${LEDGER}:1.2`, status: "idle" },
+  });
+  writeTeamMembers(LEDGER, [
+    { id: ledgerOwnerId, name: "owner-ledger", role: "operator", secret: ledgerOwnerSecret },
+    { id: ledgerViewerId, name: "viewer-ledger", role: "viewer", secret: ledgerViewerSecret },
+    { id: ledgerOtherId, name: "other-ledger", role: "operator", secret: "ledger-other-secret" },
+  ]);
+  completeUsageRun({
+    board: LEDGER,
+    node: "owner",
+    metadata: {
+      member_id: ledgerOwnerId,
+      input_tokens: 10,
+      output_tokens: 15,
+      total_tokens: 25,
+      cost_usd: 0.25,
+      transcript_path: `${ledgerPrivatePath}/owner.jsonl`,
+      owner_email: ledgerEmail,
+    },
+    startedAt: 1_704_240_000,
+  });
+  completeUsageRun({
+    board: LEDGER,
+    node: "agy-node",
+    metadata: {
+      member_id: ledgerViewerId,
+      total_tokens: 20,
+      transcript_path: `${ledgerPrivatePath}/viewer.jsonl`,
+    },
+    startedAt: 1_704_240_060,
+  });
+  completeUsageRun({
+    board: LEDGER,
+    node: "other",
+    metadata: {
+      member_id: ledgerOtherId,
+      total_tokens: 40,
+      cost_usd: 0.4,
+      secret_note: ledgerSecret,
+    },
+    startedAt: 1_704_240_120,
+  });
+  const runningLedgerTask = seedRunningTask({
+    board: LEDGER,
+    title: "ledger running soft-throttle survivor",
+    node: "agy-node",
+    createdBy: ledgerViewerId,
+  });
+  eq("seed: ledger running task status running", runningLedgerTask.status, "running");
+  eq(
+    "quota disabled without --enable-quotas -> 404",
+    (await req("POST", "/api/quota", {
+      token,
+      body: { member_id: ledgerOwnerId, enabled: true, soft_run_limit: 1 },
+    })).status,
+    404,
+  );
+
+  await startSharedServer({ session: LEDGER, joinRole: "viewer", enableQuotas: true });
+  try {
+    eq("ledger 401 without session", (await reqAt(sharedBaseUrl, "GET", "/api/ledger?window=all")).status, 401);
+    const ledgerOwnerLogin = await reqAt(sharedBaseUrl, "POST", "/api/login", {
+      body: { name: "owner-ledger", secret: ledgerOwnerSecret },
+    });
+    eq("ledger operator login 200", ledgerOwnerLogin.status, 200);
+    const ledgerOwnerCookie = String(ledgerOwnerLogin.headers.get("set-cookie") || "").split(";")[0];
+    const ledgerOwnerCsrf = ledgerOwnerLogin.json && ledgerOwnerLogin.json.csrf;
+    const ledgerViewerLogin = await reqAt(sharedBaseUrl, "POST", "/api/login", {
+      body: { name: "viewer-ledger", secret: ledgerViewerSecret },
+    });
+    eq("ledger viewer login 200", ledgerViewerLogin.status, 200);
+    const ledgerViewerCookie = String(ledgerViewerLogin.headers.get("set-cookie") || "").split(";")[0];
+    const ledgerViewerCsrf = ledgerViewerLogin.json && ledgerViewerLogin.json.csrf;
+
+    const ledgerAll = await reqAt(sharedBaseUrl, "GET", "/api/ledger?window=all", {
+      cookie: ledgerOwnerCookie,
+      project: LEDGER,
+    });
+    eq("ledger operator GET 200", ledgerAll.status, 200);
+    eq("ledger project == ledger", ledgerAll.json && ledgerAll.json.project, LEDGER);
+    eq("ledger operator scope all", ledgerAll.json && ledgerAll.json.scope, "all");
+    eq("ledger quota_enabled true", ledgerAll.json && ledgerAll.json.quota_enabled, true);
+    const ledgerMembers = ledgerAll.json && Array.isArray(ledgerAll.json.members) ? ledgerAll.json.members : [];
+    check("ledger operator sees all member rollups", ledgerMembers.length === 3, ledgerMembers.map((item) => item.member && item.member.id).join(","));
+    const ledgerByMember = Object.fromEntries(ledgerMembers.map((item) => [item.member && item.member.id, item]));
+    eq("ledger owner runs == 1", ledgerByMember[ledgerOwnerId] && ledgerByMember[ledgerOwnerId].totals.runs.value, 1);
+    eq("ledger owner total_tokens == 25", ledgerByMember[ledgerOwnerId] && ledgerByMember[ledgerOwnerId].totals.total_tokens.value, 25);
+    eq("ledger owner cost == 0.25", ledgerByMember[ledgerOwnerId] && ledgerByMember[ledgerOwnerId].totals.cost_usd_estimate.value, 0.25);
+    eq("ledger viewer runs include running task", ledgerByMember[ledgerViewerId] && ledgerByMember[ledgerViewerId].totals.runs.value, 2);
+    eq("ledger viewer total_tokens == 20", ledgerByMember[ledgerViewerId] && ledgerByMember[ledgerViewerId].totals.total_tokens.value, 20);
+    eq("ledger viewer agy cost is unknown/null", ledgerByMember[ledgerViewerId] && ledgerByMember[ledgerViewerId].totals.cost_usd_estimate.value, null);
+    eq("ledger viewer agy cost confidence unknown", ledgerByMember[ledgerViewerId] && ledgerByMember[ledgerViewerId].totals.cost_usd_estimate.confidence, "unknown");
+    check(
+      "ledger viewer agy warning avoids cost invention",
+      Boolean(ledgerByMember[ledgerViewerId]) &&
+        Array.isArray(ledgerByMember[ledgerViewerId].warnings) &&
+        ledgerByMember[ledgerViewerId].warnings.some((warning) => /agy credit is unknown/i.test(warning)),
+      ledgerByMember[ledgerViewerId] && JSON.stringify(ledgerByMember[ledgerViewerId].warnings),
+    );
+    eq("ledger other member total_tokens == 40", ledgerByMember[ledgerOtherId] && ledgerByMember[ledgerOtherId].totals.total_tokens.value, 40);
+    const hostPressure = ledgerAll.json && ledgerAll.json.host_pressure;
+    check(
+      "ledger host_pressure exposes read-only bounded fields",
+      Boolean(hostPressure) &&
+        ["running", "capacity", "ratio"].every((key) => isTaggedMetric(hostPressure[key])) &&
+        Object.keys(hostPressure).every((key) => ["status", "running", "capacity", "ratio", "load_1m", "blocked_tasks"].includes(key)),
+      hostPressure && JSON.stringify(hostPressure),
+    );
+    eq("ledger host_pressure running == 1", hostPressure && hostPressure.running && hostPressure.running.value, 1);
+    eq("ledger host_pressure capacity == node count", hostPressure && hostPressure.capacity && hostPressure.capacity.value, 3);
+    check(
+      "ledger host_pressure leaks no PID/process/path",
+      !/pid|process|command|cwd|\/Users|transcript/i.test(JSON.stringify(hostPressure || {})),
+      JSON.stringify(hostPressure || {}),
+    );
+    check(
+      "ledger response leaks no secrets/pii/paths",
+      !hasSecret(ledgerAll.json) &&
+        !ledgerAll.text.includes(ledgerSecret) &&
+        !ledgerAll.text.includes(ledgerEmail) &&
+        !ledgerAll.text.includes(ledgerPrivatePath) &&
+        !ledgerAll.text.includes("transcript_path") &&
+        !ledgerAll.text.includes("owner_email"),
+    );
+
+    const viewerLedger = await reqAt(sharedBaseUrl, "GET", "/api/ledger?window=all", {
+      cookie: ledgerViewerCookie,
+      project: LEDGER,
+    });
+    eq("ledger viewer GET 200", viewerLedger.status, 200);
+    eq("ledger viewer scope self", viewerLedger.json && viewerLedger.json.scope, "self");
+    const viewerLedgerMembers = viewerLedger.json && Array.isArray(viewerLedger.json.members) ? viewerLedger.json.members : [];
+    check(
+      "ledger viewer sees only self member",
+      viewerLedgerMembers.length === 1 && viewerLedgerMembers[0].member && viewerLedgerMembers[0].member.id === ledgerViewerId,
+      viewerLedgerMembers.map((item) => item.member && item.member.id).join(","),
+    );
+    check(
+      "ledger viewer self response hides other members",
+      !viewerLedgerMembers.some((item) => [ledgerOwnerId, ledgerOtherId].includes(item.member && item.member.id)) &&
+        !viewerLedger.text.includes("owner-ledger") &&
+        !viewerLedger.text.includes("other-ledger"),
+      viewerLedger.text,
+    );
+    eq(
+      "ledger viewer cannot request other member",
+      (await reqAt(sharedBaseUrl, "GET", `/api/ledger?window=all&member=${encodeURIComponent(ledgerOwnerId)}`, {
+        cookie: ledgerViewerCookie,
+        project: LEDGER,
+      })).status,
+      403,
+    );
+    const viewerSelfByName = await reqAt(sharedBaseUrl, "GET", "/api/ledger?window=all&member=viewer-ledger", {
+      cookie: ledgerViewerCookie,
+      project: LEDGER,
+    });
+    eq("ledger viewer can request self by name", viewerSelfByName.status, 200);
+    eq("ledger viewer self-by-name still scope self", viewerSelfByName.json && viewerSelfByName.json.scope, "self");
+
+    const ledgerBeta = await reqAt(sharedBaseUrl, "GET", `/api/ledger?window=all&project=${encodeURIComponent(BETA)}`, {
+      cookie: ledgerOwnerCookie,
+    });
+    eq("ledger other project scope 200", ledgerBeta.status, 200);
+    eq("ledger other project name", ledgerBeta.json && ledgerBeta.json.project, BETA);
+    eq("ledger other project has no ledger members", (ledgerBeta.json && ledgerBeta.json.members && ledgerBeta.json.members.length) || 0, 0);
+    check("ledger other project leaks no ledger member ids", !ledgerBeta.text.includes(ledgerViewerId) && !ledgerBeta.text.includes(ledgerOtherId), ledgerBeta.text);
+    eq(
+      "ledger path traversal project -> 400",
+      (await reqAt(sharedBaseUrl, "GET", `/api/ledger?window=all&project=${encodeURIComponent(`../${LEDGER}`)}`, {
+        cookie: ledgerOwnerCookie,
+      })).status,
+      400,
+    );
+    eq(
+      "ledger missing project -> 404",
+      (await reqAt(sharedBaseUrl, "GET", "/api/ledger?window=all&project=qae2e_missing_ledger", {
+        cookie: ledgerOwnerCookie,
+      })).status,
+      404,
+    );
+
+    eq(
+      "quota POST 401 without session",
+      (await reqAt(sharedBaseUrl, "POST", "/api/quota", {
+        body: { member_id: ledgerViewerId, enabled: true, soft_run_limit: 1 },
+      })).status,
+      401,
+    );
+    eq(
+      "quota POST viewer denied",
+      (await reqAt(sharedBaseUrl, "POST", "/api/quota", {
+        cookie: ledgerViewerCookie,
+        csrf: ledgerViewerCsrf,
+        project: LEDGER,
+        body: { member_id: ledgerViewerId, enabled: true, soft_run_limit: 1 },
+      })).status,
+      403,
+    );
+    eq(
+      "quota POST operator requires CSRF",
+      (await reqAt(sharedBaseUrl, "POST", "/api/quota", {
+        cookie: ledgerOwnerCookie,
+        project: LEDGER,
+        body: { member_id: ledgerViewerId, enabled: true, soft_run_limit: 1 },
+      })).status,
+      403,
+    );
+    eq(
+      "quota POST rejects foreign Origin",
+      (await reqAt(sharedBaseUrl, "POST", "/api/quota", {
+        cookie: ledgerOwnerCookie,
+        csrf: ledgerOwnerCsrf,
+        origin: "http://evil.example",
+        project: LEDGER,
+        body: { member_id: ledgerViewerId, enabled: true, soft_run_limit: 1 },
+      })).status,
+      403,
+    );
+    const quotaSet = await reqAt(sharedBaseUrl, "POST", "/api/quota", {
+      cookie: ledgerOwnerCookie,
+      csrf: ledgerOwnerCsrf,
+      project: LEDGER,
+      body: {
+        member_id: "viewer-ledger",
+        enabled: true,
+        soft_run_limit: 0,
+        soft_token_limit: 1,
+        soft_cost_usd: 0.01,
+      },
+    });
+    eq("quota POST operator 200", quotaSet.status, 200);
+    eq("quota response project == ledger", quotaSet.json && quotaSet.json.project, LEDGER);
+    eq("quota response member resolved by name", quotaSet.json && quotaSet.json.member && quotaSet.json.member.id, ledgerViewerId);
+    eq("quota response mode soft", quotaSet.json && quotaSet.json.quota && quotaSet.json.quota.mode, "soft");
+    eq("quota response hard_kill false", quotaSet.json && quotaSet.json.quota && quotaSet.json.quota.hard_kill, false);
+    eq("quota response soft_run_limit set", quotaSet.json && quotaSet.json.quota && quotaSet.json.quota.soft_run_limit, 0);
+    eq("quota response soft_token_limit set", quotaSet.json && quotaSet.json.quota && quotaSet.json.quota.soft_token_limit, 1);
+
+    const throttledLedger = await reqAt(sharedBaseUrl, "GET", `/api/ledger?window=all&member=${encodeURIComponent(ledgerViewerId)}`, {
+      cookie: ledgerOwnerCookie,
+      project: LEDGER,
+    });
+    eq("ledger after quota 200", throttledLedger.status, 200);
+    const throttledMember = throttledLedger.json && throttledLedger.json.members && throttledLedger.json.members[0];
+    eq("ledger quota status exceeded", throttledMember && throttledMember.quota && throttledMember.quota.status, "exceeded");
+    eq("ledger quota hard_kill false", throttledMember && throttledMember.quota && throttledMember.quota.hard_kill, false);
+    eq("ledger quota soft_throttle active", throttledMember && throttledMember.quota && throttledMember.quota.soft_throttle && throttledMember.quota.soft_throttle.active, true);
+    eq("ledger quota soft_throttle hard_kill false", throttledMember && throttledMember.quota && throttledMember.quota.soft_throttle && throttledMember.quota.soft_throttle.hard_kill, false);
+    check(
+      "ledger quota exceeded reports runs/tokens soft reasons",
+      Boolean(throttledMember) &&
+        throttledMember.quota &&
+        throttledMember.quota.soft_throttle &&
+        ["runs", "tokens"].every((reason) => throttledMember.quota.soft_throttle.reasons.includes(reason)),
+      throttledMember && JSON.stringify(throttledMember.quota),
+    );
+    check(
+      "ledger quota warning says running tasks are not killed",
+      Boolean(throttledMember) &&
+        Array.isArray(throttledMember.warnings) &&
+        throttledMember.warnings.some((warning) => /running tasks are not killed/i.test(warning)),
+      throttledMember && JSON.stringify(throttledMember.warnings),
+    );
+    const runningTaskAfterQuota = await reqAt(sharedBaseUrl, "GET", `/api/tasks/${runningLedgerTask.task_id}`, {
+      cookie: ledgerOwnerCookie,
+      project: LEDGER,
+    });
+    eq("soft quota does not kill running task", runningTaskAfterQuota.json && runningTaskAfterQuota.json.status, "running");
+    const runningRunsAfterQuota = await reqAt(sharedBaseUrl, "GET", `/api/tasks/${runningLedgerTask.task_id}/runs`, {
+      cookie: ledgerOwnerCookie,
+      project: LEDGER,
+    });
+    check(
+      "soft quota leaves running run active",
+      Array.isArray(runningRunsAfterQuota.json) && runningRunsAfterQuota.json.some((run) => run.status === "running"),
+      JSON.stringify(runningRunsAfterQuota.json),
+    );
+
+    const quotaAudit = await reqAt(sharedBaseUrl, "GET", "/api/audit?action=quota-update", {
+      cookie: ledgerOwnerCookie,
+      project: LEDGER,
+    });
+    eq("quota audit read 200", quotaAudit.status, 200);
+    const quotaAuditItems = (quotaAudit.json && quotaAudit.json.items) || [];
+    const quotaAuditEvent = quotaAuditItems.find((item) => item.target && item.target.id === ledgerViewerId);
+    check(
+      "quota audit actor is per-member operator",
+      Boolean(quotaAuditEvent) &&
+        quotaAuditEvent.actor &&
+        quotaAuditEvent.actor.kind === "member" &&
+        quotaAuditEvent.actor.login === "owner-ledger" &&
+        quotaAuditEvent.actor.role === "operator",
+      quotaAuditEvent && JSON.stringify(quotaAuditEvent.actor),
+    );
+    check(
+      "quota/ledger responses leak no token/member secrets",
+      !hasSecret([quotaSet.json, throttledLedger.json, quotaAudit.json]) &&
+        ![quotaSet.text, throttledLedger.text, quotaAudit.text].some(
+          (text) =>
+            text.includes(ledgerOwnerSecret) ||
+            text.includes(ledgerViewerSecret) ||
+            text.includes(ledgerSecret) ||
+            text.includes(ledgerPrivatePath) ||
+            text.includes(ledgerEmail) ||
+            text.includes("secret_hash"),
+        ),
+    );
   } finally {
     await stopSharedServer();
   }
