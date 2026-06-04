@@ -1226,6 +1226,52 @@ class SQLiteBoardStore:
             "global_kill_switch": global_state["kill_switch"],
         }
 
+    def member_quota_state(self, *, board: str, member_id: str) -> dict[str, object]:
+        settings = self._board_settings(board) or {}
+        members = _quota_members(settings)
+        raw = members.get(member_id)
+        if not isinstance(raw, Mapping):
+            return {"configured": False, "enabled": False}
+        return _quota_state_from_mapping(raw, configured=True)
+
+    def quota_members(self, *, board: str) -> dict[str, dict[str, object]]:
+        settings = self._board_settings(board) or {}
+        members = _quota_members(settings)
+        return {
+            member_id: _quota_state_from_mapping(raw, configured=True)
+            for member_id, raw in members.items()
+            if isinstance(member_id, str) and isinstance(raw, Mapping)
+        }
+
+    def set_member_quota(
+        self,
+        *,
+        board: str,
+        member_id: str,
+        enabled: bool,
+        soft_run_limit: int | None,
+        soft_token_limit: int | None,
+        soft_cost_usd: float | None,
+    ) -> dict[str, object]:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            members = _mutable_quota_members(settings)
+            state: dict[str, object] = {
+                "enabled": enabled,
+                "updated_at": now,
+            }
+            if soft_run_limit is not None:
+                state["soft_run_limit"] = soft_run_limit
+            if soft_token_limit is not None:
+                state["soft_token_limit"] = soft_token_limit
+            if soft_cost_usd is not None:
+                state["soft_cost_usd"] = soft_cost_usd
+            members[member_id] = state
+            self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
+        return self.member_quota_state(board=board, member_id=member_id)
+
     def execution_global_state(self, *, board: str) -> dict[str, bool]:
         settings = self._board_settings(board) or {}
         raw = _execution_settings(settings)
@@ -2476,6 +2522,55 @@ def _execution_nodes(settings: Mapping[str, object]) -> Mapping[str, object]:
 def _execution_tasks(settings: Mapping[str, object]) -> Mapping[str, object]:
     raw = _execution_settings(settings).get("tasks")
     return raw if isinstance(raw, Mapping) else {}
+
+
+def _quota_settings(settings: Mapping[str, object]) -> Mapping[str, object]:
+    raw = settings.get("quota")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _quota_members(settings: Mapping[str, object]) -> Mapping[str, object]:
+    raw = _quota_settings(settings).get("members")
+    return raw if isinstance(raw, Mapping) else {}
+
+
+def _mutable_quota_settings(settings: dict[str, object]) -> dict[str, object]:
+    raw = settings.get("quota")
+    if not isinstance(raw, dict):
+        raw = {}
+        settings["quota"] = raw
+    return cast(dict[str, object], raw)
+
+
+def _mutable_quota_members(settings: dict[str, object]) -> dict[str, object]:
+    raw = _mutable_quota_settings(settings)
+    members = raw.get("members")
+    if not isinstance(members, dict):
+        members = {}
+        raw["members"] = members
+    return cast(dict[str, object], members)
+
+
+def _quota_state_from_mapping(
+    raw: Mapping[str, object],
+    *,
+    configured: bool,
+) -> dict[str, object]:
+    state: dict[str, object] = {
+        "configured": configured,
+        "enabled": _setting_bool(raw.get("enabled"), default=True),
+    }
+    for key in ("soft_run_limit", "soft_token_limit"):
+        value = raw.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            state[key] = value
+    cost = raw.get("soft_cost_usd")
+    if isinstance(cost, int | float) and not isinstance(cost, bool) and cost >= 0:
+        state["soft_cost_usd"] = float(cost)
+    updated_at = raw.get("updated_at")
+    if isinstance(updated_at, int) and not isinstance(updated_at, bool):
+        state["updated_at"] = updated_at
+    return state
 
 
 def _mutable_autopickup_settings(settings: dict[str, object]) -> dict[str, object]:

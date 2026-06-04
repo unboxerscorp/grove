@@ -153,6 +153,7 @@ class WebAppConfig:
     handoff_ttl_seconds: int = HANDOFF_TTL_SECONDS
     shared_access: bool = False
     shared_join_role: MemberRole = "operator"
+    quota_enabled: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dist_dir", self.dist_dir.expanduser())
@@ -326,6 +327,14 @@ class SlackConfigPayload(BaseModel):
     bot_token: str = Field(min_length=1, max_length=5000)
     default_channel: str | None = Field(default=None, max_length=200)
     default_node: str | None = Field(default=None, max_length=200)
+
+
+class QuotaPayload(BaseModel):
+    member_id: str = Field(min_length=1, max_length=200)
+    enabled: bool = True
+    soft_run_limit: int | None = Field(default=None, ge=0)
+    soft_token_limit: int | None = Field(default=None, ge=0)
+    soft_cost_usd: float | None = Field(default=None, ge=0)
 
 
 class WsTicketPayload(BaseModel):
@@ -634,6 +643,61 @@ def create_app(
             node_filter=node,
             agent_filter=agent,
         )
+
+    @app.get("/api/ledger")
+    def ledger_endpoint(
+        request: Request,
+        window: str = Query(default="7d"),
+        project_name: str | None = Query(default=None, alias="project"),
+        member: str | None = Query(default=None),
+    ) -> dict[str, object]:
+        auth = _require_auth(request)
+        project = _cost_project_context(request, project_name)
+        member_filter = _ledger_member_filter(auth, member)
+        return _ledger_payload(
+            _store(request),
+            project=project,
+            auth=auth,
+            window=window,
+            member_filter=member_filter,
+            quota_enabled=_config(request).quota_enabled,
+        )
+
+    @app.post("/api/quota")
+    def quota_endpoint(request: Request, payload: QuotaPayload) -> dict[str, object]:
+        config_value = _config(request)
+        _require_quota_enabled(config_value)
+        auth = _require_operator_state_change(request, detail="quota requires operator role")
+        project = resolve_project(request)
+        member_id = _quota_member_id(payload.member_id, config=config_value)
+        state = _store(request).set_member_quota(
+            board=project.board,
+            member_id=member_id,
+            enabled=payload.enabled,
+            soft_run_limit=payload.soft_run_limit,
+            soft_token_limit=payload.soft_token_limit,
+            soft_cost_usd=payload.soft_cost_usd,
+        )
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.quota.update",
+            actor=_actor_payload(auth),
+            action="quota-update",
+            target={"type": "member", "id": member_id},
+            payload={
+                "project": project.name,
+                "member_id": member_id,
+                "quota": state,
+                "hard_kill": False,
+            },
+            summary=f"quota updated for {member_id}",
+        )
+        return {
+            "ok": True,
+            "project": project.name,
+            "member": _ledger_member_payload(member_id, _member_lookup(config_value)),
+            "quota": _quota_public_payload(state, usage=_unknown_usage(), quota_enabled=True),
+        }
 
     @app.get("/api/summary")
     def summary_endpoint(
@@ -1865,6 +1929,257 @@ def _usage_payload(
         "days": _usage_days_payload(runs, agent_by_node=agent_by_node),
         "limitations": _usage_limitations(runs),
     }
+
+
+def _ledger_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    auth: AuthContext,
+    window: str,
+    member_filter: str | None,
+    quota_enabled: bool,
+) -> dict[str, object]:
+    now = int(time.time())
+    window_payload, since = _cost_window(window, now=now)
+    runs = store.list_runs_for_board(board=project.board, since=since)
+    tasks = {task.id: task for task in store.list_tasks(board=project.board)}
+    member_lookup = _member_lookup(project.config)
+    registry_nodes = _cost_registry_node_records(project.config)
+    agent_by_node = {_cost_node_name(node): _cost_node_agent(node) for node in registry_nodes}
+    grouped: dict[str, list[Run]] = {}
+    for run in runs:
+        member_id = _run_member_id(run, tasks=tasks)
+        if member_filter is not None and member_id != member_filter:
+            continue
+        grouped.setdefault(member_id, []).append(run)
+    quota_states = store.quota_members(board=project.board) if quota_enabled else {}
+    members = [
+        _ledger_member_rollup(
+            member_id,
+            member_runs,
+            quota_state=quota_states.get(member_id),
+            quota_enabled=quota_enabled,
+            member_lookup=member_lookup,
+            agent_by_node=agent_by_node,
+        )
+        for member_id, member_runs in sorted(grouped.items())
+    ]
+    if member_filter is not None and member_filter not in grouped:
+        members.append(
+            _ledger_member_rollup(
+                member_filter,
+                [],
+                quota_state=quota_states.get(member_filter),
+                quota_enabled=quota_enabled,
+                member_lookup=member_lookup,
+                agent_by_node=agent_by_node,
+            )
+        )
+    return {
+        "project": project.name,
+        "generated_at": _cost_metric(now, source="server", confidence="explicit"),
+        "window": window_payload,
+        "scope": "self" if _ledger_self_scoped(auth, member_filter) else "all",
+        "quota_enabled": quota_enabled,
+        "members": members,
+        "host_pressure": _host_pressure_payload(store, project=project, runs=runs),
+        "limitations": [
+            "ledger uses explicit run metadata and task creator attribution only",
+            "soft quota never hard-kills running tasks",
+            "agy credit and missing cost fields remain unknown; no costs are invented",
+        ],
+    }
+
+
+def _ledger_member_rollup(
+    member_id: str,
+    runs: Sequence[Run],
+    *,
+    quota_state: Mapping[str, object] | None,
+    quota_enabled: bool,
+    member_lookup: Mapping[str, TeamMember],
+    agent_by_node: Mapping[str, str],
+) -> dict[str, object]:
+    usage = _usage_from_runs(runs)
+    quota = _quota_public_payload(
+        quota_state or {"configured": False, "enabled": False},
+        usage=usage,
+        quota_enabled=quota_enabled,
+        runs=len(runs),
+    )
+    payload: dict[str, object] = {
+        "member": _ledger_member_payload(member_id, member_lookup),
+        "totals": _usage_totals_from_usage(usage, runs=len(runs)),
+        "quota": quota,
+    }
+    warnings = _ledger_warnings(usage, quota, runs=runs, agent_by_node=agent_by_node)
+    if warnings:
+        payload["warnings"] = warnings
+    return payload
+
+
+def _ledger_member_payload(
+    member_id: str,
+    member_lookup: Mapping[str, TeamMember],
+) -> dict[str, object]:
+    member = member_lookup.get(member_id)
+    return {
+        "id": _safe_public_text(member_id),
+        "name": _safe_public_text(member.name) if member is not None else None,
+        "role": member.role if member is not None else "unknown",
+    }
+
+
+def _member_lookup(config: WebAppConfig) -> dict[str, TeamMember]:
+    try:
+        return {member.id: member for member in _member_registry(config).list_members()}
+    except ValueError:
+        return {}
+
+
+def _run_member_id(run: Run, *, tasks: Mapping[str, Task]) -> str:
+    for key in ("member_id", "member", "actor_id", "started_by", "created_by"):
+        value = _mapping_string(run.metadata, key)
+        if value is not None:
+            return value
+    task = tasks.get(run.task_id)
+    if task is not None and task.created_by:
+        return task.created_by
+    return "unattributed"
+
+
+def _ledger_member_filter(auth: AuthContext, requested: str | None) -> str | None:
+    clean = _optional_text(requested, field_name="member", max_length=200)
+    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
+        if auth.member.role == "viewer":
+            if clean is not None and clean not in {auth.member.id, auth.member.name}:
+                raise HTTPException(status_code=403, detail="ledger self scope only")
+            return auth.member.id
+        if clean == auth.member.name:
+            return auth.member.id
+    return clean
+
+
+def _ledger_self_scoped(auth: AuthContext, member_filter: str | None) -> bool:
+    if auth.mode != AuthMode.TEAM_COOKIE or auth.member is None:
+        return False
+    return member_filter == auth.member.id
+
+
+def _quota_public_payload(
+    quota_state: Mapping[str, object],
+    *,
+    usage: CostUsage,
+    quota_enabled: bool,
+    runs: int = 0,
+) -> dict[str, object]:
+    configured = bool(quota_state.get("configured"))
+    enabled = quota_enabled and bool(quota_state.get("enabled")) and configured
+    exceeded = _quota_exceeded_reasons(quota_state, usage=usage, runs=runs) if enabled else []
+    payload: dict[str, object] = {
+        "configured": configured,
+        "enabled": enabled,
+        "mode": "soft",
+        "hard_kill": False,
+        "status": "exceeded" if exceeded else "ok" if enabled else "disabled",
+        "soft_throttle": {
+            "active": bool(exceeded),
+            "action": "queue-delay" if exceeded else "none",
+            "reasons": exceeded,
+            "hard_kill": False,
+        },
+    }
+    for key in ("soft_run_limit", "soft_token_limit", "soft_cost_usd", "updated_at"):
+        if key in quota_state:
+            payload[key] = quota_state[key]
+    if enabled and "soft_cost_usd" in quota_state and usage.cost_usd is None:
+        payload["cost_warning"] = "cost usage is unknown; cost quota is warning-only"
+    return payload
+
+
+def _quota_exceeded_reasons(
+    quota_state: Mapping[str, object],
+    *,
+    usage: CostUsage,
+    runs: int,
+) -> list[str]:
+    reasons: list[str] = []
+    run_limit = _mapping_int(quota_state, "soft_run_limit")
+    if run_limit is not None and runs > run_limit:
+        reasons.append("runs")
+    token_limit = _mapping_int(quota_state, "soft_token_limit")
+    if (
+        token_limit is not None
+        and usage.total_tokens is not None
+        and usage.total_tokens > token_limit
+    ):
+        reasons.append("tokens")
+    cost_limit = _mapping_float(quota_state, "soft_cost_usd")
+    if cost_limit is not None and usage.cost_usd is not None and usage.cost_usd > cost_limit:
+        reasons.append("cost")
+    return reasons
+
+
+def _ledger_warnings(
+    usage: CostUsage,
+    quota: Mapping[str, object],
+    *,
+    runs: Sequence[Run],
+    agent_by_node: Mapping[str, str],
+) -> list[str]:
+    warnings = [_safe_log_text(warning) for warning in usage.warnings]
+    if any(
+        _usage_agent_for_node(_run_node_name(run), agent_by_node=agent_by_node) == "agy"
+        for run in runs
+    ):
+        warnings.append(
+            "agy credit is unknown because no reliable local credit source is configured"
+        )
+    throttle = quota.get("soft_throttle")
+    if isinstance(throttle, Mapping) and throttle.get("active") is True:
+        warnings.append(
+            "soft quota exceeded; new work may be delayed, running tasks are not killed"
+        )
+    cost_warning = quota.get("cost_warning")
+    if isinstance(cost_warning, str):
+        warnings.append(cost_warning)
+    return sorted(set(warnings))
+
+
+def _host_pressure_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    runs: Sequence[Run],
+) -> dict[str, object]:
+    running_runs = [run for run in runs if run.status == "running" and run.ended_at is None]
+    node_count = len(_cost_registry_node_records(project.config))
+    capacity = max(1, node_count)
+    ratio = round(len(running_runs) / capacity, 3)
+    payload: dict[str, object] = {
+        "status": "saturated" if ratio >= 1 else "nominal",
+        "running": _cost_metric(len(running_runs), source="run_metadata", confidence="explicit"),
+        "capacity": _cost_metric(capacity, source="registry", confidence="inferred"),
+        "ratio": _cost_metric(ratio, source="run_metadata+registry", confidence="inferred"),
+    }
+    try:
+        load_1m = os.getloadavg()[0]
+    except (AttributeError, OSError):
+        load_1m = None
+    payload["load_1m"] = _cost_metric(
+        round(load_1m, 3) if load_1m is not None else None,
+        source="os",
+        confidence="explicit" if load_1m is not None else "unknown",
+        status_value="unknown" if load_1m is None else None,
+    )
+    blocked_count = len(store.list_tasks(board=project.board, status="blocked"))
+    payload["blocked_tasks"] = _cost_metric(
+        blocked_count,
+        source="board",
+        confidence="explicit",
+    )
+    return payload
 
 
 def _usage_run_matches(
@@ -3602,6 +3917,10 @@ def _safe_log_text(value: object) -> str:
     return _summary_text(without_secrets)
 
 
+def _safe_public_text(value: object) -> str:
+    return EMAIL_RE.sub("[pii]", _safe_log_text(value))
+
+
 def _safe_log_path(request: Request) -> str:
     route = request.scope.get("route")
     route_path = getattr(route, "path", None)
@@ -3693,6 +4012,11 @@ def _require_summary_enabled(config: WebAppConfig) -> None:
 def _require_handoff_enabled(config: WebAppConfig) -> None:
     if not config.handoff_enabled:
         raise HTTPException(status_code=404, detail="handoff is not enabled")
+
+
+def _require_quota_enabled(config: WebAppConfig) -> None:
+    if not config.quota_enabled:
+        raise HTTPException(status_code=404, detail="quota is not enabled")
 
 
 def _require_answer_access(auth: AuthContext) -> None:
@@ -3804,6 +4128,24 @@ def _join_client_key(request: Request) -> str:
 
 def _share_url(request: Request, code: str) -> str:
     return str(request.url_for("index_endpoint")) + f"?join={code}"
+
+
+def _quota_member_id(value: str, *, config: WebAppConfig) -> str:
+    clean = _optional_text(value, field_name="member_id", max_length=200)
+    if clean is None:
+        raise HTTPException(status_code=400, detail="member_id is required")
+    try:
+        members = _member_registry(config).list_members()
+    except ValueError:
+        members = []
+    for member in members:
+        if clean in {member.id, member.name}:
+            return member.id
+    if members:
+        raise HTTPException(status_code=404, detail="member not found")
+    if NODE_NAME_RE.fullmatch(clean) is None:
+        raise HTTPException(status_code=400, detail="invalid member_id")
+    return clean
 
 
 def _set_team_session_cookie(
@@ -4813,6 +5155,20 @@ def _mapping_string(mapping: Mapping[str, object], key: str) -> str | None:
     return stripped or None
 
 
+def _mapping_int(mapping: Mapping[str, object], key: str) -> int | None:
+    value = mapping.get(key)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _mapping_float(mapping: Mapping[str, object], key: str) -> float | None:
+    value = mapping.get(key)
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
 def _board_payload(board: Board) -> dict[str, object]:
     return {"id": board.id, "name": board.title, "task_count": board.task_count}
 
@@ -4990,6 +5346,11 @@ def main(argv: list[str] | None = None) -> int:
         default=HANDOFF_TTL_SECONDS,
         help="Lifetime for signed handoff packages.",
     )
+    parser.add_argument(
+        "--enable-quotas",
+        action="store_true",
+        help="Enable soft per-member quota configuration. Enforcement is warning-only.",
+    )
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -5016,6 +5377,7 @@ def main(argv: list[str] | None = None) -> int:
         summary_trusted_keys_path=args.summary_trusted_keys,
         handoff_enabled=args.enable_handoff,
         handoff_ttl_seconds=args.handoff_ttl_seconds,
+        quota_enabled=args.enable_quotas,
     )
     app = create_app(config=config)
     started_at = cast(int, app.state.started_at)

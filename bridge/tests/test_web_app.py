@@ -1562,6 +1562,214 @@ def test_usage_endpoint_scopes_project_and_handles_empty_data(tmp_path: Path) ->
     assert missing.status_code == 404
 
 
+def test_ledger_rolls_up_members_quota_soft_throttle_and_host_pressure(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    secret = "xoxb-" + ("b" * 44)
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "maker": {"name": "maker", "agent": "codex", "tmux_pane": "dev10:1.0"},
+            "agy-node": {"name": "agy-node", "agent": "agy", "tmux_pane": "dev10:1.1"},
+        },
+    )
+    write_team_member(
+        tmp_path, name="alice", secret="admin-secret", role="admin", member_id="member-1"
+    )
+    write_team_member(
+        tmp_path,
+        name="bob@example.com",
+        secret="viewer-secret",
+        role="viewer",
+        member_id="member-bob",
+        append=True,
+    )
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="maker",
+        metadata={
+            "node": "maker",
+            "total_tokens": 25,
+            "cost_usd": 0.25,
+            "transcript_path": f"/Users/chopin/private/{secret}.jsonl",
+        },
+        started_at=1_704_067_200,
+        created_by="member-1",
+    )
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="agy-node",
+        metadata={"node": "agy-node", "total_tokens": 9},
+        started_at=1_704_067_260,
+        created_by="member-bob",
+    )
+    running_task = store.create_task(
+        board="dev10",
+        title="Running task",
+        body=None,
+        assignee="maker",
+        created_by="member-1",
+    )
+    running_claim = store.claim_next(
+        board="dev10", assignee="maker", node_id="maker", ttl_seconds=30
+    )
+    assert running_claim is not None
+    client = make_client(
+        tmp_path,
+        store,
+        auth_mode=AuthMode.TEAM_COOKIE,
+        quota_enabled=True,
+    )
+    login = client.post("/api/login", json={"name": "alice", "secret": "admin-secret"})
+    csrf = str(login.json()["csrf"])
+
+    quota = client.post(
+        "/api/quota",
+        headers={CSRF_HEADER: csrf},
+        json={
+            "member_id": "member-1",
+            "soft_run_limit": 1,
+            "soft_token_limit": 10,
+            "soft_cost_usd": 0.01,
+        },
+    )
+    ledger = client.get("/api/ledger?window=all")
+
+    assert login.status_code == 200
+    assert quota.status_code == 200
+    assert quota.json()["quota"]["hard_kill"] is False
+    assert store.get_task(board="dev10", task_id=running_task.id).status == "running"
+    assert ledger.status_code == 200
+    payload = ledger.json()
+    assert payload["project"] == "dev10"
+    assert payload["quota_enabled"] is True
+    assert payload["host_pressure"]["running"]["value"] == 1
+    members = {item["member"]["id"]: item for item in payload["members"]}
+    alice = members["member-1"]
+    assert alice["totals"]["runs"]["value"] == 2
+    assert alice["totals"]["total_tokens"]["value"] == 25
+    assert alice["quota"]["status"] == "exceeded"
+    assert alice["quota"]["soft_throttle"] == {
+        "active": True,
+        "action": "queue-delay",
+        "reasons": ["runs", "tokens", "cost"],
+        "hard_kill": False,
+    }
+    bob = members["member-bob"]
+    assert bob["member"]["name"] == "[pii]"
+    assert bob["totals"]["total_tokens"]["value"] == 9
+    assert bob["totals"]["cost_usd_estimate"]["status"] == "unknown"
+    assert "agy credit is unknown" in bob["warnings"][0]
+    audit_events = store.list_audit_events(board="dev10", action="quota-update")
+    assert len(audit_events) == 1
+    rendered = json.dumps(payload)
+    assert secret not in rendered
+    assert "/Users/chopin" not in rendered
+    assert "bob@example.com" not in rendered
+
+
+def test_ledger_self_scope_quota_permissions_default_off_and_project_scope(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"maker": {"name": "maker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"other": {"name": "other", "agent": "claude", "tmux_pane": "dev11:1.0"}},
+    )
+    write_team_member(
+        tmp_path, name="alice", secret="admin-secret", role="admin", member_id="member-1"
+    )
+    write_team_member(
+        tmp_path,
+        name="viewer",
+        secret="viewer-secret",
+        role="viewer",
+        member_id="member-viewer",
+        append=True,
+    )
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="maker",
+        metadata={"node": "maker", "total_tokens": 100},
+        started_at=1_704_067_200,
+        created_by="member-1",
+    )
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="maker",
+        metadata={"node": "maker", "total_tokens": 5},
+        started_at=1_704_067_260,
+        created_by="member-viewer",
+    )
+    complete_run_at(
+        store,
+        db_path,
+        board="dev11",
+        node="other",
+        metadata={"node": "other", "total_tokens": 999},
+        started_at=1_704_067_300,
+        created_by="member-viewer",
+    )
+    default_client = make_client(tmp_path, store)
+    disabled = default_client.post(
+        "/api/quota",
+        headers=auth_headers(default_client),
+        json={"member_id": "member-1", "soft_token_limit": 1},
+    )
+    viewer_client = make_client(
+        tmp_path,
+        store,
+        auth_mode=AuthMode.TEAM_COOKIE,
+        quota_enabled=True,
+    )
+    viewer_login = viewer_client.post(
+        "/api/login",
+        json={"name": "viewer", "secret": "viewer-secret"},
+    )
+    viewer_csrf = str(viewer_login.json()["csrf"])
+    viewer_ledger = viewer_client.get("/api/ledger?window=all")
+    viewer_other = viewer_client.get("/api/ledger?window=all&member=member-1")
+    viewer_quota = viewer_client.post(
+        "/api/quota",
+        headers={CSRF_HEADER: viewer_csrf},
+        json={"member_id": "member-viewer", "soft_token_limit": 1},
+    )
+    scoped = viewer_client.get("/api/ledger?window=all&project=dev11")
+    missing_token = default_client.get("/api/ledger?window=all")
+
+    assert disabled.status_code == 404
+    assert viewer_login.status_code == 200
+    assert viewer_ledger.status_code == 200
+    viewer_payload = viewer_ledger.json()
+    assert viewer_payload["scope"] == "self"
+    assert [item["member"]["id"] for item in viewer_payload["members"]] == ["member-viewer"]
+    assert viewer_payload["members"][0]["totals"]["total_tokens"]["value"] == 5
+    assert viewer_other.status_code == 403
+    assert viewer_quota.status_code == 403
+    assert scoped.status_code == 200
+    assert scoped.json()["members"][0]["totals"]["total_tokens"]["value"] == 999
+    assert "100" not in json.dumps(scoped.json())
+    assert missing_token.status_code == 401
+
+
 def test_summary_endpoint_is_default_off_token_scoped_and_privacy_allowlisted(
     tmp_path: Path,
 ) -> None:
@@ -4041,6 +4249,7 @@ def make_client(
     handoff_ttl_seconds: int = 86_400,
     shared_access: bool = False,
     shared_join_role: team_auth.MemberRole = "operator",
+    quota_enabled: bool = False,
 ) -> TestClient:
     dist = tmp_path / "dist"
     dist.mkdir(exist_ok=True)
@@ -4068,6 +4277,7 @@ def make_client(
         handoff_ttl_seconds=handoff_ttl_seconds,
         shared_access=shared_access,
         shared_join_role=shared_join_role,
+        quota_enabled=quota_enabled,
     )
     return TestClient(
         create_app(config=config, store=store),
@@ -4170,8 +4380,15 @@ def complete_run_at(
     node: str,
     metadata: dict[str, object],
     started_at: int,
+    created_by: str | None = None,
 ) -> None:
-    task = store.create_task(board=board, title=f"{node} usage", body=None, assignee=node)
+    task = store.create_task(
+        board=board,
+        title=f"{node} usage",
+        body=None,
+        assignee=node,
+        created_by=created_by,
+    )
     claim = store.claim_next(board=board, assignee=node, node_id=node, ttl_seconds=30)
     assert claim is not None
     assert store.complete(
