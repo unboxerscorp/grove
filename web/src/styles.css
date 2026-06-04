@@ -4663,3 +4663,66 @@ button {
 /* cost signal */
 .insights-cost__row { display: flex; align-items: center; gap: 10px; }
 .insights-cost__k { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+
+/* ── usage trend / anomaly (V23-W2): advisory, read-only ───────────────────── */
+.trend { display: flex; flex-direction: column; min-height: 0; width: 100%; }
+.trend__scroll {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 13px;
+  max-width: 920px; width: 100%; margin: 0 auto; padding: 4px 2px 24px;
+}
+.trend__head { display: flex; align-items: center; gap: 10px; }
+.trend__title-wrap { display: flex; align-items: center; gap: 10px; }
+.trend__mark { color: var(--teal); }
+.trend__title { margin: 0; font-size: 16px; font-weight: 700; }
+.trend-window { margin-left: auto; display: inline-flex; gap: 4px; border: 1px solid var(--line); border-radius: 999px; padding: 2px; }
+.trend-window__btn {
+  font-family: var(--mono); font-size: 11px; color: var(--faint); background: transparent;
+  border: 0; border-radius: 999px; padding: 3px 11px; cursor: pointer;
+}
+.trend-window__btn.is-on { color: var(--bg); background: var(--teal); font-weight: 700; }
+.trend-advisory {
+  font-family: var(--mono); font-size: 11.5px; color: var(--teal);
+  border: 1px solid rgba(84, 199, 184, 0.4); background: rgba(84, 199, 184, 0.06);
+  border-radius: 10px; padding: 8px 12px;
+}
+.trend-advisory[data-actions="0"][data-enforced="0"] { /* signals only */ }
+.trend-msg { font-family: var(--mono); font-size: 11.5px; padding: 8px 11px; border-radius: 9px; border: 1px solid var(--line); color: var(--faint); }
+.trend-msg.is-warn { color: var(--amber); border-color: rgba(240, 184, 96, 0.4); background: rgba(240, 184, 96, 0.06); }
+.trend-msg.is-error { color: var(--coral); border-color: rgba(229, 115, 99, 0.4); }
+.trend-empty { font-size: 11.5px; color: var(--faint); }
+
+.trend-nodes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 720px) { .trend-nodes { grid-template-columns: 1fr; } }
+.trend-node { display: flex; flex-direction: column; gap: 8px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
+.trend-node.has-spike { border-color: rgba(240, 184, 96, 0.5); }
+.trend-node__head { display: flex; align-items: center; gap: 8px; }
+.trend-node__glyph { font-size: 13px; }
+.trend-node__name { font-size: 13px; font-weight: 700; }
+.trend-node__agent { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+.trend-node__lowconf { margin-left: auto; font-family: var(--mono); font-size: 9.5px; color: var(--amber); border: 1px solid rgba(240, 184, 96, 0.4); border-radius: 999px; padding: 1px 8px; }
+
+.trend-spark { display: block; }
+.trend-spark__bar { fill: var(--teal); opacity: 0.72; }
+.trend-spark__bar.is-spike { fill: var(--amber); opacity: 1; }
+
+.trend-node__row { display: flex; align-items: baseline; gap: 8px; }
+.trend-node__k { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.trend-node__delta { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+.trend-node__delta.is-up { color: var(--amber); }
+.trend-node__delta.is-down { color: var(--teal); }
+.trend-node__delta.is-flat, .trend-node__delta.is-unknown { color: var(--faint); }
+
+.trend-anomalies { display: flex; flex-wrap: wrap; gap: 8px; }
+.trend-anomaly { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10.5px; border: 1px solid var(--line); border-radius: 9px; padding: 3px 9px; }
+.trend-anomaly.is-flagged { color: var(--amber); border-color: rgba(240, 184, 96, 0.5); background: rgba(240, 184, 96, 0.07); }
+.trend-anomaly__k { color: var(--faint); text-transform: uppercase; font-size: 9px; letter-spacing: 0.04em; }
+.trend-anomaly__flag { font-weight: 700; }
+.trend-anomaly__ok { color: var(--teal); }
+.trend-anomaly__muted { color: var(--faint); }
+
+.trend-forecast { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 6px; border-top: 1px dashed var(--line); }
+.trend-forecast__label { font-family: var(--mono); font-size: 10px; color: var(--dim); border: 1px dashed var(--line); border-radius: 999px; padding: 1px 8px; }
+.trend-forecast__val { font-family: var(--mono); font-size: 11px; color: var(--text); }
+.trend-unknown { color: var(--amber); }
+.trend-warn { font-family: var(--mono); font-size: 10px; color: var(--amber); line-height: 1.5; }

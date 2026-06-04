@@ -20,6 +20,7 @@
 //   - shared-access (one-time joins, viewer read-only, CSRF/origin/host guards)
 //   - ledger/quota  (member ledger, soft quotas, host pressure, no hard-kill)
 //   - retro analytics (operator-only advisory insights, privacy, low-confidence honesty)
+//   - usage trend   (advisory-only trend/anomaly signals, agy cost honesty)
 //
 // Each check asserts the CORRECT contract. A failing check is a real defect to
 // report as `# BUG(Pn)` — never relax the assertion to match a bug.
@@ -55,6 +56,8 @@ const SHARE = "qae2e_share"; // created during the shared-access checks
 const LEDGER = "qae2e_ledger"; // created during the ledger/quota checks
 const RETRO = "qae2e_retro"; // created during the retro analytics checks
 const RETRO_OTHER = "qae2e_retro_other"; // second project used to prove retro scope isolation
+const USAGE_TREND = "qae2e_usage_trend"; // created during the usage trend checks
+const USAGE_TREND_OTHER = "qae2e_usage_trend_other"; // second project used to prove usage trend scope isolation
 const READY_TIMEOUT_MS = 25_000;
 const NODE_LAST_SEEN = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
 
@@ -700,6 +703,7 @@ async function startSharedServer({
   allowHosts = [],
   enableQuotas = false,
   enableRetroAnalytics = false,
+  enableUsageTrend = false,
 } = {}) {
   const port = await freePort();
   sharedBaseUrl = `http://127.0.0.1:${port}`;
@@ -727,6 +731,7 @@ async function startSharedServer({
     ];
     if (enableQuotas) args.push("--enable-quotas");
     if (enableRetroAnalytics) args.push("--enable-retro-analytics");
+    if (enableUsageTrend) args.push("--enable-usage-trend");
     for (const allowed of allowHosts) args.push("--allow-host", allowed);
   } else {
     args = [
@@ -3230,6 +3235,256 @@ async function run() {
       "retro analytics missing project -> 404",
       (await reqAt(sharedBaseUrl, "GET", "/api/retro/analytics?window=all&project=qae2e_missing_retro", {
         cookie: retroOperatorCookie,
+      })).status,
+      404,
+    );
+  } finally {
+    await stopSharedServer();
+  }
+
+  // --- /api/usage/trend: advisory trend/anomaly signals, agy cost scrub ---
+  const trendOperatorSecret = "trend-operator-secret";
+  const trendViewerSecret = "trend-viewer-secret";
+  const trendSecret = "xoxb-" + "9".repeat(44);
+  const trendEmail = "trend.owner@example.test";
+  const trendPrivatePath = `/Users/chopin/private/${trendSecret}`;
+  const trendAgyCostMarker = 999.99;
+  const trendDay = 86_400;
+  const trendBase = Math.floor(Date.now() / 1000) - 5 * trendDay;
+  writeRegistry(USAGE_TREND, {
+    "codex-trend": { name: "codex-trend", agent: "codex", tmux_pane: `${USAGE_TREND}:1.0`, status: "idle", role: "maker" },
+    "claude-trend": { name: "claude-trend", agent: "claude", tmux_pane: `${USAGE_TREND}:1.1`, status: "idle", role: "reviewer" },
+    "agy-trend": { name: "agy-trend", agent: "agy", tmux_pane: `${USAGE_TREND}:1.2`, status: "idle", role: "maker" },
+  });
+  writeRegistry(USAGE_TREND_OTHER, {
+    "trend-other": { name: "trend-other", agent: "codex", tmux_pane: `${USAGE_TREND_OTHER}:1.0`, status: "idle", role: "maker" },
+  });
+  writeTeamMembers(USAGE_TREND, [
+    { id: "trend-operator-1", name: "trend-operator", role: "operator", secret: trendOperatorSecret },
+    { id: "trend-viewer-1", name: "trend-viewer", role: "viewer", secret: trendViewerSecret },
+  ]);
+  [
+    [0, 100, 1.0],
+    [1, 100, 1.0],
+    [2, 100, 1.0],
+    [3, 300, 3.0],
+  ].forEach(([offset, tokens, cost]) =>
+    completeUsageRun({
+      board: USAGE_TREND,
+      node: "codex-trend",
+      metadata: { node: "codex-trend", total_tokens: tokens, cost_usd: cost },
+      startedAt: trendBase + offset * trendDay,
+    }),
+  );
+  [
+    [1, 50, 0.2],
+    [4, 80, 0.35],
+  ].forEach(([offset, tokens, cost]) =>
+    completeUsageRun({
+      board: USAGE_TREND,
+      node: "claude-trend",
+      metadata: { node: "claude-trend", total_tokens: tokens, cost_usd: cost },
+      startedAt: trendBase + offset * trendDay,
+    }),
+  );
+  [
+    [2, 25],
+    [4, 30],
+  ].forEach(([offset, tokens]) =>
+    completeUsageRun({
+      board: USAGE_TREND,
+      node: "agy-trend",
+      metadata: {
+        node: "agy-trend",
+        total_tokens: tokens,
+        cost_usd: trendAgyCostMarker,
+        transcript_path: `${trendPrivatePath}/agy.jsonl`,
+        email: trendEmail,
+        secret_note: trendSecret,
+      },
+      startedAt: trendBase + offset * trendDay,
+    }),
+  );
+  eq(
+    "usage trend default-off -> 404",
+    (await req("GET", `/api/usage/trend?window=14d&project=${encodeURIComponent(USAGE_TREND)}`, { token })).status,
+    404,
+  );
+
+  await startSharedServer({ session: USAGE_TREND, joinRole: "viewer", enableUsageTrend: true });
+  try {
+    eq("usage trend 401 without session", (await reqAt(sharedBaseUrl, "GET", "/api/usage/trend?window=14d")).status, 401);
+    const trendOperatorLogin = await reqAt(sharedBaseUrl, "POST", "/api/login", {
+      body: { name: "trend-operator", secret: trendOperatorSecret },
+    });
+    eq("usage trend operator login 200", trendOperatorLogin.status, 200);
+    const trendOperatorCookie = String(trendOperatorLogin.headers.get("set-cookie") || "").split(";")[0];
+    const trendViewerLogin = await reqAt(sharedBaseUrl, "POST", "/api/login", {
+      body: { name: "trend-viewer", secret: trendViewerSecret },
+    });
+    eq("usage trend viewer login 200", trendViewerLogin.status, 200);
+    const trendViewerCookie = String(trendViewerLogin.headers.get("set-cookie") || "").split(";")[0];
+    eq(
+      "usage trend viewer denied",
+      (await reqAt(sharedBaseUrl, "GET", `/api/usage/trend?window=14d&project=${encodeURIComponent(USAGE_TREND)}`, {
+        cookie: trendViewerCookie,
+      })).status,
+      403,
+    );
+    eq(
+      "usage trend window 7d allowed",
+      (await reqAt(sharedBaseUrl, "GET", `/api/usage/trend?window=7d&project=${encodeURIComponent(USAGE_TREND)}`, {
+        cookie: trendOperatorCookie,
+      })).status,
+      200,
+    );
+    eq(
+      "usage trend window 30d allowed",
+      (await reqAt(sharedBaseUrl, "GET", `/api/usage/trend?window=30d&project=${encodeURIComponent(USAGE_TREND)}`, {
+        cookie: trendOperatorCookie,
+      })).status,
+      200,
+    );
+    eq(
+      "usage trend invalid window -> 400",
+      (await reqAt(sharedBaseUrl, "GET", `/api/usage/trend?window=all&project=${encodeURIComponent(USAGE_TREND)}`, {
+        cookie: trendOperatorCookie,
+      })).status,
+      400,
+    );
+
+    const beforeTrendTasks = await reqAt(sharedBaseUrl, "GET", `/api/boards/${USAGE_TREND}/tasks`, {
+      cookie: trendOperatorCookie,
+      project: USAGE_TREND,
+    });
+    eq("usage trend task snapshot before read 200", beforeTrendTasks.status, 200);
+    const beforeTrendTaskItems = Array.isArray(beforeTrendTasks.json) ? beforeTrendTasks.json : [];
+    const trend = await reqAt(sharedBaseUrl, "GET", `/api/usage/trend?window=14d&project=${encodeURIComponent(USAGE_TREND)}`, {
+      cookie: trendOperatorCookie,
+    });
+    eq("usage trend operator 200 when enabled", trend.status, 200);
+    eq("usage trend project == usage trend", trend.json && trend.json.project, USAGE_TREND);
+    eq("usage trend mode advisory", trend.json && trend.json.mode, "advisory");
+    check("usage trend actions empty", Boolean(trend.json) && Array.isArray(trend.json.actions) && trend.json.actions.length === 0);
+    eq("usage trend enforcement not called", trend.json && trend.json.enforcement && trend.json.enforcement.called, false);
+    check("usage trend generated_at metric", isTaggedMetric(trend.json && trend.json.generated_at));
+    eq("usage trend window 14d", trend.json && trend.json.window && trend.json.window.name, "14d");
+    eq("usage trend window days == 14", trend.json && trend.json.window && trend.json.window.days && trend.json.window.days.value, 14);
+    const trendNodes = trend.json && Array.isArray(trend.json.nodes) ? trend.json.nodes : [];
+    check("usage trend nodes include codex/claude/agy", trendNodes.length === 3, trendNodes.map((node) => node.node).join(","));
+    const trendByNode = Object.fromEntries(trendNodes.map((node) => [node.node, node]));
+    const codexTrend = trendByNode["codex-trend"];
+    const claudeTrend = trendByNode["claude-trend"];
+    const agyTrend = trendByNode["agy-trend"];
+    eq("usage trend codex confidence medium", codexTrend && codexTrend.confidence, "medium");
+    eq("usage trend codex latest tokens", codexTrend && codexTrend.trend && codexTrend.trend.total_tokens.latest.value, 300);
+    eq("usage trend codex baseline tokens", codexTrend && codexTrend.trend && codexTrend.trend.total_tokens.baseline.value, 100);
+    eq("usage trend codex token anomaly flagged", codexTrend && codexTrend.anomaly && codexTrend.anomaly.total_tokens.flagged, true);
+    eq("usage trend codex anomaly reason spike", codexTrend && codexTrend.anomaly && codexTrend.anomaly.total_tokens.reason, "spike");
+    eq("usage trend codex measured cost latest", codexTrend && codexTrend.trend && codexTrend.trend.cost_usd_estimate.latest.value, 3);
+    eq("usage trend codex cost anomaly flagged", codexTrend && codexTrend.anomaly && codexTrend.anomaly.cost_usd_estimate.flagged, true);
+    eq("usage trend codex forecast tokens", codexTrend && codexTrend.forecast && codexTrend.forecast.total_tokens_next_day.value, 500);
+    check(
+      "usage trend forecast labeled not prediction",
+      [codexTrend, claudeTrend, agyTrend].every(
+        (node) => node && node.forecast && /not a prediction/i.test(node.forecast.label || ""),
+      ),
+      JSON.stringify(trendNodes.map((node) => node.forecast && node.forecast.label)),
+    );
+    eq("usage trend claude confidence low", claudeTrend && claudeTrend.confidence, "low");
+    eq("usage trend claude measured cost latest", claudeTrend && claudeTrend.trend && claudeTrend.trend.cost_usd_estimate.latest.value, 0.35);
+    eq("usage trend claude thin-data anomaly low", claudeTrend && claudeTrend.anomaly && claudeTrend.anomaly.total_tokens.confidence, "low");
+    check(
+      "usage trend claude warns thin data",
+      Boolean(claudeTrend) &&
+        Array.isArray(claudeTrend.warnings) &&
+        claudeTrend.warnings.some((warning) => /thin data/i.test(warning)),
+      claudeTrend && JSON.stringify(claudeTrend.warnings),
+    );
+    eq("usage trend agy confidence low", agyTrend && agyTrend.confidence, "low");
+    eq("usage trend agy token latest preserved", agyTrend && agyTrend.trend && agyTrend.trend.total_tokens.latest.value, 30);
+    eq("usage trend agy cost trend unknown", agyTrend && agyTrend.trend && agyTrend.trend.cost_usd_estimate.value, null);
+    eq("usage trend agy cost trend confidence unknown", agyTrend && agyTrend.trend && agyTrend.trend.cost_usd_estimate.confidence, "unknown");
+    eq("usage trend agy cost anomaly excluded", agyTrend && agyTrend.anomaly && agyTrend.anomaly.cost_usd_estimate.reason, "excluded: agy cost is unknown");
+    eq("usage trend agy cost forecast unknown", agyTrend && agyTrend.forecast && agyTrend.forecast.cost_usd_next_day.value, null);
+    check(
+      "usage trend agy days cost unknown despite 999.99 metadata",
+      Boolean(agyTrend) &&
+        Array.isArray(agyTrend.days) &&
+        agyTrend.days.length === 2 &&
+        agyTrend.days.every(
+          (day) =>
+            day.totals &&
+            day.totals.cost_usd_estimate &&
+            day.totals.cost_usd_estimate.value === null &&
+            day.totals.cost_usd_estimate.confidence === "unknown" &&
+            day.totals.cost_usd_estimate.status === "unknown",
+        ),
+      agyTrend && JSON.stringify(agyTrend.days),
+    );
+    check(
+      "usage trend limitations document advisory+explicit+agy unknown",
+      Boolean(trend.json) &&
+        Array.isArray(trend.json.limitations) &&
+        trend.json.limitations.some((item) => /advisory-only/i.test(item)) &&
+        trend.json.limitations.some((item) => /explicit run metadata/i.test(item)) &&
+        trend.json.limitations.some((item) => /forecast.*not a prediction/i.test(item)) &&
+        trend.json.limitations.some((item) => /agy cost is unknown/i.test(item)),
+      trend.json && JSON.stringify(trend.json.limitations),
+    );
+    check(
+      "usage trend scrubs agy 999.99 cost and secrets",
+      !hasSecret(trend.json) &&
+        !trend.text.includes(String(trendAgyCostMarker)) &&
+        !trend.text.includes(trendSecret) &&
+        !trend.text.includes(trendEmail) &&
+        !trend.text.includes(trendPrivatePath) &&
+        !trend.text.includes("transcript_path") &&
+        !trend.text.includes("secret_note"),
+      trend.text.slice(0, 240),
+    );
+    const afterTrendTasks = await reqAt(sharedBaseUrl, "GET", `/api/boards/${USAGE_TREND}/tasks`, {
+      cookie: trendOperatorCookie,
+      project: USAGE_TREND,
+    });
+    const afterTrendTaskItems = Array.isArray(afterTrendTasks.json) ? afterTrendTasks.json : [];
+    eq("usage trend read leaves task count unchanged", afterTrendTaskItems.length, beforeTrendTaskItems.length);
+    check(
+      "usage trend read does not change seeded task statuses",
+      beforeTrendTaskItems.length === afterTrendTaskItems.length &&
+        beforeTrendTaskItems.every((before) => {
+          const after = afterTrendTaskItems.find((item) => item.id === before.id);
+          return Boolean(after) && after.status === before.status;
+        }),
+      JSON.stringify(afterTrendTaskItems.map((item) => [item.id, item.status])),
+    );
+    const trendOther = await reqAt(sharedBaseUrl, "GET", `/api/usage/trend?window=14d&project=${encodeURIComponent(USAGE_TREND_OTHER)}`, {
+      cookie: trendOperatorCookie,
+    });
+    eq("usage trend other project 200", trendOther.status, 200);
+    eq("usage trend other project name", trendOther.json && trendOther.json.project, USAGE_TREND_OTHER);
+    check(
+      "usage trend other project does not leak trend data",
+      Boolean(trendOther.json) &&
+        Array.isArray(trendOther.json.nodes) &&
+        trendOther.json.nodes.length === 0 &&
+        !trendOther.text.includes("codex-trend") &&
+        !trendOther.text.includes("agy-trend") &&
+        !trendOther.text.includes(String(trendAgyCostMarker)) &&
+        !trendOther.text.includes(trendSecret),
+      trendOther.text,
+    );
+    eq(
+      "usage trend path traversal project -> 400",
+      (await reqAt(sharedBaseUrl, "GET", `/api/usage/trend?window=14d&project=${encodeURIComponent(`../${USAGE_TREND}`)}`, {
+        cookie: trendOperatorCookie,
+      })).status,
+      400,
+    );
+    eq(
+      "usage trend missing project -> 404",
+      (await reqAt(sharedBaseUrl, "GET", "/api/usage/trend?window=14d&project=qae2e_missing_usage_trend", {
+        cookie: trendOperatorCookie,
       })).status,
       404,
     );

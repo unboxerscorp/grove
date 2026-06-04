@@ -576,6 +576,134 @@ function retroAnalyticsPayload(): Record<string, unknown> {
   };
 }
 
+// Usage trend / anomaly (V23-W2). Mirrors web_app.py /api/usage/trend EXACTLY:
+// ADVISORY read-only (mode "advisory", actions [], enforcement.called false),
+// operator-only (403 viewer), default OFF (404). Deterministic anomaly flag
+// (ratio>=2 or z>=3), labelled forecast ("not a prediction"), agy cost unknown
+// across trend/anomaly/forecast/day-totals (never a spike). thin data -> low conf.
+let usageTrendEnabled = true;
+diag.setUsageTrendEnabled = (on: boolean): void => {
+  usageTrendEnabled = on;
+};
+const UT_WINDOWS: Record<string, number> = { "7d": 7, "14d": 14, "30d": 30 };
+const utMean = (vals: number[]): number => (vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0);
+const utStdev = (vals: number[], mean: number): number =>
+  vals.length ? Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length) : 0;
+const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
+function utTotals(tokens: number, cost: number | null, runs: number, conf: string): Record<string, unknown> {
+  return {
+    runs: ledMetric(runs, "run_metadata", "explicit"),
+    input_tokens: ledMetric(Math.round(tokens * 0.6), "run_metadata", conf),
+    output_tokens: ledMetric(Math.round(tokens * 0.4), "run_metadata", conf),
+    total_tokens: ledMetric(tokens, "run_metadata", conf),
+    cost_usd_estimate: cost === null ? ledUnknown("estimate") : ledMetric(cost, "run_metadata", conf),
+    confidence: conf,
+  };
+}
+function utTrendSignal(values: number[], conf: string, unknown: boolean): Record<string, unknown> {
+  if (unknown) return ledUnknown("estimate");
+  if (values.length < 2) return { value: null, source: "run_metadata", confidence: "low", status: "unknown" };
+  const baseline = utMean(values.slice(0, -1));
+  const latest = values[values.length - 1]!;
+  return {
+    latest: ledMetric(round6(latest), "run_metadata", conf),
+    baseline: ledMetric(round6(baseline), "run_metadata", conf),
+    delta: ledMetric(round6(latest - baseline), "run_metadata", conf),
+    ratio: baseline > 0 ? ledMetric(round6(latest / baseline), "run_metadata", conf) : ledUnknown("none"),
+  };
+}
+function utAnomalySignal(values: number[], conf: string, excluded: boolean): Record<string, unknown> {
+  if (excluded) return { flagged: false, reason: "excluded: agy cost is unknown", confidence: "unknown" };
+  if (values.length < 4) return { flagged: false, reason: "insufficient baseline data", confidence: "low" };
+  const baselineVals = values.slice(0, -1);
+  const latest = values[values.length - 1]!;
+  const baseline = utMean(baselineVals);
+  const stdev = utStdev(baselineVals, baseline);
+  const ratio = baseline > 0 ? latest / baseline : 0;
+  const zscore = stdev > 0 ? (latest - baseline) / stdev : 0;
+  const flagged = ratio >= 2.0 || zscore >= 3.0;
+  return {
+    flagged,
+    reason: flagged ? "spike" : "within baseline",
+    latest: ledMetric(round6(latest), "run_metadata", conf),
+    baseline: ledMetric(round6(baseline), "run_metadata", conf),
+    ratio: ledMetric(round6(ratio), "run_metadata", conf),
+    zscore: ledMetric(round6(zscore), "run_metadata", conf),
+    confidence: conf,
+  };
+}
+function utForecastSignal(values: number[], conf: string, unknown: boolean): Record<string, unknown> {
+  if (unknown) return ledUnknown("estimate");
+  if (values.length < 2) return { value: null, source: "run_metadata", confidence: "low", status: "unknown" };
+  const latest = values[values.length - 1]!;
+  const prev = values[values.length - 2]!;
+  return ledMetric(round6(Math.max(0, latest + (latest - prev))), "run_metadata", conf);
+}
+function utNode(node: string, agent: string, dayTokens: number[], dayCosts: number[]): Record<string, unknown> {
+  const conf = dayTokens.length < 4 ? "low" : "medium";
+  const isAgy = agent === "agy";
+  const costValues = isAgy ? [] : dayCosts;
+  const days = dayTokens.map((tok, i) => ({
+    day: `2026-06-${String(i + 1).padStart(2, "0")}`,
+    totals: utTotals(tok, isAgy ? null : (dayCosts[i] ?? null), 3, conf),
+  }));
+  const warnings: string[] = [];
+  if (conf === "low") warnings.push("thin data; trend and forecast confidence is low");
+  if (isAgy) warnings.push("agy cost is unknown and excluded from cost anomaly checks");
+  return {
+    node,
+    agent,
+    confidence: conf,
+    days,
+    trend: { total_tokens: utTrendSignal(dayTokens, conf, false), cost_usd_estimate: utTrendSignal(costValues, conf, isAgy) },
+    anomaly: { total_tokens: utAnomalySignal(dayTokens, conf, false), cost_usd_estimate: utAnomalySignal(costValues, conf, isAgy) },
+    forecast: {
+      label: "simple extrapolation; not a prediction",
+      total_tokens_next_day: utForecastSignal(dayTokens, conf, false),
+      cost_usd_next_day: utForecastSignal(costValues, conf, isAgy),
+    },
+    ...(warnings.length ? { warnings } : {}),
+  };
+}
+function usageTrendPayload(windowName: string): Record<string, unknown> {
+  const name = UT_WINDOWS[windowName] ? windowName : "14d";
+  const days = UT_WINDOWS[name]!;
+  const since = AUDIT_TS0 - days * 86_400;
+  const hasAgy = true;
+  const limitations = [
+    "advisory-only: signals do not throttle, abort, kill, dispatch, or change config",
+    "trend and anomaly signals use explicit run metadata only",
+    "forecast is a simple labeled extrapolation, not a prediction",
+    "agy cost is unknown and excluded from cost anomaly checks",
+  ];
+  if (!hasAgy) limitations.pop();
+  return {
+    ok: true,
+    project: "dev10",
+    mode: "advisory",
+    actions: [],
+    enforcement: { called: false },
+    generated_at: ledMetric(AUDIT_TS0 + 800, "server", "explicit"),
+    window: {
+      name,
+      days: ledMetric(days, "server", "explicit"),
+      since: ledMetric(since, "server", "explicit"),
+      until: ledMetric(AUDIT_TS0, "server", "explicit"),
+    },
+    filters: { member: null },
+    nodes: [
+      // codex node with a clear token spike on the latest day (ratio ~2.86 -> flagged).
+      utNode("backend", "codex", [100_000, 110_000, 105_000, 300_000], [3.0, 3.2, 3.1, 4.0]),
+      // agy node: tokens known + within baseline (no spike), cost unknown -> cost
+      // anomaly excluded. Kept flat so neither ratio>=2 nor z>=3 trips a token flag.
+      utNode("frontend", "agy", [52_000, 53_000, 52_500, 53_000], []),
+      // thin-data node: 2 days -> low confidence, anomaly "insufficient baseline".
+      utNode("researcher", "codex", [20_000, 40_000], [1.0, 2.0]),
+    ],
+    limitations,
+  };
+}
+
 const execGateInfo = () => {
   const blocked: string[] = [];
   if (!executionGate.enabled) blocked.push("global-disabled");
@@ -1084,6 +1212,24 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     return Promise.resolve(
       json({ auth_mode: "team_cookie", member, csrf: "csrf-" + member.id, expires_at: HANDOFF_NOW + 3600 }),
     );
+  }
+
+  if (p === "/api/usage/trend") {
+    // Mirrors web_app.py /api/usage/trend: operator-only (403 viewer), default OFF
+    // (404), ADVISORY read-only. window ∈ 7d|14d|30d (default 14d).
+    diag.usageTrendFetches = ((diag.usageTrendFetches as number) ?? 0) + 1;
+    if (!usageTrendEnabled)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "usage trend is not enabled" }), { status: 404 }));
+    if (viewerMode)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "cost requires operator role" }), { status: 403 }));
+    // Mirror web_app.py _usage_trend_window: trim+lowercase, then REJECT any window
+    // outside the 7d/14d/30d allowlist with 400 (no silent fallback). Absent param
+    // keeps the backend's 14d default.
+    const win = (u.searchParams.get("window") ?? "14d").trim().toLowerCase();
+    if (!UT_WINDOWS[win])
+      return Promise.resolve(new Response(JSON.stringify({ detail: "invalid usage trend window" }), { status: 400 }));
+    diag.usageTrendWindow = win;
+    return Promise.resolve(json(usageTrendPayload(win)));
   }
 
   if (p === "/api/retro/analytics") {

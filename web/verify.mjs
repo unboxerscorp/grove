@@ -2024,6 +2024,119 @@ async function main() {
       insightsDisabled.disabled &&
       insightsDisabled.cards === 0;
 
+    // V23-W2 usage trend / anomaly (advisory, read-only): trend sparkline + delta,
+    // anomaly flags as SIGNALS only (no throttle/abort), forecast labelled "not a
+    // prediction", agy cost unknown (never a spike), thin-data low confidence,
+    // window selector, operator-only. Mirrors web_app.py /api/usage/trend.
+    const reenterTrend = async () => {
+      await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
+      await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+      await page.$eval('.dr-tab[data-view="trend"]', (el) => el.click());
+      await page.waitForSelector(".trend", { timeout: 8000 });
+    };
+    await page.$eval('.dr-tab[data-view="trend"]', (el) => el.click());
+    await page.waitForSelector(".trend-node", { timeout: 8000 });
+    const trend = await page.evaluate(() => {
+      const node = (id) => document.querySelector(`.trend-node[data-node="${id}"]`);
+      const backend = node("backend");
+      const frontend = node("frontend");
+      const researcher = node("researcher");
+      return {
+        advisory: !!document.querySelector(".trend-advisory"),
+        advisoryActions: document.querySelector(".trend-advisory")?.getAttribute("data-actions") ?? "",
+        advisoryEnforced: document.querySelector(".trend-advisory")?.getAttribute("data-enforced") ?? "",
+        advisoryText: (document.querySelector(".trend-advisory")?.textContent ?? "").trim(),
+        nodes: document.querySelectorAll(".trend-node").length,
+        sparkBars: document.querySelectorAll(".trend-spark__bar").length,
+        // backend: token spike flagged + highlighted last bar
+        backendSpike: !!backend?.querySelector('.trend-anomaly[data-anomaly="flagged"][data-kind="tokens"]'),
+        backendSpikeBar: !!backend?.querySelector(".trend-spark__bar.is-spike"),
+        // frontend (agy): cost excluded/unknown, NOT flagged as spike
+        frontAgyExcluded: !!frontend?.querySelector('.trend-anomaly.is-excluded[data-kind="cost"]'),
+        frontTokFlagged: !!frontend?.querySelector('.trend-anomaly[data-anomaly="flagged"][data-kind="tokens"]'),
+        frontCostUnknown: !!frontend?.querySelector('[data-agy="unknown"]'),
+        // researcher: thin data -> low confidence
+        researcherLowConf: !!researcher?.querySelector('[data-confidence="low"]'),
+        // forecast label present on every node (not a prediction)
+        forecastLabels: document.querySelectorAll('[data-forecast="label"]').length,
+        forecastText: (document.querySelector('[data-forecast="label"]')?.textContent ?? "").trim(),
+        // READ-ONLY: no action buttons anywhere except the window selector
+        nonWindowButtons: Array.from(document.querySelectorAll(".trend button")).filter((b) => !b.classList.contains("trend-window__btn")).length,
+        windowActive: document.querySelector(".trend-window__btn.is-on")?.getAttribute("data-window") ?? "",
+      };
+    });
+    // window selector: switch to 7d -> refetch sends window=7d.
+    await page.click('.trend-window__btn[data-window="7d"]');
+    await page.waitForFunction(() => window.__MOCK__?.usageTrendWindow === "7d", { timeout: 6000 });
+    const trendWindow = await page.evaluate(() => ({
+      sent: window.__MOCK__?.usageTrendWindow ?? "",
+      active: document.querySelector(".trend-window__btn.is-on")?.getAttribute("data-window") ?? "",
+    }));
+    // contract: a window outside the 7d/14d/30d allowlist is REJECTED with 400
+    // (mirrors web_app.py _usage_trend_window) — never a silent 14d fallback. The
+    // FE only ever sends allowlisted windows; assert the raw contract directly.
+    const trendWindowContract = await page.evaluate(async () => {
+      const bad = await fetch("/api/usage/trend?window=5d");
+      const empty = await fetch("/api/usage/trend?window=");
+      const good = await fetch("/api/usage/trend?window=30d");
+      return { bad: bad.status, empty: empty.status, good: good.status };
+    });
+    // operator-only: viewer (403) -> graceful notice, no node cards.
+    await page.evaluate(() => window.__MOCK__.setViewer(true));
+    await reenterTrend();
+    await page.waitForSelector('.trend-msg[data-err="forbidden"]', { timeout: 8000 });
+    const trendViewer = await page.evaluate(() => ({
+      forbidden: !!document.querySelector('.trend-msg[data-err="forbidden"]'),
+      nodes: document.querySelectorAll(".trend-node").length,
+    }));
+    await page.evaluate(() => window.__MOCK__.setViewer(false));
+    await reenterTrend();
+    // disabled (404) -> graceful notice, no node cards.
+    await page.evaluate(() => window.__MOCK__.setUsageTrendEnabled(false));
+    await reenterTrend();
+    await page.waitForSelector('.trend-msg[data-err="disabled"]', { timeout: 8000 });
+    const trendDisabled = await page.evaluate(() => ({
+      disabled: !!document.querySelector('.trend-msg[data-err="disabled"]'),
+      nodes: document.querySelectorAll(".trend-node").length,
+    }));
+    await page.evaluate(() => window.__MOCK__.setUsageTrendEnabled(true));
+
+    const trendAnomalyOk =
+      // trend renders, advisory banner (no actions, never enforced).
+      trend.advisory &&
+      trend.advisoryActions === "0" &&
+      trend.advisoryEnforced === "0" &&
+      trend.nodes === 3 &&
+      trend.sparkBars >= 6 &&
+      // anomaly = ADVISORY signal: backend token spike flagged + highlighted bar.
+      trend.backendSpike &&
+      trend.backendSpikeBar &&
+      /이상 신호|Anomaly/.test(trend.advisoryText) &&
+      // agy cost: unknown + excluded, never mis-flagged as a spike.
+      trend.frontAgyExcluded &&
+      !trend.frontTokFlagged &&
+      trend.frontCostUnknown &&
+      // thin-data -> low confidence.
+      trend.researcherLowConf &&
+      // forecast labelled "not a prediction" on each node.
+      trend.forecastLabels === 3 &&
+      /예측 아님|Not a prediction/.test(trend.forecastText) &&
+      // READ-ONLY: zero action buttons (only the window selector exists).
+      trend.nonWindowButtons === 0 &&
+      trend.windowActive === "14d" &&
+      // window selector works.
+      trendWindow.sent === "7d" &&
+      trendWindow.active === "7d" &&
+      // invalid window -> 400 (allowlist), valid -> 200; no silent fallback.
+      trendWindowContract.bad === 400 &&
+      trendWindowContract.empty === 400 &&
+      trendWindowContract.good === 200 &&
+      // operator-only + disabled graceful.
+      trendViewer.forbidden &&
+      trendViewer.nodes === 0 &&
+      trendDisabled.disabled &&
+      trendDisabled.nodes === 0;
+
     // #N1 project switch re-scope + no residue (여정1/5): switching to an
     // isolated project swaps org/board/nodes wholesale — none of the default
     // project's nodes/cards may bleed through — and switching back restores it.
@@ -2303,6 +2416,7 @@ async function main() {
       sharedAccessOk &&
       ledgerQuotaOk &&
       retroAnalyticsOk &&
+      trendAnomalyOk &&
       mobileOk &&
       projectOk &&
       wsBindOk &&
@@ -2426,6 +2540,8 @@ async function main() {
       ledger: { all: ledgerAll, hostNominal, hostSat, quotaBeforeYes, quotaSet, viewer: ledgerViewer, noQuota: ledgerNoQuota },
       retroAnalyticsOk,
       retro: { insights, low: insightsLow, viewer: insightsViewer, disabled: insightsDisabled },
+      trendAnomalyOk,
+      trend: { ...trend, window: trendWindow, windowContract: trendWindowContract, viewer: trendViewer, disabled: trendDisabled },
       mobileOk,
       mobile: { ...mobile, detailFits },
       delegationEdgesOk,

@@ -405,6 +405,63 @@ export interface RetroAnalytics {
   limitations?: string[];
 }
 
+// Usage trend / anomaly (web_app.py /api/usage/trend). ADVISORY, READ-ONLY:
+// operator-only, default OFF (404). `mode:"advisory"`, `actions:[]`,
+// `enforcement.called:false` — anomaly flags are SIGNALS only (no throttle/abort).
+// Forecast is a labelled extrapolation ("not a prediction"). agy cost is unknown
+// across trend/anomaly/forecast/day totals (never treated as a spike).
+//
+// A trend signal is polymorphic: an object {latest,baseline,delta,ratio} when
+// there are ≥2 daily values, otherwise a bare CostMetric (value null / unknown).
+export interface TrendSignal {
+  latest?: CostMetric;
+  baseline?: CostMetric;
+  delta?: CostMetric;
+  ratio?: CostMetric;
+  // bare-CostMetric form (thin data / agy-unknown):
+  value?: number | null;
+  source?: string;
+  confidence?: string;
+  status?: string;
+}
+export interface AnomalySignal {
+  flagged: boolean;
+  reason: string; // "spike" | "within baseline" | "insufficient baseline data" | "excluded: agy cost is unknown"
+  confidence: string;
+  latest?: CostMetric;
+  baseline?: CostMetric;
+  ratio?: CostMetric;
+  zscore?: CostMetric;
+}
+export interface TrendNode {
+  node: string;
+  agent: string;
+  confidence: string; // "low" | "medium"
+  days: { day: string; totals: UsageTotals }[];
+  trend: { total_tokens: TrendSignal; cost_usd_estimate: TrendSignal };
+  anomaly: { total_tokens: AnomalySignal; cost_usd_estimate: AnomalySignal };
+  forecast: { label: string; total_tokens_next_day: CostMetric; cost_usd_next_day: CostMetric };
+  warnings?: string[];
+}
+export interface UsageTrendWindow {
+  name?: string;
+  days?: CostMetric;
+  since?: CostMetric;
+  until?: CostMetric;
+}
+export interface UsageTrend {
+  ok: boolean;
+  project?: string;
+  mode: string; // "advisory"
+  actions: unknown[]; // []
+  enforcement: { called: boolean }; // {called:false} — signals never enforce
+  generated_at?: CostMetric;
+  window?: UsageTrendWindow;
+  filters?: { member?: string | null };
+  nodes: TrendNode[];
+  limitations?: string[];
+}
+
 // Cross-room handoff (web_app.py). export → signed allowlist package (task →
 // {title,body,priority,labels}); accept → verify (trust/freshness) + EXPLICIT
 // accept → local task (idempotent by handoff_id, receiver TTL). Default OFF.
@@ -820,6 +877,12 @@ export const api = {
   // Retro analytics insights (operator only; 404 when --enable-retro-analytics
   // is off). ADVISORY + read-only — never creates/dispatches anything.
   getRetroAnalytics: () => getJSON<RetroAnalytics>("/api/retro/analytics"),
+
+  // Usage trend + anomaly signals (operator only; 404 when --enable-usage-trend
+  // is off). ADVISORY + read-only — anomaly flags never throttle/abort. window ∈
+  // 7d|14d|30d (default 14d).
+  getUsageTrend: (window?: string) =>
+    getJSON<UsageTrend>(`/api/usage/trend${window ? `?window=${encodeURIComponent(window)}` : ""}`),
 
   // Set a member's SOFT budget (operator only; 404 when --enable-quotas is off,
   // 403 for viewers). Never hard-kills — exceeding only throttles new work.

@@ -16,6 +16,7 @@ import { CostPanel } from "./components/CostPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { HandoffPanel } from "./components/HandoffPanel";
 import { InsightsPanel } from "./components/InsightsPanel";
+import { TrendPanel } from "./components/TrendPanel";
 import { LedgerPanel } from "./components/LedgerPanel";
 import { HealthDot } from "./components/HealthDot";
 import { NodeStatusBar } from "./components/NodeStatusBar";
@@ -28,7 +29,7 @@ import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
-type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "ledger" | "insights" | "agg" | "handoff" | "connect" | "auth";
+type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "ledger" | "insights" | "trend" | "agg" | "handoff" | "connect" | "auth";
 
 // A share URL deep-links as <index>?join=<code> (web_app.py _share_url). Read the
 // code once at startup so opening a share link lands on the join screen with the
@@ -411,6 +412,14 @@ export function App() {
             </button>
             <button
               type="button"
+              data-view="trend"
+              className={cx("dr-tab", view === "trend" && "is-active")}
+              onClick={() => setView("trend")}
+            >
+              {t("tab.trend")}
+            </button>
+            <button
+              type="button"
               data-view="agg"
               className={cx("dr-tab", view === "agg" && "is-active")}
               onClick={() => setView("agg")}
@@ -517,6 +526,8 @@ export function App() {
             <LedgerPanel projectTick={projectTick} onChanged={() => setLiveTick((x) => x + 1)} />
           ) : view === "insights" ? (
             <InsightsPanel projectTick={projectTick} />
+          ) : view === "trend" ? (
+            <TrendPanel projectTick={projectTick} />
           ) : view === "agg" ? (
             <AggregationPanel projectTick={projectTick} />
           ) : view === "handoff" ? (
