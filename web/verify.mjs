@@ -2410,7 +2410,7 @@ async function main() {
     await page.waitForSelector('.proj-item[data-project="dev10"]', { timeout: 6000 });
     await page.click('.proj-item[data-project="dev10"]');
     await page.waitForFunction(
-      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "dev10",
+      () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "grove-dev",
       { timeout: 6000 },
     );
     await page.waitForFunction(() => document.querySelectorAll(".dr-node").length > 1, { timeout: 8000 });
@@ -2453,6 +2453,14 @@ async function main() {
     await page.type('.proj-modal input[name="projName"]', "demo-proj");
     await page.click(".proj-new__submit");
     await page.waitForFunction(() => !!window.__MOCK__?.createdProject, { timeout: 6000 });
+    await page.waitForSelector(".proj-modal.is-new .proj-result", { timeout: 6000 });
+    const createResult = await page.evaluate(() => ({
+      buckets: document.querySelectorAll(".proj-modal.is-new .proj-result__bucket").length,
+      board: (document.querySelector(".proj-modal.is-new .proj-result__bucket.is-restored .proj-result__items")?.textContent ?? "").trim(),
+      master: (document.querySelector(".proj-modal.is-new .proj-result__bucket.is-fresh .proj-result__items")?.textContent ?? "").trim(),
+      dashboard: (document.querySelector(".proj-modal.is-new .proj-result__bucket.is-stale .proj-result__items")?.textContent ?? "").trim(),
+    }));
+    await page.click(".proj-new__switch");
     await page.waitForFunction(
       () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "demo-proj",
       { timeout: 5000 },
@@ -2486,9 +2494,13 @@ async function main() {
 
     const projectOk =
       projItems >= 2 &&
-      projInitial === "dev10" &&
+      projInitial === "grove-dev" &&
       projAfterSwitch === "infra-ops" &&
       newCfg.name === "demo-proj" &&
+      createResult.buckets >= 3 &&
+      createResult.board === "demo-proj" &&
+      createResult.master === "project-master" &&
+      createResult.dashboard.includes("demo-proj") &&
       projAfterNew === "demo-proj" &&
       loadResult.buckets >= 3 &&
       loadResult.ok === true &&
@@ -3117,11 +3129,37 @@ async function main() {
     console.log("VERIFY PASS " + JSON.stringify(summary));
     console.log("screenshot: " + shot);
   } finally {
-    await browser.close();
+    await closeBrowser(browser);
   }
 }
 
-main().catch((e) => {
-  console.error("VERIFY FAIL: " + e.message);
-  process.exit(1);
-});
+async function closeBrowser(browser) {
+  const proc = browser.process();
+  const close = browser.close().catch(() => undefined);
+  const timeout = new Promise((resolve) => setTimeout(resolve, 5000, "timeout"));
+  const result = await Promise.race([close.then(() => "closed"), timeout]);
+  if (result !== "closed") {
+    if (proc?.pid) {
+      try {
+        process.kill(proc.pid, "SIGKILL");
+      } catch {
+        // The process may already have exited after Puppeteer's close signal.
+      }
+      await Promise.race([
+        new Promise((resolve) => proc.once("exit", resolve)),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
+    }
+  }
+}
+
+main()
+  .then(() => {
+    const guard = setTimeout(() => process.exit(0), 1000);
+    guard.unref?.();
+  })
+  .catch((e) => {
+    console.error("VERIFY FAIL: " + e.message);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    process.exit(1);
+  });

@@ -26,6 +26,10 @@ function basename(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
+function projectLabel(project: Project | null): string | null {
+  return project?.display_name ?? project?.name ?? null;
+}
+
 function NewProjectModal(props: { onCreated: (name: string) => void; onClose: () => void }) {
   const { onCreated, onClose } = props;
   const { t } = useI18n();
@@ -34,6 +38,7 @@ function NewProjectModal(props: { onCreated: (name: string) => void; onClose: ()
   const [clone, setClone] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<Project | null>(null);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,7 +50,7 @@ function NewProjectModal(props: { onCreated: (name: string) => void; onClose: ()
       .createProject({ name: nm, template: template || undefined, clone: clone.trim() || undefined })
       .then((p) => {
         setBusy(false);
-        onCreated(p.name);
+        setCreated(p);
       })
       .catch(() => {
         setBusy(false);
@@ -55,52 +60,82 @@ function NewProjectModal(props: { onCreated: (name: string) => void; onClose: ()
 
   return (
     <ProjModal title={t("proj.new.heading")} onClose={onClose} kind="new">
-      <form className="proj-form" onSubmit={submit}>
-        <label className="slack-field">
-          <span className="slack-field__label">{t("proj.new.name")}</span>
-          <input
-            className="dr-input"
-            name="projName"
-            type="text"
-            value={name}
-            autoFocus
-            spellCheck={false}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </label>
-        <label className="slack-field">
-          <span className="slack-field__label">{t("proj.new.template")}</span>
-          <select className="dr-select" name="template" value={template} onChange={(e) => setTemplate(e.target.value)}>
-            <option value="">{t("proj.new.templateNone")}</option>
-            {TEMPLATES.map((tpl) => (
-              <option key={tpl} value={tpl}>
-                {tpl}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="slack-field">
-          <span className="slack-field__label">{t("proj.new.clone")}</span>
-          <input
-            className="dr-input"
-            name="clone"
-            type="text"
-            placeholder={t("proj.new.clonePh")}
-            value={clone}
-            spellCheck={false}
-            onChange={(e) => setClone(e.target.value)}
-          />
-        </label>
-        {error && <div className="slack-field__err">{error}</div>}
-        <div className="proj-form__actions">
-          <button type="button" className="dr-btn dr-btn--ghost" onClick={onClose}>
-            {t("proj.cancel")}
-          </button>
-          <button type="submit" className="dr-btn dr-btn--primary proj-new__submit" disabled={busy}>
-            {busy ? t("proj.new.creating") : t("proj.new.create")}
-          </button>
+      {!created && (
+        <form className="proj-form" onSubmit={submit}>
+          <label className="slack-field">
+            <span className="slack-field__label">{t("proj.new.name")}</span>
+            <input
+              className="dr-input"
+              name="projName"
+              type="text"
+              value={name}
+              autoFocus
+              spellCheck={false}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+          <label className="slack-field">
+            <span className="slack-field__label">{t("proj.new.template")}</span>
+            <select className="dr-select" name="template" value={template} onChange={(e) => setTemplate(e.target.value)}>
+              <option value="">{t("proj.new.templateNone")}</option>
+              {TEMPLATES.map((tpl) => (
+                <option key={tpl} value={tpl}>
+                  {tpl}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="slack-field">
+            <span className="slack-field__label">{t("proj.new.clone")}</span>
+            <input
+              className="dr-input"
+              name="clone"
+              type="text"
+              placeholder={t("proj.new.clonePh")}
+              value={clone}
+              spellCheck={false}
+              onChange={(e) => setClone(e.target.value)}
+            />
+          </label>
+          {error && <div className="slack-field__err">{error}</div>}
+          <div className="proj-form__actions">
+            <button type="button" className="dr-btn dr-btn--ghost" onClick={onClose}>
+              {t("proj.cancel")}
+            </button>
+            <button type="submit" className="dr-btn dr-btn--primary proj-new__submit" disabled={busy}>
+              {busy ? t("proj.new.creating") : t("proj.new.create")}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {created && (
+        <div className="proj-result">
+          <div className="proj-result__ok is-ok">{t("proj.new.ready")}</div>
+          <div className="proj-result__bucket is-restored">
+            <span className="proj-result__k">{t("proj.new.board")}</span>
+            <span className="proj-result__items">{created.board ?? created.name}</span>
+          </div>
+          <div className="proj-result__bucket is-fresh">
+            <span className="proj-result__k">{t("proj.new.master")}</span>
+            <span className="proj-result__items">{created.project_master?.name ?? created.default_assignee ?? "project-master"}</span>
+          </div>
+          {created.dashboardCommand && (
+            <div className="proj-result__bucket is-stale">
+              <span className="proj-result__k">{t("proj.new.dashboard")}</span>
+              <span className="proj-result__items">{created.dashboardCommand}</span>
+            </div>
+          )}
+          <div className="proj-form__actions">
+            <button type="button" className="dr-btn dr-btn--ghost" onClick={onClose}>
+              {t("proj.cancel")}
+            </button>
+            <button type="button" className="dr-btn dr-btn--primary proj-new__switch" onClick={() => onCreated(created.name)}>
+              {t("proj.new.switch")}
+            </button>
+          </div>
         </div>
-      </form>
+      )}
     </ProjModal>
   );
 }
@@ -260,7 +295,7 @@ export function ProjectSwitcher(props: {
         onClick={toggleMenu}
       >
         <span className={cx("proj-switcher__dot", statusClass(cur?.status ?? ""))} />
-        <span className="proj-switcher__name">{current ?? t("project.none")}</span>
+        <span className="proj-switcher__name">{projectLabel(cur) ?? current ?? t("project.none")}</span>
         <span className="proj-switcher__chev">▾</span>
       </button>
 
@@ -281,7 +316,7 @@ export function ProjectSwitcher(props: {
                 >
                   <span className={cx("proj-switcher__dot", statusClass(p.status))} />
                   <span className="proj-item__body">
-                    <span className="proj-item__name">{p.name}</span>
+                    <span className="proj-item__name">{projectLabel(p) ?? p.name}</span>
                     <span className="proj-item__meta">
                       {p.workspace} · {t("project.nodes", { n: p.node_count })}
                     </span>

@@ -134,11 +134,19 @@ def test_team_auth_login_session_me_csrf_and_secret_storage(tmp_path: Path) -> N
     assert "samesite=strict" in login.headers["set-cookie"].lower()
     login_payload = login.json()
     assert login_payload["member"] == {"id": "member-1", "name": "alice", "role": "admin"}
+    assert login_payload["account"] == {
+        "id": "member-1",
+        "login": "alice",
+        "display_name": "alice",
+        "role": "admin",
+        "enabled": True,
+    }
     csrf = str(login_payload["csrf"])
 
     me = client.get("/api/me")
     assert me.status_code == 200
     assert me.json()["member"]["name"] == "alice"
+    assert me.json()["account"]["login"] == "alice"
     assert client.get("/api/csrf").json()["csrf"] == csrf
     stolen_cookie = client.cookies.get(TEAM_SESSION_COOKIE)
     assert stolen_cookie is not None
@@ -2828,8 +2836,12 @@ def test_aggregate_verifies_signature_and_rejects_tampered_summary(tmp_path: Pat
     assert payload["combined"]["sources"] == 1
     assert payload["combined"]["tasks"]["total"] == 1
     assert payload["combined"]["tasks"]["by_status"] == {"ready": 1}
-    rendered = json.dumps(payload)
-    assert "999" not in rendered
+    assert "payload" not in payload["summaries"][1]
+    assert "payload" not in payload["summaries"][2]
+    trusted_payload = cast(dict[str, object], payload["summaries"][0]["payload"])
+    trusted_summary = cast(dict[str, object], trusted_payload["summary"])
+    trusted_tasks = cast(dict[str, object], trusted_summary["tasks"])
+    assert trusted_tasks["total"] == 1
 
 
 def test_aggregate_trusts_configured_summary_key_id_only(tmp_path: Path) -> None:
@@ -3622,8 +3634,20 @@ def test_projects_endpoint_lists_registry_sessions_with_tmux_status(
 
     assert response.status_code == 200
     assert response.json() == [
-        {"name": "dev10", "workspace": "/repo/dev10", "node_count": 2, "status": "running"},
-        {"name": "stopped", "workspace": "/repo/stopped", "node_count": 1, "status": "stopped"},
+        {
+            "name": "dev10",
+            "display_name": "grove-dev",
+            "workspace": "/repo/dev10",
+            "node_count": 2,
+            "status": "running",
+        },
+        {
+            "name": "stopped",
+            "display_name": "stopped",
+            "workspace": "/repo/stopped",
+            "node_count": 1,
+            "status": "stopped",
+        },
     ]
     assert calls == [
         {
@@ -3651,10 +3675,12 @@ def test_create_project_invokes_new_project_with_literal_argv(
         args: list[str],
         *,
         capture_output: bool,
-        text: bool,
+        text: bool | None = None,
         timeout: float,
         check: bool,
     ) -> subprocess.CompletedProcess[str]:
+        if args[:3] == ["tmux", "has-session", "-t"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
         calls.append(
             {
                 "args": args,
@@ -3670,9 +3696,8 @@ def test_create_project_invokes_new_project_with_literal_argv(
             stdout=json.dumps(
                 {
                     "name": "new-dev",
-                    "workspace": "/repo/new-dev",
+                    "dir": "/repo/new-dev",
                     "node_count": 0,
-                    "status": "stopped",
                 }
             ),
             stderr="",
@@ -3691,9 +3716,14 @@ def test_create_project_invokes_new_project_with_literal_argv(
     assert response.status_code == 200
     assert response.json() == {
         "name": "new-dev",
+        "display_name": "new-dev",
+        "project": "new-dev",
+        "session": "new-dev",
+        "board": "new-dev",
+        "dir": "/repo/new-dev",
         "workspace": "/repo/new-dev",
         "node_count": 1,
-        "status": "stopped",
+        "status": "running",
         "default_assignee": "project-master",
         "project_master": {
             "name": "project-master",

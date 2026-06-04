@@ -81,7 +81,7 @@ function deps(opts: { ghAuthed?: boolean; sessionExists?: boolean; template?: st
 }
 
 describe("createNewProject", () => {
-  test("creates a detached session, default workspace, and default lead node", async () => {
+  test("creates a detached session, default workspace, board, and project master", async () => {
     const state = deps();
 
     const result = await createNewProject("alpha", {}, state.deps);
@@ -99,12 +99,13 @@ describe("createNewProject", () => {
         agent: "claude",
         cwd: "/home/tester/grove-projects/alpha",
         group: "core",
-        name: "lead",
+        name: "project-master",
         session: "alpha",
       }),
     ]);
     expect(result).toEqual(
       expect.objectContaining({
+        board: { slug: "alpha" },
         dashboardCommand: "grove-web --session alpha",
         dir: "/home/tester/grove-projects/alpha",
         session: "alpha",
@@ -116,13 +117,14 @@ describe("createNewProject", () => {
     expect(JSON.parse(state.writes[0]!.text)).toEqual({
       created_at: "2026-06-03T00:00:00.000Z",
       name: "alpha",
+      board: { slug: "alpha" },
       nodes: [
         {
           agent: "claude",
           group: "core",
-          name: "lead",
-          role: "Lead the alpha project. Coordinate work and keep the team moving.",
-          session_id: "session-lead",
+          name: "project-master",
+          role: "Project master for alpha. Coordinate the project board and team.",
+          session_id: "session-project-master",
         },
       ],
       updated_at: "2026-06-03T00:00:00.000Z",
@@ -161,8 +163,18 @@ describe("createNewProject", () => {
     await createNewProject("alpha", { template: "team" }, state.deps);
 
     expect(state.readPaths).toEqual(["/home/tester/.grove/templates/team.yaml"]);
-    expect(state.spawnInputs.map((input) => input.name)).toEqual(["lead", "maker"]);
+    expect(state.spawnInputs.map((input) => input.name)).toEqual([
+      "project-master",
+      "lead",
+      "maker",
+    ]);
     expect(state.spawnInputs).toEqual([
+      expect.objectContaining({
+        agent: "claude",
+        group: "core",
+        name: "project-master",
+        role: "Project master for alpha. Coordinate the project board and team.",
+      }),
       expect.objectContaining({
         agent: "claude",
         description: "Coordinates handoffs",
@@ -179,6 +191,10 @@ describe("createNewProject", () => {
     ]);
     const projectFile = GroveProjectFileSchema.parse(JSON.parse(state.writes[0]!.text));
     expect(projectFile.nodes).toEqual([
+      expect.objectContaining({
+        name: "project-master",
+        session_id: "session-project-master",
+      }),
       expect.objectContaining({
         description: "Coordinates handoffs",
         name: "lead",
@@ -231,6 +247,7 @@ describe("createNewProject", () => {
     const result = await createNewProject("alpha", {}, state.deps);
 
     expect(renderNewProjectText(result)).toContain("session: alpha");
+    expect(renderNewProjectText(result)).toContain("board: alpha");
     expect(renderNewProjectText(result)).toContain("grove-web --session alpha");
     expect(JSON.parse(renderNewProjectJson(result))).toEqual(result);
   });

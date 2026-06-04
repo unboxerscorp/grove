@@ -827,12 +827,17 @@ const execGateInfo = () => {
 
 interface ProjectMock {
   name: string;
+  display_name?: string;
+  board?: string;
+  dashboardCommand?: string;
+  default_assignee?: string;
+  project_master?: { name: string; status: string };
   workspace: string;
   node_count: number;
   status: string;
 }
 const PROJECTS: ProjectMock[] = [
-  { name: "dev10", workspace: "~/dev/grove", node_count: 5, status: "running" },
+  { name: "dev10", display_name: "grove-dev", workspace: "~/dev/grove", node_count: 5, status: "running" },
   { name: "infra-ops", workspace: "~/dev/infra", node_count: 2, status: "idle" },
   { name: SOLO_PROJECT, workspace: "~/dev/solo", node_count: 1, status: "running" },
 ];
@@ -1831,6 +1836,11 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       diag.createdProject = body;
       const created: ProjectMock = {
         name: String(body.name ?? "untitled"),
+        display_name: String(body.name ?? "untitled"),
+        board: String(body.name ?? "untitled"),
+        dashboardCommand: `grove-web --session ${String(body.name ?? "untitled")}`,
+        default_assignee: "project-master",
+        project_master: { name: "project-master", status: "external" },
         workspace: body.clone ? `~/dev/${body.name}` : `~/dev/${body.name}`,
         node_count: 1,
         status: "running",

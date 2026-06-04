@@ -683,9 +683,16 @@ export interface Presence {
 
 export interface Project {
   name: string; // = session
+  display_name?: string;
+  project?: string;
+  session?: string;
+  board?: string;
   workspace: string;
   node_count: number;
   status: string;
+  dashboardCommand?: string;
+  default_assignee?: string;
+  project_master?: { name?: string; status?: string };
 }
 
 export interface NewProject {
