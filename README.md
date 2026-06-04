@@ -39,6 +39,14 @@ grove repair --all
   group, agent type, workspace, and model metadata.
 - **Board-based delegation** - `grove delegate <node> "<title>"` creates an assigned
   board task; the pull executor claims it and runs it in the target real session.
+- **Board query and saved views** - v1.26 adds read-only status/assignee/label
+  filters, full-text search over task title/body, pagination, and live board results.
+  Operators can save named board views; results are project-scoped, role-aware, and
+  redacted.
+- **Org and board clarity** - the org chart shows an explicit external `lead`
+  orchestrator when the registry does not already have one, and board cards show task
+  titles as primary text with long titles/summaries wrapping instead of widening
+  columns.
 - **Channels and ask-human** - Slack integration and web/chat paths route work and
   human decisions through grove tasks, comments, and unblock flows.
 - **Event-driven turn detection** - transcript/event watchers wake waits promptly,
@@ -197,6 +205,10 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
 - The v1.25 command palette is navigation-only. Cmd-K opens views/drawers or routes to
   existing gated UI; it does not create tasks, update config, send Slack messages, or
   bypass confirmations.
+- Board query/search is read-only, deterministic, paginated, project-scoped,
+  role-aware, and redacted. Missing boards or saved views return clear 404s; dev-room
+  board access stays inside the owning project and rejects cross-project board IDs.
+  Saving or deleting named views is the operator-gated, audited exception.
 - Notification routing v2 is default OFF and dry-run by default. Operator-gated config
   and audit are required before routing/escalation can move beyond simulation, and
   payloads stay redacted.

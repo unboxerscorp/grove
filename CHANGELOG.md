@@ -4,6 +4,28 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.27.0] — v1.26 (2026-06-04)
+
+Find on the board + fix the board feedback. Auto-started after v1.25.0; folds in user dashboard feedback.
+
+### Board query + saved views
+
+- **GET /api/boards/{board}/query** — read-only filter (status/assignee/label) + full-text (LIKE, parameter-bound, injection-safe) + offset pagination; project-scoped, viewer-readable, redacted, no mutation. Saved views persisted (operator/admin POST/DELETE, CSRF, audited).
+
+### Board-scope hardening + lead (user feedback)
+
+- `_resolve_board_id`: empty/invalid → 400, board outside the project scope → clear 404 "board 'X' not in project 'Y'"; empty board-id guarded. The delegate board (dev-room) is **owned by its session project** (reachable only under that scope; a foreign project header is blocked — closing a cross-project hole the adversarial review caught). `grove delegate --session dev10` works again.
+- `/api/org` now includes an external **lead/orchestrator** node (display-only, no pane/privilege) with the grove-dev/review groups under it — the dashboard Org shows the team head.
+- **Board card** shows the task **title** (not the raw id) and wraps — the raw id is a small secondary slug; long titles/ids wrap (overflow-wrap/word-break); verify asserts zero horizontal overflow.
+
+### Quality
+
+- Adversarial review: P0 cross-project dev-room alias scoped to its owner + regression-tested (dev11→dev-room blocked across tasks/query/views/board-list); query injection-safe; lead display-only. 287 py + web e2e 620/620. Continues to dogfood grove (work on the dev-room board; now actually using `grove delegate`).
+
+### Deferred (→ v1.27)
+
+- Board filter/search FE; tutorial revamp + sidebar entry; tree/GROVE logo (Codex asset); **web→node command input**; dashboard login; resilience/snapshot; MASTER node (see docs/V1_27_BRAINSTORM.md + new user directives).
+
 ## [0.26.0] — v1.25 (2026-06-04)
 
 Reach + summarize. Auto-started after v1.24.0.
