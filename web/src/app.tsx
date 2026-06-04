@@ -430,7 +430,6 @@ export function App() {
             <GroveMark />
             <div className="dr-brand__text">
               <span className="dr-brand__title">{t("brand.title")}</span>
-              <span className="dr-brand__sub">{t("brand.sub")}</span>
             </div>
           </div>
           <ProjectSwitcher

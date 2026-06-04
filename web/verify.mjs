@@ -544,8 +544,14 @@ async function main() {
       const depths = nodes.map((n) => Number(n.getAttribute("data-depth") ?? "0"));
       return {
         brand: (document.querySelector(".dr-brand__title")?.textContent ?? "").trim(),
-        markPaths: document.querySelectorAll(".dr-mark path").length,
-        markCircles: document.querySelectorAll(".dr-mark circle").length,
+        markSvgSource:
+          document
+            .querySelector('.dr-brand .dr-mark source[type="image/svg+xml"]')
+            ?.getAttribute("srcset") ?? "",
+        markPngFallback: document.querySelector(".dr-brand .dr-mark img")?.getAttribute("src") ?? "",
+        markCurrentSrc: document.querySelector(".dr-brand .dr-mark img")?.currentSrc ?? "",
+        markLoaded: (document.querySelector(".dr-brand .dr-mark img")?.naturalWidth ?? 0) > 0,
+        noDevRoomSub: !/개발실|dev room/i.test(document.querySelector(".dr-brand")?.textContent ?? ""),
         nodes: nodes.length,
         nested: depths.some((d) => d >= 1),
         roots: depths.filter((d) => d === 0).length,
@@ -3132,8 +3138,11 @@ async function main() {
 
     const batchUiOk =
       shellBatch.brand === "GROVE" &&
-      shellBatch.markPaths >= 2 &&
-      shellBatch.markCircles >= 3 &&
+      shellBatch.markSvgSource.includes("grove-icon.svg") &&
+      shellBatch.markPngFallback.includes("grove-icon.png") &&
+      shellBatch.markCurrentSrc.includes("grove-icon.svg") &&
+      shellBatch.markLoaded &&
+      shellBatch.noDevRoomSub &&
       shellBatch.nodes >= 1 &&
       shellBatch.nested &&
       shellBatch.roots >= 1 &&

@@ -109,8 +109,18 @@ button {
 }
 
 .dr-mark {
-  color: var(--amber);
-  filter: drop-shadow(0 0 7px rgba(240, 184, 96, 0.45));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  filter: drop-shadow(0 0 7px rgba(84, 199, 184, 0.32));
+}
+
+.dr-mark__img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .dr-brand__text {

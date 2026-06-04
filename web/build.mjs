@@ -7,7 +7,7 @@
 //   mock/harness.js -> standalone mock backend loaded by mock/index.html for
 //   headless verification (verify.mjs).
 import { build } from "esbuild";
-import { copyFile } from "node:fs/promises";
+import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,6 +32,9 @@ async function run() {
     sourcemap: false,
   });
   await copyFile(path.join(root, "index.html"), path.join(root, "dist/index.html"));
+  await mkdir(path.join(root, "dist", "assets"), { recursive: true });
+  await copyFile(path.join(root, "assets", "grove-icon.svg"), path.join(root, "dist", "assets", "grove-icon.svg"));
+  await copyFile(path.join(root, "assets", "grove-icon.png"), path.join(root, "dist", "assets", "grove-icon.png"));
 
   await build({
     ...shared,
