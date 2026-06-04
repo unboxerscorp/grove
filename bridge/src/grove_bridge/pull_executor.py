@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.config import (
@@ -27,6 +27,11 @@ from grove_bridge.grove import (
     first_failure_line,
     grove_metadata,
     summarize_stdout,
+)
+from grove_bridge.notification_rules import (
+    NotificationRoutingConfig,
+    NotificationRuleRunner,
+    notification_routing_config_from_mapping,
 )
 from grove_bridge.notifier import NotifierProtocol, build_notifier
 from grove_bridge.store import ClaimedTask, NotifySub, SQLiteBoardStore, Task
@@ -121,6 +126,8 @@ class BoardStoreProtocol(Protocol):
         thread_id: str = "",
         user_id: str | None = None,
     ) -> NotifySub: ...
+
+    def notification_routing_state(self, *, board: str) -> dict[str, object]: ...
 
     def add_audit_event(
         self,
@@ -264,6 +271,10 @@ class PullExecutor:
             heartbeat_interval_seconds=config.heartbeat_interval_seconds,
         )
         self.notifier = notifier or build_notifier(config.notifier)
+        self.notification_rules = NotificationRuleRunner(
+            store=cast(SQLiteBoardStore, self.store),
+            notifier=self.notifier,
+        )
         self._autopickup_last_at: dict[tuple[str, str], float] = {}
 
     def run_once(self) -> TickResult:
@@ -310,6 +321,7 @@ class PullExecutor:
                         node=node,
                     )
             remaining = self._run_autonomous_pickups(board=board, remaining=remaining, tick=result)
+            self._poll_notifications(board=board)
         return result
 
     def _run_autonomous_pickups(
@@ -656,17 +668,24 @@ class PullExecutor:
                 author="grove-bridge",
                 body=comment,
             )
-            if needs_human:
-                sub = self.store.add_notify_sub(
-                    board=board,
-                    task_id=task.id,
-                    channel_kind=self.notifier.channel_kind,
-                    room_id=self.notifier.room_id,
-                )
-                self.notifier.notify_blocked(task=task, sub=sub)
+            self._poll_notifications(board=board)
             tick.blocked += 1
         else:
             tick.terminal_conflicts += 1
+
+    def _poll_notifications(self, *, board: str) -> int:
+        routing = self._notification_routing_config(board=board)
+        return self.notification_rules.poll_board(board, routing=routing)
+
+    def _notification_routing_config(
+        self,
+        *,
+        board: str,
+    ) -> NotificationRoutingConfig | None:
+        state = self.store.notification_routing_state(board=board)
+        if state.get("configured") is not True:
+            return None
+        return notification_routing_config_from_mapping(state)
 
     def _heartbeat(self, *, board: str, claimed: ClaimedTask) -> bool:
         return self.store.heartbeat(
