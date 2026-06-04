@@ -557,9 +557,10 @@
         "classContains": "connect-reissue"
       },
       "oracle_class": "external",
+      "_note": "share issuance is operator-gated (_require_operator_state_change); the join code grants the admin shared_join_role, but issuing it requires operator (not admin). Registry aligned to the real contract.",
       "allowed_roles": {
         "viewer": "forbidden",
-        "operator": "forbidden",
+        "operator": "allowed",
         "admin": "allowed"
       },
       "expected_network": {

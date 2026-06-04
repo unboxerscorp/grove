@@ -107,17 +107,41 @@ async function tier1() {
       await vctx.close();
     }
 
-    // --- (3) operator happy-path on a reversible state-change (toggle+restore)
-    const operator = await roleSession(ctx, "operator");
-    check("operator role session is issued", operator.available, operator.reason || "");
-    if (operator.available) {
-      const opCall = roleApiCall(ctx.baseUrl, operator);
-      const before = await opCall("GET", "/api/gui-features");
-      const on = await opCall("POST", "/api/gui-features/quota", { mutation: true });
-      check("operator state-change allowed (feature toggle POST 2xx)", on.status >= 200 && on.status < 300, `HTTP ${on.status}`);
-      // restore.
-      await fetch(`${ctx.baseUrl}/api/gui-features/quota`, { method: "POST", headers: { "Content-Type": "application/json", Origin: ctx.baseUrl, ...operator.headers }, body: JSON.stringify({ enabled: false }) });
-      check("operator change restored (no residual feature state)", before.status === 200);
+    // --- (3) FULL role matrix (API axis): operator + admin contract. For every
+    // role and mutation control: allowed_roles==forbidden -> 403 (incl. admin-only
+    // controls that operator must not do); DB-backed state-change/destructive
+    // allowed -> not 401/403. external-effect/join/share "allowed" success is
+    // skipped (needs effector/valid-code stub) but their forbidden-role 403 is
+    // still asserted. Reversible globals are restored after each role.
+    const vars = { board: ctx.board, id: ctx.seedIds.ready, node: "worker", feature: "quota", name: "worker" };
+    const mutationControls = controls.controls.filter((c) => c.expected_network && c.expected_network.method !== "GET");
+    for (const role of ["operator", "admin"]) {
+      const sess = await roleSession(ctx, role);
+      check(`${role} role session is issued`, sess.available, sess.reason || "");
+      if (!sess.available) continue;
+      const call = roleApiCall(ctx.baseUrl, sess);
+      let ok = 0;
+      let total = 0;
+      for (const c of mutationControls) {
+        const exp = c.allowed_roles?.[role];
+        if (!exp) continue;
+        const net = c.expected_network;
+        const res = await call(net.method, fillPath(net.path, vars), { mutation: true });
+        if (["forbidden", "hidden_or_disabled"].includes(exp)) {
+          total += 1;
+          if (res.status === 403) ok += 1;
+          else check(`${role} denied ${c.id} (expect 403-lock)`, false, `got ${res.status}`);
+        } else if (["state-change", "destructive"].includes(c.oracle_class) && !/join|share/.test(c.id)) {
+          total += 1;
+          if (![401, 403].includes(res.status)) ok += 1;
+          else check(`${role} allowed ${c.id} (expect not 401/403)`, false, `got ${res.status}`);
+        }
+      }
+      check(`${role} role-matrix API contract holds for ${total} controls (forbidden=403, allowed=not-403)`, ok === total, `${ok}/${total}`);
+      // restore reversible globals this role may have flipped.
+      for (const [p, b] of [["/api/gui-features/quota", { enabled: false }], ["/api/execution", { kill_switch: false }]]) {
+        await fetch(`${ctx.baseUrl}${p}`, { method: "POST", headers: { "Content-Type": "application/json", Origin: ctx.baseUrl, ...sess.headers }, body: JSON.stringify(b) }).catch(() => {});
+      }
     }
   } finally {
     await browser.close();

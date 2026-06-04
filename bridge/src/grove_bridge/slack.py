@@ -91,7 +91,7 @@ class SlackWebClientProtocol(Protocol):
         thread_ts: str | None = None,
         metadata: Mapping[str, object] | None = None,
         blocks: Sequence[Mapping[str, object]] | None = None,
-    ) -> Mapping[str, object]: ...
+    ) -> object: ...
 
     def conversations_history(
         self,
@@ -493,7 +493,8 @@ class SlackSdkClient:
             metadata=metadata,
             blocks=blocks,
         )
-        ts = response.get("ts") if isinstance(response, dict) else None
+        get_value = getattr(response, "get", None)
+        ts = get_value("ts") if callable(get_value) else None
         if not isinstance(ts, str):
             raise RuntimeError("Slack response did not include ts")
         return ts

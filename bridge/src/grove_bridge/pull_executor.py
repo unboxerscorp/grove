@@ -303,6 +303,8 @@ class PullExecutor:
                     if remaining <= 0:
                         break
                     node = _execution_node(lane)
+                    if self._node_has_current_wip(board=board, node=node):
+                        continue
                     claimed = self.store.claim_next(
                         board=board,
                         assignee=lane.assignee,
@@ -508,8 +510,13 @@ class PullExecutor:
             self._autopickup_last_at[key] = last
         if last is not None and now - last < self.config.autonomous_pickup.cooldown_seconds:
             return False
-        running = self.store.list_tasks(board=board, status="running", assignee=node, limit=1)
-        return not running
+        return not self._node_has_current_wip(board=board, node=node)
+
+    def _node_has_current_wip(self, *, board: str, node: str) -> bool:
+        running = self.store.list_tasks(board=board, status="running", assignee=node, limit=10)
+        return any(
+            task.current_run_id is not None and task.claim_lock is not None for task in running
+        )
 
     def run_forever(self, stop: Callable[[], bool] | None = None) -> None:
         should_stop = stop or (lambda: False)
