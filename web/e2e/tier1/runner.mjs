@@ -163,17 +163,26 @@ async function tier2Live() {
   try {
     const page = await browser.newPage();
     await page.evaluateOnNewDocument(() => window.localStorage.setItem("grove.onboarded.v3", "1"));
-    // HARD fire-guard: any non-live_safe mutation reaching :9131 is a safety FAIL.
+    // HARD fire-guard: any non-live_safe mutation toward :9131 is intercepted and
+    // ABORTED before egress (req.abort), not merely detected after dispatch — so a
+    // forbidden external/state-change/destructive request can never reach the live
+    // cockpit, pollute the real board, or spam Slack. Only live_safe GET/HEAD continue.
     const mutationPaths = controls.controls.filter((c) => !c.live_safe && c.expected_network && c.expected_network.method !== "GET").map((c) => c.expected_network.path.replace(/\{\w+\}/g, "[^/]+"));
     const guardRe = new RegExp(`(${mutationPaths.map((p) => p.replace(/[/]/g, "\\/")).join("|")})$`);
+    const blocked = [];
     let firedForbidden = "";
+    await page.setRequestInterception(true);
     page.on("request", (req) => {
-      try {
-        const u = new URL(req.url());
-        if (req.method() !== "GET" && guardRe.test(u.pathname)) firedForbidden = `${req.method()} ${u.pathname}`;
-      } catch {
-        /* ignore */
+      let pathname = "";
+      try { pathname = new URL(req.url()).pathname; } catch { /* opaque url */ }
+      const forbidden = req.method() !== "GET" && req.method() !== "HEAD" && guardRe.test(pathname);
+      if (forbidden) {
+        firedForbidden = `${req.method()} ${pathname}`;
+        blocked.push(`${req.method()} ${pathname}`);
+        req.abort("blockedbyclient").catch(() => {});
+        return;
       }
+      req.continue().catch(() => {});
     });
     await page.goto(`${LIVE_URL}/`, { waitUntil: "networkidle2", timeout: 30000 });
     await page.waitForSelector(".devroom .dr-brand", { timeout: 20000 });
@@ -184,7 +193,29 @@ async function tier2Live() {
       await sleep(400);
     }
     check("live nav smoke: views switch without crash", true);
-    check("SAFETY: no non-live_safe mutation fired on :9131 (external/state-change/destructive blocked)", firedForbidden === "", firedForbidden);
+    check("SAFETY: no non-live_safe mutation fired on :9131 during nav smoke (external/state-change/destructive blocked)", firedForbidden === "", firedForbidden);
+    // Regression: deliberately attempt forbidden external + destructive requests and
+    // prove the guard ABORTS them (they never reach :9131). Every probe path is in
+    // guardRe (verified) so it is intercepted; nonexistent ids make any miss a
+    // harmless no-op rather than real pollution.
+    const beforeProbe = blocked.length;
+    const probe = await page.evaluate(async (base) => {
+      const out = {};
+      const tryFetch = async (name, path, body) => {
+        try {
+          const r = await fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", Origin: base }, body: JSON.stringify(body) });
+          out[name] = `reached:${r.status}`;
+        } catch (e) {
+          out[name] = /aborted|Failed to fetch|ERR_BLOCKED/.test(String(e)) ? "aborted" : `err:${e}`;
+        }
+      };
+      await tryFetch("nodeSend", "/api/nodes/__e2e_nonexistent__/send", { message: "must-be-blocked" });
+      await tryFetch("slackTest", "/api/slack/test", {});
+      await tryFetch("execKill", "/api/execution", { kill_switch: true });
+      return out;
+    }, LIVE_URL);
+    check("SAFETY regression: forbidden external/destructive requests are aborted before reaching :9131", probe.nodeSend === "aborted" && probe.slackTest === "aborted" && probe.execKill === "aborted", JSON.stringify(probe));
+    check("SAFETY regression: guard recorded the aborted forbidden requests (no live egress)", blocked.length >= beforeProbe + 3, `blocked=${blocked.length - beforeProbe}/3`);
   } finally {
     await browser.close();
   }

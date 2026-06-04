@@ -622,6 +622,34 @@ async function main() {
     }
   });
 
+  // Tier-2 HARD-BLOCK (Slack-spam / live-pollution lesson): external + destructive
+  // mutations must NEVER reach the live :9131 server. Intercept and req.abort()
+  // them; everything else (read-only/nav + the suite's bounded p2-test
+  // state-changes) continues. Recorded in liveBlocked for the regression check.
+  const liveBlocked = [];
+  // External egress (slack send/save, node send) + destructive (kill-switch,
+  // abort, despawn, delete) only. share/join/handoff/approve are internal,
+  // cockpit-gated, and exercised read-only/validation-only by the suite — not
+  // blocked (blocking them would break the disabled-state/validation steps).
+  const LIVE_HARD_BLOCK_RE =
+    /\/api\/(slack\/(test|config)|nodes\/[^/]+\/send|execution|tasks\/[^/]+\/(abort|despawn|delete))$/;
+  await page.setRequestInterception(true);
+  page.on("request", (req) => {
+    let pathname = "";
+    try {
+      pathname = new URL(req.url()).pathname;
+    } catch {
+      /* non-standard url */
+    }
+    const method = req.method();
+    if (method !== "GET" && method !== "HEAD" && LIVE_HARD_BLOCK_RE.test(pathname)) {
+      liveBlocked.push(`${method} ${pathname}`);
+      req.abort("blockedbyclient").catch(() => {});
+      return;
+    }
+    req.continue().catch(() => {});
+  });
+
   await page.evaluateOnNewDocument(() => {
     window.localStorage.setItem("grove.onboarded.v3", "1");
   });
@@ -647,6 +675,40 @@ async function main() {
       skip("admin browser role", "live :9131 is local-token; no real admin team session is exposed");
       const pollution = await dev10LiveFixtures(page);
       assertCheck("dev10 board has no p2-live fixtures before run", pollution.ok && pollution.items.length === 0, pollution.detail);
+    });
+
+    await runStep(page, "Tier-2 hard-block: external/destructive requests are aborted (no live egress)", async () => {
+      const before = liveBlocked.length;
+      // Deliberately attempt forbidden external/destructive mutations from page
+      // context; the interceptor must req.abort() each BEFORE it reaches :9131.
+      const probes = await page.evaluate(async () => {
+        const targets = [
+          ["nodeSend", "/api/nodes/worker/send", { text: "probe" }],
+          ["slackTest", "/api/slack/test", {}],
+          ["slackSave", "/api/slack/config", { app_token: "xapp-probe", bot_token: "xoxb-probe" }],
+          ["execKill", "/api/execution", { kill_switch: true }],
+        ];
+        const out = {};
+        for (const [k, p, body] of targets) {
+          try {
+            await fetch(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+            out[k] = "reached-server";
+          } catch {
+            out[k] = "aborted";
+          }
+        }
+        return out;
+      });
+      check(
+        "external/destructive page requests are aborted before reaching :9131",
+        Object.values(probes).every((v) => v === "aborted"),
+        JSON.stringify(probes),
+      );
+      check(
+        "hard-block recorded the aborted external/destructive requests (no egress)",
+        liveBlocked.length >= before + 4,
+        `${liveBlocked.length - before} blocked: ${liveBlocked.slice(before).join(", ")}`,
+      );
     });
 
     await runStep(page, "project switch to isolated p2-test", async () => {
@@ -1089,6 +1151,10 @@ async function main() {
   let remainingExpected404Console = expected404Count;
   const noisyConsole = consoleErrors.filter((line) => {
     if (/favicon/i.test(line)) return false;
+    // Expected: the Tier-2 hard-block aborts external/destructive requests, which
+    // surface as ERR_BLOCKED_BY_CLIENT console errors. These are the safety net
+    // working as intended, not a defect.
+    if (/ERR_BLOCKED_BY_CLIENT/.test(line)) return false;
     if (/Failed to load resource: the server responded with a status of 404/.test(line) && remainingExpected404Console > 0) {
       remainingExpected404Console -= 1;
       return false;
