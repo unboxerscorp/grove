@@ -729,10 +729,16 @@ export interface Presence {
 
 export interface Project {
   name: string; // = session (internal identity, e.g. "dev10")
+  display_name?: string;
+  project?: string;
+  session?: string;
+  board?: string;
   workspace: string;
   node_count: number;
   status: string;
-  display_name?: string; // v1.29 human label (e.g. "grove-dev"); falls back to name
+  dashboardCommand?: string;
+  default_assignee?: string;
+  project_master?: { name?: string; status?: string };
 }
 
 export interface NewProject {
@@ -801,12 +807,38 @@ export interface MasterChatSendBody {
 // the human reply by response_type and the FE threads conversation_id forward.
 export type MasterChatResponseType = "answer" | "preview" | "denied";
 
+export interface MasterChatFacts {
+  project?: { selected?: string; board?: string };
+  projects?: { visible?: string[] };
+  org?: {
+    node_count?: number;
+    project_master?: { name?: string; present?: boolean; default_assignee?: boolean };
+  };
+  board?: { status_counts?: Record<string, number> };
+  reviewers?: { count?: number; nodes?: string[] };
+  human?: {
+    assignee_candidates?: string[];
+    reviewers?: string[];
+    ask_human_count?: number;
+    needs_human_count?: number;
+    inbox_endpoint?: string;
+    answer_endpoint?: string;
+  };
+  delegation?: {
+    default_assignee?: string;
+    create_task_endpoint?: string;
+    watch_endpoint?: string;
+    watch_ticket_endpoint?: string;
+    watch_ticket_kind?: string;
+  };
+}
+
 export interface MasterChatResponse {
   conversation_id: string;
   request_id: string;
   response_type: MasterChatResponseType;
   classification?: string;
-  answer?: { text?: string } | null;
+  answer?: { text?: string; metadata?: { facts?: MasterChatFacts; [key: string]: unknown } } | null;
   proposal?: { summary?: string } | null;
   feedback_route?: string | { id?: string; title?: string } | null;
   operator_gate?: { reason?: string } | null;
@@ -829,6 +861,10 @@ export function masterReplyText(res: MasterChatResponse): string {
     default:
       return res.answer?.text ?? res.proposal?.summary ?? "";
   }
+}
+
+export function masterReplyFacts(res: MasterChatResponse): MasterChatFacts | undefined {
+  return res.response_type === "answer" ? res.answer?.metadata?.facts : undefined;
 }
 
 const TOKEN = window.__GROVE_SESSION_TOKEN__ ?? "";

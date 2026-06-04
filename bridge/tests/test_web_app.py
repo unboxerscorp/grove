@@ -134,11 +134,19 @@ def test_team_auth_login_session_me_csrf_and_secret_storage(tmp_path: Path) -> N
     assert "samesite=strict" in login.headers["set-cookie"].lower()
     login_payload = login.json()
     assert login_payload["member"] == {"id": "member-1", "name": "alice", "role": "admin"}
+    assert login_payload["account"] == {
+        "id": "member-1",
+        "login": "alice",
+        "display_name": "alice",
+        "role": "admin",
+        "enabled": True,
+    }
     csrf = str(login_payload["csrf"])
 
     me = client.get("/api/me")
     assert me.status_code == 200
     assert me.json()["member"]["name"] == "alice"
+    assert me.json()["account"]["login"] == "alice"
     assert client.get("/api/csrf").json()["csrf"] == csrf
     stolen_cookie = client.cookies.get(TEAM_SESSION_COOKIE)
     assert stolen_cookie is not None
@@ -1408,6 +1416,140 @@ def test_master_chat_viewer_action_denied_but_answer_allowed(tmp_path: Path) -> 
     assert denied.json()["operator_gate"]["allowed"] is False
     assert answer.status_code == 200
     assert answer.json()["response_type"] == "answer"
+
+
+def test_master_chat_answer_includes_project_board_org_and_human_facts(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "project-master": {
+                "name": "project-master",
+                "agent": "claude",
+                "role": "orchestrator",
+                "status": "external",
+                "parent": "lead",
+            },
+            "lead": {
+                "name": "lead",
+                "agent": "claude",
+                "role": "lead",
+                "status": "running",
+                "tmux_pane": "dev10:1.0",
+            },
+            "m-py": {
+                "name": "m-py",
+                "agent": "codex",
+                "role": "backend maker",
+                "parent": "project-master",
+                "group": "bridge",
+                "status": "running",
+                "tmux_pane": "dev10:1.1",
+            },
+            "r-qa": {
+                "name": "r-qa",
+                "agent": "claude",
+                "role": "reviewer",
+                "parent": "project-master",
+                "group": "review",
+                "tmux_pane": "dev10:1.2",
+            },
+            "human-lead": {
+                "name": "human-lead",
+                "agent": "human",
+                "role": "reviewer",
+                "parent": "project-master",
+                "group": "human",
+                "status": "external",
+            },
+        },
+        workspace="/repo/dev10",
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {
+            "project-master": {
+                "name": "project-master",
+                "agent": "claude",
+                "role": "orchestrator",
+                "status": "external",
+            }
+        },
+        workspace="/repo/dev11",
+    )
+    store.create_task(board="dev10", title="Ready backend", body=None, assignee="m-py")
+    store.create_task(
+        board="dev10",
+        title="Running backend",
+        body=None,
+        assignee="m-py",
+        status="running",
+    )
+    human_task = store.create_task(
+        board="dev10",
+        title="Needs human decision",
+        body=None,
+        assignee="human-lead",
+        status="blocked",
+        metadata={"needs_human": True, "reason": "Need approval"},
+    )
+    store.add_notify_sub(
+        board="dev10",
+        task_id=human_task.id,
+        channel_kind="inbox",
+        room_id="human-lead",
+        thread_id="ask-human",
+    )
+    store.create_task(
+        board="dev10",
+        title="Reviewed",
+        body=None,
+        assignee="r-qa",
+        status="done",
+    )
+    client = make_client(tmp_path, store)
+
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={"message": "리뷰어 몇 명이고 보드 task 상태 알려줘?"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response_type"] == "answer"
+    answer = payload["answer"]
+    assert answer is not None
+    text = answer["text"]
+    assert "future web route should attach" not in text
+    assert "Reviewers: 2" in text
+    assert "ready=1" in text
+    assert "running=1" in text
+    assert "blocked=1" in text
+    assert "done=1" in text
+    assert "ask-human=1" in text
+    assert "needs_human=1" in text
+    assert "project-master" in text
+    assert "human-lead" in text
+    assert "Projects: dev10, dev11" in text
+    facts = answer["metadata"]["facts"]
+    assert facts["project"] == {"selected": "dev10", "board": "dev10"}
+    assert facts["board"]["status_counts"] == {
+        "ready": 1,
+        "running": 1,
+        "blocked": 1,
+        "done": 1,
+        "archived": 0,
+    }
+    assert facts["reviewers"]["count"] == 2
+    assert facts["human"]["ask_human_count"] == 1
+    assert facts["human"]["needs_human_count"] == 1
+    assert facts["org"]["project_master"]["present"] is True
+    assert facts["projects"]["visible"] == ["dev10", "dev11"]
 
 
 def test_master_chat_rejects_missing_or_bad_payload(tmp_path: Path) -> None:
@@ -3273,8 +3415,12 @@ def test_aggregate_verifies_signature_and_rejects_tampered_summary(tmp_path: Pat
     assert payload["combined"]["sources"] == 1
     assert payload["combined"]["tasks"]["total"] == 1
     assert payload["combined"]["tasks"]["by_status"] == {"ready": 1}
-    rendered = json.dumps(payload)
-    assert "999" not in rendered
+    assert "payload" not in payload["summaries"][1]
+    assert "payload" not in payload["summaries"][2]
+    trusted_payload = cast(dict[str, object], payload["summaries"][0]["payload"])
+    trusted_summary = cast(dict[str, object], trusted_payload["summary"])
+    trusted_tasks = cast(dict[str, object], trusted_summary["tasks"])
+    assert trusted_tasks["total"] == 1
 
 
 def test_aggregate_trusts_configured_summary_key_id_only(tmp_path: Path) -> None:
@@ -4200,9 +4346,8 @@ def test_create_project_invokes_new_project_with_literal_argv(
             stdout=json.dumps(
                 {
                     "name": "new-dev",
-                    "workspace": "/repo/new-dev",
+                    "dir": "/repo/new-dev",
                     "node_count": 0,
-                    "status": "stopped",
                 }
             ),
             stderr="",
@@ -4222,9 +4367,13 @@ def test_create_project_invokes_new_project_with_literal_argv(
     assert response.json() == {
         "name": "new-dev",
         "display_name": "new-dev",
+        "project": "new-dev",
+        "session": "new-dev",
+        "board": "new-dev",
+        "dir": "/repo/new-dev",
         "workspace": "/repo/new-dev",
         "node_count": 1,
-        "status": "stopped",
+        "status": "running",
         "default_assignee": "project-master",
         "project_master": {
             "name": "project-master",
@@ -4639,6 +4788,90 @@ def test_org_distinguishes_current_delegation_snapshot_from_history(
     assert delegations["history"][0]["to"] == "worker"
     assert delegations["history"][0]["task_id"] == open_task.id
     assert "Delegation history" in delegations["history"][0]["label"]
+
+
+def test_org_payload_includes_master_and_human_routing_support(
+    tmp_path: Path,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "project-master": {
+                "name": "project-master",
+                "agent": "claude",
+                "role": "orchestrator",
+                "status": "external",
+                "parent": "lead",
+            },
+            "worker": {
+                "name": "worker",
+                "agent": "codex",
+                "role": "maker",
+                "parent": "project-master",
+                "tmux_pane": "dev10:1.1",
+            },
+            "human-reviewer": {
+                "name": "human-reviewer",
+                "agent": "human",
+                "role": "reviewer",
+                "parent": "project-master",
+                "group": "human",
+                "status": "external",
+            },
+        },
+        workspace="/repo/dev10",
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {
+            "project-master": {
+                "name": "project-master",
+                "agent": "claude",
+                "role": "orchestrator",
+                "status": "external",
+            }
+        },
+        workspace="/repo/dev11",
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/org", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    payload = response.json()
+    nodes = {node["name"]: node for node in payload["nodes"]}
+    candidates = {candidate["name"]: candidate for candidate in payload["assignee_candidates"]}
+    assert nodes["human-reviewer"]["kind"] == "human"
+    assert nodes["human-reviewer"]["status"] == "external"
+    assert candidates["human-reviewer"]["human"] is True
+    assert candidates["human-reviewer"]["reviewer"] is True
+    assert candidates["human-reviewer"]["inbox"]["endpoint"] == "/api/inbox"
+    assert payload["master_org"] == {
+        "name": "GROVE MASTER",
+        "scope": "cross_project",
+        "selected_project": "dev10",
+        "visible_projects": ["dev10", "dev11"],
+        "project_master": {
+            "name": "project-master",
+            "present": True,
+            "default_assignee": True,
+        },
+        "delegation": {
+            "default_assignee": "project-master",
+            "create_task_endpoint": "/api/boards/{board_id}/tasks",
+            "watch_endpoint": "/ws/board",
+            "watch_ticket_endpoint": "/api/ws-ticket",
+            "watch_ticket_kind": "board",
+        },
+        "human": {
+            "assignee_candidates": ["human-reviewer"],
+            "reviewers": ["human-reviewer"],
+            "inbox_endpoint": "/api/inbox",
+            "answer_endpoint": "/api/tasks/{task_id}/answer",
+        },
+    }
 
 
 def test_org_adds_external_lead_for_grouped_workers(tmp_path: Path) -> None:

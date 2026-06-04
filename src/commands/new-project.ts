@@ -44,6 +44,7 @@ export interface CloneResult {
 export interface NewProjectResult {
   session: string;
   dir: string;
+  board: { slug: string };
   template?: string;
   clone?: CloneResult;
   nodes: SpawnResult[];
@@ -111,6 +112,8 @@ const TemplateSchema = z
   })
   .strict();
 
+const PROJECT_MASTER_NODE_NAME = "project-master";
+
 function required(value: string, label: string): string {
   const trimmed = value.trim();
   if (!trimmed) throw new Error(`${label} is required`);
@@ -131,10 +134,15 @@ function defaultNodes(project: string): ProjectNodeSpec[] {
     {
       agent: "claude",
       group: "core",
-      name: "lead",
-      role: `Lead the ${project} project. Coordinate work and keep the team moving.`,
+      name: PROJECT_MASTER_NODE_NAME,
+      role: `Project master for ${project}. Coordinate the project board and team.`,
     },
   ];
+}
+
+function ensureProjectMaster(project: string, nodes: ProjectNodeSpec[]): ProjectNodeSpec[] {
+  if (nodes.some((node) => node.name === PROJECT_MASTER_NODE_NAME)) return nodes;
+  return [...defaultNodes(project), ...nodes];
 }
 
 function normalizeTemplate(raw: unknown): ProjectNodeSpec[] {
@@ -232,6 +240,7 @@ function projectFileFromNodes(
   now: string,
 ): GroveProjectFile {
   return {
+    board: { slug: name },
     created_at: now,
     name,
     nodes: specs.map((spec, index) => ({
@@ -262,7 +271,9 @@ export async function createNewProject(
   await deps.newSession(name, { cwd: dir, windowName: "main" });
 
   const templateNodes = await loadTemplate(opts.template?.trim() || undefined, deps);
-  const specs = orderNodes(templateNodes.length > 0 ? templateNodes : defaultNodes(name));
+  const specs = orderNodes(
+    templateNodes.length > 0 ? ensureProjectMaster(name, templateNodes) : defaultNodes(name),
+  );
   const ctx = contextForProject(name, dir);
   const nodes: SpawnResult[] = [];
   for (const spec of specs) {
@@ -287,6 +298,7 @@ export async function createNewProject(
 
   const dashboardCommand = `grove-web --session ${name}`;
   return {
+    board: { slug: name },
     clone,
     dashboardCommand,
     dir,
@@ -304,6 +316,7 @@ export function renderNewProjectJson(result: NewProjectResult): string {
 export function renderNewProjectText(result: NewProjectResult): string {
   const lines = [
     `session: ${result.session}`,
+    `board: ${result.board.slug}`,
     `dir: ${result.dir}`,
     `dashboard: ${result.dashboardCommand}`,
   ];

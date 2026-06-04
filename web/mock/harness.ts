@@ -128,6 +128,7 @@ const ORG_NODES: OrgNodeMock[] = [
   { name: "frontend", agent: "claude", role: "프런트엔드", parent: "root", group: "build", tmux_pane: "grove:0.2", session_id: "sess-fe", status: "idle" },
   { name: "researcher", agent: "claude", role: "리서치", parent: "root", group: "research", tmux_pane: "grove:0.3", session_id: "sess-re", status: "error" },
   { name: "docs", agent: "codex", role: "문서", parent: "backend", group: "build", tmux_pane: "grove:1.0", session_id: "sess-docs", status: "done" },
+  { name: "human-reviewer", agent: "human", role: "reviewer", parent: "root", group: "human", tmux_pane: "", session_id: "", status: "external" },
 ];
 const LEAD_NODE: OrgNodeMock = {
   name: "lead",
@@ -203,9 +204,47 @@ function isDescendant(ancestor: string, candidate: string): boolean {
 // nodes + lead/orchestrator, with project-master as the default.
 const ASSIGNEE_CANDIDATES = [
   { name: "project-master", agent: "claude", role: "orchestrator", status: "external", default: true },
-  ...ORG_NODES.map((n) => ({ name: n.name, agent: n.agent, role: n.role ?? "", status: n.status, default: false })),
+  ...ORG_NODES.map((n) => ({
+    name: n.name,
+    agent: n.agent,
+    role: n.role ?? "",
+    status: n.status,
+    default: false,
+    ...(n.agent === "human"
+      ? {
+          human: true,
+          reviewer: /review/i.test(n.role ?? ""),
+          inbox: { endpoint: "/api/inbox", answer_endpoint: "/api/tasks/{task_id}/answer", route: n.name },
+        }
+      : {}),
+  })),
   { name: "lead", agent: "claude", role: "none", status: "external", default: false },
 ];
+
+function buildMasterOrg(selected: string) {
+  const visible = PROJECTS.map((p) => p.name).sort();
+  const humans = ORG_NODES.filter((n) => n.agent === "human").map((n) => n.name).sort();
+  return {
+    name: "GROVE MASTER",
+    scope: "cross_project",
+    selected_project: selected,
+    visible_projects: visible,
+    project_master: { name: "project-master", present: true, default_assignee: true },
+    delegation: {
+      default_assignee: "project-master",
+      create_task_endpoint: "/api/boards/{board_id}/tasks",
+      watch_endpoint: "/ws/board",
+      watch_ticket_endpoint: "/api/ws-ticket",
+      watch_ticket_kind: "board",
+    },
+    human: {
+      assignee_candidates: humans,
+      reviewers: humans,
+      inbox_endpoint: "/api/inbox",
+      answer_endpoint: "/api/tasks/{task_id}/answer",
+    },
+  };
+}
 
 function buildOrg(proj = "dev10") {
   const orgNodes = [...ORG_NODES, LEAD_NODE];
@@ -213,12 +252,19 @@ function buildOrg(proj = "dev10") {
   const groups: Record<string, string[]> = {};
   for (const n of ORG_NODES) if (n.group) (groups[n.group] ??= []).push(n.name);
   return {
-    nodes: orgNodes.map((n) => ({ ...n, children: children[n.name] ?? [], ...nodeAccessFlags(n.tmux_pane) })),
+    nodes: orgNodes.map((n) => ({
+      ...n,
+      children: children[n.name] ?? [],
+      kind: n.agent === "human" ? "human" : "registry",
+      ...nodeAccessFlags(n.tmux_pane),
+      ...(n.agent === "human" ? { terminal_allowed: false, input_allowed: false, unavailable_reason: "human node has no pane" } : {}),
+    })),
     roots: orgNodes.filter((n) => !n.parent).map((n) => n.name),
     groups,
     children,
     default_assignee: "project-master",
     assignee_candidates: ASSIGNEE_CANDIDATES,
+    master_org: buildMasterOrg(proj),
     ...mockOrgExtras(proj),
   };
 }
@@ -235,6 +281,7 @@ function buildSoloOrg() {
     children: {} as Record<string, string[]>,
     default_assignee: "solo",
     assignee_candidates: [{ name: "solo", agent: "claude", role: "혼자", status: "running", default: true }],
+    master_org: buildMasterOrg(SOLO_PROJECT),
     ...mockOrgExtras(SOLO_PROJECT),
   };
 }
@@ -1049,14 +1096,18 @@ const execGateInfo = () => {
 
 interface ProjectMock {
   name: string;
+  display_name?: string;
+  board?: string;
+  dashboardCommand?: string;
+  default_assignee?: string;
+  project_master?: { name: string; status: string };
   workspace: string;
   node_count: number;
   status: string;
-  display_name: string;
 }
 // internal name (e.g. dev10) stays the identity; display_name is the human label.
 const PROJECTS: ProjectMock[] = [
-  { name: "dev10", workspace: "~/dev/grove", node_count: 5, status: "running", display_name: "grove-dev" },
+  { name: "dev10", display_name: "grove-dev", workspace: "~/dev/grove", node_count: 5, status: "running" },
   { name: "infra-ops", workspace: "~/dev/infra", node_count: 2, status: "idle", display_name: "grove-infra" },
   { name: SOLO_PROJECT, workspace: "~/dev/solo", node_count: 1, status: "running", display_name: "solo-x" },
 ];
@@ -1734,7 +1785,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       // add/create/build -> preview (proposal + requires_confirmation); else answer.
       const lower = message.toLowerCase();
       let response_type: "answer" | "preview" | "denied" = "answer";
-      let answer: { text: string } | null = null;
+      let answer: { text: string; metadata?: Record<string, unknown> } | null = null;
       let proposal: { summary: string } | null = null;
       let operator_gate: { reason: string } | null = null;
       let requires_confirmation = false;
@@ -1749,7 +1800,33 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         proposal = { summary: `proposed: ${message.slice(0, 60)} — review and confirm to proceed. (mock)` };
         requires_confirmation = true;
       } else {
-        answer = { text: `received: “${message.slice(0, 60)}” — project-master will follow up. (mock)` };
+        answer = {
+          text: `received: “${message.slice(0, 60)}” — project-master will follow up. Reviewers: 2. Board tasks: ready=1, running=1, blocked=1, done=1. Human queue: ask-human=1, needs_human=1. (mock)`,
+          metadata: {
+            facts: {
+              project: { selected: "dev10", board: "dev10" },
+              projects: { visible: PROJECTS.map((p) => p.name).sort() },
+              org: { node_count: ORG_NODES.length, project_master: { name: "project-master", present: true, default_assignee: true } },
+              board: { status_counts: { ready: 1, running: 1, blocked: 1, done: 1, archived: 0 } },
+              reviewers: { count: 2, nodes: ["human-reviewer", "researcher"] },
+              human: {
+                assignee_candidates: ["human-reviewer"],
+                reviewers: ["human-reviewer"],
+                ask_human_count: 1,
+                needs_human_count: 1,
+                inbox_endpoint: "/api/inbox",
+                answer_endpoint: "/api/tasks/{task_id}/answer",
+              },
+              delegation: {
+                default_assignee: "project-master",
+                create_task_endpoint: "/api/boards/{board_id}/tasks",
+                watch_endpoint: "/ws/board",
+                watch_ticket_endpoint: "/api/ws-ticket",
+                watch_ticket_kind: "board",
+              },
+            },
+          },
+        };
       }
       return Promise.resolve(
         json({
@@ -2136,6 +2213,10 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       diag.createdProject = body;
       const created: ProjectMock = {
         name: String(body.name ?? "untitled"),
+        board: String(body.name ?? "untitled"),
+        dashboardCommand: `grove-web --session ${String(body.name ?? "untitled")}`,
+        default_assignee: "project-master",
+        project_master: { name: "project-master", status: "external" },
         workspace: body.clone ? `~/dev/${body.name}` : `~/dev/${body.name}`,
         node_count: 1,
         status: "running",
