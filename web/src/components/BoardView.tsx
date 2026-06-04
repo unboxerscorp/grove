@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { COLUMNS, cx, initials, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
-import type { Task } from "../types";
+import type { AssigneeCandidate, Task } from "../types";
 
 const PRIORITIES = ["low", "normal", "high"] as const;
 
@@ -19,10 +19,39 @@ function AddTaskForm(props: { boardId: string; onCreated: () => void; onClose: (
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [assignee, setAssignee] = useState("");
+  const [candidates, setCandidates] = useState<AssigneeCandidate[]>([]);
   const [status, setStatus] = useState<string>(COLUMNS[0].key);
   const [priority, setPriority] = useState<string>("normal");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // assignee = a REQUIRED dropdown of the project's nodes + lead/orchestrator,
+  // defaulting to project-master (web_app.py assignee_candidates/default_assignee;
+  // falls back to /api/org nodes if the candidate list is absent). No free input.
+  useEffect(() => {
+    let alive = true;
+    api
+      .getOrg()
+      .then((o) => {
+        if (!alive) return;
+        const cands: AssigneeCandidate[] =
+          o.assignee_candidates && o.assignee_candidates.length > 0
+            ? o.assignee_candidates
+            : (o.nodes ?? []).map((n) => ({ name: n.name, role: n.role, agent: n.agent, status: n.status }));
+        setCandidates(cands);
+        const def =
+          o.default_assignee && cands.some((c) => c.name === o.default_assignee)
+            ? o.default_assignee
+            : (cands.find((c) => c.default)?.name ?? cands[0]?.name ?? "");
+        setAssignee((prev) => prev || def);
+      })
+      .catch(() => {
+        /* no candidates available — select stays empty */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,15 +103,21 @@ function AddTaskForm(props: { boardId: string; onCreated: () => void; onClose: (
         onChange={(e) => setBody(e.target.value)}
       />
       <div className="dr-addform__row">
-        <input
-          className="dr-input"
+        <select
+          className="dr-select dr-addform__assignee"
           name="assignee"
-          type="text"
-          placeholder={t("add.assignee")}
+          required
           value={assignee}
-          spellCheck={false}
+          aria-label={t("add.assignee")}
           onChange={(e) => setAssignee(e.target.value)}
-        />
+        >
+          {candidates.map((c) => (
+            <option key={c.name} value={c.name}>
+              {c.name}
+              {c.default ? ` · ${t("add.master")}` : c.role ? ` · ${c.role}` : ""}
+            </option>
+          ))}
+        </select>
         <select
           className="dr-select"
           name="status"
@@ -112,7 +147,7 @@ function AddTaskForm(props: { boardId: string; onCreated: () => void; onClose: (
       </div>
       {error && <div className="dr-addform__err">{error}</div>}
       <div className="dr-addform__actions">
-        <button type="button" className="dr-btn dr-btn--ghost" onClick={onClose}>
+        <button type="button" className="dr-btn dr-btn--ghost dr-addform__cancel" onClick={onClose}>
           {t("add.cancel")}
         </button>
         <button type="submit" className="dr-btn dr-btn--primary dr-addform__submit" disabled={busy}>
@@ -126,10 +161,11 @@ function AddTaskForm(props: { boardId: string; onCreated: () => void; onClose: (
 export function BoardView(props: {
   boardId: string;
   liveTick: number;
+  projectTick: number;
   boardLive: boolean;
   onOpenTask: (id: string) => void;
 }) {
-  const { boardId, liveTick, boardLive, onOpenTask } = props;
+  const { boardId, liveTick, projectTick, boardLive, onOpenTask } = props;
   const { t } = useI18n();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
@@ -161,7 +197,9 @@ export function BoardView(props: {
     return () => {
       alive = false;
     };
-  }, [boardId, statusFilter, assigneeFilter, liveTick, reloadKey, t]);
+    // projectTick: refetch once the project (and its X-Grove-Project header) is
+    // adopted/switched, so "default" resolves against the right project board.
+  }, [boardId, statusFilter, assigneeFilter, liveTick, projectTick, reloadKey, t]);
 
   const byColumn = useMemo(() => {
     const map: Record<string, Task[]> = {};

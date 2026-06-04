@@ -49,11 +49,24 @@ export interface OrgNode extends GroveNode {
   description?: string;
 }
 
+// One selectable task assignee (web_app.py _assignee_candidate_payload): a
+// project node or the lead/orchestrator. `default` marks the project-master.
+export interface AssigneeCandidate {
+  name: string;
+  agent?: string;
+  role?: string;
+  status?: string;
+  default?: boolean;
+}
+
 export interface Org {
   nodes: OrgNode[];
   roots: string[];
   groups?: Record<string, string[]> | string[];
   children?: Record<string, string[]>;
+  // v1.27: candidate assignees + the default (project-master) for task creation.
+  default_assignee?: string;
+  assignee_candidates?: AssigneeCandidate[];
 }
 
 export interface WsTicket {

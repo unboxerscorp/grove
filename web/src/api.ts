@@ -12,7 +12,24 @@ export interface NewTask {
   body?: string;
   assignee?: string;
   status?: string;
-  priority?: string;
+  priority?: number | string;
+}
+
+// The backend TaskCreatePayload requires `priority: int` (default 0) and a
+// non-empty `status` — a string priority like "normal" or a null/empty status is
+// the direct cause of a 422. Normalize both before POSTing so every caller is safe.
+const PRIORITY_LEVELS: Record<string, number> = { low: -10, normal: 0, high: 10 };
+function normalizePriority(value: number | string | undefined | null): number {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (/^[+-]?\d+$/.test(s)) return parseInt(s, 10);
+    if (s in PRIORITY_LEVELS) return PRIORITY_LEVELS[s]!;
+  }
+  return 0; // default — never null/undefined/""
+}
+function normalizeStatus(value: string | undefined | null): string {
+  return typeof value === "string" && value.trim() ? value.trim() : "ready";
 }
 
 export interface NewNode {
@@ -189,6 +206,15 @@ export interface Health {
 export interface NodePatch {
   parent?: string | null;
   group?: string | null;
+}
+
+// web_app.py _node_connect_payload: tmux attach/select-pane commands to connect
+// to a node's pane (the "SSH/connect" string). 404 when the node has no pane.
+export interface NodeConnect {
+  project?: string;
+  node: string;
+  tmux_target: string;
+  commands: { attach: string; select_pane?: string };
 }
 
 export interface SlackConfig {
@@ -739,11 +765,20 @@ export const api = {
   },
 
   async createTask(boardId: string, payload: NewTask): Promise<Task> {
+    // Always send a non-empty status + an INTEGER priority (default 0) — never
+    // null/undefined/"" (those 422 against the backend TaskCreatePayload).
+    const body: Record<string, unknown> = {
+      title: payload.title,
+      status: normalizeStatus(payload.status),
+      priority: normalizePriority(payload.priority),
+    };
+    if (payload.body != null && payload.body !== "") body.body = payload.body;
+    if (payload.assignee != null && payload.assignee !== "") body.assignee = payload.assignee;
     const res = await fetch(`/api/boards/${enc(boardId)}/tasks`, {
       method: "POST",
       headers: headers({ "Content-Type": "application/json" }),
       credentials: "same-origin",
-      body: JSON.stringify(payload),
+      body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`create task: HTTP ${res.status}`);
     return (await res.json()) as Task;
@@ -769,6 +804,23 @@ export const api = {
   listNodes: () => getJSON<GroveNode[]>("/api/nodes"),
 
   getOrg: () => getJSON<Org>("/api/org"),
+
+  // web→node command input (operator only; 404 when --enable-node-input is off,
+  // 429 rate-limited). The live terminal streams the result. Distinct statuses
+  // map to FIXED FE messages; the raw cause is never surfaced.
+  async sendNode(node: string, text: string): Promise<{ ok?: boolean; node?: string; tmux_pane?: string }> {
+    const res = await fetch(`/api/nodes/${enc(node)}/send`, {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error(`/api/nodes/send: HTTP ${res.status}`);
+    return (await res.json()) as { ok?: boolean; node?: string; tmux_pane?: string };
+  },
+
+  // SSH/attach connect commands for a node (any member; surfaced to operators).
+  getNodeConnect: (node: string) => getJSON<NodeConnect>(`/api/nodes/${enc(node)}/connect`),
 
   async createNode(payload: NewNode): Promise<OrgNode> {
     const res = await fetch("/api/nodes", {

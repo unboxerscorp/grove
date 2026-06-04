@@ -490,19 +490,19 @@ def test_shared_access_viewer_is_read_only_for_mutations(
 def test_rest_reads_and_writes_board_store(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     first = store.create_task(
-        board="main",
+        board="dev10",
         title="Ready task",
         body="Task body",
         assignee="grove:codex",
     )
     store.create_task(
-        board="main",
+        board="dev10",
         title="Blocked task",
         body=None,
         assignee="grove:codex",
         status="blocked",
     )
-    store.add_comment(board="main", task_id=first.id, author="maker", body="hello")
+    store.add_comment(board="dev10", task_id=first.id, author="maker", body="hello")
     client = make_client(tmp_path, store)
     headers = auth_headers(client)
 
@@ -511,7 +511,7 @@ def test_rest_reads_and_writes_board_store(tmp_path: Path) -> None:
     assert client.get("/api/status", headers=headers).json()["ok"] is True
     assert client.get("/api/boards").status_code == 401
     boards = client.get("/api/boards", headers=headers).json()
-    assert boards == [{"id": "main", "name": "main", "task_count": 2}]
+    assert boards == [{"id": "dev10", "name": "dev10", "task_count": 2}]
     tasks = client.get(
         "/api/boards/main/tasks?status=ready&assignee=grove%3Acodex",
         headers=headers,
@@ -777,7 +777,7 @@ def test_rest_creates_task_on_board(tmp_path: Path) -> None:
         json={
             "title": "New task",
             "body": "Task details",
-            "assignee": "grove:codex",
+            "assignee": "lead",
             "status": "blocked",
             "priority": 7,
         },
@@ -787,9 +787,132 @@ def test_rest_creates_task_on_board(tmp_path: Path) -> None:
     task = created.json()
     assert task["title"] == "New task"
     assert task["body"] == "Task details"
-    assert task["assignee"] == "grove:codex"
+    assert task["assignee"] == "lead"
     assert task["status"] == "blocked"
-    assert store.get_task(board="main", task_id=task["id"]).priority == 7
+    assert store.get_task(board="dev10", task_id=task["id"]).priority == 7
+
+
+def test_no_header_default_board_alias_maps_to_default_project_board(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+
+    created = client.post(
+        "/api/boards/default/tasks",
+        headers=auth_headers(client),
+        json={"title": "Default alias task"},
+    )
+
+    assert created.status_code == 200
+    task = store.get_task(board="dev10", task_id=created.json()["id"])
+    assert task.title == "Default alias task"
+    assert store.list_tasks(board="default") == []
+
+
+def test_task_create_coerces_nullable_fields_and_rejects_invalid_payloads(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client) | {"X-Grove-Project": "dev10"}
+
+    priority_null = client.post(
+        "/api/boards/default/tasks",
+        headers=headers,
+        json={"title": "Priority null", "priority": None},
+    )
+    priority_string = client.post(
+        "/api/boards/default/tasks",
+        headers=headers,
+        json={"title": "Priority string", "priority": "12"},
+    )
+    status_null = client.post(
+        "/api/boards/default/tasks",
+        headers=headers,
+        json={"title": "Status null", "status": None},
+    )
+    status_blank = client.post(
+        "/api/boards/default/tasks",
+        headers=headers,
+        json={"title": "Status blank", "status": ""},
+    )
+    unknown_assignee = client.post(
+        "/api/boards/default/tasks",
+        headers=headers,
+        json={"title": "Unknown assignee", "assignee": "random-node"},
+    )
+    missing_title = client.post(
+        "/api/boards/default/tasks",
+        headers=headers,
+        json={"priority": None},
+    )
+    bad_priority = client.post(
+        "/api/boards/default/tasks",
+        headers=headers,
+        json={"title": "Bad priority", "priority": "high"},
+    )
+
+    assert priority_null.status_code == 200
+    assert store.get_task(board="dev10", task_id=priority_null.json()["id"]).priority == 0
+    assert priority_string.status_code == 200
+    assert store.get_task(board="dev10", task_id=priority_string.json()["id"]).priority == 12
+    assert status_null.status_code == 200
+    assert status_null.json()["status"] == "ready"
+    assert status_blank.status_code == 200
+    assert status_blank.json()["status"] == "ready"
+    assert unknown_assignee.status_code == 200
+    assert "assignee" not in unknown_assignee.json()
+    assert missing_title.status_code == 422
+    assert bad_priority.status_code == 422
+
+
+def test_task_create_validates_assignee_candidates_and_lead_filter(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    worker = client.post(
+        "/api/boards/main/tasks",
+        headers=headers,
+        json={"title": "Worker task", "assignee": "worker"},
+    )
+    lead = client.post(
+        "/api/boards/main/tasks",
+        headers=headers,
+        json={"title": "Lead task", "assignee": "lead"},
+    )
+    arbitrary = client.post(
+        "/api/boards/main/tasks",
+        headers=headers,
+        json={"title": "Bad task", "assignee": "random-node"},
+    )
+    lane = client.post(
+        "/api/boards/main/tasks",
+        headers=headers,
+        json={"title": "Bad lane", "assignee": "grove:codex"},
+    )
+    lead_inbox = client.get("/api/boards/main/tasks?assignee=lead", headers=headers)
+
+    assert worker.status_code == 200
+    assert worker.json()["assignee"] == "worker"
+    assert lead.status_code == 200
+    assert lead.json()["assignee"] == "lead"
+    assert arbitrary.status_code == 200
+    assert "assignee" not in arbitrary.json()
+    assert lane.status_code == 200
+    assert "assignee" not in lane.json()
+    assert [task["id"] for task in lead_inbox.json()] == [lead.json()["id"]]
 
 
 def test_audit_endpoint_returns_assigned_task_events_with_actor(tmp_path: Path) -> None:
@@ -3449,9 +3572,48 @@ def test_create_project_invokes_new_project_with_literal_argv(
     assert response.json() == {
         "name": "new-dev",
         "workspace": "/repo/new-dev",
-        "node_count": 0,
+        "node_count": 1,
         "status": "stopped",
+        "default_assignee": "project-master",
+        "project_master": {
+            "name": "project-master",
+            "agent": "claude",
+            "tmux_pane": "",
+            "session_id": "",
+            "status": "external",
+            "role": "orchestrator",
+            "parent": "lead",
+            "group": "",
+            "description": "Project master/orchestrator.",
+        },
     }
+    registry = read_registry(tmp_path, "new-dev")
+    assert registry["workspace"] == "/repo/new-dev"
+    assert cast(dict[str, object], registry["nodes"])["project-master"] == {
+        "name": "project-master",
+        "agent": "claude",
+        "role": "orchestrator",
+        "status": "external",
+        "parent": "lead",
+        "description": "Project master/orchestrator.",
+    }
+    org = client.get(
+        "/api/org",
+        headers=auth_headers(client) | {"X-Grove-Project": "new-dev"},
+    )
+    assert org.status_code == 200
+    assert org.json()["default_assignee"] == "project-master"
+    assert [candidate["name"] for candidate in org.json()["assignee_candidates"]] == [
+        "project-master",
+        "lead",
+    ]
+    project_task = client.post(
+        "/api/boards/main/tasks",
+        headers=auth_headers(client) | {"X-Grove-Project": "new-dev"},
+        json={"title": "Master task", "assignee": "project-master"},
+    )
+    assert project_task.status_code == 200
+    assert project_task.json()["assignee"] == "project-master"
     assert calls == [
         {
             "args": [
@@ -3689,6 +3851,30 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
                 "description": "",
             },
         ],
+        "default_assignee": "lead",
+        "assignee_candidates": [
+            {
+                "name": "lead",
+                "agent": "codex",
+                "role": "lead",
+                "status": "idle",
+                "default": True,
+            },
+            {
+                "name": "qa",
+                "agent": "antigravity",
+                "role": "qa",
+                "status": "idle",
+                "default": False,
+            },
+            {
+                "name": "worker",
+                "agent": "claude",
+                "role": "builder",
+                "status": "running",
+                "default": False,
+            },
+        ],
     }
 
 
@@ -3731,6 +3917,197 @@ def test_org_adds_external_lead_for_grouped_workers(tmp_path: Path) -> None:
         {"name": "grove-dev", "parent": "lead", "nodes": ["dev"]},
         {"name": "review", "parent": "lead", "nodes": ["reviewer"]},
     ]
+    assert payload["default_assignee"] == "lead"
+    assert [candidate["name"] for candidate in payload["assignee_candidates"]] == [
+        "lead",
+        "dev",
+        "reviewer",
+    ]
+
+
+def test_node_send_default_off(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post(
+        "/api/nodes/worker/send",
+        headers=auth_headers(client),
+        json={"text": "hello"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "node input is not enabled"
+
+
+def test_node_send_uses_literal_tmux_argv_audits_redacts_and_rate_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    client = make_client(tmp_path, store, node_input_enabled=True)
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        assert capture_output is True
+        assert text is True
+        assert timeout == web_app.TMUX_TIMEOUT_SECONDS
+        assert check is False
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    secret = "xoxb-" + ("s" * 44)
+    text = f"please run {secret} /Users/chopin/private alice@example.com"
+
+    response = client.post(
+        "/api/nodes/worker/send",
+        headers=auth_headers(client),
+        json={"text": text},
+    )
+    limited = client.post(
+        "/api/nodes/worker/send",
+        headers=auth_headers(client),
+        json={"text": "again"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "project": "dev10",
+        "node": "worker",
+        "tmux_pane": "dev10:1.0",
+    }
+    assert limited.status_code == 429
+    assert calls == [
+        ["tmux", "send-keys", "-t", "dev10:1.0", "-l", "--", text],
+        ["tmux", "send-keys", "-t", "dev10:1.0", "Enter"],
+    ]
+    audits = store.list_audit_events(board="dev10", action="node-send", node="worker")
+    assert len(audits) == 1
+    rendered = json.dumps(audits[0].payload)
+    assert secret not in rendered
+    assert "/Users/chopin" not in rendered
+    assert "alice@example.com" not in rendered
+    assert "[path]" in rendered
+    assert "[pii]" in rendered
+
+
+def test_node_send_rejects_viewer_and_other_project_pane(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {
+            "worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"},
+            "other": {"name": "other", "agent": "codex", "tmux_pane": "dev11:1.0"},
+        },
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    viewer_client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        auth_mode=AuthMode.TEAM_COOKIE,
+        node_input_enabled=True,
+    )
+    login = viewer_client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+    csrf = str(login.json()["csrf"])
+    viewer = viewer_client.post(
+        "/api/nodes/worker/send",
+        headers={CSRF_HEADER: csrf},
+        json={"text": "hello"},
+    )
+    token_client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        node_input_enabled=True,
+    )
+    cross_project = token_client.post(
+        "/api/nodes/worker/send",
+        headers=auth_headers(token_client) | {"X-Grove-Project": "dev11"},
+        json={"text": "hello"},
+    )
+    invalid = token_client.post(
+        "/api/nodes/-bad/send",
+        headers=auth_headers(token_client),
+        json={"text": "hello"},
+    )
+
+    assert viewer.status_code == 403
+    assert cross_project.status_code == 404
+    assert invalid.status_code == 400
+    assert calls == []
+
+
+def test_node_connect_info_is_read_only_and_project_scoped(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"other": {"name": "other", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    before_events = store.list_events_after(cursor=0, limit=100)
+
+    response = client.get("/api/nodes/worker/connect", headers=auth_headers(client))
+    scoped = client.get(
+        "/api/nodes/worker/connect",
+        headers=auth_headers(client) | {"X-Grove-Project": "dev11"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "project": "dev10",
+        "node": "worker",
+        "tmux_target": "dev10:2.0",
+        "commands": {
+            "attach": "tmux attach -t dev10",
+            "select_pane": "tmux select-pane -t dev10:2.0",
+        },
+    }
+    assert scoped.status_code == 404
+    assert store.list_events_after(cursor=0, limit=100) == before_events
 
 
 def test_node_autopickup_toggle_persists_and_audits(tmp_path: Path) -> None:
@@ -4992,6 +5369,7 @@ def make_client(
     slack_intake_enabled: bool = False,
     retro_analytics_enabled: bool = False,
     usage_trend_enabled: bool = False,
+    node_input_enabled: bool = False,
 ) -> TestClient:
     dist = tmp_path / "dist"
     dist.mkdir(exist_ok=True)
@@ -5023,6 +5401,7 @@ def make_client(
         slack_intake_enabled=slack_intake_enabled,
         retro_analytics_enabled=retro_analytics_enabled,
         usage_trend_enabled=usage_trend_enabled,
+        node_input_enabled=node_input_enabled,
     )
     return TestClient(
         create_app(config=config, store=store),

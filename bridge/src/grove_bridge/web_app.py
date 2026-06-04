@@ -26,7 +26,7 @@ from urllib.parse import unquote, urlparse
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, status
 from fastapi.responses import FileResponse, HTMLResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
 from grove_bridge.config import default_board_db_path
@@ -77,6 +77,7 @@ except importlib.metadata.PackageNotFoundError:
 TICKET_TTL_SECONDS = 30
 POLL_INTERVAL_SECONDS = 1.0
 TMUX_TIMEOUT_SECONDS = 5.0
+NODE_INPUT_RATE_LIMIT_SECONDS = 1.0
 GROVE_SPAWN_TIMEOUT_SECONDS = 30.0
 GROVE_PROJECT_TIMEOUT_SECONDS = 30.0
 TAILSCALE_IP_TIMEOUT_SECONDS = 1.0
@@ -145,6 +146,7 @@ PROJECT_BOARD_ALIASES = frozenset({"main", "default"})
 DELEGATE_BOARD_ALIASES = frozenset({"dev-room"})
 DELEGATE_BOARD_OWNER_PROJECT = "dev10"
 LEAD_NODE_NAME = "lead"
+PROJECT_MASTER_NODE_NAME = "project-master"
 
 
 class AuthMode(StrEnum):
@@ -176,6 +178,7 @@ class WebAppConfig:
     slack_intake_enabled: bool = False
     retro_analytics_enabled: bool = False
     usage_trend_enabled: bool = False
+    node_input_enabled: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dist_dir", self.dist_dir.expanduser())
@@ -305,6 +308,24 @@ class TaskCreatePayload(BaseModel):
     status: str = Field(default="ready", min_length=1, max_length=100)
     priority: int = 0
 
+    @field_validator("status", mode="before")
+    @classmethod
+    def _coerce_blank_status(cls, value: object) -> object:
+        if value is None:
+            return "ready"
+        if isinstance(value, str) and not value.strip():
+            return "ready"
+        return value
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _coerce_nullable_priority(cls, value: object) -> object:
+        if value is None:
+            return 0
+        if isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()) is not None:
+            return int(value.strip())
+        return value
+
 
 class NodeCreatePayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
@@ -320,6 +341,10 @@ class NodeUpdatePayload(BaseModel):
     parent: str | None = Field(default=None, max_length=100)
     group: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=1000)
+
+
+class NodeSendPayload(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
 
 
 class AutoPickupTogglePayload(BaseModel):
@@ -466,6 +491,7 @@ def create_app(
     app.state.ticket_store = TicketStore()
     app.state.team_session_store = TeamSessionStore()
     app.state.team_join_code_store = TeamJoinCodeStore()
+    app.state.node_input_rate_limit = {}
     app.state.started_at = int(time.time())
     _write_web_companion(app_config, started_at=cast(int, app.state.started_at))
 
@@ -925,6 +951,18 @@ def create_app(
             detail="project mutation requires operator role",
         )
         result = _create_project(payload)
+        created_name = _project_name_from_result(result, fallback=payload.name)
+        created_config = replace(_config(request), registry_session=created_name)
+        project_master = _ensure_project_master_node(
+            created_config,
+            workspace=_project_workspace_from_result(result),
+        )
+        result = {
+            **result,
+            "node_count": _project_node_count(created_config),
+            "default_assignee": PROJECT_MASTER_NODE_NAME,
+            "project_master": project_master,
+        }
         project = resolve_project(request)
         _store(request).add_audit_event(
             board=project.board,
@@ -1155,18 +1193,20 @@ def create_app(
             raise HTTPException(status_code=400, detail="title is required")
         project = resolve_project(request)
         actor = _actor_payload(auth)
+        assignee = _validated_task_assignee(payload.assignee, project=project)
+        resolved_board = _resolve_board_id(board_id, project=project)
         task = _store(request).create_task(
-            board=_resolve_board_id(board_id, project=project),
+            board=resolved_board,
             title=title,
             body=payload.body,
-            assignee=payload.assignee,
+            assignee=assignee,
             status=payload.status,
             priority=payload.priority,
             created_by=_actor_id(actor),
         )
         if task.assignee:
             _store(request).add_audit_event(
-                board=_resolve_board_id(board_id, project=project),
+                board=resolved_board,
                 kind="audit.task.assign",
                 actor=actor,
                 action="assign",
@@ -1341,6 +1381,60 @@ def create_app(
             summary=name,
         )
         return org
+
+    @app.post("/api/nodes/{node}/send")
+    def send_node_input_endpoint(
+        request: Request,
+        node: str,
+        payload: NodeSendPayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="node input requires operator role",
+        )
+        config_value = _config(request)
+        _require_node_input_enabled(config_value)
+        project = resolve_project(request)
+        node_record = _node_record_in_project(node, config=project.config)
+        pane = node_record["tmux_pane"]
+        if not _pane_allowed(pane, config=project.config):
+            raise HTTPException(status_code=404, detail="node not found")
+        _check_node_input_rate_limit(request, project=project, node=node_record["name"])
+        try:
+            _tmux_send_text(pane, payload.text)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=_safe_log_text(str(exc)) or "tmux send failed",
+            ) from exc
+        safe_text = _safe_public_text(payload.text)
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.node.send",
+            actor=_actor_payload(auth),
+            action="node-send",
+            target={"type": "node", "id": node_record["name"], "node": node_record["name"]},
+            payload={
+                "project": project.name,
+                "node": node_record["name"],
+                "text": safe_text,
+                "length": len(payload.text),
+            },
+            summary=safe_text,
+        )
+        return {
+            "ok": True,
+            "project": project.name,
+            "node": node_record["name"],
+            "tmux_pane": pane,
+        }
+
+    @app.get("/api/nodes/{node}/connect")
+    def node_connect_endpoint(request: Request, node: str) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        node_record = _node_record_in_project(node, config=project.config)
+        return _node_connect_payload(node_record, project=project)
 
     @app.get("/api/nodes/{node}/autopickup")
     def get_node_autopickup_endpoint(request: Request, node: str) -> dict[str, object]:
@@ -4915,6 +5009,11 @@ def _require_usage_trend_enabled(config: WebAppConfig) -> None:
         raise HTTPException(status_code=404, detail="usage trend is not enabled")
 
 
+def _require_node_input_enabled(config: WebAppConfig) -> None:
+    if not config.node_input_enabled:
+        raise HTTPException(status_code=404, detail="node input is not enabled")
+
+
 def _require_answer_access(auth: AuthContext) -> None:
     _require_operator_access(auth, detail="answer requires operator role")
 
@@ -5444,6 +5543,8 @@ def _resolve_board_id(board_id: str, *, project: ProjectContext) -> str:
     if BOARD_NAME_RE.fullmatch(clean) is None:
         raise HTTPException(status_code=400, detail="invalid board id")
     if not project.from_header:
+        if clean == project.board or clean in PROJECT_BOARD_ALIASES:
+            return project.board
         return clean
     if clean == project.board or clean in PROJECT_BOARD_ALIASES:
         return project.board
@@ -5601,6 +5702,25 @@ def _project_payloads(config: WebAppConfig) -> list[dict[str, object]]:
     return projects
 
 
+def _project_name_from_result(result: Mapping[str, object], *, fallback: str) -> str:
+    raw = result.get("name")
+    if isinstance(raw, str) and PROJECT_NAME_RE.fullmatch(raw.strip()) is not None:
+        return raw.strip()
+    return _validated_node_ref(fallback, field_name="project name")
+
+
+def _project_workspace_from_result(result: Mapping[str, object]) -> str | None:
+    raw = result.get("workspace")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def _project_node_count(config: WebAppConfig) -> int:
+    raw_nodes = _load_registry(config).get("nodes")
+    return len(raw_nodes) if isinstance(raw_nodes, dict) else 0
+
+
 def _project_workspace(session_dir: Path, registry: Mapping[str, object]) -> str:
     for key in ("workspace", "workspace_path", "cwd"):
         value = _mapping_string(registry, key)
@@ -5647,6 +5767,37 @@ def _create_project(payload: ProjectCreatePayload) -> dict[str, object]:
         args.extend(["--clone", clone])
     args.append("--json")
     return _run_grove_json(args, failure_detail="grove new-project failed")
+
+
+def _ensure_project_master_node(
+    config: WebAppConfig,
+    *,
+    workspace: str | None = None,
+) -> dict[str, object]:
+    path = _registry_path(config)
+    if path.is_file():
+        registry = _read_json_mapping(path, error_detail="invalid grove registry")
+    else:
+        registry = {"session": config.registry_session, "nodes": {}}
+    if workspace is not None and _mapping_string(registry, "workspace") is None:
+        registry["workspace"] = workspace
+    raw_nodes = registry.get("nodes")
+    if not isinstance(raw_nodes, dict):
+        raw_nodes = {}
+        registry["nodes"] = raw_nodes
+    nodes = cast(dict[str, object], raw_nodes)
+    existing = _nodes_by_name(nodes).get(PROJECT_MASTER_NODE_NAME)
+    if existing is None:
+        nodes[PROJECT_MASTER_NODE_NAME] = {
+            "name": PROJECT_MASTER_NODE_NAME,
+            "agent": "claude",
+            "role": "orchestrator",
+            "status": "external",
+            "parent": LEAD_NODE_NAME,
+            "description": "Project master/orchestrator.",
+        }
+    _write_registry_atomic(path, registry)
+    return dict(_project_master_node())
 
 
 def _load_project(payload: ProjectLoadPayload) -> dict[str, object]:
@@ -5760,11 +5911,73 @@ def _registry_node_records(config: WebAppConfig) -> list[dict[str, str]]:
     return sorted(nodes, key=lambda node: node["name"])
 
 
+def _project_master_exists(config: WebAppConfig) -> bool:
+    raw_nodes = _load_registry(config).get("nodes")
+    if not isinstance(raw_nodes, dict):
+        return False
+    return PROJECT_MASTER_NODE_NAME in _nodes_by_name(cast(dict[str, object], raw_nodes))
+
+
+def _default_assignee(config: WebAppConfig) -> str:
+    return PROJECT_MASTER_NODE_NAME if _project_master_exists(config) else LEAD_NODE_NAME
+
+
+def _assignee_candidates(config: WebAppConfig) -> list[dict[str, object]]:
+    default = _default_assignee(config)
+    by_name: dict[str, dict[str, object]] = {}
+    for node in _registry_node_records(config):
+        by_name[node["name"]] = _assignee_candidate_payload(node, default=default)
+    if _project_master_exists(config):
+        master = _project_master_node()
+        by_name[PROJECT_MASTER_NODE_NAME] = _assignee_candidate_payload(master, default=default)
+    if LEAD_NODE_NAME not in by_name:
+        by_name[LEAD_NODE_NAME] = _assignee_candidate_payload(
+            _external_lead_node(),
+            default=default,
+        )
+    return sorted(
+        by_name.values(),
+        key=lambda item: (not bool(item["default"]), str(item["name"])),
+    )
+
+
+def _assignee_candidate_payload(
+    node: Mapping[str, str],
+    *,
+    default: str,
+) -> dict[str, object]:
+    return {
+        "name": node["name"],
+        "agent": node["agent"],
+        "role": node["role"],
+        "status": node["status"],
+        "default": node["name"] == default,
+    }
+
+
+def _validated_task_assignee(value: str | None, *, project: ProjectContext) -> str | None:
+    if value is None:
+        return None
+    assignee = value.strip()
+    if not assignee:
+        return None
+    if NODE_NAME_RE.fullmatch(assignee) is None:
+        return None
+    allowed = {str(candidate["name"]) for candidate in _assignee_candidates(project.config)}
+    if assignee not in allowed:
+        return None
+    return assignee
+
+
 def _org_payload(config: WebAppConfig) -> dict[str, object]:
     nodes = _registry_node_records(config)
+    if _project_master_exists(config) and not any(
+        node["name"] == PROJECT_MASTER_NODE_NAME for node in nodes
+    ):
+        nodes.append(_project_master_node())
     if not any(node["name"] == LEAD_NODE_NAME for node in nodes):
         nodes.append(_external_lead_node())
-        nodes = sorted(nodes, key=lambda node: node["name"])
+    nodes = sorted(nodes, key=lambda node: node["name"])
     names = {node["name"] for node in nodes}
     children_by_parent: dict[str, list[str]] = {name: [] for name in names}
     groups: dict[str, list[str]] = {}
@@ -5804,6 +6017,22 @@ def _org_payload(config: WebAppConfig) -> dict[str, object]:
             for group, group_nodes in sorted(groups.items())
         ],
         "nodes": graph_nodes,
+        "default_assignee": _default_assignee(config),
+        "assignee_candidates": _assignee_candidates(config),
+    }
+
+
+def _project_master_node() -> dict[str, str]:
+    return {
+        "name": PROJECT_MASTER_NODE_NAME,
+        "agent": "claude",
+        "tmux_pane": "",
+        "session_id": "",
+        "status": "external",
+        "role": "orchestrator",
+        "parent": LEAD_NODE_NAME,
+        "group": "",
+        "description": "Project master/orchestrator.",
     }
 
 
@@ -5826,6 +6055,8 @@ def _org_parent(node: Mapping[str, str], *, names: set[str]) -> str:
     parent = node["parent"]
     if name == LEAD_NODE_NAME:
         return ""
+    if name == PROJECT_MASTER_NODE_NAME and LEAD_NODE_NAME in names:
+        return LEAD_NODE_NAME
     if parent in names:
         return parent
     if node["group"] and LEAD_NODE_NAME in names:
@@ -5874,6 +6105,27 @@ def _tmux_capture(pane: str) -> bytes:
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.decode("utf-8", errors="replace").strip())
     return proc.stdout
+
+
+def _tmux_send_text(pane: str, text: str) -> None:
+    text_proc = subprocess.run(
+        ["tmux", "send-keys", "-t", pane, "-l", "--", text],
+        capture_output=True,
+        text=True,
+        timeout=TMUX_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if text_proc.returncode != 0:
+        raise RuntimeError(text_proc.stderr.strip())
+    enter_proc = subprocess.run(
+        ["tmux", "send-keys", "-t", pane, "Enter"],
+        capture_output=True,
+        text=True,
+        timeout=TMUX_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if enter_proc.returncode != 0:
+        raise RuntimeError(enter_proc.stderr.strip())
 
 
 def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str, object]:
@@ -5937,10 +6189,55 @@ def _node_name_from_spawn_result(payload: Mapping[str, object], *, fallback: str
 
 
 def _node_in_project(name: str, *, config: WebAppConfig) -> str:
+    return _node_record_in_project(name, config=config)["name"]
+
+
+def _node_record_in_project(name: str, *, config: WebAppConfig) -> dict[str, str]:
     node_name = _validated_node_ref(name, field_name="node")
-    if not any(node["name"] == node_name for node in _registry_node_records(config)):
+    for node in _registry_node_records(config):
+        if node["name"] == node_name:
+            return node
+    raise HTTPException(status_code=404, detail="node not found")
+
+
+def _node_connect_payload(
+    node: Mapping[str, str],
+    *,
+    project: ProjectContext,
+) -> dict[str, object]:
+    pane = node["tmux_pane"]
+    match = TMUX_PANE_RE.fullmatch(pane)
+    if match is None or not _pane_allowed(pane, config=project.config):
         raise HTTPException(status_code=404, detail="node not found")
-    return node_name
+    session = match.group("session")
+    return {
+        "project": project.name,
+        "node": node["name"],
+        "tmux_target": pane,
+        "commands": {
+            "attach": f"tmux attach -t {session}",
+            "select_pane": f"tmux select-pane -t {pane}",
+        },
+    }
+
+
+def _check_node_input_rate_limit(
+    request: Request,
+    *,
+    project: ProjectContext,
+    node: str,
+) -> None:
+    now = time.monotonic()
+    bucket = _node_input_rate_limit(request)
+    key = (project.name, node)
+    previous = bucket.get(key)
+    if previous is not None and now - previous < NODE_INPUT_RATE_LIMIT_SECONDS:
+        raise HTTPException(status_code=429, detail="node input rate limit exceeded")
+    bucket[key] = now
+
+
+def _node_input_rate_limit(request: Request) -> dict[tuple[str, str], float]:
+    return cast(dict[tuple[str, str], float], request.app.state.node_input_rate_limit)
 
 
 def _node_autopickup_payload(
@@ -6471,6 +6768,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Enable advisory-only usage trend and anomaly signals.",
     )
+    parser.add_argument(
+        "--enable-node-input",
+        action="store_true",
+        help="Enable operator-gated web input to exposed node panes.",
+    )
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -6501,6 +6803,7 @@ def main(argv: list[str] | None = None) -> int:
         slack_intake_enabled=args.enable_intake,
         retro_analytics_enabled=args.enable_retro_analytics,
         usage_trend_enabled=args.enable_usage_trend,
+        node_input_enabled=args.enable_node_input,
     )
     app = create_app(config=config)
     started_at = cast(int, app.state.started_at)

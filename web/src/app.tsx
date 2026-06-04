@@ -30,7 +30,7 @@ import { TaskDrawer } from "./components/TaskDrawer";
 import { TerminalPane } from "./components/TerminalPane";
 import { cx } from "./constants";
 import { useI18n } from "./i18n";
-import type { Board, GroveNode } from "./types";
+import type { GroveNode } from "./types";
 
 type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "ledger" | "insights" | "trend" | "agg" | "handoff" | "connect" | "routing" | "auth";
 
@@ -151,8 +151,9 @@ function GroveMark() {
 
 export function App() {
   const { t, lang, setLang } = useI18n();
-  const [boards, setBoards] = useState<Board[]>([]);
-  const [boardId, setBoardId] = useState<string | null>(null);
+  // The project's single board, addressed by the "default" alias (resolves to
+  // project.board server-side). Constant — never derived from /api/boards list[0].
+  const boardId = "default";
   const [nodes, setNodes] = useState<GroveNode[]>([]);
   const [selectedPane, setSelectedPane] = useState<string | null>(null);
   const [joinCode] = useState<string | null>(initialJoinCode);
@@ -269,23 +270,15 @@ export function App() {
   const switchProject = useCallback((name: string) => {
     setProject(name); // api header
     setActiveProject(name);
-    setBoardId(null);
     setSelectedPane(null);
     setProjectTick((x) => x + 1);
     setLiveTick((x) => x + 1);
   }, []);
 
-  // Boards (re-scoped per project; pick the first by default).
-  useEffect(() => {
-    api
-      .listBoards()
-      .then((b) => {
-        const list = Array.isArray(b) ? b : [];
-        setBoards(list);
-        setBoardId((prev) => prev ?? list[0]?.id ?? null);
-      })
-      .catch(() => setBoards([]));
-  }, [projectTick]);
+  // 1 project = 1 board: the dashboard always targets the active project's single
+  // board via the "default" alias — the backend (_resolve_board_id) maps it to
+  // project.board for both reads and writes. No /api/boards list[0] (which sorts
+  // slug-ASC and would pick the wrong board); context switching is per-project.
 
   // Nodes (re-scoped per project; poll).
   useEffect(() => {
@@ -461,20 +454,8 @@ export function App() {
             onSwitch={switchProject}
             onProjectsChanged={() => void loadProjects()}
           />
-          {boards.length > 0 && (
-            <select
-              className="dr-select dr-board-select"
-              value={boardId ?? ""}
-              onChange={(e) => setBoardId(e.target.value)}
-              aria-label="board"
-            >
-              {boards.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          )}
+          {/* 1 project = 1 board (v1.27): no board picker — the dashboard shows the
+              project's single board; context switching is per-project. */}
         </div>
 
         {/* Minimal top bar: command palette / presence / health / auth / language. */}
@@ -582,7 +563,7 @@ export function App() {
             <NodeList nodes={nodes} selectedPane={selectedPane} onSelect={pickNode} boardLive={boardLive} />
             <section className="dr-stage">
           {view === "board" && boardId ? (
-            <BoardView boardId={boardId} liveTick={liveTick} boardLive={boardLive} onOpenTask={setOpenTaskId} />
+            <BoardView boardId={boardId} liveTick={liveTick} projectTick={projectTick} boardLive={boardLive} onOpenTask={setOpenTaskId} />
           ) : view === "board" ? (
             <div className="dr-stage__empty">{t("stage.noBoards")}</div>
           ) : view === "team" ? (

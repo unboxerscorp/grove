@@ -8,6 +8,7 @@ import { api, b64ToBytes, wsUrl } from "../api";
 import { agentGlyph, cx } from "../constants";
 import { useI18n } from "../i18n";
 import type { TFn } from "../i18n";
+import type { NodeConnect } from "../api";
 import type { GroveNode, TerminalFrame } from "../types";
 
 type ConnState = "connecting" | "live" | "reconnecting" | "error";
@@ -47,6 +48,127 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Copyable "SSH/connect" command for a node (GET /api/nodes/{node}/connect). */
+function SshConnect({ node, t }: { node: GroveNode; t: TFn }) {
+  const [connect, setConnect] = useState<NodeConnect | null>(null);
+  const [state, setState] = useState<"idle" | "loading" | "error">("idle");
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    setConnect(null);
+    setState("idle");
+  }, [node.name]);
+  const load = () => {
+    setState("loading");
+    api
+      .getNodeConnect(node.name)
+      .then((c) => {
+        setConnect(c);
+        setState("idle");
+      })
+      .catch(() => setState("error"));
+  };
+  const cmd = connect?.commands?.attach ?? "";
+  const copy = () => {
+    void navigator.clipboard?.writeText(cmd).catch(() => {});
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <div className="dr-term__connect" data-node={node.name}>
+      {!connect ? (
+        <button type="button" className="dr-btn dr-btn--ghost dr-term__connect-btn" disabled={state === "loading"} onClick={load}>
+          🔌 {state === "loading" ? t("term.connect.loading") : t("term.connect.btn")}
+        </button>
+      ) : (
+        <span className="dr-term__connect-cmd">
+          <code className="dr-term__connect-code">{cmd}</code>
+          <button type="button" className="dr-term__connect-copy" onClick={copy}>
+            {copied ? t("term.connect.copied") : t("term.connect.copy")}
+          </button>
+        </span>
+      )}
+      {state === "error" && <span className="dr-term__connect-err">{t("term.connect.error")}</span>}
+    </div>
+  );
+}
+
+/** Operator-only web→node command input → POST /api/nodes/{node}/send. The live
+ *  terminal streams the result. Fixed error messages (no raw cause). */
+function NodeSendBox({ node, t }: { node: GroveNode; t: TFn }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<"disabled" | "forbidden" | "rate" | "failed" | null>(null);
+  const [sent, setSent] = useState(false);
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const v = text.trim();
+    if (!v || busy) return;
+    setBusy(true);
+    setErr(null);
+    api
+      .sendNode(node.name, v)
+      .then(() => {
+        setBusy(false);
+        setText("");
+        setSent(true);
+        window.setTimeout(() => setSent(false), 1500);
+      })
+      .catch((e2: unknown) => {
+        setBusy(false);
+        const m = e2 instanceof Error ? e2.message : "";
+        setErr(/\b404\b/.test(m) ? "disabled" : /\b403\b/.test(m) ? "forbidden" : /\b429\b/.test(m) ? "rate" : "failed");
+      });
+  };
+  return (
+    <form className="dr-term__send" onSubmit={submit}>
+      <input
+        className="dr-input dr-term__send-input"
+        name="nodeInput"
+        type="text"
+        placeholder={t("term.send.placeholder")}
+        value={text}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(e) => setText(e.target.value)}
+      />
+      <button type="submit" className="dr-btn dr-btn--primary dr-term__send-btn" disabled={!text.trim() || busy}>
+        {busy ? t("term.send.sending") : t("term.send.btn")}
+      </button>
+      {err && (
+        <span className="dr-term__send-err" data-send-err={err}>
+          {t(`term.send.err.${err}`)}
+        </span>
+      )}
+      {sent && <span className="dr-term__send-ok">{t("term.send.ok")}</span>}
+    </form>
+  );
+}
+
+/** Footer tools for a node: SSH connect + operator-only send box (viewer locked). */
+function TerminalTools({ node, t }: { node: GroveNode; t: TFn }) {
+  const [isViewer, setIsViewer] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api
+      .getMe()
+      .then((me) => alive && setIsViewer(me?.member?.role === "viewer"))
+      .catch(() => alive && setIsViewer(false));
+    return () => {
+      alive = false;
+    };
+  }, [node.name]);
+  return (
+    <div className="dr-term__tools">
+      <SshConnect node={node} t={t} />
+      {isViewer ? (
+        <div className="dr-term__send-viewer">{t("term.send.viewer")}</div>
+      ) : (
+        <NodeSendBox node={node} t={t} />
+      )}
+    </div>
+  );
 }
 
 export function TerminalPane({ node }: { node: GroveNode | null }) {
@@ -228,6 +350,7 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
           </div>
         )}
       </div>
+      {node && <TerminalTools node={node} t={t} />}
     </section>
   );
 }

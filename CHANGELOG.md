@@ -4,6 +4,32 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.28.0] — v1.27 (2026-06-04)
+
+Drive the whole dev loop from the web: send a command to a node from the dashboard, copy a node's SSH/connect command, and a confusion-free 1:1:1 project model. Auto-started after v1.26.0; folds in the live board-create fix the user hit.
+
+### Web → node command input
+
+- **POST /api/nodes/{node}/send** — deliver a prompt/command to a node's agent pane from the dashboard (the `grove send` equivalent). Operator/admin only (viewers rejected), project-scoped with a strict node-name + tmux-pane allowlist (pane `0.0` blocked), rate-limited, delivered as a literal `tmux send-keys -l --` argv (no shell-injection surface), and audited (actor + node + redacted text). Default **OFF**, opt-in via `--enable-node-input`.
+- FE: an operator-only **NodeSendBox** on the terminal pane (disabled for viewers); the live terminal streams the result.
+
+### Per-node connect
+
+- **GET /api/nodes/{node}/connect** — read-only, project-scoped connect info; FE renders a per-node **copy SSH/attach command** button.
+
+### 1:1:1 project model (user decision)
+
+- **1 project = 1 tmux session = 1 board.** The board-selector is removed; the dashboard always targets the active project's single board via the `default`/`main` alias, which `_resolve_board_id` maps to `project.board` for both reads and writes (now also on the no-header default-session path). New projects auto-create a **project-master** node.
+- Task **assignee** is a required dropdown of the project's nodes (+ lead / project-master), defaulting to the project-master; no free-text. `/api/org` exposes `assignee_candidates` + `default_assignee`.
+
+### Board-create reliability (live fix)
+
+- `TaskCreatePayload` tolerates a null/blank `status` (→ `ready`) and a null `priority` (→ `0`); a numeric-string priority coerces while a non-numeric one still 422s. An unknown/invalid assignee on create is now **non-fatal** (dropped to unassigned, not a 400) so an older client can't break task creation. Closes the dashboard "작업을 추가하지 못했습니다" failure (root cause: the FE sent a null body field → 422, not a board-id problem).
+
+### Internal
+
+- Spawned-node visibility: `grove spawn` now writes a canonical `session:window.pane` registry pane so the dashboard `/api/nodes` reflects every live node (previously a `%`-pane-id form was silently filtered out).
+
 ## [0.27.0] — v1.26 (2026-06-04)
 
 Find on the board + fix the board feedback. Auto-started after v1.25.0; folds in user dashboard feedback.

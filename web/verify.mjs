@@ -1240,6 +1240,92 @@ async function main() {
       n5Error === true &&
       n5NoReconnectOnAuth === true;
 
+    // V27 project model (1:1:1 + web→node + SSH): board-select removed, assignee
+    // is a required node dropdown (default project-master), operator-only web→node
+    // send box (viewer locked), copyable SSH/connect command per node. The
+    // terminal is attached to node "root" from the n5 test above.
+    await page.waitForSelector(".dr-term__tools", { timeout: 8000 });
+    // SSH connect: button -> copyable tmux attach command.
+    await page.$eval(".dr-term__connect-btn", (el) => el.click());
+    await page.waitForSelector(".dr-term__connect-code", { timeout: 6000 });
+    const sshCmd = await page.evaluate(() => ({
+      cmd: (document.querySelector(".dr-term__connect-code")?.textContent ?? "").trim(),
+      copyBtn: !!document.querySelector(".dr-term__connect-copy"),
+      fetched: window.__MOCK__?.nodeConnectFetched ?? "",
+    }));
+    // operator send box: present; sending records the POST (terminal streams it).
+    const sendBoxOperator = await page.evaluate(() => !!document.querySelector(".dr-term__send-input"));
+    await page.type(".dr-term__send-input", "echo hi");
+    await page.$eval(".dr-term__send-btn", (el) => el.click());
+    await page.waitForFunction(() => window.__MOCK__?.nodeSent != null, { timeout: 6000 });
+    const nodeSent = await page.evaluate(() => window.__MOCK__?.nodeSent ?? null);
+    // viewer lock: switch to another node as a viewer -> send box hidden + note.
+    const pickRail = (name) =>
+      page.evaluate((n) => {
+        const btn = Array.from(document.querySelectorAll(".dr-node")).find(
+          (b) => (b.querySelector(".dr-node__name")?.textContent ?? "").trim() === n,
+        );
+        btn?.click();
+      }, name);
+    await page.evaluate(() => window.__MOCK__.setViewer(true));
+    await pickRail("backend");
+    await page.waitForSelector(".dr-term__send-viewer", { timeout: 8000 });
+    const sendViewer = await page.evaluate(() => ({
+      viewerNote: !!document.querySelector(".dr-term__send-viewer"),
+      sendInput: document.querySelectorAll(".dr-term__send-input").length, // hidden for viewers
+    }));
+    await page.evaluate(() => window.__MOCK__.setViewer(false));
+    await pickRail("frontend");
+    await page.waitForSelector(".dr-term__send-input", { timeout: 8000 });
+
+    // board: no board-select + required assignee dropdown defaulting to master.
+    await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
+    await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+    await page.click(".dr-addbtn");
+    await page.waitForSelector(".dr-addform", { timeout: 5000 });
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector(".dr-addform__assignee");
+        return el && el.tagName === "SELECT" && el.value;
+      },
+      { timeout: 6000 },
+    );
+    const assignee = await page.evaluate(() => {
+      const el = document.querySelector(".dr-addform__assignee");
+      return {
+        isSelect: el?.tagName === "SELECT",
+        required: el?.required === true,
+        value: el?.value ?? "",
+        options: el ? el.querySelectorAll("option").length : 0,
+        hasMaster: el ? Array.from(el.querySelectorAll("option")).some((o) => o.value === "project-master") : false,
+        noFreeInput: !document.querySelector('.dr-addform input[name="assignee"]'),
+      };
+    });
+    await page.$eval(".dr-addform__cancel", (el) => el.click());
+    const noBoardSelect = await page.evaluate(() => document.querySelectorAll(".dr-board-select").length === 0);
+
+    const projModelOk =
+      // 1 project = 1 board: the board picker UI is gone.
+      noBoardSelect &&
+      // assignee = required dropdown, default project-master, no free input.
+      assignee.isSelect &&
+      assignee.required &&
+      assignee.value === "project-master" &&
+      assignee.options >= 2 &&
+      assignee.hasMaster &&
+      assignee.noFreeInput &&
+      // SSH/connect command (copyable).
+      /tmux attach/.test(sshCmd.cmd) &&
+      sshCmd.copyBtn &&
+      sshCmd.fetched === "root" &&
+      // operator web→node send box: records a POST.
+      sendBoxOperator &&
+      nodeSent?.node === "root" &&
+      nodeSent?.text === "echo hi" &&
+      // viewer is locked out of node input.
+      sendViewer.viewerNote &&
+      sendViewer.sendInput === 0;
+
     // Slack integration panel.
     await page.$eval('.dr-tab[data-view="integrations"]', (el) => el.click());
     await page.waitForSelector(".slack", { timeout: 8000 });
@@ -2699,6 +2785,7 @@ async function main() {
       cursorReplayOk &&
       n4Ok &&
       n5Ok &&
+      projModelOk &&
       n1Ok &&
       n2Ok &&
       teamOk &&
@@ -2774,6 +2861,8 @@ async function main() {
       n4NoReconnect,
       n4SparkOff,
       n5Ok,
+      projModelOk,
+      projModel: { noBoardSelect, assignee, sshCmd, sendBoxOperator, nodeSent, sendViewer },
       n5Reconnecting,
       n5Relive,
       n5TermReconnected,

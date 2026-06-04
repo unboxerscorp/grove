@@ -10,6 +10,7 @@ viewable, talk-to-able terminal session, not an invisible runtime.
 ```bash
 grove up                         # start the org chart in tmux
 grove-web --port 8765            # open the dev-room web SPA + dashboard APIs
+grove-web --enable-node-input     # optional: operator-gated web input to node panes
 grove serve --port 8787          # optional local OpenAI-compatible chat facade
 grove delegate maker-1 "Fix auth retry handling" --body "Add tests and report risks."
 grove ask reviewer "Review the current diff"
@@ -39,10 +40,21 @@ grove repair --all
   group, agent type, workspace, and model metadata.
 - **Board-based delegation** - `grove delegate <node> "<title>"` creates an assigned
   board task; the pull executor claims it and runs it in the target real session.
+- **Project room model** - v1.27 makes the dashboard use one active project, one tmux
+  session, and one project board. The old board selector is gone; the `"default"` board
+  alias resolves to the active project's board. New projects get a `project-master`
+  node, and new task creation uses a required assignee dropdown that defaults to it.
 - **Board query and saved views** - v1.26 adds read-only status/assignee/label
   filters, full-text search over task title/body, pagination, and live board results.
   Operators can save named board views; results are project-scoped, role-aware, and
   redacted.
+- **Web-to-node input** - v1.27 can send a prompt or command from a node's terminal
+  panel to that node's tmux pane when `grove-web --enable-node-input` is set. It is
+  operator-gated, project/pane allowlisted, rate-limited, sent as literal tmux input,
+  and audited with redaction.
+- **Node connect copy** - each terminal panel can fetch `GET /api/nodes/{node}/connect`
+  and copy a read-only tmux attach/select-pane command for that node. It exposes
+  connection strings only for nodes in the current project scope.
 - **Org and board clarity** - the org chart shows an explicit external `lead`
   orchestrator when the registry does not already have one, and board cards show task
   titles as primary text with long titles/summaries wrapping instead of widening
@@ -151,6 +163,16 @@ If grove is installed globally or linked, use `grove` in place of `node dist/cli
 The dashboard/API server is the Python bridge console script `grove-web`, declared in
 `bridge/pyproject.toml` and backed by `grove_bridge.web_app`.
 
+`grove-web` shows one board per active project. The `"default"` board alias resolves
+to that project's board; switching projects switches the board, nodes, and terminal
+scope together.
+
+To enable the web terminal's operator-only send box:
+
+```bash
+uv run --project bridge grove-web --port 8765 --enable-node-input
+```
+
 To expose a local chat facade for tools that speak OpenAI-compatible chat completions:
 
 ```bash
@@ -209,6 +231,17 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   role-aware, and redacted. Missing boards or saved views return clear 404s; dev-room
   board access stays inside the owning project and rejects cross-project board IDs.
   Saving or deleting named views is the operator-gated, audited exception.
+- The dashboard follows a 1:1:1 project model: one project, one tmux session, one
+  board. The `"default"` alias resolves to the active project board, not a global
+  board picker. New task forms require choosing an assignee from project candidates;
+  unknown assignees are omitted rather than accepted as free text.
+- Web-to-node input is default OFF (`--enable-node-input`). When enabled, sends require
+  operator/admin role, project-scoped pane allowlisting, rate limiting, literal tmux
+  input (`send-keys -l`), and audit/redaction; viewers can still watch terminals but
+  cannot send.
+- Node connect commands are read-only and project-scoped. `GET /api/nodes/{node}/connect`
+  returns attach/select-pane strings for an authorized node; it does not expose tokens
+  or grant extra tmux privileges.
 - Notification routing v2 is default OFF and dry-run by default. Operator-gated config
   and audit are required before routing/escalation can move beyond simulation, and
   payloads stay redacted.

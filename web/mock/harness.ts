@@ -99,6 +99,14 @@ function isDescendant(ancestor: string, candidate: string): boolean {
   return false;
 }
 
+// v1.27 assignee candidates (mirror web_app.py _assignee_candidates): project
+// nodes + lead/orchestrator, with project-master as the default.
+const ASSIGNEE_CANDIDATES = [
+  { name: "project-master", agent: "claude", role: "orchestrator", status: "external", default: true },
+  ...ORG_NODES.map((n) => ({ name: n.name, agent: n.agent, role: n.role ?? "", status: n.status, default: false })),
+  { name: "lead", agent: "claude", role: "none", status: "external", default: false },
+];
+
 function buildOrg() {
   const children = childMap();
   const groups: Record<string, string[]> = {};
@@ -108,6 +116,8 @@ function buildOrg() {
     roots: ORG_NODES.filter((n) => !n.parent).map((n) => n.name),
     groups,
     children,
+    default_assignee: "project-master",
+    assignee_candidates: ASSIGNEE_CANDIDATES,
   };
 }
 
@@ -121,6 +131,8 @@ function buildSoloOrg() {
     roots: ["solo"],
     groups: {} as Record<string, string[]>,
     children: {} as Record<string, string[]>,
+    default_assignee: "solo",
+    assignee_candidates: [{ name: "solo", agent: "claude", role: "혼자", status: "running", default: true }],
   };
 }
 
@@ -321,6 +333,13 @@ diag.setExecutionGlobal = (enabled: boolean, killSwitch: boolean): void => {
 let viewerMode = false;
 diag.setViewer = (on: boolean): void => {
   viewerMode = on;
+};
+
+// v1.27 web→node input (--enable-node-input). default ON so the box is
+// exercisable; diag.setNodeInput(false) -> 404. diag.nodeSendRateLimited -> 429.
+let nodeInputEnabled = true;
+diag.setNodeInput = (on: boolean): void => {
+  nodeInputEnabled = on;
 };
 
 // Summary export / aggregation. Default ENABLED for the view; verify flips it OFF
@@ -1575,7 +1594,12 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 
   let m = p.match(/^\/api\/boards\/([^/]+)\/tasks$/);
   if (m) {
-    const board = decodeURIComponent(m[1]!);
+    const rawBoard = decodeURIComponent(m[1]!);
+    const boardProj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    // Mirror web_app.py _resolve_board_id: the "default"/"main" alias resolves to
+    // the active project's single board (project.board) for both reads and writes.
+    const projectBoard = boardProj === SOLO_PROJECT ? "solo-x" : "grove";
+    const board = rawBoard === "default" || rawBoard === "main" ? projectBoard : rawBoard;
     if (method === "POST") {
       const payload = (init?.body ? JSON.parse(init.body as string) : {}) as Partial<MockTask>;
       const created: MockTask = {
@@ -1777,6 +1801,48 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"];
     if (proj === SOLO_PROJECT) return Promise.resolve(json(SOLO_NODES.map(basicNode)));
     return Promise.resolve(json(ORG_NODES.map(basicNode)));
+  }
+
+  m = p.match(/^\/api\/nodes\/([^/]+)\/send$/);
+  if (m && method === "POST") {
+    // Mirrors web_app.py send_node_input_endpoint: operator-only (403 viewer),
+    // 404 when --enable-node-input is off / node unknown, 429 rate-limited. On
+    // success the live terminal streams the result; returns {ok,project,node,pane}.
+    const node = decodeURIComponent(m[1]!).trim();
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const reject = (status: number, detail: string) =>
+      Promise.resolve(new Response(JSON.stringify({ detail }), { status }));
+    if (viewerMode) return reject(403, "node input requires operator role");
+    if (!nodeInputEnabled) return reject(404, "node input is not enabled");
+    const projNodes = proj === SOLO_PROJECT ? SOLO_NODES : ORG_NODES;
+    const rec = projNodes.find((n) => n.name === node);
+    if (!rec) return reject(404, "node not found");
+    if (diag.nodeSendRateLimited) return reject(429, "node input rate limit exceeded");
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as { text?: string };
+    diag.nodeSent = { node, text: typeof body.text === "string" ? body.text : "" };
+    return Promise.resolve(json({ ok: true, project: proj, node, tmux_pane: rec.tmux_pane }));
+  }
+
+  m = p.match(/^\/api\/nodes\/([^/]+)\/connect$/);
+  if (m) {
+    // Mirrors web_app.py node_connect_endpoint/_node_connect_payload: any member
+    // can read the tmux attach/select-pane connect commands; 404 unknown node.
+    const node = decodeURIComponent(m[1]!).trim();
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const projNodes = proj === SOLO_PROJECT ? SOLO_NODES : ORG_NODES;
+    const rec = projNodes.find((n) => n.name === node);
+    if (!rec)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "node not found" }), { status: 404 }));
+    diag.nodeConnectFetched = node;
+    const session = rec.tmux_pane.split(":")[0];
+    return Promise.resolve(
+      json({
+        project: proj,
+        node,
+        tmux_target: rec.tmux_pane,
+        commands: { attach: `tmux attach -t ${session}`, select_pane: `tmux select-pane -t ${rec.tmux_pane}` },
+      }),
+    );
   }
 
   m = p.match(/^\/api\/nodes\/([^/]+)\/autopickup$/);
