@@ -20,8 +20,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useI18n } from "../i18n";
 import type { Lang } from "../i18n";
-import { api, masterReplyText } from "../api";
-import type { MasterChatMessage } from "../api";
+import { api, masterReplyFacts, masterReplyText } from "../api";
+import type { MasterChatFacts, MasterChatMessage } from "../api";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 type ChatRole = "user" | "master";
@@ -33,6 +33,7 @@ interface ChatMessage {
   text: string;
   ts: number; // epoch ms
   status: ChatStatus;
+  facts?: MasterChatFacts;
 }
 
 type Upsert = (m: ChatMessage) => void;
@@ -104,6 +105,46 @@ function TypingDots() {
   );
 }
 
+const FACT_STATUSES = ["ready", "running", "blocked", "done"] as const;
+
+function MasterFacts({ facts }: { facts?: MasterChatFacts }) {
+  if (!facts) return null;
+  const statusCounts = facts.board?.status_counts ?? {};
+  const statusItems = FACT_STATUSES.map((status) => [status, statusCounts[status]] as const).filter(
+    ([, count]) => typeof count === "number" && count > 0,
+  );
+  const reviewers = facts.reviewers?.count;
+  const askHuman = facts.human?.ask_human_count;
+  const needsHuman = facts.human?.needs_human_count;
+  const projects = facts.projects?.visible ?? [];
+  const humans = facts.human?.assignee_candidates ?? [];
+  const masterName = facts.org?.project_master?.name;
+  const hasFacts =
+    statusItems.length > 0 ||
+    typeof reviewers === "number" ||
+    typeof askHuman === "number" ||
+    typeof needsHuman === "number" ||
+    projects.length > 0 ||
+    humans.length > 0 ||
+    !!masterName;
+  if (!hasFacts) return null;
+  return (
+    <div className="dr-mchat__facts" data-master-facts="true">
+      {masterName && <span className="dr-mchat__fact">MASTER {masterName}</span>}
+      {typeof reviewers === "number" && <span className="dr-mchat__fact">reviewers {reviewers}</span>}
+      {statusItems.map(([status, count]) => (
+        <span key={status} className="dr-mchat__fact">
+          {status} {count}
+        </span>
+      ))}
+      {typeof askHuman === "number" && <span className="dr-mchat__fact">ask-human {askHuman}</span>}
+      {typeof needsHuman === "number" && <span className="dr-mchat__fact">needs-human {needsHuman}</span>}
+      {humans.length > 0 && <span className="dr-mchat__fact">human {humans.join(", ")}</span>}
+      {projects.length > 0 && <span className="dr-mchat__fact">projects {projects.join(", ")}</span>}
+    </div>
+  );
+}
+
 function MessageBubble({
   msg,
   lang,
@@ -122,6 +163,7 @@ function MessageBubble({
       <div className="dr-mchat__bubble">
         {empty && msg.status === "pending" ? <TypingDots /> : msg.text}
       </div>
+      {!isUser && <MasterFacts facts={msg.facts} />}
       <div className={`dr-mchat__meta${msg.status === "error" ? " dr-mchat__meta--error" : ""}`}>
         <span>{isUser ? t("mchat.you") : t("mchat.master")}</span>
         {msg.status === "error" ? (
@@ -142,7 +184,8 @@ function MessageBubble({
 }
 
 // ── main widget ─────────────────────────────────────────────────────────────────
-export function MasterChat() {
+export function MasterChat(props: { openSignal?: number } = {}) {
+  const { openSignal = 0 } = props;
   const { t, lang } = useI18n();
 
   const [role, setRole] = useState<"loading" | "operator" | "viewer">("loading");
@@ -165,6 +208,10 @@ export function MasterChat() {
       mounted.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (openSignal > 0) setOpen(true);
+  }, [openSignal]);
 
   // operator-only gate — fails CLOSED: the launcher shows only on a successful
   // /api/me with a non-viewer member (local-token member null = operator). A
@@ -256,6 +303,7 @@ export function MasterChat() {
               text: replyText,
               ts: Date.now(),
               status: "sent",
+              facts: masterReplyFacts(res),
             });
           }
         })
