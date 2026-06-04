@@ -2,7 +2,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const pexec = promisify(execFile);
-const PANE_TARGET_FORMAT = "#{session_name}:#{window_index}.#{pane_id}";
+const PANE_ID_FORMAT = "#{pane_id}";
+const PANE_INDEX_TARGET_FORMAT = "#{session_name}:#{window_index}.#{pane_index}";
+const WINDOW_PANE_INDEX_FORMAT = "#{window_index}.#{pane_index}";
 
 export interface TmuxError extends Error {
   stderr?: string;
@@ -48,7 +50,7 @@ export function detachedNewWindowPaneArgs(req: DetachedPaneRequest): string[] {
     "-d",
     "-P",
     "-F",
-    PANE_TARGET_FORMAT,
+    PANE_ID_FORMAT,
     "-t",
     req.session,
     "-n",
@@ -64,7 +66,7 @@ export function detachedSplitPaneArgs(req: DetachedPaneRequest): string[] {
     "-d",
     "-P",
     "-F",
-    PANE_TARGET_FORMAT,
+    PANE_ID_FORMAT,
     "-t",
     target(req.session, req.window),
   ];
@@ -144,7 +146,14 @@ export async function newSession(
 }
 
 export async function paneTarget(addr: string): Promise<string> {
-  return (await tmux(["display-message", "-t", addr, "-p", PANE_TARGET_FORMAT])).trim();
+  return (await tmux(["display-message", "-t", addr, "-p", PANE_INDEX_TARGET_FORMAT])).trim();
+}
+
+async function paneIndexTarget(session: string, paneId: string): Promise<string> {
+  const windowPane = (
+    await tmux(["display-message", "-t", paneId, "-p", WINDOW_PANE_INDEX_FORMAT])
+  ).trim();
+  return `${session}:${windowPane}`;
 }
 
 export async function createDetachedPane(req: CreateDetachedPaneRequest): Promise<string> {
@@ -157,16 +166,17 @@ export async function createDetachedPane(req: CreateDetachedPaneRequest): Promis
   }
 
   if (req.window) {
-    const pane = (
+    const paneId = (
       await tmux(detachedSplitPaneArgs({ cwd: req.cwd, session: req.session, window }))
     ).trim();
     await tmux(tiledLayoutArgs(req.session, window));
-    return pane;
+    return paneIndexTarget(req.session, paneId);
   }
 
-  return (
+  const paneId = (
     await tmux(detachedNewWindowPaneArgs({ cwd: req.cwd, session: req.session, window }))
   ).trim();
+  return paneIndexTarget(req.session, paneId);
 }
 
 export async function listWindows(session: string): Promise<string[]> {

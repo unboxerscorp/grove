@@ -142,12 +142,12 @@ describe("cmdRebind", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.mocked(loadContext).mockReturnValue(loaded);
     vi.mocked(planTranscriptRebinds).mockReturnValue({ skipped: [], updates: [] });
-    vi.mocked(paneTarget).mockResolvedValue("dev10:1.%7");
+    vi.mocked(paneTarget).mockResolvedValue("dev10:1.7");
 
     await cmdRebind({});
 
     expect(paneTarget).toHaveBeenCalledWith("dev10:1.2");
-    expect(loaded.registry.nodes.viewer?.tmux_pane).toBe("dev10:1.%7");
+    expect(loaded.registry.nodes.viewer?.tmux_pane).toBe("dev10:1.7");
     expect(saveRegistry).toHaveBeenCalledWith(loaded.registry);
   });
 });

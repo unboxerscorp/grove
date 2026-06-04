@@ -21,7 +21,7 @@ vi.mock("./tmux.js", () => ({
   newSession: vi.fn(async () => undefined),
   newWindow: vi.fn(async () => undefined),
   paneCommand: vi.fn(async () => "zsh"),
-  paneTarget: vi.fn(async (addr: string) => addr.replace(/\.(\d+)$/, ".%$1")),
+  paneTarget: vi.fn(async (addr: string) => addr),
   sendEnter: vi.fn(async () => undefined),
   sendLiteral: vi.fn(async () => undefined),
   sendText: vi.fn(async () => undefined),
@@ -121,7 +121,7 @@ describe("bringUp registry tmux pane metadata", () => {
 
     expect(ctx.registry.nodes.viewer).toEqual(
       expect.objectContaining({
-        tmux_pane: "dev10:1.%2",
+        tmux_pane: "dev10:1.2",
       }),
     );
   });
@@ -135,13 +135,13 @@ describe("bringUp registry tmux pane metadata", () => {
     await bringUp(ctx);
 
     expect(vi.mocked(sendText)).toHaveBeenCalledWith(
-      "dev10:1.%2",
+      "dev10:1.2",
       "cd '/tmp/grove dir; rm -rf nope'",
     );
     expect(ctx.registry.nodes.viewer).toEqual(
       expect.objectContaining({
         sessionId: "session-new",
-        tmux_pane: "dev10:1.%2",
+        tmux_pane: "dev10:1.2",
         transcript: "/tmp/grove/session-new.jsonl",
       }),
     );
@@ -181,7 +181,7 @@ describe("bringUp registry tmux pane metadata", () => {
         description: "Coordinates handoffs",
         group: "core",
         role: "Lead",
-        tmux_pane: "dev10:1.%1",
+        tmux_pane: "dev10:1.1",
       }),
     );
     expect(ctx.registry.nodes.maker).toEqual(
@@ -214,7 +214,7 @@ describe("bringUp registry tmux pane metadata", () => {
         description: "Runtime note",
         group: "runtime",
         role: "Runtime role",
-        tmux_pane: "dev10:1.%1",
+        tmux_pane: "dev10:1.1",
       }),
     );
   });

@@ -21,7 +21,9 @@ import {
   tiledLayoutArgs,
 } from "./tmux.js";
 
-const TARGET_FORMAT = "#{session_name}:#{window_index}.#{pane_id}";
+const PANE_ID_FORMAT = "#{pane_id}";
+const PANE_INDEX_TARGET_FORMAT = "#{session_name}:#{window_index}.#{pane_index}";
+const WINDOW_PANE_INDEX_FORMAT = "#{window_index}.#{pane_index}";
 const pexec = promisify(execFile);
 
 type ExecFileCallback = (
@@ -113,18 +115,57 @@ function resolveWindow(session: FakeSession, spec?: string): FakeWindow {
   return window;
 }
 
-function resolveTarget(targetValue: string): { session: FakeSession; window: FakeWindow } {
-  const [sessionName, windowSpec] = cleanSessionTarget(targetValue).split(":", 2);
-  const session = sessionByName(sessionName ?? "");
-  return { session, window: resolveWindow(session, windowSpec) };
+function findPaneById(paneId: string): {
+  session: FakeSession;
+  window: FakeWindow;
+  pane: FakePane;
+} {
+  const id = Number.parseInt(paneId.replace(/^%/, ""), 10);
+  for (const session of sessions.values()) {
+    for (const window of session.windows) {
+      const pane = window.panes.find((candidate) => candidate.id === id);
+      if (pane) return { pane, session, window };
+    }
+  }
+  throw fail(`no such pane: ${paneId}`);
 }
 
-function formatPaneTarget(
+function resolveTarget(targetValue: string): {
+  session: FakeSession;
+  window: FakeWindow;
+  pane: FakePane;
+} {
+  const cleaned = cleanSessionTarget(targetValue);
+  if (cleaned.startsWith("%")) return findPaneById(cleaned);
+  const [sessionName, windowSpec] = cleaned.split(":", 2);
+  const session = sessionByName(sessionName ?? "");
+  const window = resolveWindow(session, windowSpec);
+  const paneSpec = windowSpec?.split(".", 2)[1];
+  if (paneSpec?.startsWith("%")) return { ...findPaneById(paneSpec), session, window };
+  const paneIndex = paneSpec === undefined ? 0 : Number.parseInt(paneSpec, 10);
+  const pane = window.panes[paneIndex];
+  if (!pane) throw fail(`no such pane: ${targetValue}`);
+  return { pane, session, window };
+}
+
+function paneIndex(window: FakeWindow, pane: FakePane): number {
+  const index = window.panes.indexOf(pane);
+  if (index < 0) throw fail(`pane not in window: ${pane.id}`);
+  return index;
+}
+
+function formatTmux(
+  format: string | undefined,
   session: FakeSession,
   window: FakeWindow,
-  pane = window.panes[0]!,
+  pane: FakePane,
 ): string {
-  return `${session.name}:${window.index}.%${pane.id}`;
+  if (format === PANE_ID_FORMAT) return `%${pane.id}\n`;
+  if (format === PANE_INDEX_TARGET_FORMAT) {
+    return `${session.name}:${window.index}.${paneIndex(window, pane)}\n`;
+  }
+  if (format === WINDOW_PANE_INDEX_FORMAT) return `${window.index}.${paneIndex(window, pane)}\n`;
+  throw fail(`unsupported format: ${format ?? ""}`);
 }
 
 function listWindowNames(session: FakeSession): string {
@@ -155,7 +196,9 @@ function runFakeTmux(args: string[]): string {
     const session = sessionByName(argAfter(args, "-t") ?? "");
     const window = addWindow(session, argAfter(args, "-n") ?? String(session.windows.length));
     if (!args.includes("-d")) session.activeWindow = window.index;
-    return args.includes("-P") ? `${formatPaneTarget(session, window)}\n` : "";
+    return args.includes("-P")
+      ? formatTmux(argAfter(args, "-F") ?? "", session, window, window.panes[0]!)
+      : "";
   }
 
   if (command === "split-window") {
@@ -163,7 +206,7 @@ function runFakeTmux(args: string[]): string {
     const pane = { id: nextPaneId++ };
     window.panes.push(pane);
     if (!args.includes("-d")) session.activeWindow = window.index;
-    return args.includes("-P") ? `${formatPaneTarget(session, window, pane)}\n` : "";
+    return args.includes("-P") ? formatTmux(argAfter(args, "-F") ?? "", session, window, pane) : "";
   }
 
   if (command === "select-window") {
@@ -178,12 +221,11 @@ function runFakeTmux(args: string[]): string {
 
   if (command === "display-message") {
     const targetValue = argAfter(args, "-t") ?? "";
-    const { session, window } = resolveTarget(targetValue);
+    const { pane, session, window } = resolveTarget(targetValue);
     const format = args[args.length - 1];
     if (format === "#{window_index}:#{window_name}") return `${window.index}:${window.name}\n`;
     if (format === "#{session_name}:#{window_index}") return `${session.name}:${window.index}\n`;
-    if (format === TARGET_FORMAT) return `${formatPaneTarget(session, window)}\n`;
-    throw fail(`unsupported display format: ${format ?? ""}`);
+    return formatTmux(format, session, window, pane);
   }
 
   if (command === "list-windows") {
@@ -240,7 +282,7 @@ describe("tmux detached pane commands", () => {
     expect(await killPane("")).toBe(false);
   });
 
-  test("builds a detached new-window command that prints the full pane target", () => {
+  test("builds a detached new-window command that prints the pane id for normalization", () => {
     expect(
       detachedNewWindowPaneArgs({
         cwd: "/repo",
@@ -252,7 +294,7 @@ describe("tmux detached pane commands", () => {
       "-d",
       "-P",
       "-F",
-      TARGET_FORMAT,
+      PANE_ID_FORMAT,
       "-t",
       "dev10",
       "-n",
@@ -269,7 +311,17 @@ describe("tmux detached pane commands", () => {
         session: "dev10",
         window: "lead",
       }),
-    ).toEqual(["split-window", "-d", "-P", "-F", TARGET_FORMAT, "-t", "dev10:lead", "-c", "/repo"]);
+    ).toEqual([
+      "split-window",
+      "-d",
+      "-P",
+      "-F",
+      PANE_ID_FORMAT,
+      "-t",
+      "dev10:lead",
+      "-c",
+      "/repo",
+    ]);
     expect(tiledLayoutArgs("dev10", "lead")).toEqual([
       "select-layout",
       "-t",
@@ -338,7 +390,7 @@ describe("tmux detached pane commands", () => {
     }
   });
 
-  test("returns stable unique pane-id targets for multiple splits in the same window", async () => {
+  test("returns canonical numeric pane targets for multiple splits in the same window", async () => {
     if (!(await tmuxAvailable())) return;
     const session = `grove-split-test-${process.pid}-${Date.now()}`;
     await tmux(["new-session", "-d", "-s", session, "-n", "one"]);
@@ -356,8 +408,8 @@ describe("tmux detached pane commands", () => {
         window: "one",
       });
       expect(pane1).not.toBe(pane2);
-      expect(pane1).toMatch(new RegExp(`^${session}:0\\.%\\d+$`));
-      expect(pane2).toMatch(new RegExp(`^${session}:0\\.%\\d+$`));
+      expect(pane1).toMatch(new RegExp(`^${session}:0\\.\\d+$`));
+      expect(pane2).toMatch(new RegExp(`^${session}:0\\.\\d+$`));
     } finally {
       await tmux(["kill-session", "-t", `=${session}`]);
     }

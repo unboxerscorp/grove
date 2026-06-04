@@ -128,7 +128,7 @@ function deps(agent = adapter({ "/repo/ok.jsonl": 10 })): {
       paneTarget: async (addr) => {
         paneTargets.push(addr);
         if (addr === "dev10:old.%5") throw new Error("pane not found");
-        if (addr === "dev10:1.2") return "dev10:1.%7";
+        if (addr === "dev10:1.2") return "dev10:1.7";
         if (addr === "dev10:gone.%8") throw new Error("pane not found");
         return addr;
       },
@@ -157,10 +157,10 @@ describe("repairNodes", () => {
 
     expect(state.guardSessions).toEqual(["dev10"]);
     expect(state.paneTargets).toEqual(["dev10:old.%5", "dev10:1.2"]);
-    expect(ctx.registry.nodes.dead?.tmux_pane).toBe("dev10:1.%7");
+    expect(ctx.registry.nodes.dead?.tmux_pane).toBe("dev10:1.7");
     expect(result.recovered).toEqual([
       expect.objectContaining({
-        after: "dev10:1.%7",
+        after: "dev10:1.7",
         before: "dev10:old.%5",
         kind: "pane",
         node: "dead",

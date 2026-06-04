@@ -6,7 +6,7 @@ import { target } from "./tmux.js";
 export interface NodeCtx {
   node: ResolvedNode;
   adapter: AgentAdapter;
-  /** tmux target, preferably the stable "session:window.%pane_id" form. */
+  /** tmux target, preferably the canonical "session:window.pane" form. */
   addr: string;
 }
 
