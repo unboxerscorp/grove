@@ -1,116 +1,170 @@
-# 🌳 grove
+# grove
 
-**Grow a tree of AI agents in your terminal.**
+**A standalone, self-contained dev-room / team-OS for real CLI agents.**
 
-Declare an org-chart of [Claude Code](https://claude.com/claude-code) and [Codex](https://openai.com/codex) agents in one YAML file. Bring the whole tree up in tmux with a single command. Any node can delegate work to its children and collect their results through a uniform protocol — so a Claude "lead" can drive a pool of Codex makers, which can each drive their own reviewers, recursively.
-
-You watch the entire fleet think, live, in tmux panes.
+grove runs a tree of `codex`, `claude`, and `agy` CLI sessions in tmux, then gives the
+team one web cockpit: a kanban board, channels, live terminal panes, decision inbox,
+audit lane, usage reporting, and safety controls. Every agent you see is a real,
+viewable, talk-to-able terminal session, not an invisible runtime.
 
 ```bash
-grove up                       # spawn the whole tree in tmux
-grove status                   # see every node + what it's doing
-grove ask maker-1 "fix the failing test in auth.service.ts"
-grove send reviewer "review the diff on branch hotfix"
+grove up                         # start the org chart in tmux
+grove-web --port 8765            # open the dev-room web SPA + dashboard APIs
+grove serve --port 8787          # optional local OpenAI-compatible chat facade
+grove delegate maker-1 "Fix auth retry handling" --body "Add tests and report risks."
+grove ask reviewer "Review the current diff"
+grove repair --all
 ```
 
-## Why
+## What ships today
 
-One agent in one terminal is a chat. A _tree_ of agents is an org. grove gives you the org:
-
-- **Declarative** — the org-chart is a file (`grove.yaml`), versioned with your repo.
-- **Heterogeneous** — mix `claude` and `codex` nodes freely. Each is just a node.
-- **Uniform protocol** — `send` a task, `wait` for the result. Works the same for every agent type via pluggable **adapters**.
-- **Live** — every node is a real interactive TUI in a tmux pane. Attach and watch, or drive it programmatically.
-- **Resumable** — nodes resume their prior session (full context intact) across restarts.
-- **Recursive** — any node that has `grove` can address its own children. The tree grows itself.
+- **Real tmux agent tree** - bring up an org chart of `codex`, `claude`, and `agy`
+  nodes; each node is a live tmux pane with adapter-specific turn detection.
+- **Web dev-room SPA** - `grove-web` serves the board, org chart, live terminal viewer, project switcher,
+  auth/status panels, audit drawer, cost/usage views, execution timeline, aggregation,
+  and handoff surfaces.
+- **Chat-completions facade** - `grove serve` is a local OpenAI-compatible
+  `/v1/chat/completions` SSE facade backed by selected grove nodes. It is not the
+  dashboard server.
+- **Org-chart spawn/up** - create nodes from the CLI or dashboard with role, parent,
+  group, agent type, workspace, and model metadata.
+- **Board-based delegation** - `grove delegate <node> "<title>"` creates an assigned
+  board task; the pull executor claims it and runs it in the target real session.
+- **Channels and ask-human** - Slack integration and web/chat paths route work and
+  human decisions through grove tasks, comments, and unblock flows.
+- **Event-driven turn detection** - transcript/event watchers wake waits promptly,
+  with deadline-bounded fallbacks so waits do not hang forever.
+- **Repair and lifecycle tools** - `repair`, `rebind`, and `despawn` recover stale
+  pane bindings, reattach broken transcripts, and tear down nodes safely.
+- **Project portability** - `new-project`, `load-project`, `export-project`, and
+  `import-project` support local project rooms and portable bundles with machine-local
+  paths, sessions, transcripts, and secrets stripped.
+- **Onboarding and team auth** - onboarding wizard, stable local tokens, optional real
+  team auth with server-side sessions, CSRF, member roles, logout, and role-gated UI/API.
+- **Audit, inbox, presence, notifications** - actor-aware audit events, decision inbox,
+  board cursor replay, presence, notification rules, and deduped ask-human/blocked alerts.
+- **Routing planner** - read-only `/api/plan` recommends candidate nodes using role,
+  capability, load, and cost signals. It never claims, delegates, or spawns by itself.
+- **Guarded autonomy** - autonomous pickup and the guarded execution loop are shipped
+  but default OFF. Execution requires both gates, an approval step, concurrency 1,
+  multi-level kill-switch checks, and prepared dispatch lease validation.
+- **Slack safety commands** - Slack `status`, `approve`, `abort`, and `killswitch`
+  are default OFF, role-gated, preview-then-confirm, one-shot, audited, and redacted.
+- **Usage and timeline** - `/api/usage` reports run usage by node/day with source and
+  warnings; agy cost/credit is reported as unknown when no local source exists, never
+  fabricated. Execution timeline shows step and Gantt-style durations from audit data.
+- **Signed read-only aggregation** - default OFF multi-machine summaries use HMAC
+  signatures, trusted `key_id`s, freshness checks, count allowlists, and no raw task
+  bodies, comments, transcripts, paths, tokens, or member PII.
+- **Signed cross-room handoff** - default OFF handoff exports signed, privacy-allowlisted
+  task packages. The receiver verifies and explicitly accepts locally; the sender never
+  creates or executes work remotely.
+- **Tailnet shared access** - v1.18 shared access is default OFF and tailnet-scoped:
+  peers join with per-user identity, roles, CSRF-protected sessions, and audit. Work
+  uses the host machine's local CLI credentials and capacity; it is not public internet
+  access and not per-user sandboxing.
 
 ## Concepts
 
+```text
+grove.yaml / project scaffold
+  |
+  +-- node: one tmux pane running one agent CLI (codex | claude | agy)
+  +-- board task: the delegation protocol between humans, leads, and nodes
+  +-- run: a claimed task executed in a real session
+  +-- comment: task discussion, human answers, and execution notes
+  +-- audit event: actor + action + target + timestamp for important mutations
 ```
-grove.yaml                     the org-chart you declare
-   │
-   ├── node = one tmux window running one agent (claude | codex)
-   ├── send/wait = the message bus (send-keys in, transcript-tail out)
-   └── adapter = per-agent-type plumbing: launch · detect-done · read-result
-```
 
-A **node** is one agent instance. It has a name, an agent type, an optional role prompt, and optional children. The **root** is whoever has no parent — a human, or a conductor agent.
-
-An **adapter** teaches grove how to talk to one kind of agent. Adding a new agent type = implementing three operations: how to launch it, how to know it finished a turn, and how to read what it said. Two adapters ship today:
-
-| agent    | launch                 | "turn done" signal                             |
-| -------- | ---------------------- | ---------------------------------------------- |
-| `codex`  | `codex resume <id>`    | `task_complete` event in the session jsonl     |
-| `claude` | `claude --resume <id>` | assistant message with `stop_reason: end_turn` |
+The board is the source of truth for delegated work. Orchestrators assign by creating
+tasks; executors claim, heartbeat, complete, block, unblock, and comment. The dashboard
+is a cockpit over that same state, plus live terminals for the actual sessions.
 
 ## Quick start
 
-```bash
-pnpm add -g grove          # or: npx grove
-grove init                 # scaffold grove.yaml + a protocol doc for your root agent
-grove up                   # bring the tree up
-grove status
-```
-
-## Development gate
-
-Install Node dependencies with `pnpm install`. Install pre-commit hooks with:
+From the repository:
 
 ```bash
-pnpm hooks:install
+pnpm install
+pnpm build
+node dist/cli.js init
+node dist/cli.js up
+uv run --project bridge grove-web --port 8765
 ```
 
-The single local verification gate is:
+If grove is installed globally or linked, use `grove` in place of `node dist/cli.js`.
+The dashboard/API server is the Python bridge console script `grove-web`, declared in
+`bridge/pyproject.toml` and backed by `grove_bridge.web_app`.
+
+To expose a local chat facade for tools that speak OpenAI-compatible chat completions:
+
+```bash
+node dist/cli.js serve --port 8787
+```
+
+For local development, run the full gate before handing off:
 
 ```bash
 pnpm check
 ```
 
-It runs Prettier, ESLint, TypeScript typecheck, Vitest, Ruff, Ruff format, mypy strict,
-and pytest. Python checks run through `uv`; install it with `brew install uv` or the
-installer documented at <https://docs.astral.sh/uv/getting-started/installation/>.
+`pnpm check` runs Prettier, ESLint, TypeScript typecheck, Vitest, Ruff, Ruff format,
+mypy strict, and pytest. Python checks use `uv`.
 
-### `grove.yaml`
+## Common commands
 
-```yaml
-session: my-project # tmux session name
-cwd: /path/to/repo # default working dir for every node
-defaults:
-  agent: codex
-  model: gpt-5.5
+| command                           | purpose                                        |
+| --------------------------------- | ---------------------------------------------- |
+| `grove-web [--port 8765]`         | run the dev-room web SPA and dashboard APIs    |
+| `grove init`                      | scaffold a starter org chart and protocol docs |
+| `grove new-project <name>`        | create a local project room                    |
+| `grove load-project <path>`       | load an existing project room                  |
+| `grove up [--config f]`           | start or adopt the tmux org chart              |
+| `grove serve [--port 8787]`       | run a local OpenAI-compatible chat facade      |
+| `grove status`                    | show node state, liveness, and recent activity |
+| `grove spawn <node>`              | create a persistent node                       |
+| `grove delegate <node> "<title>"` | create an assigned board task                  |
+| `grove send <node> "<msg>"`       | send a non-blocking message to a node          |
+| `grove wait <node>`               | wait for the node's current turn to finish     |
+| `grove ask <node> "<msg>"`        | send and wait in one command                   |
+| `grove tail <node>`               | follow a node transcript live                  |
+| `grove session <node>`            | print resolved session and transcript metadata |
+| `grove repair [--all]`            | recover stale pane/session bindings            |
+| `grove rebind <node>`             | re-resolve a node's pane/session binding       |
+| `grove despawn <node>`            | safely remove a node pane and registry entry   |
+| `grove export-project`            | write a portable, redacted project bundle      |
+| `grove import-project <bundle>`   | recreate a project from a portable bundle      |
 
-nodes:
-  lead:
-    agent: claude
-    role: |
-      You are the lead. Delegate implementation to maker-1/maker-2 with
-      `grove send <node> "<task>"` and collect results with `grove wait <node>`.
-    children: [maker-1, maker-2, reviewer]
+## Safety defaults
 
-  maker-1: { role: "Feature & bug implementation." }
-  maker-2: { role: "Feature & bug implementation." }
-  reviewer:
-    agent: claude
-    role: "Read-only code review. Never edit."
-```
+grove is built for local-first operation. The sharp edges are deliberately opt-in:
 
-## Commands
+- Team auth is optional; loopback use stays frictionless, non-loopback access requires
+  explicit auth/bind choices.
+- Shared access is default OFF, tailnet-scoped, per-user, role-gated, CSRF-protected,
+  and audited.
+- Autonomous pickup and guarded execution are default OFF and require explicit gates,
+  approval, concurrency 1, kill-switch checks, and prepared dispatch validation.
+- Slack safety commands are default OFF and require role-gated preview/confirm.
+- Multi-machine aggregation is read-only and default OFF.
+- Cross-room handoff is data transfer only and default OFF; receiver-local accept is
+  required before any task is created.
+- Cost numbers are source-tagged. agy credit/cost is unknown unless locally available;
+  grove does not invent estimates.
+- The dashboard and APIs are served by `grove-web`, not `grove serve`. Tailnet
+  shared-access belongs to `grove-web --shared-access --allow-host <host>`.
 
-| command                     | what it does                                                                                  |
-| --------------------------- | --------------------------------------------------------------------------------------------- |
-| `grove up [--config f]`     | create the tmux session and bring up every node (idempotent — adopts already-running windows) |
-| `grove down`                | kill the session                                                                              |
-| `grove status`              | tree view of every node: agent, tmux state, last event                                        |
-| `grove send <node> "<msg>"` | give a node a task (non-blocking)                                                             |
-| `grove wait <node>`         | block until the node finishes its current turn, print the result                              |
-| `grove ask <node> "<msg>"`  | `send` + `wait` in one shot                                                                   |
-| `grove tail <node>`         | follow a node's output live                                                                   |
-| `grove session <node>`      | print a node's resolved session id + transcript path                                          |
-| `grove init`                | scaffold a `grove.yaml` and a delegation-protocol doc                                         |
+## Security notes
 
-## Status
-
-Early. The `codex` adapter is battle-tested (it grew out of an 8-node fleet shipping a real SaaS); the `claude` adapter is new. Interactive-tmux mode is the focus; headless (`claude -p` / `codex exec`) structured I/O is on the roadmap.
+- Tokens, member registries, project state, stable dashboard tokens, and signing keys
+  live outside git under local state directories.
+- Sensitive files are written with restrictive permissions; signing keys are created
+  race-safely and stored `0600`.
+- Signed summaries and handoffs expose `key_id`, never the secret key.
+- API responses and task metadata redact tokens, common secret formats, absolute paths,
+  email PII where relevant, and raw execution details on safety surfaces.
+- Non-loopback bearer-token egress is guarded; remote URLs require explicit opt-in where
+  supported.
 
 ## License
 
