@@ -174,7 +174,10 @@ grove.yaml / project scaffold
 
 The board is the source of truth for delegated work. Orchestrators assign by creating
 tasks; executors claim, heartbeat, complete, block, unblock, and comment. The dashboard
-is a cockpit over that same state, plus live terminals for the actual sessions.
+is a cockpit over that same state, plus live terminals for the actual sessions. The
+default workflow is ready -> in_progress/running -> review -> done, with blocked and
+ask-human surfaced explicitly; legacy running/complete-style aliases are normalized for
+display so old tasks still render.
 
 ## Quick start
 

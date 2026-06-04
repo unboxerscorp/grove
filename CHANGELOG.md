@@ -4,6 +4,26 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.31.0] — v1.30 (2026-06-04)
+
+Four features harvested in parallel (worktree-isolated orchestrators), merged after per-branch sync. Auto-started after v1.29.0.
+
+### Slack bot — human channel
+
+- The Slack config panel now documents bot usage + available commands + the intake flow (Block Kit). The bot is the human-node communication channel: humans hand bugs/feedback/tasks in Slack; answers flow back. (`/api/slack/test` still being upgraded from a stub to a real send.)
+
+### GROVE MASTER chat — real answers + cross-project org
+
+- master-chat now attaches scoped project/org/board facts to produce real answers (not a stub). The org view gains the **cross-project GROVE MASTER** root (click → chat) with other projects' leads as standalone nodes (click → switch), and **human-as-node** (a human is assignable; tasks route to the inbox, answered via comment).
+
+### Auth + project lifecycle
+
+- Dashboard **login** + session model (replacing the injected-token bootstrap), **project lifecycle** (create / GitHub import via `new-project --clone`, 1:1:1 session+board+project-master), and a project **display name** (e.g. show dev10 as "grove-dev").
+
+### GUI for everything + branding
+
+- **GUI feature toggles**: enable/disable flag-gated features (intake, quotas, node-input, …) from the Setup panel (operator-gated, persisted) instead of CLI flags. Batch UI polish: node-list indentation/hierarchy, org task-count badges, per-column "+" add buttons, tutorial revamp. The **GROVE logo** (`GroveMark`, tree icon + wordmark) replaces the "개발실" text.
+
 ## [0.30.0] — v1.29 (2026-06-04)
 
 Immortal tasks + a board that never lies. Stabilization wave: the kanban model is now the source of truth, with hardened tests. Auto-started after v1.28.0.
