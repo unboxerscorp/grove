@@ -4,6 +4,45 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.17.0] — v1.16 (2026-06-04)
+
+See many rooms in one view. Auto-started after v1.15.0. Read-only and privacy-first —
+observation only, no cross-machine control. Default OFF.
+
+### Signed read-only summary + aggregation
+
+- **GET /api/summary** (default OFF, token + project-scoped) exports a signed, privacy-
+  allowlisted summary: board/node/task/run COUNTS only, every count key drawn from an enum
+  allowlist (status, agent) with anything else folded into an "other" bucket — no arbitrary
+  string, secret, token, path, member PII, task body, or transcript content. HMAC-signed; the
+  response carries key_id, never the key (stored O_EXCL + 0600).
+- **POST /api/aggregate** verifies each submitted summary against a key resolved by its key_id
+  from a trusted key set (local + optional summary-trusted-keys.json); unknown/missing key_id or
+  a tampered signature → untrusted; a timestamp past the freshness window → stale; beyond a 60s
+  clock-skew constant → untrusted. Untrusted/stale are excluded from the combined view; the
+  combined view re-applies the allowlist. Observe-only — no mutation, no cross-machine control.
+
+### Aggregation view
+
+- A "집계" tab: per-room cards with counts, a trust badge (trusted/untrusted) and a freshness
+  badge (fresh/stale + relative time); untrusted/stale rooms are marked "excluded from combined"
+  — never shown as live. Only key_id is shown (never signature/key). The multi-room path is real:
+  paste another grove's signed summary to add a peer, then own + peers are submitted to
+  /api/aggregate. Disabled export renders a fixed "off" notice.
+
+### Quality / safety
+
+- Adversarial review hardened privacy + trust: P1 value-allowlist (count keys were arbitrary
+  strings → enum + "other"), P1 key_id trust model (per-source verification, unknown → untrusted),
+  P1 mock/FE aggregate contract drift (mock now processes the actually-submitted summaries, not
+  fabricated rooms), clock-skew constant. 243 py tests; web e2e 327/327 (+51 for the endpoints,
+  with canonical signing + tamper/unknown/stale/future cases).
+
+### Deferred (→ v1.17)
+
+- Signed cross-room handoff contract, retro analytics, usage/cost trend reporting v2,
+  notification routing v2 (see docs/V1_17_BRAINSTORM.md).
+
 ## [0.16.0] — v1.15 (2026-06-04)
 
 Observe & report. Auto-started after v1.14.0. Read-only — no new mutation or autonomy.
