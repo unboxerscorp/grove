@@ -4,6 +4,53 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.14.0] — v1.13 (2026-06-04)
+
+The guarded autonomous execution loop. Auto-started after v1.12.0. Built safety-first over
+a 5-round adversarial review — the loop closes only behind every gate.
+
+### Guarded execution loop (default OFF)
+
+- A claimed task can move claimed → preflight → approval-pending → (approve) → executing →
+  verify → complete, with abort/rollback safe terminals. Safety is enforced at the DB at
+  runtime, not just in config:
+  - **Default OFF + both gates** — execution is a separate flag from autopickup; the execute
+    path and every transition require BOTH ON.
+  - **Approval gate** — a preflighted task waits in approval-pending; no path reaches
+    executing without an explicit approve.
+  - **Concurrency 1** — per-assignee executing lease in BEGIN IMMEDIATE.
+  - **Multi-level kill-switch** — global/board/node/task, checked at every transition and at
+    dispatch; a mid-flight flip aborts (heartbeat re-checks both gates).
+  - **Prepared two-phase dispatch** — the helper spawns held and execs only after it
+    re-validates a one-shot dispatch lease in a single immediate transaction (gate + state +
+    approved + run/node/token + expiry + consumed_at). Absent/invalid lease is fail-closed;
+    the lease rides the Popen env and never leaves the server. Residual post-consume flip is
+    a mid-flight kill, caught by the heartbeat dual-gate.
+  - **release_stale** resets execution metadata + audits; every transition is audited with
+    recursive payload sanitization.
+
+### Dashboard
+
+- A "실행" tab: approval queue (explicit, confirm-gated approve/abort), per-node execution
+  toggle (distinct from autopickup; gate/kill-switch/viewer aware), global kill-switch
+  arm/clear (confirm + viewer-locked), and an execution timeline from audit.execution.\*.
+  /api/me drives a proactive role-based viewer lock.
+
+### Quality / safety fixes (caught before ship)
+
+- 5-round adversarial safety review of the dispatch race: 2 P0 (autopickup-OFF bypass,
+  kill-switch dispatch race) + P1 (release_stale leak), then the race closed across
+  handshake → heartbeat dual-gate → helper-side lease re-validation → env-delivery +
+  fail-closed + atomic lease-consume.
+- Real-server e2e caught the per-node execution toggle returning 200 instead of 409 under a
+  gate-OFF / kill-switch; fixed. /api/tasks/{id}/execution strips the dispatch_lease
+  (token never exposed). 228 py tests; web e2e 232/232 (+68 for the loop).
+
+### Deferred (→ v1.14)
+
+- Slack command surface v1 (safety commands first), mobile approval/kill-switch, execution
+  timeline visualization, multi-machine read-only aggregation (see docs/V1_14_BRAINSTORM.md).
+
 ## [0.13.0] — v1.12 (2026-06-04)
 
 Act on the recommendations — explicit, human-initiated actions. Auto-started after v1.11.0.
