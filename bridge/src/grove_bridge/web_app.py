@@ -154,6 +154,7 @@ class WebAppConfig:
     shared_access: bool = False
     shared_join_role: MemberRole = "operator"
     quota_enabled: bool = False
+    slack_intake_enabled: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dist_dir", self.dist_dir.expanduser())
@@ -1249,7 +1250,11 @@ def create_app(
     @app.get("/api/slack/config/status")
     def slack_config_status_endpoint(request: Request) -> dict[str, object]:
         _require_auth(request)
-        return config_status(_slack_config_path(_config(request)))
+        config_value = _config(request)
+        return config_status(
+            _slack_config_path(config_value),
+            intake_enabled=config_value.slack_intake_enabled,
+        )
 
     @app.post("/api/slack/config")
     def slack_config_endpoint(
@@ -5351,6 +5356,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Enable soft per-member quota configuration. Enforcement is warning-only.",
     )
+    parser.add_argument(
+        "--enable-intake",
+        action="store_true",
+        help="Report Slack intent intake as enabled in /api/slack/config/status.",
+    )
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -5378,6 +5388,7 @@ def main(argv: list[str] | None = None) -> int:
         handoff_enabled=args.enable_handoff,
         handoff_ttl_seconds=args.handoff_ttl_seconds,
         quota_enabled=args.enable_quotas,
+        slack_intake_enabled=args.enable_intake,
     )
     app = create_app(config=config)
     started_at = cast(int, app.state.started_at)

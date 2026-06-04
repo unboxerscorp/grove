@@ -412,12 +412,14 @@ class FakeStatusProbe:
         socket_connected: bool = False,
         last_event_at: int | None = None,
         last_error: str | None = None,
+        intake_enabled: bool = False,
     ) -> None:
         self.config_path = config_path
         self.bot_auth_ok = bot_auth_ok
         self.socket_connected = socket_connected
         self.last_event_at = last_event_at
         self.last_error = last_error
+        self.intake_enabled = intake_enabled
 
     def status(self) -> dict[str, object]:
         config = SlackConfigStore(self.config_path).load()
@@ -438,6 +440,7 @@ class FakeStatusProbe:
             "last_event_at": self.last_event_at,
             "last_error": self.last_error,
             "tokens": tokens,
+            "intake": {"enabled": self.intake_enabled},
         }
 
 
@@ -1662,8 +1665,12 @@ def slack_manifest() -> dict[str, object]:
     }
 
 
-def config_status(config_path: Path = SLACK_CONFIG_PATH) -> dict[str, object]:
-    return FakeStatusProbe(config_path=config_path).status()
+def config_status(
+    config_path: Path = SLACK_CONFIG_PATH,
+    *,
+    intake_enabled: bool = False,
+) -> dict[str, object]:
+    return FakeStatusProbe(config_path=config_path, intake_enabled=intake_enabled).status()
 
 
 def mask_token(value: str) -> str:

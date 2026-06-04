@@ -3818,8 +3818,22 @@ def test_slack_manifest_and_config_endpoints(tmp_path: Path) -> None:
     assert test_response.json()["ok"] is True
     assert test_response.json()["status"] == "tokens_saved"
     assert status_response.json()["status"] == "tokens_saved"
+    assert status_response.json()["intake"] == {"enabled": False}
     assert "state" not in status_response.json()
     assert status_response.json()["tokens"]["default_channel"] == "C123"
+
+    enabled_client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "enabled-board.db"),
+        slack_intake_enabled=True,
+    )
+    enabled_status = enabled_client.get(
+        "/api/slack/config/status",
+        headers=auth_headers(enabled_client),
+    )
+
+    assert enabled_status.status_code == 200
+    assert enabled_status.json()["intake"] == {"enabled": True}
 
 
 def test_slack_threads_endpoint_lists_task_threads(tmp_path: Path) -> None:
@@ -4250,6 +4264,7 @@ def make_client(
     shared_access: bool = False,
     shared_join_role: team_auth.MemberRole = "operator",
     quota_enabled: bool = False,
+    slack_intake_enabled: bool = False,
 ) -> TestClient:
     dist = tmp_path / "dist"
     dist.mkdir(exist_ok=True)
@@ -4278,6 +4293,7 @@ def make_client(
         shared_access=shared_access,
         shared_join_role=shared_join_role,
         quota_enabled=quota_enabled,
+        slack_intake_enabled=slack_intake_enabled,
     )
     return TestClient(
         create_app(config=config, store=store),

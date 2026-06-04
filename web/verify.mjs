@@ -1260,6 +1260,115 @@ async function main() {
       liveAfterTest === true &&
       nodeOptions >= 2;
 
+    // V20-W2 Slack intake visualization: (1) intent-triage intake status in the
+    // Slack panel (enabled/disabled + triage one-liner, secrets masked), and (2)
+    // slack-origin audit events (actor.kind="slack", action="slack_intake_create")
+    // surfaced with a distinct chip + quick filter. Read-only; intake is in Slack.
+    const intakeOn = await page.evaluate(() => ({
+      present: !!document.querySelector(".slack-intake"),
+      enabled: document.querySelector(".slack-intake")?.getAttribute("data-intake") ?? "",
+      badgeOn: !!document.querySelector(".slack-intake__badge.is-on"),
+      flow: (document.querySelector(".slack-intake__flow")?.textContent ?? "").trim(),
+      note: (document.querySelector(".slack-intake__note")?.textContent ?? "").trim(),
+      noSecret: !/xapp-[A-Za-z0-9]|xoxb-[A-Za-z0-9]/.test(document.querySelector(".slack-intake")?.textContent ?? ""),
+    }));
+    // EXACT backend contract: the status carries a top-level `intake.enabled`
+    // boolean — not a flat/invented field. Assert the raw JSON shape directly.
+    const intakeShapeOn = await page.evaluate(async () => {
+      const j = await fetch("/api/slack/config/status").then((r) => r.json());
+      return {
+        hasIntake: Object.prototype.hasOwnProperty.call(j, "intake"),
+        enabledType: typeof (j.intake && j.intake.enabled),
+        enabledVal: j?.intake?.enabled ?? null,
+        noFlat: !("intake_enabled" in j), // never a flat invented key
+      };
+    });
+    // toggle intake OFF -> disabled badge (status re-fetched on panel remount).
+    const reenterIntegrations = async () => {
+      await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
+      await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+      await page.$eval('.dr-tab[data-view="integrations"]', (el) => el.click());
+      await page.waitForSelector(".slack-intake", { timeout: 8000 });
+    };
+    await page.evaluate(() => window.__MOCK__.setSlackIntake(false));
+    await reenterIntegrations();
+    await page.waitForSelector(".slack-intake__badge.is-off", { timeout: 8000 });
+    const intakeOff = await page.evaluate(() => ({
+      enabled: document.querySelector(".slack-intake")?.getAttribute("data-intake") ?? "",
+      badgeOff: !!document.querySelector(".slack-intake__badge.is-off"),
+    }));
+    await page.evaluate(() => window.__MOCK__.setSlackIntake(true)); // restore
+
+    // older backend OMITS the field entirely -> FE must render "unknown", never
+    // silently "disabled" (graceful), and the raw status must carry no intake key.
+    await page.evaluate(() => window.__MOCK__.setSlackIntake(null));
+    await reenterIntegrations();
+    await page.waitForSelector('.slack-intake[data-intake="unknown"]', { timeout: 8000 });
+    const intakeUnknown = await page.evaluate(async () => {
+      const j = await fetch("/api/slack/config/status").then((r) => r.json());
+      return {
+        state: document.querySelector(".slack-intake")?.getAttribute("data-intake") ?? "",
+        label: (document.querySelector(".slack-intake__badge")?.textContent ?? "").trim(),
+        hasIntakeField: Object.prototype.hasOwnProperty.call(j, "intake"),
+      };
+    });
+    await page.evaluate(() => window.__MOCK__.setSlackIntake(true)); // restore
+    await reenterIntegrations();
+
+    // audit drawer: filter to slack-intake; every event carries the Slack chip.
+    await page.click(".dr-audit-btn");
+    await page.waitForSelector(".audit-drawer", { timeout: 5000 });
+    await page.click('.audit-qf[data-action="slack_intake_create"]');
+    await page.waitForFunction(
+      () => {
+        const evs = Array.from(document.querySelectorAll(".audit-event"));
+        return (
+          evs.length >= 1 &&
+          evs.every((e) => e.querySelector(".audit-event__action")?.getAttribute("data-action") === "slack_intake_create")
+        );
+      },
+      { timeout: 6000 },
+    );
+    const slackAudit = await page.evaluate(() => ({
+      count: document.querySelectorAll(".audit-event").length,
+      allChip: Array.from(document.querySelectorAll(".audit-event")).every((e) => !!e.querySelector(".audit-event__slack")),
+      chips: document.querySelectorAll(".audit-event__slack").length,
+      slackClass: document.querySelectorAll(".audit-event.is-slack").length,
+      actors: Array.from(document.querySelectorAll(".audit-event__actor")).map((e) => (e.textContent ?? "").trim()),
+      filter: window.__MOCK__?.auditFilter ?? "",
+    }));
+    await page.click(".audit-drawer .dr-drawer__close");
+    await page.waitForFunction(() => !document.querySelector(".audit-drawer"), { timeout: 5000 });
+
+    const slackIntakeOk =
+      // intake status surfaced (enabled), with the triage one-liner + read-only note.
+      intakeOn.present &&
+      intakeOn.enabled === "on" &&
+      intakeOn.badgeOn &&
+      /등록|create/.test(intakeOn.flow) &&
+      /답만|answer/.test(intakeOn.flow) &&
+      intakeOn.note.length > 0 &&
+      intakeOn.noSecret && // no raw token leaked in the intake card
+      // exact backend shape: top-level intake.enabled boolean, no flat field.
+      intakeShapeOn.hasIntake &&
+      intakeShapeOn.enabledType === "boolean" &&
+      intakeShapeOn.enabledVal === true &&
+      intakeShapeOn.noFlat &&
+      // disabled state reflected.
+      intakeOff.enabled === "off" &&
+      intakeOff.badgeOff &&
+      // graceful unknown when the backend omits the field (no fabricated "off").
+      intakeUnknown.state === "unknown" &&
+      /알 수 없음|Unknown/.test(intakeUnknown.label) &&
+      !intakeUnknown.hasIntakeField &&
+      // slack-intake audit events: distinct chip + working action quick-filter.
+      slackAudit.count === 2 &&
+      slackAudit.allChip &&
+      slackAudit.chips === 2 &&
+      slackAudit.slackClass === 2 &&
+      slackAudit.actors.some((a) => /jiwoo|minji/.test(a)) &&
+      /action=slack_intake_create/.test(slackAudit.filter);
+
     // Dev-tool auth status panel: 5 tools, LEDs, login-hint reveal, URL hint, refresh.
     await page.click('.dr-tab[data-view="auth"]');
     await page.waitForSelector(".auth-row", { timeout: 8000 });
@@ -2101,6 +2210,7 @@ async function main() {
       n2Ok &&
       teamOk &&
       slackOk &&
+      slackIntakeOk &&
       authOk &&
       costOk &&
       usageReportOk &&
@@ -2177,6 +2287,8 @@ async function main() {
       n2BlockedCol,
       teamOk,
       slackOk,
+      slackIntakeOk,
+      slackIntake: { on: intakeOn, shape: intakeShapeOn, off: intakeOff, unknown: intakeUnknown, audit: slackAudit },
       authOk,
       authRows,
       codexHint,

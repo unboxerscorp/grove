@@ -4567,3 +4567,27 @@ button {
 .ledger-quota__actions, .ledger-quota__confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ledger-quota__q { font-family: var(--mono); font-size: 11px; color: var(--amber); }
 .ledger-quota__yes, .ledger-quota__no, .ledger-quota__save, .ledger-quota__cancel { font-size: 11px; padding: 3px 10px; }
+
+/* ── slack intake status + audit slack chip (V20-W2) ───────────────────────── */
+.slack-intake__row { display: flex; align-items: center; gap: 10px; }
+.slack-intake__badge {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  border: 1px solid var(--line); border-radius: 999px; padding: 2px 11px;
+}
+.slack-intake__led { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+.slack-intake__badge.is-on { color: var(--teal); border-color: rgba(84, 199, 184, 0.5); }
+.slack-intake__badge.is-on .slack-intake__led { background: var(--teal); box-shadow: 0 0 6px rgba(84, 199, 184, 0.7); }
+.slack-intake__badge.is-off { color: var(--faint); }
+.slack-intake__flow { margin: 8px 0 0; font-size: 11.5px; color: var(--dim); line-height: 1.55; }
+.slack-intake__note { margin: 4px 0 0; font-size: 11px; color: var(--faint); line-height: 1.5; }
+
+/* audit event slack-intake chip + quick-filter accent */
+.audit-qf.is-slack.is-on { color: var(--teal); border-color: rgba(84, 199, 184, 0.5); }
+.audit-event.is-slack { border-left: 2px solid rgba(84, 199, 184, 0.55); }
+.audit-event__slack {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.03em;
+  color: var(--teal); border: 1px solid rgba(84, 199, 184, 0.45); border-radius: 999px; padding: 0 6px;
+}
+.audit-event__action.is-slack { color: var(--teal); }

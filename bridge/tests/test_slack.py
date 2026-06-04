@@ -197,6 +197,7 @@ def test_slack_status_probe_reports_not_configured_and_socket_connected(tmp_path
         socket_connected=True,
         last_event_at=123,
         last_error="none",
+        intake_enabled=True,
     ).status()
 
     assert missing_status == {
@@ -204,10 +205,12 @@ def test_slack_status_probe_reports_not_configured_and_socket_connected(tmp_path
         "last_event_at": None,
         "last_error": None,
         "tokens": {},
+        "intake": {"enabled": False},
     }
     assert connected_status["status"] == "socket_connected"
     assert connected_status["last_event_at"] == 123
     assert connected_status["last_error"] == "none"
+    assert connected_status["intake"] == {"enabled": True}
 
 
 def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Path) -> None:
@@ -1322,6 +1325,7 @@ def test_status_probe_reports_bot_auth_ok_for_saved_tokens(tmp_path: Path) -> No
 
     assert status["status"] == "bot_auth_ok"
     assert "state" not in status
+    assert status["intake"] == {"enabled": False}
     assert tokens["app_token"] == "xapp...p-ok"
     assert tokens["bot_token"] == "xoxb...b-ok"
 

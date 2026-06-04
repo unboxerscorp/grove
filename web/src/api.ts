@@ -202,6 +202,9 @@ export interface SlackStatus {
   status: string; // not_configured | tokens_saved | bot_auth_ok | socket_connected
   last_event_at?: string | number | null;
   last_error?: string | null;
+  // v1.20 intent-triage intake (--enable-intake, default OFF). Surfaced read-only
+  // so the dashboard can show whether free-form Slack messages become gated tasks.
+  intake?: { enabled?: boolean };
 }
 
 // Mirrors web_app.py _cost_metric: every number carries provenance so estimates

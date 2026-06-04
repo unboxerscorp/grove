@@ -1,26 +1,34 @@
 import { useEffect, useRef, useState } from "react";
 
 import { actorLabel, api, targetLabel } from "../api";
-import type { AuditEvent } from "../api";
+import type { AuditActor, AuditEvent } from "../api";
 import { cx, fmtAgo } from "../constants";
 import { useI18n } from "../i18n";
 import { useFocusTrap } from "../useFocusTrap";
 
 const PAGE = 4;
 
-// Autonomy actions (v1.10 backend): node self-claim + retrospective. Surfaced
-// with distinct chips/icons and exposed as quick filters.
-const ACTION_FILTERS = ["", "autopickup", "retro"] as const;
+// Quick action filters: v1.10 autonomy (self-claim/retro) + v1.20 Slack intake
+// (free-form Slack message → gated task-create, action="slack_intake_create").
+const ACTION_FILTERS = ["", "autopickup", "retro", "slack_intake_create"] as const;
 
 function actionClass(action: string): string {
   if (action === "autopickup") return "is-autopickup";
   if (action === "retro") return "is-retro";
+  if (action === "slack_intake_create") return "is-slack";
   return "";
 }
 function actionGlyph(action: string): string {
   if (action === "autopickup") return "⚡";
   if (action === "retro") return "↺";
+  if (action === "slack_intake_create") return "💬";
   return "";
+}
+
+/** A Slack-origin event (actor.kind==="slack") — i.e. someone registered work
+ *  from Slack via intent-triage intake. Surfaced with a distinct chip. */
+function isSlackActor(actor: AuditActor): boolean {
+  return typeof actor === "object" && actor !== null && actor.kind === "slack";
 }
 
 /**
@@ -158,8 +166,13 @@ export function AuditDrawer(props: { open: boolean; projectTick: number; onClose
           {error && <div className="audit-msg is-error">{error}</div>}
           {!error && events.length === 0 && !loading && <div className="audit-msg">{t("audit.empty")}</div>}
           {events.map((ev, i) => (
-            <div key={ev.cursor ?? `${ev.ts}-${i}`} className={cx("audit-event", actionClass(ev.action))}>
+            <div key={ev.cursor ?? `${ev.ts}-${i}`} className={cx("audit-event", actionClass(ev.action), isSlackActor(ev.actor) && "is-slack")}>
               <span className="audit-event__actor">{actorLabel(ev.actor)}</span>
+              {isSlackActor(ev.actor) && (
+                <span className="audit-event__slack" data-slack="1" title={t("audit.slackOrigin")}>
+                  💬 {t("audit.slackChip")}
+                </span>
+              )}
               <span className={cx("audit-event__action", actionClass(ev.action))} data-action={ev.action}>
                 {actionGlyph(ev.action) && <span className="audit-event__glyph" aria-hidden="true">{actionGlyph(ev.action)}</span>}
                 {ev.action}

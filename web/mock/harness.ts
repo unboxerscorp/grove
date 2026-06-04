@@ -181,6 +181,9 @@ type MockAuditEvent = {
   to_node?: string | null;
 };
 const nodeActor = (id: string): MockAuditActor => ({ kind: "node", id, login: id, role: "none" });
+// Slack identity actor (mirrors slack.py _slack_member_actor: kind="slack",
+// id=slack user, login=member name). Drives the audit drawer's Slack-intake chip.
+const slackActor = (id: string, login: string, role: string): MockAuditActor => ({ kind: "slack", id, login, role });
 const AUDIT_TS0 = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
 const AUDIT_EVENTS: MockAuditEvent[] = [
   { cursor: 1, id: "e1", actor: nodeActor("root"), action: "spawn", target: { type: "node", id: "backend", node: "backend" }, ts: AUDIT_TS0 + 5, task_id: null },
@@ -208,6 +211,13 @@ const AUDIT_EVENTS: MockAuditEvent[] = [
   { cursor: 17, id: "e17", type: "audit.execution.execute", actor: nodeActor("backend"), action: "execute", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 510, task_id: "G-2" },
   { cursor: 18, id: "e18", type: "audit.execution.verify", actor: nodeActor("backend"), action: "verify", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 570, task_id: "G-2" },
   { cursor: 19, id: "e19", type: "audit.execution.complete", actor: nodeActor("backend"), action: "complete", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 590, task_id: "G-2" },
+  // v1.20 Slack intent-triage intake: free-form Slack message -> gated task-create.
+  // actor.kind="slack" (the slack identity), action="slack_intake_create" (mirrors
+  // slack.py: kind="audit.task.create", action="slack_intake_create"). Distinct
+  // slack chip + quick filter in the audit drawer; appended at the tail so the
+  // existing page-1 assertions (cursors 1-4) are untouched.
+  { cursor: 20, id: "e20", type: "audit.task.create", actor: slackActor("U07JIWOO", "jiwoo", "operator"), action: "slack_intake_create", target: { type: "task", id: "G-20" }, ts: AUDIT_TS0 + 620, task_id: "G-20" },
+  { cursor: 21, id: "e21", type: "audit.task.create", actor: slackActor("U07MINJI", "minji", "operator"), action: "slack_intake_create", target: { type: "task", id: "G-21" }, ts: AUDIT_TS0 + 640, task_id: "G-21" },
 ];
 
 // Decision inbox seed — MIRRORS web_app.py _inbox_item_payload: blocked +
@@ -267,6 +277,16 @@ let slack: { status: string; last_event_at: string | null; last_error: string | 
   status: "not_configured",
   last_event_at: null,
   last_error: null,
+};
+// v1.20 intent-triage intake (--enable-intake). Mirrors the EXACT backend
+// config_status contract (bridge slack.py): a top-level `"intake": {"enabled":
+// <bool>}` object — nothing invented, no flat field. Tri-state so verify can
+// exercise an OLDER backend that omits the key entirely (null => field absent =>
+// the FE must render "unknown", never silently "disabled"). Kept separate from
+// `slack` so config/test reassignments preserve it.
+let slackIntakeEnabled: boolean | null = true;
+diag.setSlackIntake = (on: boolean | null): void => {
+  slackIntakeEnabled = on;
 };
 
 // Presence mode for /api/presence: "team" (member chips) by default; verify can
@@ -1595,7 +1615,14 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       }),
     );
   }
-  if (p === "/api/slack/config/status") return Promise.resolve(json(slack));
+  if (p === "/api/slack/config/status") {
+    // Mirror the backend shape exactly: attach `intake: {enabled: <bool>}` ONLY
+    // when the backend reports it. null => omit the key (older backend) so the FE
+    // graceful "unknown" path is real, not a fabricated default.
+    const body: Record<string, unknown> = { ...slack };
+    if (slackIntakeEnabled !== null) body.intake = { enabled: slackIntakeEnabled };
+    return Promise.resolve(json(body));
+  }
   if (p === "/api/slack/config" && method === "POST") {
     const cfg = (init?.body ? JSON.parse(init.body as string) : {}) as Record<string, string>;
     diag.slackConfig = cfg;

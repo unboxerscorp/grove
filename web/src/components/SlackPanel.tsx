@@ -128,7 +128,9 @@ export function SlackPanel({ projectTick = 0 }: { projectTick?: number }) {
     api
       .saveSlackConfig(cfg)
       .then((s) => {
-        setStatus(s);
+        // save/test responses don't carry the intake flag (config/status is its
+        // authority) — preserve the last known intake so its badge doesn't vanish.
+        setStatus((prev) => ({ ...s, intake: s.intake ?? prev?.intake }));
         if (appToken) {
           setApp4(last4(appToken));
           setAppSaved(true);
@@ -152,7 +154,7 @@ export function SlackPanel({ projectTick = 0 }: { projectTick?: number }) {
     api
       .testSlack()
       .then((s) => {
-        setStatus(s);
+        setStatus((prev) => ({ ...s, intake: s.intake ?? prev?.intake }));
         setTesting(false);
       })
       .catch(() => {
@@ -164,6 +166,16 @@ export function SlackPanel({ projectTick = 0 }: { projectTick?: number }) {
   const st = status?.status ?? "not_configured";
   const hasError = !!status?.last_error;
   const stepIdx = STATUS_ORDER.indexOf(st);
+
+  // Intake has THREE states, read from the exact backend path `intake.enabled`:
+  //   on / off  — the backend reports the boolean
+  //   unknown   — the field is absent (older backend); never render that as "off".
+  const intakeState =
+    status?.intake && typeof status.intake.enabled === "boolean"
+      ? status.intake.enabled
+        ? "on"
+        : "off"
+      : "unknown";
 
   return (
     <section className="slack">
@@ -203,6 +215,24 @@ export function SlackPanel({ projectTick = 0 }: { projectTick?: number }) {
               {t("slack.status.lastError")}: <span>{status.last_error}</span>
             </div>
           )}
+        </div>
+
+        {/* v1.20 intent-triage intake — READ-ONLY (intake itself happens in Slack;
+            this only surfaces whether it's on + the triage behaviour). Secrets
+            stay masked; nothing here is mutable from the dashboard. */}
+        <div className="slack-card slack-intake" data-intake={intakeState}>
+          <div className="slack-card__title">{t("slack.intake.title")}</div>
+          <div className="slack-intake__row">
+            <span
+              className={cx("slack-intake__badge", intakeState === "on" ? "is-on" : "is-off")}
+              data-enabled={intakeState}
+            >
+              <span className="slack-intake__led" aria-hidden="true" />
+              {t(`slack.intake.${intakeState}`)}
+            </span>
+          </div>
+          <p className="slack-intake__flow">{t("slack.intake.flow")}</p>
+          <p className="slack-intake__note">{intakeState === "unknown" ? t("slack.intake.unknownNote") : t("slack.intake.note")}</p>
         </div>
 
         {/* manifest */}
