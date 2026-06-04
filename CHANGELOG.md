@@ -4,6 +4,38 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.23.0] — v1.22 (2026-06-04)
+
+Retro analytics. Auto-started after v1.21.0. Read-only, advisory-only — turn the v1.10 self-retro
+lane + completed-task history into insights a human reads. Never acts. Default OFF.
+
+### Read-only advisory insights
+
+- **GET /api/retro/analytics** (token + operator + project-scoped, --enable-retro-analytics,
+  404 when off) aggregates retros + completed tasks into throughput-over-time, common retro
+  themes, blocked/slow patterns, and per-node/role outcomes. **Advisory-only**: the response
+  carries mode="advisory" + actions=[]; no task/config/dispatch mutation — only a read-audit.
+- Honest + private: retro themes never return raw text (redacted, then only allowlist
+  RETRO_THEME_TERMS categories); cross-project + viewer access denied; small samples (<3) are
+  labeled low-confidence; throughput/outcomes use only run timestamps/status; agy cost stays
+  unknown; by_node/by_assignee are neutral counts (no blame, no recommended action).
+
+### Insights view
+
+- An "Insights" tab: throughput sparkline, theme chips, blocked/slow patterns, neutral outcome
+  counts, with an always-on "참고용 제안 — 자동 조치 없음" advisory banner and "낮은 신뢰도" badges
+  on small samples. Operator-only; a viewer (403) / disabled (404) renders a fixed graceful notice.
+
+### Quality
+
+- Reviewer: GO, no NO-GO — privacy/scope, retro-text redaction, advisory-only (no mutation),
+  honesty + low-confidence, neutral outcomes. 267 py tests; web e2e 524/524 (+35).
+
+### Deferred (→ v1.23)
+
+- Advisory ops signals: usage/cost trend + anomaly/forecast (advisory), optional per-user sandbox
+  v0, notification routing v2, Slack digest/reminder (see docs/V1_23_BRAINSTORM.md).
+
 ## [0.22.0] — v1.21 (2026-06-04)
 
 The Slack bot converses. Auto-started after v1.20.0. Read-only — the "just answer" path made

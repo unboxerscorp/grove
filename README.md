@@ -63,6 +63,12 @@ grove repair --all
   from read-only board/run data. Usage and ledger answers require operator/admin role;
   viewer scope is denied instead of leaked. Thread follow-ups cannot smuggle task,
   comment, or unblock mutations.
+- **Retro analytics insights** - v1.22 `--enable-retro-analytics` is default OFF. The
+  self-retro lane and completed task/run history feed read-only advisory cards for
+  throughput, allowlisted retro themes, blocked/slow patterns, and neutral node/role
+  outcomes. It creates zero actions, tasks, or config changes; operator-only access,
+  project scope, redaction, low-confidence labels for small samples, and agy cost
+  unknown are part of the contract.
 - **Usage and timeline** - `/api/usage` reports run usage by node/day with source and
   warnings; agy cost/credit is reported as unknown when no local source exists, never
   fabricated. Execution timeline shows step and Gantt-style durations from audit data.
@@ -171,6 +177,10 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   deterministic, project-scoped, redacted, and read-only; usage/ledger detail is denied
   unless the Slack member is operator/admin, and bounded thread context cannot create
   hidden mutations.
+- Retro analytics is default OFF (`--enable-retro-analytics`), operator-only,
+  project-scoped, redacted, and advisory-only. It reads retros and completed work but
+  performs no action, task creation, or config change; small samples are low-confidence
+  and agy cost remains unknown unless locally sourced.
 - Multi-machine aggregation is read-only and default OFF.
 - Cross-room handoff is data transfer only and default OFF; receiver-local accept is
   required before any task is created.
