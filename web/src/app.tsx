@@ -57,6 +57,77 @@ function scrubJoinFromUrl(): void {
   }
 }
 
+// Left-sidebar navigation (V24-W1): the old top tab strip became too crowded, so
+// every panel/drawer now lives in a grouped, collapsible left sidebar. Items keep
+// their legacy hook classes (`dr-tab[data-view]` for view panels; dr-audit-btn /
+// dr-chain-btn / dr-inbox-btn for the drawers) so existing wiring is unchanged —
+// only their position moved. Groups: Work, Ops, Comms, Cross-room, Audit, Cost,
+// Setup.
+type NavItem =
+  | { kind: "view"; view: View; labelKey: string; icon: string }
+  | { kind: "drawer"; drawer: "audit" | "chain" | "inbox"; labelKey: string; icon: string };
+const NAV_GROUPS: { id: string; labelKey: string; items: NavItem[] }[] = [
+  {
+    id: "work",
+    labelKey: "nav.group.work",
+    items: [
+      { kind: "view", view: "board", labelKey: "tab.board", icon: "▤" },
+      { kind: "view", view: "team", labelKey: "tab.team", icon: "⊚" },
+      { kind: "view", view: "terminal", labelKey: "tab.terminal", icon: "❯" },
+    ],
+  },
+  {
+    id: "ops",
+    labelKey: "nav.group.ops",
+    items: [
+      { kind: "view", view: "exec", labelKey: "tab.exec", icon: "▶" },
+      { kind: "view", view: "ledger", labelKey: "tab.ledger", icon: "▦" },
+      { kind: "view", view: "trend", labelKey: "tab.trend", icon: "↗" },
+      { kind: "view", view: "insights", labelKey: "tab.insights", icon: "◍" },
+    ],
+  },
+  {
+    id: "comms",
+    labelKey: "nav.group.comms",
+    items: [
+      { kind: "view", view: "integrations", labelKey: "tab.integrations", icon: "#" },
+      { kind: "view", view: "connect", labelKey: "tab.connect", icon: "⚯" },
+      { kind: "drawer", drawer: "inbox", labelKey: "inbox.open", icon: "⚑" },
+    ],
+  },
+  {
+    id: "crossroom",
+    labelKey: "nav.group.crossroom",
+    items: [
+      { kind: "view", view: "agg", labelKey: "tab.agg", icon: "⊞" },
+      { kind: "view", view: "handoff", labelKey: "tab.handoff", icon: "⇄" },
+    ],
+  },
+  {
+    id: "audit",
+    labelKey: "nav.group.audit",
+    items: [
+      { kind: "drawer", drawer: "audit", labelKey: "audit.open", icon: "⌗" },
+      { kind: "drawer", drawer: "chain", labelKey: "chain.open", icon: "⛓" },
+    ],
+  },
+  {
+    id: "cost",
+    labelKey: "nav.group.cost",
+    items: [{ kind: "view", view: "cost", labelKey: "tab.cost", icon: "$" }],
+  },
+  {
+    id: "setup",
+    labelKey: "nav.group.setup",
+    items: [{ kind: "view", view: "auth", labelKey: "tab.auth", icon: "⛨" }],
+  },
+];
+const DRAWER_CLASS: Record<"audit" | "chain" | "inbox", string> = {
+  audit: "dr-audit-btn",
+  chain: "dr-chain-btn",
+  inbox: "dr-inbox-btn",
+};
+
 function GroveMark() {
   return (
     <svg className="dr-mark" viewBox="0 0 24 24" width={22} height={22} aria-hidden="true">
@@ -96,6 +167,28 @@ export function App() {
   const [project, setActiveProject] = useState<string | null>(null);
   // Bumped on project switch to re-scope boards + nodes to the new project.
   const [projectTick, setProjectTick] = useState(0);
+  // Left sidebar: mobile drawer open + per-group collapse (all expanded default).
+  const [navOpen, setNavOpen] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
+  const toggleGroup = (id: string) =>
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  // Navigate then close the mobile drawer (no-op when already closed on desktop).
+  const onNav = (fn: () => void) => {
+    fn();
+    setNavOpen(false);
+  };
+  const openDrawer = (d: "audit" | "chain" | "inbox") => {
+    if (d === "audit") setAuditOpen(true);
+    else if (d === "chain") setChainOpen(true);
+    else setInboxOpen(true);
+  };
+  const drawerOpen = (d: "audit" | "chain" | "inbox") =>
+    d === "audit" ? auditOpen : d === "chain" ? chainOpen : inboxOpen;
 
   const loadProjects = useCallback(
     () =>
@@ -314,6 +407,15 @@ export function App() {
     <div className="devroom">
       <header className="dr-top">
         <div className="dr-left">
+          <button
+            type="button"
+            className="dr-hamburger"
+            aria-label={t("nav.menu")}
+            aria-expanded={navOpen}
+            onClick={() => setNavOpen((o) => !o)}
+          >
+            ☰
+          </button>
           <div className="dr-brand">
             <GroveMark />
             <div className="dr-brand__text">
@@ -328,9 +430,6 @@ export function App() {
             onSwitch={switchProject}
             onProjectsChanged={() => void loadProjects()}
           />
-        </div>
-
-        <div className="dr-top__center">
           {boards.length > 0 && (
             <select
               className="dr-select dr-board-select"
@@ -345,129 +444,10 @@ export function App() {
               ))}
             </select>
           )}
-          <div className="dr-tabs" role="tablist">
-            <button
-              type="button"
-              data-view="board"
-              className={cx("dr-tab", view === "board" && "is-active")}
-              onClick={() => setView("board")}
-            >
-              {t("tab.board")}
-            </button>
-            <button
-              type="button"
-              data-view="team"
-              className={cx("dr-tab", view === "team" && "is-active")}
-              onClick={() => setView("team")}
-            >
-              {t("tab.team")}
-            </button>
-            <button
-              type="button"
-              data-view="terminal"
-              className={cx("dr-tab", view === "terminal" && "is-active")}
-              onClick={() => setView("terminal")}
-            >
-              {t("tab.terminal")}
-            </button>
-            <button
-              type="button"
-              data-view="integrations"
-              className={cx("dr-tab", view === "integrations" && "is-active")}
-              onClick={() => setView("integrations")}
-            >
-              {t("tab.integrations")}
-            </button>
-            <button
-              type="button"
-              data-view="exec"
-              className={cx("dr-tab", view === "exec" && "is-active")}
-              onClick={() => setView("exec")}
-            >
-              {t("tab.exec")}
-            </button>
-            <button
-              type="button"
-              data-view="cost"
-              className={cx("dr-tab", view === "cost" && "is-active")}
-              onClick={() => setView("cost")}
-            >
-              {t("tab.cost")}
-            </button>
-            <button
-              type="button"
-              data-view="ledger"
-              className={cx("dr-tab", view === "ledger" && "is-active")}
-              onClick={() => setView("ledger")}
-            >
-              {t("tab.ledger")}
-            </button>
-            <button
-              type="button"
-              data-view="insights"
-              className={cx("dr-tab", view === "insights" && "is-active")}
-              onClick={() => setView("insights")}
-            >
-              {t("tab.insights")}
-            </button>
-            <button
-              type="button"
-              data-view="trend"
-              className={cx("dr-tab", view === "trend" && "is-active")}
-              onClick={() => setView("trend")}
-            >
-              {t("tab.trend")}
-            </button>
-            <button
-              type="button"
-              data-view="agg"
-              className={cx("dr-tab", view === "agg" && "is-active")}
-              onClick={() => setView("agg")}
-            >
-              {t("tab.agg")}
-            </button>
-            <button
-              type="button"
-              data-view="handoff"
-              className={cx("dr-tab", view === "handoff" && "is-active")}
-              onClick={() => setView("handoff")}
-            >
-              {t("tab.handoff")}
-            </button>
-            <button
-              type="button"
-              data-view="connect"
-              className={cx("dr-tab", view === "connect" && "is-active")}
-              onClick={() => setView("connect")}
-            >
-              {t("tab.connect")}
-            </button>
-            <button
-              type="button"
-              data-view="auth"
-              className={cx("dr-tab", view === "auth" && "is-active")}
-              onClick={() => setView("auth")}
-            >
-              {t("tab.auth")}
-            </button>
-          </div>
         </div>
 
+        {/* Minimal top bar: presence / health / auth / language only. */}
         <div className="dr-top__right">
-          <div className="dr-stat">
-            <span className="dr-stat__n is-live">{liveCount}</span>
-            <span className="dr-stat__l">{t("stat.live")}</span>
-          </div>
-          <button type="button" className="dr-audit-btn" onClick={() => setAuditOpen(true)}>
-            ⌗ {t("audit.open")}
-          </button>
-          <button type="button" className="dr-audit-btn dr-chain-btn" onClick={() => setChainOpen(true)}>
-            ⛓ {t("chain.open")}
-          </button>
-          <button type="button" className="dr-audit-btn dr-inbox-btn" onClick={() => setInboxOpen(true)}>
-            ⚑ {t("inbox.open")}
-            {inboxCount > 0 && <span className="dr-inbox-btn__badge">{inboxCount}</span>}
-          </button>
           <PresenceIndicator liveTick={liveTick} projectTick={projectTick} />
           <HealthDot />
           <span className={cx("dr-auth", AUTH_REQUIRED ? "is-secured" : "is-local")}>
@@ -494,11 +474,72 @@ export function App() {
         </div>
       </header>
 
-      <NodeStatusBar liveTick={liveTick} projectTick={projectTick} />
+      <div className="dr-body">
+        {navOpen && <div className="dr-nav-scrim" onClick={() => setNavOpen(false)} aria-hidden="true" />}
+        <aside className={cx("dr-sidebar", navOpen && "is-open")} aria-label={t("nav.label")}>
+          <div className="dr-sidebar__stat">
+            <span className="dr-stat__n is-live">{liveCount}</span>
+            <span className="dr-stat__l">{t("stat.live")}</span>
+          </div>
+          <nav className="dr-sidebar__nav" role="navigation" aria-label={t("nav.label")}>
+            {NAV_GROUPS.map((g) => {
+              const collapsed = collapsedGroups.has(g.id);
+              return (
+                <div className={cx("dr-navgroup", collapsed && "is-collapsed")} key={g.id} data-group={g.id}>
+                  <button
+                    type="button"
+                    className="dr-navgroup__head"
+                    aria-expanded={!collapsed}
+                    onClick={() => toggleGroup(g.id)}
+                  >
+                    <span className="dr-navgroup__label">{t(g.labelKey)}</span>
+                    <span className="dr-navgroup__chev" aria-hidden="true">
+                      {collapsed ? "▸" : "▾"}
+                    </span>
+                  </button>
+                  {!collapsed && (
+                    <div className="dr-navgroup__items">
+                      {g.items.map((it) =>
+                        it.kind === "view" ? (
+                          <button
+                            key={it.view}
+                            type="button"
+                            data-view={it.view}
+                            className={cx("dr-navitem dr-tab", view === it.view && "is-active")}
+                            onClick={() => onNav(() => setView(it.view))}
+                          >
+                            <span className="dr-navitem__icon" aria-hidden="true">{it.icon}</span>
+                            <span className="dr-navitem__label">{t(it.labelKey)}</span>
+                          </button>
+                        ) : (
+                          <button
+                            key={it.drawer}
+                            type="button"
+                            className={cx("dr-navitem", DRAWER_CLASS[it.drawer], drawerOpen(it.drawer) && "is-active")}
+                            onClick={() => onNav(() => openDrawer(it.drawer))}
+                          >
+                            <span className="dr-navitem__icon" aria-hidden="true">{it.icon}</span>
+                            <span className="dr-navitem__label">{t(it.labelKey)}</span>
+                            {it.drawer === "inbox" && inboxCount > 0 && (
+                              <span className="dr-inbox-btn__badge">{inboxCount}</span>
+                            )}
+                          </button>
+                        ),
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </nav>
+        </aside>
 
-      <main className="dr-main">
-        <NodeList nodes={nodes} selectedPane={selectedPane} onSelect={pickNode} boardLive={boardLive} />
-        <section className="dr-stage">
+        <div className="dr-content">
+          <NodeStatusBar liveTick={liveTick} projectTick={projectTick} />
+
+          <main className="dr-main">
+            <NodeList nodes={nodes} selectedPane={selectedPane} onSelect={pickNode} boardLive={boardLive} />
+            <section className="dr-stage">
           {view === "board" && boardId ? (
             <BoardView boardId={boardId} liveTick={liveTick} boardLive={boardLive} onOpenTask={setOpenTaskId} />
           ) : view === "board" ? (
@@ -544,7 +585,9 @@ export function App() {
             <TerminalPane node={selected} />
           )}
         </section>
-      </main>
+          </main>
+        </div>
+      </div>
 
       <TaskDrawer
         taskId={openTaskId}

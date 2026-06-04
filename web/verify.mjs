@@ -318,7 +318,7 @@ async function main() {
       nodeReject.known === 200;
 
     // V4-W1 audit drawer (GET /api/audit): events render, cursor paging, filter.
-    await page.click(".dr-audit-btn");
+    await page.$eval(".dr-audit-btn", (el) => el.click());
     await page.waitForSelector(".audit-drawer", { timeout: 5000 });
     await page.waitForFunction(() => document.querySelectorAll(".audit-event").length >= 1, { timeout: 6000 });
     const audit1 = await page.evaluate(() => ({
@@ -349,7 +349,7 @@ async function main() {
 
     // V11-W2 autonomy visibility (audit): autopickup/retro events get distinct
     // chips + glyphs and quick action filters (exact action filter on /api/audit).
-    await page.click(".dr-audit-btn");
+    await page.$eval(".dr-audit-btn", (el) => el.click());
     await page.waitForSelector(".audit-drawer", { timeout: 5000 });
     // The drawer re-renders (not remounts), so clear the node filter carried over
     // from the auditOk test before exercising the action quick-filters.
@@ -401,7 +401,7 @@ async function main() {
     // V6-W3 delegation-chain explorer: multi-hop chains derived from the audit
     // assign/delegate graph (mock has root->backend->researcher). Open the
     // drawer, assert a >=3-node (2-hop) chain in order, then focus a node.
-    await page.click(".dr-chain-btn");
+    await page.$eval(".dr-chain-btn", (el) => el.click());
     await page.waitForSelector(".chain-drawer", { timeout: 5000 });
     await page.waitForFunction(() => document.querySelectorAll(".chain-row").length >= 1, { timeout: 6000 });
     const chain = await page.evaluate(() => {
@@ -447,7 +447,7 @@ async function main() {
     const inboxBadgeBefore = await page.evaluate(
       () => (document.querySelector(".dr-inbox-btn__badge")?.textContent ?? "").trim(),
     );
-    await page.click(".dr-inbox-btn");
+    await page.$eval(".dr-inbox-btn", (el) => el.click());
     await page.waitForSelector(".inbox-drawer", { timeout: 5000 });
     await page.waitForFunction(() => document.querySelectorAll(".inbox-item").length >= 1, { timeout: 6000 });
     const inboxBefore = await page.evaluate(() => ({
@@ -740,7 +740,7 @@ async function main() {
       timeline.durText === "10s"; // first row renders its computed duration
 
     // Approval queue: approve + abort are EXPLICIT (button → confirm → POST).
-    await page.click('.dr-tab[data-view="exec"]');
+    await page.$eval('.dr-tab[data-view="exec"]', (el) => el.click());
     await page.waitForSelector(".exec-queue", { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".exec-queue__item").length >= 2, { timeout: 8000 });
     const queueInit = await page.evaluate(() => ({
@@ -752,9 +752,9 @@ async function main() {
     // P1: team viewer -> approve/abort/kill-switch controls PROACTIVELY hidden
     // (queue still populated). Re-enter the tab to refetch /api/me.
     const reenterExec = async () => {
-      await page.click('.dr-tab[data-view="board"]');
+      await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
       await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
-      await page.click('.dr-tab[data-view="exec"]');
+      await page.$eval('.dr-tab[data-view="exec"]', (el) => el.click());
       await page.waitForSelector(".exec-queue", { timeout: 8000 });
     };
     await page.evaluate(() => window.__MOCK__.setViewer(true));
@@ -815,7 +815,7 @@ async function main() {
     await page.waitForFunction(() => window.__MOCK__?.execGatePost?.kill_switch === false, { timeout: 6000 });
 
     // Return to the board view so the remaining board tests run as before.
-    await page.click('.dr-tab[data-view="board"]');
+    await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
 
     const execLoopOk =
@@ -945,7 +945,7 @@ async function main() {
 
     // Interactive org canvas: switch to the Team tab; assert the graph renders
     // (nodes, bezier edges, group legend).
-    await page.click('.dr-tab[data-view="team"]');
+    await page.$eval('.dr-tab[data-view="team"]', (el) => el.click());
     await page.waitForSelector(".org-node", { timeout: 8000 });
     await new Promise((r) => setTimeout(r, 650)); // let the entrance layout tween settle
     const orgView = await page.evaluate(() => ({
@@ -1209,7 +1209,7 @@ async function main() {
       n5NoReconnectOnAuth === true;
 
     // Slack integration panel.
-    await page.click('.dr-tab[data-view="integrations"]');
+    await page.$eval('.dr-tab[data-view="integrations"]', (el) => el.click());
     await page.waitForSelector(".slack", { timeout: 8000 });
     const slackStatus0 = await page.$eval(".slack-status__label", (el) => (el.textContent ?? "").trim());
 
@@ -1316,7 +1316,7 @@ async function main() {
     await reenterIntegrations();
 
     // audit drawer: filter to slack-intake; every event carries the Slack chip.
-    await page.click(".dr-audit-btn");
+    await page.$eval(".dr-audit-btn", (el) => el.click());
     await page.waitForSelector(".audit-drawer", { timeout: 5000 });
     await page.click('.audit-qf[data-action="slack_intake_create"]');
     await page.waitForFunction(
@@ -1370,7 +1370,7 @@ async function main() {
       /action=slack_intake_create/.test(slackAudit.filter);
 
     // Dev-tool auth status panel: 5 tools, LEDs, login-hint reveal, URL hint, refresh.
-    await page.click('.dr-tab[data-view="auth"]');
+    await page.$eval('.dr-tab[data-view="auth"]', (el) => el.click());
     await page.waitForSelector(".auth-row", { timeout: 8000 });
     const authRows = await page.$$eval(".auth-row", (els) => els.length);
     const authLeds = await page.evaluate(() => ({
@@ -1396,7 +1396,7 @@ async function main() {
     // (codex registry=exact, no badge; claude/agy inferred=badge); agy credit
     // reported UNKNOWN with a warning (never an estimated remaining balance);
     // no backend path/status leaks into the UI.
-    await page.click('.dr-tab[data-view="cost"]');
+    await page.$eval('.dr-tab[data-view="cost"]', (el) => el.click());
     await page.waitForSelector('.cost-card[data-agent="codex"]', { timeout: 8000 });
     const cost = await page.evaluate(() => ({
       cards: document.querySelectorAll(".cost-grid .cost-card").length,
@@ -2154,7 +2154,7 @@ async function main() {
       return { count: names.length, hasSolo: names.includes("solo"), hasRoot: names.includes("root") };
     });
     // org canvas re-scoped (one node, no default-project root residue).
-    await page.click('.dr-tab[data-view="team"]');
+    await page.$eval('.dr-tab[data-view="team"]', (el) => el.click());
     await page.waitForFunction(
       () => document.querySelectorAll(".org-node").length === 1 && !!document.querySelector('[data-name="solo"]'),
       { timeout: 8000 },
@@ -2164,7 +2164,7 @@ async function main() {
       hasRoot: !!document.querySelector('[data-name="root"]'),
     }));
     // board re-scoped: the solo task shows, none of the default project's G- cards.
-    await page.click('.dr-tab[data-view="board"]');
+    await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
     await page.waitForFunction(
       () => Array.from(document.querySelectorAll(".dr-card__title")).some((e) => (e.textContent ?? "").includes("solo task")),
       { timeout: 8000 },
@@ -2249,7 +2249,7 @@ async function main() {
     const projAfterLoad = await projName();
 
     // confirm the active project reaches the backend (X-Grove-Project) on reload
-    await page.click('.dr-tab[data-view="team"]');
+    await page.$eval('.dr-tab[data-view="team"]', (el) => el.click());
     await page.waitForSelector(".org-node", { timeout: 8000 });
     await page.waitForFunction(() => (window.__MOCK__?.projectHeader ?? "") === "loaded-proj", { timeout: 6000 });
 
@@ -2304,6 +2304,86 @@ async function main() {
     await page.setViewport({ width: 1320, height: 860, deviceScaleFactor: 2 }); // restore
     const mobileOk =
       mobile.execTabActive && mobile.gateFits && mobile.ksBtn && mobile.nodestat && mobile.noHOverflow && detailFits;
+
+    // V24-W1 left sidebar nav: all panels/drawers moved from the top strip into a
+    // grouped, collapsible left sidebar; top bar minimized; mobile hamburger
+    // drawer. Every panel stays reachable (legacy hook classes preserved), so the
+    // flags above don't regress. (Viewport is back to desktop after mobileOk.)
+    const SIDEBAR_VIEWS = [
+      "board", "team", "terminal", "integrations", "exec", "cost",
+      "ledger", "insights", "trend", "agg", "handoff", "connect", "auth",
+    ];
+    const sidebar = await page.evaluate((views) => {
+      const sb = document.querySelector(".dr-sidebar");
+      const inSb = (sel) => !!sb?.querySelector(sel);
+      return {
+        present: !!sb,
+        groups: document.querySelectorAll(".dr-sidebar .dr-navgroup").length,
+        groupIds: Array.from(document.querySelectorAll(".dr-sidebar .dr-navgroup")).map((g) => g.getAttribute("data-group")),
+        // every view panel is reachable from the sidebar
+        allViews: views.every((v) => inSb(`.dr-tab[data-view="${v}"]`)),
+        // the three drawer triggers moved here too
+        drawers: inSb(".dr-audit-btn") && inSb(".dr-chain-btn") && inSb(".dr-inbox-btn"),
+        // top bar is minimized: no nav tabs / drawer buttons left in the header...
+        topNoNav: document.querySelectorAll(".dr-top .dr-tab, .dr-top .dr-audit-btn, .dr-top .dr-chain-btn, .dr-top .dr-inbox-btn").length === 0,
+        // ...but the essentials remain in the header.
+        topKeeps:
+          !!document.querySelector(".dr-top .dr-brand") &&
+          !!document.querySelector(".dr-top .proj-switcher") &&
+          !!document.querySelector(".dr-top .dr-presence") &&
+          !!document.querySelector(".dr-top .dr-lang"),
+      };
+    }, SIDEBAR_VIEWS);
+    // active highlight via a sidebar item.
+    await page.$eval('.dr-sidebar .dr-tab[data-view="ledger"]', (el) => el.click());
+    await page.waitForSelector('.dr-sidebar .dr-tab[data-view="ledger"].is-active', { timeout: 6000 });
+    const sidebarActive = await page.evaluate(() => !!document.querySelector('.dr-sidebar .dr-tab[data-view="ledger"].is-active'));
+    // collapse a group -> its items hide; re-expand -> they return.
+    await page.$eval('.dr-navgroup[data-group="ops"] .dr-navgroup__head', (el) => el.click());
+    await page.waitForFunction(() => !document.querySelector('.dr-navgroup[data-group="ops"] .dr-tab[data-view="trend"]'), { timeout: 6000 });
+    const groupCollapsed = await page.evaluate(() => !document.querySelector('.dr-navgroup[data-group="ops"] .dr-tab[data-view="trend"]'));
+    await page.$eval('.dr-navgroup[data-group="ops"] .dr-navgroup__head', (el) => el.click());
+    await page.waitForSelector('.dr-navgroup[data-group="ops"] .dr-tab[data-view="trend"]', { timeout: 6000 });
+    const groupReexpanded = await page.evaluate(() => !!document.querySelector('.dr-navgroup[data-group="ops"] .dr-tab[data-view="trend"]'));
+    // mobile: hamburger visible + sidebar off-canvas; opening it slides in.
+    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
+    await new Promise((r) => setTimeout(r, 200));
+    const mobileNav = await page.evaluate(() => {
+      const ham = document.querySelector(".dr-hamburger");
+      const sb = document.querySelector(".dr-sidebar");
+      const r = sb?.getBoundingClientRect();
+      return {
+        hamburgerVisible: !!ham && ham.offsetParent !== null,
+        offCanvas: !!r && r.right <= 2, // translated off-screen to the left
+        noHOverflow: document.documentElement.scrollWidth <= 390 + 3,
+      };
+    });
+    await page.$eval(".dr-hamburger", (el) => el.click());
+    await page.waitForSelector(".dr-sidebar.is-open", { timeout: 6000 });
+    await new Promise((r) => setTimeout(r, 320)); // let the 0.22s slide-in settle
+    const drawerNav = await page.evaluate(() => {
+      const sb = document.querySelector(".dr-sidebar.is-open");
+      const r = sb?.getBoundingClientRect();
+      return { open: !!sb, onScreen: !!r && r.left >= -2 && r.left < 60, scrim: !!document.querySelector(".dr-nav-scrim") };
+    });
+    await page.$eval(".dr-hamburger", (el) => el.click()); // close
+    await page.setViewport({ width: 1320, height: 860, deviceScaleFactor: 2 }); // restore
+    const sidebarNavOk =
+      sidebar.present &&
+      sidebar.groups >= 6 &&
+      sidebar.allViews && // all 13 panels reachable from the sidebar
+      sidebar.drawers && // audit/chain/inbox drawers reachable too
+      sidebar.topNoNav && // top bar minimized
+      sidebar.topKeeps && // brand/project/presence/lang stay up top
+      sidebarActive &&
+      groupCollapsed &&
+      groupReexpanded &&
+      mobileNav.hamburgerVisible &&
+      mobileNav.offCanvas &&
+      mobileNav.noHOverflow &&
+      drawerNav.open &&
+      drawerNav.onScreen &&
+      drawerNav.scrim;
 
     const diag = await page.evaluate(() => {
       const mock = window.__MOCK__ ?? {};
@@ -2418,6 +2498,7 @@ async function main() {
       retroAnalyticsOk &&
       trendAnomalyOk &&
       mobileOk &&
+      sidebarNavOk &&
       projectOk &&
       wsBindOk &&
       wsKindOk &&
@@ -2544,6 +2625,8 @@ async function main() {
       trend: { ...trend, window: trendWindow, windowContract: trendWindowContract, viewer: trendViewer, disabled: trendDisabled },
       mobileOk,
       mobile: { ...mobile, detailFits },
+      sidebarNavOk,
+      sidebar: { ...sidebar, active: sidebarActive, collapsed: groupCollapsed, reexpanded: groupReexpanded, mobileNav, drawerNav },
       delegationEdgesOk,
       deleg: { offBefore: delegOffBefore, ...delegOn, offAfter: delegOffAfter },
       delegateOk,
