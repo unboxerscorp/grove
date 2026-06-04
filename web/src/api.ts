@@ -716,10 +716,16 @@ export interface Presence {
 
 export interface Project {
   name: string; // = session (internal identity, e.g. "dev10")
+  display_name?: string;
+  project?: string;
+  session?: string;
+  board?: string;
   workspace: string;
   node_count: number;
   status: string;
-  display_name?: string; // v1.29 human label (e.g. "grove-dev"); falls back to name
+  dashboardCommand?: string;
+  default_assignee?: string;
+  project_master?: { name?: string; status?: string };
 }
 
 export interface NewProject {

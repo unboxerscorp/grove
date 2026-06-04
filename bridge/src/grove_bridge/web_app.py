@@ -30,6 +30,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, sta
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
+from grove_bridge.auth import Account, DashboardRole
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
 from grove_bridge.config import default_board_db_path
 from grove_bridge.slack import (
@@ -630,6 +631,7 @@ def create_app(
         return {
             "auth_mode": config_value.auth_mode.value,
             "member": member.to_payload(),
+            "account": _account_payload_for_member(member),
             "csrf": issued.csrf_token,
             "expires_at": issued.expires_at,
         }
@@ -696,6 +698,7 @@ def create_app(
         return {
             "auth_mode": config_value.auth_mode.value,
             "member": member.to_payload(),
+            "account": _account_payload_for_member(member),
             "csrf": issued.csrf_token,
             "expires_at": issued.expires_at,
         }
@@ -1048,14 +1051,20 @@ def create_app(
         result = _create_project(payload)
         created_name = _project_name_from_result(result, fallback=payload.name)
         created_config = replace(_config(request), registry_session=created_name)
+        workspace = _project_workspace_from_result(result)
         project_master = _ensure_project_master_node(
             created_config,
-            workspace=_project_workspace_from_result(result),
+            workspace=workspace,
         )
         result = {
             **result,
             "display_name": _project_display_name(created_name, _load_registry(created_config)),
+            "project": created_name,
+            "session": created_name,
+            "board": created_name,
+            "workspace": workspace or "",
             "node_count": _project_node_count(created_config),
+            "status": _mapping_string(result, "status") or _tmux_session_status(created_name),
             "default_assignee": PROJECT_MASTER_NODE_NAME,
             "project_master": project_master,
         }
@@ -5862,9 +5871,35 @@ def _me_payload(config: WebAppConfig, auth: AuthContext) -> dict[str, object]:
     return {
         "auth_mode": config.auth_mode.value,
         "member": auth.member.to_payload() if auth.member is not None else None,
+        "account": _account_payload_for_auth(auth),
         "csrf": auth.csrf_token,
         "expires_at": auth.expires_at,
     }
+
+
+def _account_payload_for_auth(auth: AuthContext) -> dict[str, object]:
+    if auth.member is not None:
+        return _account_payload_for_member(auth.member)
+    return dict(
+        Account(
+            id="lead",
+            login="lead",
+            display_name="lead",
+            role=DashboardRole.OPERATOR,
+        ).to_payload()
+    )
+
+
+def _account_payload_for_member(member: TeamMember) -> dict[str, object]:
+    return dict(
+        Account(
+            id=member.id,
+            login=member.name,
+            display_name=member.name,
+            role=DashboardRole(member.role),
+            enabled=member.enabled,
+        ).to_payload()
+    )
 
 
 def _require_allowed_origin(request: Request) -> None:
@@ -6253,7 +6288,7 @@ def _project_display_name(session: str, registry: Mapping[str, object]) -> str:
             value = _mapping_string(project, key)
             if value is not None:
                 return _safe_public_text(value)
-    if session == "dev10":
+    if session == DEFAULT_SESSION:
         return "grove-dev"
     return _safe_public_text(session)
 
@@ -6335,6 +6370,8 @@ def _project_name_from_result(result: Mapping[str, object], *, fallback: str) ->
 
 def _project_workspace_from_result(result: Mapping[str, object]) -> str | None:
     raw = result.get("workspace")
+    if not isinstance(raw, str) or not raw.strip():
+        raw = result.get("dir")
     if isinstance(raw, str) and raw.strip():
         return raw.strip()
     return None

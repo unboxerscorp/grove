@@ -2610,6 +2610,14 @@ async function main() {
     await page.type('.proj-modal input[name="projName"]', "demo-proj");
     await page.click(".proj-new__submit");
     await page.waitForFunction(() => !!window.__MOCK__?.createdProject, { timeout: 6000 });
+    await page.waitForSelector(".proj-modal.is-new .proj-result", { timeout: 6000 });
+    const createResult = await page.evaluate(() => ({
+      buckets: document.querySelectorAll(".proj-modal.is-new .proj-result__bucket").length,
+      board: (document.querySelector(".proj-modal.is-new .proj-result__bucket.is-restored .proj-result__items")?.textContent ?? "").trim(),
+      master: (document.querySelector(".proj-modal.is-new .proj-result__bucket.is-fresh .proj-result__items")?.textContent ?? "").trim(),
+      dashboard: (document.querySelector(".proj-modal.is-new .proj-result__bucket.is-stale .proj-result__items")?.textContent ?? "").trim(),
+    }));
+    await page.click(".proj-new__switch");
     await page.waitForFunction(
       () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "demo-proj",
       { timeout: 5000 },
@@ -2646,6 +2654,10 @@ async function main() {
       projInitial === "grove-dev" && // display_name (internal: dev10)
       projAfterSwitch === "grove-infra" && // display_name (internal: infra-ops)
       newCfg.name === "demo-proj" &&
+      createResult.buckets >= 3 &&
+      createResult.board === "demo-proj" &&
+      createResult.master === "project-master" &&
+      createResult.dashboard.includes("demo-proj") &&
       projAfterNew === "demo-proj" &&
       loadResult.buckets >= 3 &&
       loadResult.ok === true &&
@@ -3331,14 +3343,22 @@ async function main() {
 }
 
 async function closeBrowser(browser) {
-  const child = typeof browser.process === "function" ? browser.process() : null;
-  try {
-    browser.disconnect();
-  } catch {
-    // Browser cleanup is best-effort; the child process kill below is decisive.
-  }
-  if (child && child.exitCode === null && !child.killed) {
-    child.kill("SIGKILL");
+  const proc = browser.process();
+  const close = browser.close().catch(() => undefined);
+  const timeout = new Promise((resolve) => setTimeout(resolve, 5000, "timeout"));
+  const result = await Promise.race([close.then(() => "closed"), timeout]);
+  if (result !== "closed") {
+    if (proc?.pid) {
+      try {
+        process.kill(proc.pid, "SIGKILL");
+      } catch {
+        // The process may already have exited after Puppeteer's close signal.
+      }
+      await Promise.race([
+        new Promise((resolve) => proc.once("exit", resolve)),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
+    }
   }
 }
 
