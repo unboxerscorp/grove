@@ -48,14 +48,18 @@ from grove_bridge.store import (
 )
 from grove_bridge.team_auth import (
     CSRF_HEADER,
+    MEMBER_ROLES,
     TEAM_SESSION_COOKIE,
     TEAM_SESSION_TTL_SECONDS,
     IssuedSession,
     MemberRegistry,
+    MemberRole,
     SessionSigner,
+    TeamJoinCodeStore,
     TeamMember,
     TeamSessionStore,
     bootstrap_hint,
+    hash_secret,
     members_path,
     session_secret_path,
 )
@@ -92,6 +96,7 @@ TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?
 NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 PROJECT_NAME_RE = NODE_NAME_RE
 HANDOFF_ID_RE = re.compile(r"^handoff_[A-Za-z0-9_-]{16,}$")
+JOIN_MEMBER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$")
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 STACK_TRACE_RE = re.compile(r"(?i)(traceback|\bfile \"|\bat .+\(.+:\d+:\d+\))")
@@ -143,6 +148,8 @@ class WebAppConfig:
     summary_trusted_keys_path: Path | None = None
     handoff_enabled: bool = False
     handoff_ttl_seconds: int = HANDOFF_TTL_SECONDS
+    shared_access: bool = False
+    shared_join_role: MemberRole = "operator"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dist_dir", self.dist_dir.expanduser())
@@ -161,7 +168,18 @@ class WebAppConfig:
             "allowed_hosts",
             _normalize_allowed_hosts(self.allowed_hosts),
         )
-        object.__setattr__(self, "auth_mode", AuthMode(self.auth_mode))
+        auth_mode = AuthMode(self.auth_mode)
+        if self.shared_access:
+            auth_mode = AuthMode.TEAM_COOKIE
+        object.__setattr__(self, "auth_mode", auth_mode)
+        if self.shared_join_role not in MEMBER_ROLES:
+            raise ValueError("shared join role is invalid")
+        if self.shared_access and self.shared_join_role == "admin":
+            LOGGER.warning(
+                "event=shared_access_admin_join_role message=join-codes-will-create-admin-members"
+            )
+        if self.shared_access and _is_shared_remote_bind(self.host) and not self.allowed_hosts:
+            raise ValueError("shared access on non-loopback bind requires --allow-host")
         if self.summary_trusted_keys_path is not None:
             object.__setattr__(
                 self,
@@ -317,6 +335,11 @@ class LoginPayload(BaseModel):
     secret: str = Field(min_length=1, max_length=5000)
 
 
+class JoinPayload(BaseModel):
+    code: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=80)
+
+
 class AggregatePayload(BaseModel):
     summaries: list[dict[str, object]] = Field(default_factory=list, max_length=100)
 
@@ -374,6 +397,7 @@ def create_app(
     app.state.store = board_store
     app.state.ticket_store = TicketStore()
     app.state.team_session_store = TeamSessionStore()
+    app.state.team_join_code_store = TeamJoinCodeStore()
     app.state.started_at = int(time.time())
     _write_web_companion(app_config, started_at=cast(int, app.state.started_at))
 
@@ -442,6 +466,64 @@ def create_app(
             _team_session_store(request).revoke(auth.sid)
         response.delete_cookie(TEAM_SESSION_COOKIE)
         return {"ok": True}
+
+    @app.get("/api/share")
+    def share_get_endpoint() -> dict[str, object]:
+        raise HTTPException(status_code=405, detail="share code issuance requires POST")
+
+    @app.post("/api/share")
+    def share_endpoint(request: Request) -> dict[str, object]:
+        config_value = _config(request)
+        _require_shared_access_enabled(config_value)
+        _require_operator_state_change(request, detail="share requires operator role")
+        record = _team_join_code_store(request).issue(role=config_value.shared_join_role)
+        return {
+            "code": record.code,
+            "role": record.role,
+            "expires_at": record.expires_at,
+            "url": _share_url(request, record.code),
+        }
+
+    @app.post("/api/join")
+    def join_endpoint(
+        request: Request,
+        response: Response,
+        payload: JoinPayload,
+    ) -> dict[str, object]:
+        config_value = _config(request)
+        _require_shared_access_enabled(config_value)
+        _require_allowed_origin(request)
+        clean_name = _validated_join_name(payload.name)
+        record, failure = _team_join_code_store(request).consume(
+            payload.code,
+            client_key=_join_client_key(request),
+        )
+        if failure == "rate_limited":
+            raise HTTPException(status_code=429, detail="join rate limit exceeded")
+        if failure == "expired":
+            raise HTTPException(status_code=410, detail="join code expired")
+        if record is None:
+            raise HTTPException(status_code=403, detail="invalid join code")
+        registry = _member_registry(config_value)
+        members = registry.list_members()
+        if any(member.name == clean_name for member in members):
+            raise HTTPException(status_code=409, detail="member name already exists")
+        member = TeamMember(
+            id="member_" + secrets.token_urlsafe(12),
+            name=clean_name,
+            role=record.role,
+            secret_hash=hash_secret(secrets.token_urlsafe(32)),
+        )
+        registry.add_member(member)
+        issued = _session_signer(config_value).issue(member)
+        _team_session_store(request).add(issued)
+        _set_team_session_cookie(response, request=request, issued=issued)
+        return {
+            "auth_mode": config_value.auth_mode.value,
+            "member": member.to_payload(),
+            "csrf": issued.csrf_token,
+            "expires_at": issued.expires_at,
+        }
 
     @app.get("/api/csrf")
     def csrf_endpoint(request: Request) -> dict[str, object]:
@@ -579,7 +661,7 @@ def create_app(
         task_id: str = Query(min_length=1, max_length=200),
         project_name: str | None = Query(default=None, alias="project"),
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
+        auth = _require_operator_state_change(request, detail="handoff requires operator role")
         config_value = _config(request)
         _require_handoff_enabled(config_value)
         project = _cost_project_context(request, project_name)
@@ -592,7 +674,7 @@ def create_app(
         payload: HandoffExportPayload,
         project_name: str | None = Query(default=None, alias="project"),
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
+        auth = _require_operator_state_change(request, detail="handoff requires operator role")
         config_value = _config(request)
         _require_handoff_enabled(config_value)
         project = _cost_project_context(request, project_name)
@@ -605,7 +687,7 @@ def create_app(
         payload: HandoffAcceptPayload,
         project_name: str | None = Query(default=None, alias="project"),
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
+        auth = _require_operator_state_change(request, detail="handoff requires operator role")
         config_value = _config(request)
         _require_handoff_enabled(config_value)
         project = _cost_project_context(request, project_name)
@@ -643,16 +725,44 @@ def create_app(
         request: Request,
         payload: ProjectCreatePayload,
     ) -> dict[str, object]:
-        _require_state_change(request)
-        return _create_project(payload)
+        auth = _require_operator_state_change(
+            request,
+            detail="project mutation requires operator role",
+        )
+        result = _create_project(payload)
+        project = resolve_project(request)
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.project.create",
+            actor=_actor_payload(auth),
+            action="create",
+            target={"type": "project", "name": result.get("name", payload.name)},
+            payload={"project": project.name},
+            summary=str(result.get("name", payload.name)),
+        )
+        return result
 
     @app.post("/api/projects/load")
     def load_project_endpoint(
         request: Request,
         payload: ProjectLoadPayload,
     ) -> dict[str, object]:
-        _require_state_change(request)
-        return _load_project(payload)
+        auth = _require_operator_state_change(
+            request,
+            detail="project mutation requires operator role",
+        )
+        result = _load_project(payload)
+        project = resolve_project(request)
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.project.load",
+            actor=_actor_payload(auth),
+            action="load",
+            target={"type": "project", "path": payload.path},
+            payload={"project": project.name},
+            summary=str(result.get("name", "load-project")),
+        )
+        return result
 
     @app.get("/api/boards")
     def boards_endpoint(request: Request) -> list[dict[str, object]]:
@@ -689,7 +799,10 @@ def create_app(
         board_id: str,
         payload: TaskCreatePayload,
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
+        auth = _require_operator_state_change(
+            request,
+            detail="task mutation requires operator role",
+        )
         title = payload.title.strip()
         if not title:
             raise HTTPException(status_code=400, detail="title is required")
@@ -746,7 +859,7 @@ def create_app(
         task_id: str,
         payload: CommentPayload,
     ) -> dict[str, object]:
-        _require_state_change(request)
+        _require_operator_state_change(request, detail="comment requires operator role")
         project = resolve_project(request)
         _task_for_project(_store(request), task_id, project=project)
         try:
@@ -765,8 +878,7 @@ def create_app(
         task_id: str,
         payload: AnswerPayload,
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
-        _require_answer_access(auth)
+        auth = _require_operator_state_change(request, detail="answer requires operator role")
         project = resolve_project(request)
         task = _task_for_project(_store(request), task_id, project=project)
         if task.status != "blocked":
@@ -796,8 +908,7 @@ def create_app(
         task_id: str,
         payload: RetroPayload,
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
-        _require_retro_access(auth)
+        auth = _require_operator_state_change(request, detail="retro requires operator role")
         project = resolve_project(request)
         task = _task_for_project(_store(request), task_id, project=project)
         if task.status != "done":
@@ -843,7 +954,10 @@ def create_app(
         request: Request,
         payload: NodeCreatePayload,
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
+        auth = _require_operator_state_change(
+            request,
+            detail="node mutation requires operator role",
+        )
         project = resolve_project(request)
         node = _spawn_node(payload, config=project.config)
         node_name = _node_name_from_spawn_result(node, fallback=payload.name)
@@ -864,7 +978,10 @@ def create_app(
         name: str,
         payload: NodeUpdatePayload,
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
+        auth = _require_operator_state_change(
+            request,
+            detail="node mutation requires operator role",
+        )
         project = resolve_project(request)
         org = _update_node_relationships(name, payload, config=project.config)
         _store(request).add_audit_event(
@@ -891,8 +1008,10 @@ def create_app(
         node: str,
         payload: AutoPickupTogglePayload,
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
-        _require_node_mutation_access(auth)
+        auth = _require_operator_state_change(
+            request,
+            detail="node mutation requires operator role",
+        )
         project = resolve_project(request)
         node_name = _node_in_project(node, config=project.config)
         global_state = _store(request).autopickup_global_state(board=project.board)
@@ -930,8 +1049,7 @@ def create_app(
         request: Request,
         payload: ExecutionGatePayload,
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
-        _require_execution_access(auth)
+        auth = _require_operator_state_change(request, detail="execution requires operator role")
         project = resolve_project(request)
         state = _store(request).set_execution_global(
             board=project.board,
@@ -964,8 +1082,7 @@ def create_app(
         node: str,
         payload: ExecutionTogglePayload,
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
-        _require_execution_access(auth)
+        auth = _require_operator_state_change(request, detail="execution requires operator role")
         project = resolve_project(request)
         node_name = _node_in_project(node, config=project.config)
         store = _store(request)
@@ -1013,8 +1130,7 @@ def create_app(
         request: Request,
         task_id: str,
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
-        _require_execution_access(auth)
+        auth = _require_operator_state_change(request, detail="execution requires operator role")
         project = resolve_project(request)
         task = _task_for_project(_store(request), task_id, project=project)
         node = _execution_node_for_task(_store(request), project=project, task=task)
@@ -1040,8 +1156,7 @@ def create_app(
         task_id: str,
         payload: ExecutionAbortPayload,
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
-        _require_execution_access(auth)
+        auth = _require_operator_state_change(request, detail="execution requires operator role")
         project = resolve_project(request)
         task = _task_for_project(_store(request), task_id, project=project)
         if not _store(request).abort_execution(
@@ -1074,7 +1189,7 @@ def create_app(
         request: Request,
         payload: SlackConfigPayload,
     ) -> dict[str, object]:
-        _require_state_change(request)
+        _require_operator_state_change(request, detail="slack config requires operator role")
         try:
             config_value = SlackConfig(
                 app_token=payload.app_token.strip(),
@@ -1089,7 +1204,7 @@ def create_app(
 
     @app.post("/api/slack/test")
     def slack_test_endpoint(request: Request) -> dict[str, object]:
-        _require_state_change(request)
+        _require_operator_state_change(request, detail="slack test requires operator role")
         configured = SlackConfigStore(_slack_config_path(_config(request))).load() is not None
         return {
             "ok": configured,
@@ -3536,6 +3651,16 @@ def _require_state_change(request: Request) -> AuthContext:
     return auth
 
 
+def _require_operator_state_change(
+    request: Request,
+    *,
+    detail: str = "mutation requires operator role",
+) -> AuthContext:
+    auth = _require_state_change(request)
+    _require_operator_access(auth, detail=detail)
+    return auth
+
+
 def _require_team_csrf(request: Request, *, auth: AuthContext) -> None:
     supplied = request.headers.get(CSRF_HEADER)
     expected = auth.csrf_token
@@ -3543,16 +3668,18 @@ def _require_team_csrf(request: Request, *, auth: AuthContext) -> None:
         raise HTTPException(status_code=403, detail="missing or invalid csrf token")
 
 
+def _require_operator_access(auth: AuthContext, *, detail: str) -> None:
+    if auth.mode == AuthMode.TEAM_COOKIE:
+        if auth.member is None or auth.member.role == "viewer":
+            raise HTTPException(status_code=403, detail=detail)
+
+
 def _require_audit_access(auth: AuthContext) -> None:
-    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
-        if auth.member.role == "viewer":
-            raise HTTPException(status_code=403, detail="audit requires operator role")
+    _require_operator_access(auth, detail="audit requires operator role")
 
 
 def _require_cost_access(auth: AuthContext) -> None:
-    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
-        if auth.member.role == "viewer":
-            raise HTTPException(status_code=403, detail="cost requires operator role")
+    _require_operator_access(auth, detail="cost requires operator role")
 
 
 def _require_summary_enabled(config: WebAppConfig) -> None:
@@ -3566,27 +3693,19 @@ def _require_handoff_enabled(config: WebAppConfig) -> None:
 
 
 def _require_answer_access(auth: AuthContext) -> None:
-    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
-        if auth.member.role == "viewer":
-            raise HTTPException(status_code=403, detail="answer requires operator role")
+    _require_operator_access(auth, detail="answer requires operator role")
 
 
 def _require_retro_access(auth: AuthContext) -> None:
-    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
-        if auth.member.role == "viewer":
-            raise HTTPException(status_code=403, detail="retro requires operator role")
+    _require_operator_access(auth, detail="retro requires operator role")
 
 
 def _require_execution_access(auth: AuthContext) -> None:
-    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
-        if auth.member.role == "viewer":
-            raise HTTPException(status_code=403, detail="execution requires operator role")
+    _require_operator_access(auth, detail="execution requires operator role")
 
 
 def _require_node_mutation_access(auth: AuthContext) -> None:
-    if auth.mode == AuthMode.TEAM_COOKIE and auth.member is not None:
-        if auth.member.role == "viewer":
-            raise HTTPException(status_code=403, detail="node mutation requires operator role")
+    _require_operator_access(auth, detail="node mutation requires operator role")
 
 
 def _actor_payload(auth: AuthContext) -> dict[str, object]:
@@ -3634,6 +3753,10 @@ def _team_session_store(request: Request) -> TeamSessionStore:
     return cast(TeamSessionStore, request.app.state.team_session_store)
 
 
+def _team_join_code_store(request: Request) -> TeamJoinCodeStore:
+    return cast(TeamJoinCodeStore, request.app.state.team_join_code_store)
+
+
 def _team_auth_unauthorized_detail(config: WebAppConfig) -> dict[str, object]:
     registry = _member_registry(config)
     detail: dict[str, object] = {"error": "not authenticated"}
@@ -3644,6 +3767,40 @@ def _team_auth_unauthorized_detail(config: WebAppConfig) -> dict[str, object]:
     if not has_members:
         detail["bootstrap_hint"] = bootstrap_hint(registry.path)
     return detail
+
+
+def _require_shared_access_enabled(config: WebAppConfig) -> None:
+    if not config.shared_access:
+        raise HTTPException(status_code=404, detail="shared access is not enabled")
+    if config.auth_mode != AuthMode.TEAM_COOKIE:
+        raise HTTPException(status_code=500, detail="shared access requires team auth")
+
+
+def _require_share_access(auth: AuthContext) -> None:
+    if auth.mode != AuthMode.TEAM_COOKIE or auth.member is None:
+        raise HTTPException(status_code=403, detail="share requires team member")
+    _require_operator_access(auth, detail="share requires operator role")
+
+
+def _require_project_mutation_access(auth: AuthContext) -> None:
+    _require_operator_access(auth, detail="project mutation requires operator role")
+
+
+def _validated_join_name(name: str) -> str:
+    clean = re.sub(r"\s+", " ", name.strip())
+    if JOIN_MEMBER_NAME_RE.fullmatch(clean) is None:
+        raise HTTPException(status_code=400, detail="invalid member name")
+    return clean
+
+
+def _join_client_key(request: Request) -> str:
+    if request.client is not None:
+        return _safe_log_text(request.client.host)
+    return "unknown"
+
+
+def _share_url(request: Request, code: str) -> str:
+    return str(request.url_for("index_endpoint")) + f"?join={code}"
 
 
 def _set_team_session_cookie(
@@ -3695,6 +3852,13 @@ def _allowed_request_hosts(config: WebAppConfig) -> set[str]:
     hosts = set(LOOPBACK_HOSTS)
     hosts.update(config.allowed_hosts)
     return hosts
+
+
+def _is_shared_remote_bind(host: str) -> bool:
+    normalized = _normalize_hostname(host)
+    if normalized is None:
+        return True
+    return normalized not in LOOPBACK_HOSTS
 
 
 def _normalize_allowed_hosts(values: Sequence[str]) -> tuple[str, ...]:
@@ -4682,6 +4846,20 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--shared-access",
+        action="store_true",
+        help=(
+            "Allow tailnet-scoped multi-user access with one-time join codes. "
+            "Use --allow-host for non-loopback peers."
+        ),
+    )
+    parser.add_argument(
+        "--shared-join-role",
+        choices=sorted(MEMBER_ROLES),
+        default="operator",
+        help="Role granted to members created from one-time join codes.",
+    )
+    parser.add_argument(
         "--enable-summary-export",
         action="store_true",
         help="Enable signed read-only summary export and aggregation endpoints.",
@@ -4725,7 +4903,11 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         unsafe_bind_token_bootstrap=args.unsafe_bind,
         allowed_hosts=_normalize_allowed_hosts(args.allow_host),
-        auth_mode=AuthMode.TEAM_COOKIE if args.team_auth else AuthMode.LOCAL_TOKEN,
+        auth_mode=AuthMode.TEAM_COOKIE
+        if args.team_auth or args.shared_access
+        else AuthMode.LOCAL_TOKEN,
+        shared_access=args.shared_access,
+        shared_join_role=args.shared_join_role,
         summary_export_enabled=args.enable_summary_export,
         summary_freshness_seconds=args.summary_freshness_seconds,
         summary_trusted_keys_path=args.summary_trusted_keys,

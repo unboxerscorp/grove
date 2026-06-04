@@ -63,6 +63,14 @@ class TeamSessionRecord:
     last_activity_at: int
 
 
+@dataclass(frozen=True)
+class JoinCodeRecord:
+    code: str
+    role: MemberRole
+    issued_at: int
+    expires_at: int
+
+
 class MemberRegistry:
     def __init__(self, path: Path) -> None:
         self.path = path.expanduser()
@@ -118,6 +126,13 @@ class MemberRegistry:
             ]
         }
         _write_json_secret_file(self.path, payload)
+
+    def add_member(self, member: TeamMember) -> None:
+        members = self.list_members()
+        if any(existing.id == member.id for existing in members):
+            raise ValueError("member id already exists")
+        members.append(member)
+        self.save_members(members)
 
 
 class SessionSigner:
@@ -240,6 +255,91 @@ class TeamSessionStore:
         expired = [sid for sid, record in self._sessions.items() if record.expires_at <= now]
         for sid in expired:
             self._sessions.pop(sid, None)
+
+
+class TeamJoinCodeStore:
+    def __init__(
+        self,
+        *,
+        ttl_seconds: int = 10 * 60,
+        rate_limit_attempts: int = 5,
+        rate_limit_window_seconds: int = 5 * 60,
+    ) -> None:
+        self.ttl_seconds = ttl_seconds
+        self.rate_limit_attempts = rate_limit_attempts
+        self.rate_limit_window_seconds = rate_limit_window_seconds
+        self._codes: dict[str, JoinCodeRecord] = {}
+        self._attempts: dict[str, list[int]] = {}
+        self._lock = threading.Lock()
+
+    def issue(self, *, role: MemberRole, now: int | None = None) -> JoinCodeRecord:
+        current_time = int(time.time()) if now is None else now
+        code = secrets.token_urlsafe(18)
+        record = JoinCodeRecord(
+            code=code,
+            role=role,
+            issued_at=current_time,
+            expires_at=current_time + self.ttl_seconds,
+        )
+        with self._lock:
+            self._cleanup_locked(current_time)
+            self._codes[code] = record
+        return record
+
+    def consume(
+        self,
+        code: str,
+        *,
+        client_key: str,
+        now: int | None = None,
+    ) -> tuple[JoinCodeRecord | None, str | None]:
+        current_time = int(time.time()) if now is None else now
+        clean_code = code.strip()
+        with self._lock:
+            if self._rate_limited_locked(client_key, current_time):
+                return None, "rate_limited"
+            record = self._codes.get(clean_code)
+            if record is None:
+                self._cleanup_locked(current_time)
+                self._record_attempt_locked(client_key, current_time)
+                return None, "invalid"
+            if record.expires_at <= current_time:
+                self._codes.pop(clean_code, None)
+                self._record_attempt_locked(client_key, current_time)
+                return None, "expired"
+            self._codes.pop(clean_code, None)
+            self._attempts.pop(client_key, None)
+            return record, None
+
+    def _rate_limited_locked(self, client_key: str, now: int) -> bool:
+        attempts = [
+            ts
+            for ts in self._attempts.get(client_key, [])
+            if now - ts < self.rate_limit_window_seconds
+        ]
+        self._attempts[client_key] = attempts
+        return len(attempts) >= self.rate_limit_attempts
+
+    def _record_attempt_locked(self, client_key: str, now: int) -> None:
+        attempts = [
+            ts
+            for ts in self._attempts.get(client_key, [])
+            if now - ts < self.rate_limit_window_seconds
+        ]
+        attempts.append(now)
+        self._attempts[client_key] = attempts
+
+    def _cleanup_locked(self, now: int) -> None:
+        expired = [code for code, record in self._codes.items() if record.expires_at <= now]
+        for code in expired:
+            self._codes.pop(code, None)
+        stale_clients = [
+            client_key
+            for client_key, attempts in self._attempts.items()
+            if all(now - ts >= self.rate_limit_window_seconds for ts in attempts)
+        ]
+        for client_key in stale_clients:
+            self._attempts.pop(client_key, None)
 
 
 def members_path(grove_home: Path, session: str) -> Path:

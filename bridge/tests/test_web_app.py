@@ -127,7 +127,6 @@ def test_team_auth_login_session_me_csrf_and_secret_storage(tmp_path: Path) -> N
     assert client.get("/api/status", headers=auth_headers(client)).status_code == 401
 
     login = client.post("/api/login", json={"name": "alice", "secret": secret})
-
     assert login.status_code == 200
     assert TEAM_SESSION_COOKIE in login.headers["set-cookie"]
     assert "httponly" in login.headers["set-cookie"].lower()
@@ -266,6 +265,225 @@ def test_team_auth_without_members_returns_bootstrap_hint(tmp_path: Path) -> Non
     detail = response.json()["detail"]
     assert detail["error"] == "not authenticated"
     assert "members_path=" in detail["bootstrap_hint"]
+
+
+def test_shared_access_join_default_off_rate_limit_one_time_and_host_guard(
+    tmp_path: Path,
+) -> None:
+    secret = "share-admin-secret"
+    write_team_member(tmp_path, secret=secret, role="admin")
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    off_client = make_client(tmp_path, store)
+    client = make_client(tmp_path, store, shared_access=True)
+
+    assert off_client.post("/api/join", json={"code": "x", "name": "bob"}).status_code == 404
+    for attempt in range(5):
+        invalid = client.post(
+            "/api/join",
+            headers={"X-Forwarded-For": f"203.0.113.{attempt}"},
+            json={"code": "bad", "name": "bob"},
+        )
+        assert invalid.status_code == 403
+    limited = client.post(
+        "/api/join",
+        headers={"X-Forwarded-For": "203.0.113.99"},
+        json={"code": "bad", "name": "bob"},
+    )
+    assert limited.status_code == 429
+
+    client = make_client(tmp_path, store, shared_access=True)
+    login = client.post("/api/login", json={"name": "alice", "secret": secret})
+    csrf = str(login.json()["csrf"])
+    get_share = client.get("/api/share")
+    missing_csrf = client.post("/api/share")
+    share = client.post("/api/share", headers={CSRF_HEADER: csrf})
+    code = share.json()["code"]
+    joined = client.post("/api/join", json={"code": code, "name": "bob"})
+    replay = client.post("/api/join", json={"code": code, "name": "charlie"})
+
+    assert login.status_code == 200
+    assert get_share.status_code == 405
+    assert missing_csrf.status_code == 403
+    assert share.status_code == 200
+    assert share.json()["role"] == "operator"
+    assert share.json()["role"] != "admin"
+    assert "code=" not in json.dumps(share.json())
+    assert joined.status_code == 200
+    assert joined.json()["member"]["name"] == "bob"
+    assert joined.json()["member"]["role"] == "operator"
+    assert replay.status_code == 403
+    registry_text = members_path(tmp_path / ".grove", "dev10").read_text(encoding="utf-8")
+    assert code not in registry_text
+    with pytest.raises(ValueError, match="requires --allow-host"):
+        make_client(tmp_path, store, host="0.0.0.0", shared_access=True)
+    guarded = make_client(
+        tmp_path,
+        store,
+        host="0.0.0.0",
+        allowed_hosts=("100.64.0.1",),
+        shared_access=True,
+    )
+    rejected_host = guarded.post(
+        "/api/join",
+        headers={"host": "evil.test", "origin": "http://evil.test"},
+        json={"code": "bad", "name": "eve"},
+    )
+    assert rejected_host.status_code == 403
+
+
+def test_shared_access_join_expiry_viewer_denial_and_member_project_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "share-admin-secret"
+    write_team_member(tmp_path, secret=secret, role="admin")
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store, shared_access=True)
+    anonymous_project = client.post("/api/projects", json={"name": "anon-project"})
+    fastapi_app(client).state.team_join_code_store = team_auth.TeamJoinCodeStore(ttl_seconds=1)
+    login = client.post("/api/login", json={"name": "alice", "secret": secret})
+    assert login.status_code == 200
+    admin_csrf = str(login.json()["csrf"])
+    share = client.post("/api/share", headers={CSRF_HEADER: admin_csrf})
+    code = share.json()["code"]
+
+    with monkeypatch.context() as time_patch:
+        time_patch.setattr(
+            "grove_bridge.team_auth.time.time",
+            lambda: share.json()["expires_at"] + 1,
+        )
+        expired = client.post("/api/join", json={"code": code, "name": "late"})
+
+    viewer = write_team_member(
+        tmp_path,
+        name="viewer",
+        secret="viewer-secret",
+        role="viewer",
+        member_id="member-viewer",
+        append=True,
+    )
+    viewer_client = make_client(tmp_path, store, shared_access=True)
+    viewer_login = viewer_client.post(
+        "/api/login",
+        json={"name": viewer.name, "secret": "viewer-secret"},
+    )
+    viewer_create = viewer_client.post(
+        "/api/projects",
+        headers={CSRF_HEADER: str(viewer_login.json()["csrf"])},
+        json={"name": "viewer-project"},
+    )
+
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "name": "joined-project",
+                    "workspace": "/repo/joined-project",
+                    "node_count": 0,
+                    "status": "stopped",
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    share2 = client.post("/api/share", headers={CSRF_HEADER: admin_csrf})
+    joined = client.post("/api/join", json={"code": share2.json()["code"], "name": "operator-bob"})
+    joined_create = client.post(
+        "/api/projects",
+        headers={CSRF_HEADER: str(joined.json()["csrf"])},
+        json={"name": "joined-project"},
+    )
+
+    assert anonymous_project.status_code == 401
+    assert expired.status_code == 410
+    assert viewer_create.status_code == 403
+    assert joined_create.status_code == 200
+    assert calls == [["grove", "new-project", "joined-project", "--json"]]
+    audits = store.list_audit_events(board="dev10", action="create")
+    assert len(audits) == 1
+    assert audits[0].kind == "audit.project.create"
+    audit_actor = cast(dict[str, object], audits[0].payload["actor"])
+    assert audit_actor["login"] == "operator-bob"
+    assert audit_actor["role"] == "operator"
+
+
+def test_shared_access_viewer_is_read_only_for_mutations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        pytest.fail("viewer mutation must be rejected before invoking subprocess")
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fail_run)
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="dev10",
+        title="Blocked task",
+        body="Needs a human answer",
+        assignee="worker",
+        status="blocked",
+    )
+    done_task = store.create_task(
+        board="dev10",
+        title="Done task",
+        body="Ready for retro",
+        assignee="worker",
+        status="done",
+        metadata={"self_retro": True},
+    )
+    client = make_client(tmp_path, store, shared_access=True, handoff_enabled=True)
+    login = client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+    csrf = str(login.json()["csrf"])
+    headers = {CSRF_HEADER: csrf}
+
+    requests: list[tuple[str, str, dict[str, object] | None]] = [
+        ("POST", "/api/share", None),
+        ("POST", "/api/projects", {"name": "viewer-project"}),
+        ("POST", "/api/projects/load", {"path": "/repo/viewer-project"}),
+        (
+            "POST",
+            "/api/boards/dev10/tasks",
+            {"title": "Delegate", "assignee": "worker"},
+        ),
+        ("POST", f"/api/tasks/{task.id}/comments", {"body": "comment"}),
+        ("POST", f"/api/tasks/{task.id}/answer", {"text": "answer"}),
+        ("POST", f"/api/tasks/{done_task.id}/retro", {"text": "retro", "node": "worker"}),
+        ("POST", "/api/nodes", {"name": "viewer-node", "agent": "codex"}),
+        ("PATCH", "/api/nodes/worker", {"group": "review"}),
+        ("POST", "/api/nodes/worker/autopickup", {"enabled": True}),
+        ("POST", "/api/execution", {"enabled": True}),
+        ("POST", "/api/nodes/worker/execution", {"enabled": True}),
+        ("POST", f"/api/tasks/{task.id}/approve", None),
+        ("POST", f"/api/tasks/{task.id}/abort", {"reason": "stop"}),
+        ("POST", "/api/slack/config", {"app_token": "xapp-test", "bot_token": "xoxb-test"}),
+        ("POST", "/api/slack/test", None),
+        ("POST", "/api/handoff/export", {"task_id": task.id}),
+        ("POST", "/api/handoff/accept", {"package": {}}),
+    ]
+
+    assert login.status_code == 200
+    for method, path, payload in requests:
+        response = client.request(method, path, headers=headers, json=payload)
+        assert response.status_code == 403, f"{method} {path} returned {response.status_code}"
 
 
 def test_rest_reads_and_writes_board_store(tmp_path: Path) -> None:
@@ -3821,6 +4039,8 @@ def make_client(
     summary_trusted_keys_path: Path | None = None,
     handoff_enabled: bool = False,
     handoff_ttl_seconds: int = 86_400,
+    shared_access: bool = False,
+    shared_join_role: team_auth.MemberRole = "operator",
 ) -> TestClient:
     dist = tmp_path / "dist"
     dist.mkdir(exist_ok=True)
@@ -3846,6 +4066,8 @@ def make_client(
         summary_trusted_keys_path=summary_trusted_keys_path,
         handoff_enabled=handoff_enabled,
         handoff_ttl_seconds=handoff_ttl_seconds,
+        shared_access=shared_access,
+        shared_join_role=shared_join_role,
     )
     return TestClient(
         create_app(config=config, store=store),
@@ -3864,14 +4086,22 @@ def write_team_member(
     name: str = "alice",
     secret: str = "opensesame",
     role: team_auth.MemberRole = "admin",
+    member_id: str = "member-1",
+    append: bool = False,
 ) -> TeamMember:
     member = TeamMember(
-        id="member-1",
+        id=member_id,
         name=name,
         role=role,
         secret_hash=hash_secret(secret, salt=b"0" * 16),
     )
-    MemberRegistry(members_path(tmp_path / ".grove", "dev10")).save_members([member])
+    registry = MemberRegistry(members_path(tmp_path / ".grove", "dev10"))
+    if append:
+        members = registry.list_members()
+        members.append(member)
+        registry.save_members(members)
+    else:
+        registry.save_members([member])
     return member
 
 
