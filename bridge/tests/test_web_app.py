@@ -8,6 +8,7 @@ import logging
 import os
 import sqlite3
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -1565,6 +1566,233 @@ def test_aggregate_marks_stale_summary_and_excludes_it_from_live_rollup(
     future = client.post("/api/aggregate", headers=headers, json={"summaries": [future_summary]})
     assert future.json()["trust"] == {"trusted": 0, "untrusted": 1, "stale": 0}
     assert "timestamp" in future.json()["summaries"][0]["reason"]
+
+
+def test_handoff_export_default_off_token_scoped_and_privacy_allowlisted(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    secret = "xoxb-" + ("b" * 44)
+    task = store.create_task(
+        board="dev10",
+        title=f"Move this owner@example.com /Users/chopin/private/{secret}",
+        body=f"Context /Users/chopin/private/transcript.log owner@example.com {secret}",
+        assignee="maker",
+        status="blocked",
+        priority=7,
+        metadata={
+            "labels": ["handoff", f"/Users/chopin/private/{secret}"],
+            "transcript_path": f"/Users/chopin/private/{secret}.jsonl",
+        },
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"maker": {"name": "maker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    default_client = make_client(tmp_path, store)
+    client = make_client(tmp_path, store, handoff_enabled=True)
+    headers = auth_headers(client)
+
+    disabled = default_client.get(
+        f"/api/handoff/export?task_id={task.id}",
+        headers=auth_headers(default_client),
+    )
+    missing_token = client.get(f"/api/handoff/export?task_id={task.id}")
+    response = client.post(
+        "/api/handoff/export",
+        headers=headers,
+        json={"task_id": task.id},
+    )
+
+    assert disabled.status_code == 404
+    assert missing_token.status_code == 401
+    assert response.status_code == 200
+    package = response.json()
+    assert set(package) == {"algorithm", "key_id", "payload", "signature"}
+    assert package["payload"]["schema"] == "grove.handoff.v1"
+    assert package["payload"]["source_project"] == "dev10"
+    assert package["payload"]["task"]["priority"] == 7
+    rendered = json.dumps(package)
+    assert secret not in rendered
+    assert "owner@example.com" not in rendered
+    assert "/Users/chopin" not in rendered
+    assert "transcript_path" not in rendered
+    assert "transcript.log" not in rendered
+    assert package["payload"]["task"]["labels"] == ["handoff", "[path]"]
+    audits = store.list_audit_events(board="dev10", action="export")
+    assert len(audits) == 1
+    assert audits[0].kind == "audit.handoff.export"
+    audit_rendered = json.dumps(audits[0].payload)
+    assert secret not in audit_rendered
+    assert "owner@example.com" not in audit_rendered
+    assert "/Users/chopin" not in audit_rendered
+
+
+def test_handoff_accept_trust_idempotency_and_receiver_local_only(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="dev10",
+        title="Receiver should decide",
+        body="Create this locally",
+        assignee="sender-node",
+        status="blocked",
+        priority=3,
+        metadata={"labels": ["handoff"]},
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"sender-node": {"name": "sender-node", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"receiver": {"name": "receiver", "agent": "claude", "tmux_pane": "dev11:1.0"}},
+    )
+    sender = make_client(tmp_path, store, handoff_enabled=True)
+    package = sender.post(
+        "/api/handoff/export",
+        headers=auth_headers(sender),
+        json={"task_id": task.id},
+    ).json()
+    tampered = json.loads(json.dumps(package))
+    tampered["payload"]["task"]["title"] = "tampered"
+    assert store.list_tasks(board="dev11") == []
+
+    receiver_without_trust = make_client(tmp_path, store, handoff_enabled=True)
+    unknown = receiver_without_trust.post(
+        "/api/handoff/accept",
+        headers=auth_headers(receiver_without_trust) | {"X-Grove-Project": "dev11"},
+        json={"package": package},
+    )
+    assert unknown.status_code == 403
+    assert store.list_tasks(board="dev11") == []
+
+    sender_key = (
+        (tmp_path / ".grove" / "dev10" / "summary-signing-key").read_text(encoding="utf-8").strip()
+    )
+    sender_key_id = hashlib.sha256(sender_key.encode("utf-8")).hexdigest()[:16]
+    trusted_keys = tmp_path / "handoff-trusted-keys.json"
+    trusted_keys.write_text(json.dumps({"keys": {sender_key_id: sender_key}}), encoding="utf-8")
+    trusted_keys.chmod(0o600)
+    receiver = make_client(
+        tmp_path,
+        store,
+        handoff_enabled=True,
+        summary_trusted_keys_path=trusted_keys,
+    )
+    headers = auth_headers(receiver) | {"X-Grove-Project": "dev11"}
+    disabled_client = make_client(tmp_path, store)
+    disabled_accept = disabled_client.post(
+        "/api/handoff/accept",
+        headers=auth_headers(disabled_client),
+        json={"package": package},
+    )
+    missing_token = receiver.post("/api/handoff/accept", json={"package": package})
+    missing_project = receiver.post(
+        "/api/handoff/accept?project=missing",
+        headers=auth_headers(receiver),
+        json={"package": package},
+    )
+    tampered_response = receiver.post(
+        "/api/handoff/accept",
+        headers=headers,
+        json={"package": tampered},
+    )
+    receiver_peer = make_client(
+        tmp_path,
+        store,
+        handoff_enabled=True,
+        summary_trusted_keys_path=trusted_keys,
+    )
+    results: list[Any] = []
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(3)
+
+    def accept_with(client: TestClient) -> None:
+        try:
+            client_headers = auth_headers(client) | {"X-Grove-Project": "dev11"}
+            barrier.wait()
+            results.append(
+                client.post(
+                    "/api/handoff/accept",
+                    headers=client_headers,
+                    json={"package": package},
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - assertion below reports the error
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=accept_with, args=(receiver,)),
+        threading.Thread(target=accept_with, args=(receiver_peer,)),
+    ]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+    replay = receiver.post("/api/handoff/accept", headers=headers, json={"package": package})
+
+    assert disabled_accept.status_code == 404
+    assert missing_token.status_code == 401
+    assert missing_project.status_code == 404
+    assert tampered_response.status_code == 403
+    assert errors == []
+    assert len(results) == 2
+    assert [response.status_code for response in results] == [200, 200]
+    assert sorted(response.json()["created"] for response in results) == [False, True]
+    assert replay.status_code == 200
+    assert replay.json()["created"] is False
+    tasks = store.list_tasks(board="dev11")
+    assert len(tasks) == 1
+    accepted = tasks[0]
+    assert accepted.status == "ready"
+    assert accepted.assignee is None
+    assert accepted.priority == 3
+    assert accepted.metadata["labels"] == ["handoff"]
+    accepted_handoff = cast(dict[str, object], accepted.metadata["handoff"])
+    package_payload = cast(dict[str, object], package["payload"])
+    assert accepted_handoff["id"] == package_payload["handoff_id"]
+    created_payload = next(response.json() for response in results if response.json()["created"])
+    assert "never dispatches" in created_payload["limitations"][1]
+    audits = store.list_audit_events(board="dev11", action="accept")
+    assert len(audits) == 1
+    assert audits[0].task_id == accepted.id
+
+
+def test_handoff_accept_rejects_expired_package(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="dev10", title="old", body=None, assignee=None, status="ready")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"sender": {"name": "sender", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    sender = make_client(tmp_path, store, handoff_enabled=True, handoff_ttl_seconds=10_000)
+    headers = auth_headers(sender)
+    old_now = 1_700_000_000
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("grove_bridge.web_app.time.time", lambda: float(old_now))
+        package = sender.post(
+            "/api/handoff/export",
+            headers=headers,
+            json={"task_id": task.id},
+        ).json()
+    assert package["payload"]["expires_at"] > old_now + 60
+    receiver = make_client(tmp_path, store, handoff_enabled=True, handoff_ttl_seconds=60)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("grove_bridge.web_app.time.time", lambda: float(old_now + 61))
+        response = receiver.post(
+            "/api/handoff/accept",
+            headers=auth_headers(receiver),
+            json={"package": package},
+        )
+
+    assert response.status_code == 410
+    assert "receiver ttl" in response.json()["detail"]
 
 
 def test_plan_endpoint_ranks_candidates_with_role_load_and_cost_signals(
@@ -3591,6 +3819,8 @@ def make_client(
     summary_export_enabled: bool = False,
     summary_freshness_seconds: int = 300,
     summary_trusted_keys_path: Path | None = None,
+    handoff_enabled: bool = False,
+    handoff_ttl_seconds: int = 86_400,
 ) -> TestClient:
     dist = tmp_path / "dist"
     dist.mkdir(exist_ok=True)
@@ -3614,6 +3844,8 @@ def make_client(
         summary_export_enabled=summary_export_enabled,
         summary_freshness_seconds=summary_freshness_seconds,
         summary_trusted_keys_path=summary_trusted_keys_path,
+        handoff_enabled=handoff_enabled,
+        handoff_ttl_seconds=handoff_ttl_seconds,
     )
     return TestClient(
         create_app(config=config, store=store),

@@ -19,6 +19,7 @@ from grove_bridge.auth_status import redact_secret_text
 DONE_STATUSES = ("done", "archived")
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 EXECUTION_TERMINAL_STATES = frozenset({"complete", "abort", "rollback"})
 EXECUTION_DISPATCH_LEASE_TTL_SECONDS = 30
 
@@ -229,6 +230,101 @@ class SQLiteBoardStore:
                 now=now,
             )
         return self.get_task(board=board, task_id=task_id)
+
+    def accept_handoff_task(
+        self,
+        *,
+        board: str,
+        handoff_id: str,
+        title: str,
+        body: str | None,
+        priority: int,
+        labels: list[str],
+        metadata: Mapping[str, object],
+        created_by: str | None,
+        actor: Mapping[str, object],
+    ) -> tuple[Task, bool]:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            existing = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE board_id = ?
+                  AND json_extract(metadata_json, '$.handoff.id') = ?
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                """,
+                (board_id, handoff_id),
+            ).fetchone()
+            if existing is not None:
+                return _task_from_row(existing), False
+            task_id = _new_id("task")
+            final_metadata = dict(metadata)
+            raw_handoff = final_metadata.get("handoff")
+            handoff_metadata = dict(raw_handoff) if isinstance(raw_handoff, Mapping) else {}
+            handoff_metadata.update(
+                {
+                    "id": handoff_id,
+                    "accepted_at": now,
+                }
+            )
+            final_metadata["handoff"] = {
+                key: value for key, value in handoff_metadata.items() if isinstance(key, str)
+            }
+            if labels:
+                final_metadata["labels"] = labels
+            conn.execute(
+                """
+                INSERT INTO tasks (
+                    id, board_id, title, body, assignee, status, priority,
+                    workspace_kind, workspace_path, branch_name, metadata_json,
+                    created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, NULL, 'ready', ?, 'scratch', NULL, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    board_id,
+                    title,
+                    body,
+                    priority,
+                    _json(final_metadata),
+                    created_by,
+                    now,
+                    now,
+                ),
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="task.created",
+                payload={"status": "ready", "source": "handoff"},
+                now=now,
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="audit.handoff.accept",
+                payload=_audit_payload(
+                    actor=actor,
+                    action="accept",
+                    target={"type": "handoff", "id": handoff_id, "task_id": task_id},
+                    board=board,
+                    status="ok",
+                    summary=title,
+                    ts=now,
+                    extra={"handoff_id": handoff_id},
+                ),
+                now=now,
+            )
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if row is None:
+                raise RuntimeError("accepted handoff task disappeared")
+            return _task_from_row(row), True
 
     def list_tasks(
         self,
@@ -2603,7 +2699,8 @@ def _safe_summary(value: str) -> str:
 
 def _safe_text(value: str) -> str:
     redacted = redact_secret_text(value)
-    return ABSOLUTE_PATH_RE.sub("[path]", redacted)
+    without_paths = ABSOLUTE_PATH_RE.sub("[path]", redacted)
+    return EMAIL_RE.sub("[pii]", without_paths)
 
 
 def _sanitize_audit_mapping(value: Mapping[str, object]) -> dict[str, object]:

@@ -78,7 +78,9 @@ MAX_TIMESTAMP_SECONDS = 4_102_444_800
 PRESENCE_ACTIVE_SECONDS = 5 * 60
 SUMMARY_FRESHNESS_SECONDS = 5 * 60
 SUMMARY_CLOCK_SKEW_SECONDS = 60
+HANDOFF_TTL_SECONDS = 24 * 60 * 60
 SUMMARY_SCHEMA = "grove.summary.v1"
+HANDOFF_SCHEMA = "grove.handoff.v1"
 SUMMARY_ALGORITHM = "hmac-sha256"
 SUMMARY_OTHER_BUCKET = "other"
 SUMMARY_TRUSTED_KEYS_FILENAME = "summary-trusted-keys.json"
@@ -89,7 +91,9 @@ SUMMARY_NODE_AGENTS = frozenset({"codex", "claude", "antigravity", "agy"})
 TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?P<pane>[0-9]+)$")
 NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 PROJECT_NAME_RE = NODE_NAME_RE
+HANDOFF_ID_RE = re.compile(r"^handoff_[A-Za-z0-9_-]{16,}$")
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 STACK_TRACE_RE = re.compile(r"(?i)(traceback|\bfile \"|\bat .+\(.+:\d+:\d+\))")
 NODE_AGENTS = frozenset({"codex", "claude", "antigravity"})
 COST_AGENTS = ("codex", "claude", "agy")
@@ -137,6 +141,8 @@ class WebAppConfig:
     summary_export_enabled: bool = False
     summary_freshness_seconds: int = SUMMARY_FRESHNESS_SECONDS
     summary_trusted_keys_path: Path | None = None
+    handoff_enabled: bool = False
+    handoff_ttl_seconds: int = HANDOFF_TTL_SECONDS
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dist_dir", self.dist_dir.expanduser())
@@ -164,6 +170,8 @@ class WebAppConfig:
             )
         if self.summary_freshness_seconds <= 0:
             raise ValueError("summary freshness must be positive")
+        if self.handoff_ttl_seconds <= 0:
+            raise ValueError("handoff ttl must be positive")
 
 
 @dataclass(frozen=True)
@@ -311,6 +319,14 @@ class LoginPayload(BaseModel):
 
 class AggregatePayload(BaseModel):
     summaries: list[dict[str, object]] = Field(default_factory=list, max_length=100)
+
+
+class HandoffExportPayload(BaseModel):
+    task_id: str = Field(min_length=1, max_length=200)
+
+
+class HandoffAcceptPayload(BaseModel):
+    package: dict[str, object]
 
 
 class TicketStore:
@@ -556,6 +572,50 @@ def create_app(
         _require_summary_enabled(config_value)
         project = _cost_project_context(request, project_name)
         return _aggregate_summary_payload(project.config, payload)
+
+    @app.get("/api/handoff/export")
+    def handoff_export_get_endpoint(
+        request: Request,
+        task_id: str = Query(min_length=1, max_length=200),
+        project_name: str | None = Query(default=None, alias="project"),
+    ) -> dict[str, object]:
+        auth = _require_state_change(request)
+        config_value = _config(request)
+        _require_handoff_enabled(config_value)
+        project = _cost_project_context(request, project_name)
+        task = _task_for_project(_store(request), task_id, project=project)
+        return _signed_handoff_payload(_store(request), project=project, task=task, auth=auth)
+
+    @app.post("/api/handoff/export")
+    def handoff_export_post_endpoint(
+        request: Request,
+        payload: HandoffExportPayload,
+        project_name: str | None = Query(default=None, alias="project"),
+    ) -> dict[str, object]:
+        auth = _require_state_change(request)
+        config_value = _config(request)
+        _require_handoff_enabled(config_value)
+        project = _cost_project_context(request, project_name)
+        task = _task_for_project(_store(request), payload.task_id, project=project)
+        return _signed_handoff_payload(_store(request), project=project, task=task, auth=auth)
+
+    @app.post("/api/handoff/accept")
+    def handoff_accept_endpoint(
+        request: Request,
+        payload: HandoffAcceptPayload,
+        project_name: str | None = Query(default=None, alias="project"),
+    ) -> dict[str, object]:
+        auth = _require_state_change(request)
+        config_value = _config(request)
+        _require_handoff_enabled(config_value)
+        project = _cost_project_context(request, project_name)
+        return _accept_handoff_payload(
+            _store(request),
+            config=project.config,
+            project=project,
+            package=payload.package,
+            auth=auth,
+        )
 
     @app.get("/api/plan")
     def plan_endpoint(
@@ -2222,6 +2282,235 @@ def _read_summary_key(path: Path) -> str:
     return key
 
 
+def _signed_handoff_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    task: Task,
+    auth: AuthContext,
+) -> dict[str, object]:
+    now = int(time.time())
+    handoff_id = "handoff_" + secrets.token_urlsafe(18)
+    key = _load_or_create_summary_key(project.config)
+    payload = _handoff_payload(
+        task,
+        project=project,
+        handoff_id=handoff_id,
+        generated_at=now,
+        expires_at=now + project.config.handoff_ttl_seconds,
+    )
+    actor = _actor_payload(auth)
+    store.add_audit_event(
+        board=project.board,
+        kind="audit.handoff.export",
+        actor=actor,
+        action="export",
+        target={"type": "handoff", "id": handoff_id, "task_id": task.id},
+        task_id=task.id,
+        payload={"project": project.name, "handoff_id": handoff_id},
+        summary=task.title,
+    )
+    return {
+        "algorithm": SUMMARY_ALGORITHM,
+        "key_id": _summary_key_id(key),
+        "payload": payload,
+        "signature": _summary_signature(key, payload),
+    }
+
+
+def _handoff_payload(
+    task: Task,
+    *,
+    project: ProjectContext,
+    handoff_id: str,
+    generated_at: int,
+    expires_at: int,
+) -> dict[str, object]:
+    return {
+        "schema": HANDOFF_SCHEMA,
+        "handoff_id": handoff_id,
+        "source_project": project.name,
+        "generated_at": generated_at,
+        "expires_at": expires_at,
+        "task": {
+            "title": _handoff_text(task.title, max_length=300),
+            "body": _handoff_optional_text(task.body, max_length=4000),
+            "priority": max(0, min(task.priority, 1000)),
+            "labels": _handoff_labels(task.metadata),
+        },
+    }
+
+
+def _accept_handoff_payload(
+    store: SQLiteBoardStore,
+    *,
+    config: WebAppConfig,
+    project: ProjectContext,
+    package: Mapping[str, object],
+    auth: AuthContext,
+) -> dict[str, object]:
+    verified = _verify_handoff_envelope(
+        package,
+        trusted_keys=_summary_trusted_keys(config),
+        now=int(time.time()),
+        receiver_ttl_seconds=config.handoff_ttl_seconds,
+    )
+    if verified["trust"] != "trusted":
+        reason = str(verified.get("reason", "handoff package is untrusted"))
+        status_code = 410 if "expired" in reason else 403
+        raise HTTPException(status_code=status_code, detail=reason)
+    payload = cast(Mapping[str, object], verified["payload"])
+    task_payload = cast(Mapping[str, object], payload["task"])
+    actor = _actor_payload(auth)
+    task, created = store.accept_handoff_task(
+        board=project.board,
+        handoff_id=cast(str, payload["handoff_id"]),
+        title=cast(str, task_payload["title"]),
+        body=cast(str | None, task_payload.get("body")),
+        priority=cast(int, task_payload["priority"]),
+        labels=cast(list[str], task_payload["labels"]),
+        metadata={
+            "handoff": {
+                "id": payload["handoff_id"],
+                "source_project": payload["source_project"],
+                "source_key_id": verified["key_id"],
+                "generated_at": payload["generated_at"],
+            }
+        },
+        created_by=_actor_id(actor),
+        actor=actor,
+    )
+    return {
+        "status": "created" if created else "existing",
+        "created": created,
+        "handoff_id": payload["handoff_id"],
+        "task": _task_payload(task),
+        "limitations": [
+            "handoff accept creates a local unassigned ready task only",
+            "handoff accept never dispatches or executes remote work",
+        ],
+    }
+
+
+def _verify_handoff_envelope(
+    envelope: Mapping[str, object],
+    *,
+    trusted_keys: Mapping[str, str],
+    now: int,
+    receiver_ttl_seconds: int,
+) -> dict[str, object]:
+    payload = envelope.get("payload")
+    signature = envelope.get("signature")
+    algorithm = envelope.get("algorithm")
+    key_id = envelope.get("key_id")
+    if not isinstance(payload, Mapping) or not isinstance(signature, str):
+        return _untrusted_summary(reason="invalid handoff envelope")
+    if algorithm != SUMMARY_ALGORITHM:
+        return _untrusted_summary(reason="unsupported handoff algorithm")
+    if not isinstance(key_id, str) or key_id not in trusted_keys:
+        return _untrusted_summary(reason="unknown handoff key")
+    expected = _summary_signature(trusted_keys[key_id], payload)
+    if not hmac.compare_digest(signature, expected):
+        return _untrusted_summary(reason="handoff signature verification failed")
+    public_payload = _handoff_public_view(payload)
+    if public_payload is None:
+        return _untrusted_summary(reason="invalid handoff payload")
+    generated_at = cast(int, public_payload["generated_at"])
+    expires_at = cast(int, public_payload["expires_at"])
+    if generated_at > now + SUMMARY_CLOCK_SKEW_SECONDS:
+        return _untrusted_summary(reason="handoff timestamp is invalid")
+    if generated_at + receiver_ttl_seconds < now:
+        return _untrusted_summary(reason="handoff package expired by receiver ttl")
+    if expires_at < now:
+        return _untrusted_summary(reason="handoff package expired")
+    return {
+        "trust": "trusted",
+        "freshness": "fresh",
+        "key_id": _safe_log_text(key_id),
+        "handoff_id": public_payload["handoff_id"],
+        "payload": public_payload,
+    }
+
+
+def _handoff_public_view(payload: Mapping[str, object]) -> dict[str, object] | None:
+    if payload.get("schema") != HANDOFF_SCHEMA:
+        return None
+    handoff_id = payload.get("handoff_id")
+    source_project = payload.get("source_project")
+    generated_at = _summary_int(payload.get("generated_at"))
+    expires_at = _summary_int(payload.get("expires_at"))
+    task = payload.get("task")
+    if (
+        not isinstance(handoff_id, str)
+        or HANDOFF_ID_RE.fullmatch(handoff_id) is None
+        or not isinstance(source_project, str)
+        or generated_at is None
+        or expires_at is None
+        or not isinstance(task, Mapping)
+    ):
+        return None
+    title = task.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return None
+    priority = _summary_int(task.get("priority"))
+    if priority is None:
+        return None
+    body = task.get("body")
+    if body is not None and not isinstance(body, str):
+        return None
+    labels = _handoff_public_labels(task.get("labels"))
+    if labels is None:
+        return None
+    return {
+        "schema": HANDOFF_SCHEMA,
+        "handoff_id": handoff_id,
+        "source_project": _safe_log_text(source_project),
+        "generated_at": generated_at,
+        "expires_at": expires_at,
+        "task": {
+            "title": _handoff_text(title, max_length=300),
+            "body": _handoff_optional_text(body, max_length=4000),
+            "priority": max(0, min(priority, 1000)),
+            "labels": labels,
+        },
+    }
+
+
+def _handoff_labels(metadata: Mapping[str, object]) -> list[str]:
+    raw = metadata.get("labels")
+    return _handoff_public_labels(raw) or []
+
+
+def _handoff_public_labels(value: object) -> list[str] | None:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return None
+    labels: list[str] = []
+    for item in value[:50]:
+        if not isinstance(item, str):
+            return None
+        label = _handoff_text(item, max_length=100)
+        if label:
+            labels.append(label)
+    return labels
+
+
+def _handoff_optional_text(value: str | None, *, max_length: int) -> str | None:
+    if value is None:
+        return None
+    text = _handoff_text(value, max_length=max_length)
+    return text or None
+
+
+def _handoff_text(value: str, *, max_length: int) -> str:
+    raw = value.replace("\r", "\n")
+    without_paths = ABSOLUTE_PATH_RE.sub("[path]", raw)
+    without_secrets = redact_secret_text(without_paths)
+    without_pii = EMAIL_RE.sub("[pii]", without_secrets)
+    return re.sub(r"\s+", " ", without_pii).strip()[:max_length]
+
+
 def _plan_payload(
     store: SQLiteBoardStore,
     *,
@@ -3269,6 +3558,11 @@ def _require_cost_access(auth: AuthContext) -> None:
 def _require_summary_enabled(config: WebAppConfig) -> None:
     if not config.summary_export_enabled:
         raise HTTPException(status_code=404, detail="summary export is not enabled")
+
+
+def _require_handoff_enabled(config: WebAppConfig) -> None:
+    if not config.handoff_enabled:
+        raise HTTPException(status_code=404, detail="handoff is not enabled")
 
 
 def _require_answer_access(auth: AuthContext) -> None:
@@ -4407,6 +4701,17 @@ def main(argv: list[str] | None = None) -> int:
             '{"keys":{"<key_id>":"<key>"}}.'
         ),
     )
+    parser.add_argument(
+        "--enable-handoff",
+        action="store_true",
+        help="Enable signed read-only handoff export and receiver-local accept endpoints.",
+    )
+    parser.add_argument(
+        "--handoff-ttl-seconds",
+        type=int,
+        default=HANDOFF_TTL_SECONDS,
+        help="Lifetime for signed handoff packages.",
+    )
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -4424,6 +4729,8 @@ def main(argv: list[str] | None = None) -> int:
         summary_export_enabled=args.enable_summary_export,
         summary_freshness_seconds=args.summary_freshness_seconds,
         summary_trusted_keys_path=args.summary_trusted_keys,
+        handoff_enabled=args.enable_handoff,
+        handoff_ttl_seconds=args.handoff_ttl_seconds,
     )
     app = create_app(config=config)
     started_at = cast(int, app.state.started_at)
