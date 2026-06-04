@@ -4,7 +4,7 @@ import type { Context, NodeCtx } from "../context.js";
 import { loadContext, nodeOf } from "../context.js";
 import type { FanInResult } from "../fanin.js";
 import { renderFanInJson, waitForFanIn } from "../fanin.js";
-import { clearPending, waitForCompletion } from "../ops.js";
+import { clearPending, resolvePending, waitForCompletion } from "../ops.js";
 import { cmdWait, cmdWaitCommand } from "./wait.js";
 
 vi.mock("../context.js", () => ({
@@ -19,6 +19,7 @@ vi.mock("../fanin.js", () => ({
 
 vi.mock("../ops.js", () => ({
   clearPending: vi.fn(),
+  resolvePending: vi.fn(),
   waitForCompletion: vi.fn(),
 }));
 
@@ -65,6 +66,7 @@ function harness(): { ctx: Context; nc: NodeCtx; writes: string[] } {
   });
   vi.mocked(loadContext).mockReturnValue(ctx);
   vi.mocked(nodeOf).mockReturnValue(nc);
+  vi.mocked(resolvePending).mockReturnValue(ctx.registry.nodes.maker?.pending);
   return { ctx, nc, writes };
 }
 

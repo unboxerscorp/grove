@@ -1,8 +1,14 @@
+import { rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, test } from "vitest";
 
+import type { AgentAdapter } from "./adapters/types.js";
+import type { Context, NodeCtx } from "./context.js";
+import { recordPending } from "./ops.js";
+import { loadRegistry, type Registry, saveRegistry } from "./registry.js";
 import { createGroveChatServer, type GroveFacadeRuntime, StickySessionPool } from "./serve.js";
+import { sessionDir } from "./util/paths.js";
 
 interface RuntimeCall {
   nodeName: string;
@@ -82,6 +88,51 @@ function decodeChunk(value: unknown, opts?: { stream?: boolean }): string {
 
 function parsePayload(payload: string): unknown {
   return JSON.parse(payload) as unknown;
+}
+
+function makeRegistryContext(session: string, registry: Registry): Context {
+  return {
+    byName: new Map(),
+    config: {
+      cwd: "/tmp/grove-test",
+      defaults: { agent: "codex" },
+      nodes: {},
+      session,
+    },
+    configPath: "/tmp/grove.yaml",
+    nodes: [],
+    registry,
+  };
+}
+
+function makeNodeContext(name: string): NodeCtx {
+  const adapter = {
+    name: "codex",
+    label: "Codex",
+    submit: "enter",
+    readyPattern: /ready/,
+    launchCommand: () => "codex",
+    transcriptForSession: () => `/tmp/${name}.jsonl`,
+    snapshot: () => new Map<string, number>(),
+    detectNew: () => null,
+    sessionIdFromPath: () => name,
+    size: () => 0,
+    readCompletionSince: (_transcript: string, offset: number) => ({
+      done: false,
+      offset,
+    }),
+    readLast: () => null,
+  } satisfies AgentAdapter;
+  return {
+    adapter,
+    addr: `dev10:${name}`,
+    node: {
+      agent: "codex",
+      children: [],
+      cwd: "/tmp/grove-test",
+      name,
+    },
+  };
 }
 
 describe("grove chat completions facade", () => {
@@ -375,5 +426,106 @@ describe("grove chat completions facade", () => {
     });
     expect(oversized.status).toBe(413);
     expect(await oversized.json()).toEqual({ error: "request body too large" });
+  });
+
+  test("concurrent live browser requests preserve registry bindings", async () => {
+    const session = `servereg-${process.pid}-${Date.now()}`;
+    const initial: Registry = {
+      cwd: "/tmp/grove-test",
+      nodes: {
+        browser: {
+          agent: "codex",
+          name: "browser",
+          role: "stale-browser-role",
+        },
+        "maker-a": {
+          agent: "codex",
+          name: "maker-a",
+          tmux_pane: "dev10:1.0",
+        },
+        "maker-b": {
+          agent: "codex",
+          name: "maker-b",
+          tmux_pane: "dev10:1.1",
+        },
+      },
+      session,
+      updatedAt: "before",
+    };
+    saveRegistry(initial);
+    const staleA = structuredClone(initial);
+    const staleB = structuredClone(initial);
+    const latest = loadRegistry(session)!;
+    latest.nodes.browser = {
+      agent: "codex",
+      name: "browser",
+      role: "live-browser-role",
+    };
+    latest.nodes["maker-b"]!.sessionId = "live-maker-b-session";
+    saveRegistry(latest);
+
+    const runtime: GroveFacadeRuntime = {
+      async runTurn(nodeName) {
+        const staleRegistry = nodeName === "maker-a" ? staleA : staleB;
+        recordPending(
+          makeRegistryContext(session, staleRegistry),
+          makeNodeContext(nodeName),
+          `/tmp/${nodeName}.jsonl`,
+          nodeName === "maker-a" ? 10 : 20,
+          { eventLogOffset: nodeName === "maker-a" ? 100 : 200 },
+        );
+        return `${nodeName} done`;
+      },
+    };
+    const baseUrl = await listen(runtime, ["maker-a", "maker-b"]);
+
+    try {
+      const [first, second] = await Promise.all([
+        fetch(`${baseUrl}/v1/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Grove-Session-Id": "channel-a",
+          },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "first" }],
+            stream: false,
+          }),
+        }),
+        fetch(`${baseUrl}/v1/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Grove-Session-Id": "channel-b",
+          },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "second" }],
+            stream: false,
+          }),
+        }),
+      ]);
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+
+      const reloaded = loadRegistry(session);
+      expect(reloaded?.nodes.browser?.role).toBe("live-browser-role");
+      expect(reloaded?.nodes["maker-a"]?.pending).toEqual(
+        expect.objectContaining({
+          eventLogOffset: 100,
+          fromOffset: 10,
+          transcript: "/tmp/maker-a.jsonl",
+        }),
+      );
+      expect(reloaded?.nodes["maker-b"]?.pending).toEqual(
+        expect.objectContaining({
+          eventLogOffset: 200,
+          fromOffset: 20,
+          transcript: "/tmp/maker-b.jsonl",
+        }),
+      );
+      expect(reloaded?.nodes["maker-b"]?.sessionId).toBe("live-maker-b-session");
+    } finally {
+      rmSync(sessionDir(session), { force: true, recursive: true });
+    }
   });
 });
