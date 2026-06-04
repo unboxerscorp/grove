@@ -105,6 +105,15 @@ EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 STACK_TRACE_RE = re.compile(r"(?i)(traceback|\bfile \"|\bat .+\(.+:\d+:\d+\))")
 NODE_AGENTS = frozenset({"codex", "claude", "antigravity"})
 COST_AGENTS = ("codex", "claude", "agy")
+RETRO_ANALYTICS_SMALL_SAMPLE = 3
+RETRO_SLOW_RUN_SECONDS = 60 * 60
+RETRO_THEME_TERMS: dict[str, tuple[str, ...]] = {
+    "testing": ("test", "tests", "pytest", "coverage", "flake", "flaky"),
+    "blocked": ("blocked", "stuck", "waiting", "dependency"),
+    "scope": ("scope", "requirement", "contract"),
+    "review": ("review", "reviewer", "feedback"),
+    "tooling": ("ruff", "mypy", "pytest", "lint", "format", "tooling"),
+}
 PLAN_ROLE_WEIGHT = 50.0
 PLAN_CAPABILITY_WEIGHT = 20.0
 PLAN_LOAD_WEIGHT = 30.0
@@ -155,6 +164,7 @@ class WebAppConfig:
     shared_join_role: MemberRole = "operator"
     quota_enabled: bool = False
     slack_intake_enabled: bool = False
+    retro_analytics_enabled: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dist_dir", self.dist_dir.expanduser())
@@ -662,6 +672,24 @@ def create_app(
             window=window,
             member_filter=member_filter,
             quota_enabled=_config(request).quota_enabled,
+        )
+
+    @app.get("/api/retro/analytics")
+    def retro_analytics_endpoint(
+        request: Request,
+        window: str = Query(default="7d"),
+        project_name: str | None = Query(default=None, alias="project"),
+    ) -> dict[str, object]:
+        auth = _require_auth(request)
+        _require_retro_access(auth)
+        config_value = _config(request)
+        _require_retro_analytics_enabled(config_value)
+        project = _cost_project_context(request, project_name)
+        return _retro_analytics_payload(
+            _store(request),
+            project=project,
+            auth=auth,
+            window=window,
         )
 
     @app.post("/api/quota")
@@ -1995,6 +2023,307 @@ def _ledger_payload(
             "agy credit and missing cost fields remain unknown; no costs are invented",
         ],
     }
+
+
+def _retro_analytics_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    auth: AuthContext,
+    window: str,
+) -> dict[str, object]:
+    now = int(time.time())
+    window_payload, since = _cost_window(window, now=now)
+    tasks = store.list_tasks(board=project.board)
+    runs = store.list_runs_for_board(board=project.board, since=since)
+    retro_comments = _retro_comments_for_tasks(store, board=project.board, tasks=tasks, since=since)
+    completed_runs = [run for run in runs if _retro_run_completed(run)]
+    sample_count = len(retro_comments) + len(completed_runs)
+    confidence = "low" if sample_count < RETRO_ANALYTICS_SMALL_SAMPLE else "medium"
+    registry_nodes = _registry_node_records(project.config)
+    has_agy = any(_normalized_cost_agent(node["agent"]) == "agy" for node in registry_nodes)
+    store.add_audit_event(
+        board=project.board,
+        kind="audit.retro.analytics",
+        actor=_actor_payload(auth),
+        action="retro-analytics",
+        target={"type": "retro_analytics", "id": project.name},
+        status="ok",
+        summary="retro analytics read",
+        payload={
+            "project": project.name,
+            "advisory_only": True,
+            "sample_count": sample_count,
+            "confidence": confidence,
+        },
+    )
+    limitations = [
+        "advisory-only: this endpoint does not create tasks, change config, or dispatch work",
+        "themes are deterministic allowlist categories from redacted retro text",
+        "slow patterns use measured run timestamps only",
+    ]
+    if has_agy:
+        limitations.append("agy credit is unknown; no credit or cost values are invented")
+    if confidence == "low":
+        limitations.append("small sample size; confidence is low")
+    return {
+        "ok": True,
+        "project": project.name,
+        "mode": "advisory",
+        "actions": [],
+        "generated_at": _cost_metric(now, source="server", confidence="explicit"),
+        "window": window_payload,
+        "confidence": confidence,
+        "sample": {
+            "completed_runs": _cost_metric(
+                len(completed_runs),
+                source="run_metadata",
+                confidence="explicit",
+            ),
+            "retro_comments": _cost_metric(
+                len(retro_comments),
+                source="comments",
+                confidence="explicit",
+            ),
+            "blocked_tasks": _cost_metric(
+                len([task for task in tasks if task.status == "blocked"]),
+                source="tasks",
+                confidence="explicit",
+            ),
+        },
+        "throughput": _retro_throughput_payload(runs, confidence=confidence),
+        "themes": _retro_theme_payload(retro_comments, confidence=confidence),
+        "patterns": _retro_patterns_payload(tasks=tasks, runs=runs, confidence=confidence),
+        "outcomes": _retro_outcomes_payload(
+            runs,
+            nodes=registry_nodes,
+            confidence=confidence,
+        ),
+        "cost_signals": {
+            "agy_credit": _cost_metric(
+                None,
+                source="none",
+                confidence="unknown",
+                status_value="unknown",
+            )
+        },
+        "limitations": limitations,
+    }
+
+
+def _retro_comments_for_tasks(
+    store: SQLiteBoardStore,
+    *,
+    board: str,
+    tasks: Sequence[Task],
+    since: int | None,
+) -> list[Comment]:
+    comments: list[Comment] = []
+    for task in tasks:
+        for comment in store.list_comments(board=board, task_id=task.id):
+            if since is not None and comment.created_at < since:
+                continue
+            if _is_retro_comment(comment):
+                comments.append(comment)
+    return comments
+
+
+def _is_retro_comment(comment: Comment) -> bool:
+    kind = comment.metadata.get("kind")
+    return kind == "retro" or comment.author.startswith("retro:")
+
+
+def _retro_throughput_payload(
+    runs: Sequence[Run],
+    *,
+    confidence: str,
+) -> list[dict[str, object]]:
+    counts: dict[str, int] = {}
+    for run in runs:
+        if not _retro_run_completed(run):
+            continue
+        completed_at = run.ended_at or run.started_at
+        bucket = _retro_day_bucket(completed_at)
+        counts[bucket] = counts.get(bucket, 0) + 1
+    return [
+        {
+            "bucket": bucket,
+            "completed": _cost_metric(count, source="run_metadata", confidence=confidence),
+        }
+        for bucket, count in sorted(counts.items())
+    ]
+
+
+def _retro_theme_payload(
+    comments: Sequence[Comment],
+    *,
+    confidence: str,
+) -> list[dict[str, object]]:
+    counts: dict[str, int] = {theme: 0 for theme in RETRO_THEME_TERMS}
+    for comment in comments:
+        text = _safe_public_text(comment.body).lower()
+        for theme, terms in RETRO_THEME_TERMS.items():
+            if any(term in text for term in terms):
+                counts[theme] += 1
+    return [
+        {
+            "theme": theme,
+            "count": _cost_metric(count, source="retro_comments", confidence=confidence),
+            "keywords": list(RETRO_THEME_TERMS[theme]),
+        }
+        for theme, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        if count > 0
+    ]
+
+
+def _retro_patterns_payload(
+    *,
+    tasks: Sequence[Task],
+    runs: Sequence[Run],
+    confidence: str,
+) -> dict[str, object]:
+    blocked_tasks = [task for task in tasks if task.status == "blocked"]
+    durations = [
+        run.ended_at - run.started_at
+        for run in runs
+        if _retro_run_completed(run) and run.ended_at is not None and run.ended_at >= run.started_at
+    ]
+    slow = [duration for duration in durations if duration >= RETRO_SLOW_RUN_SECONDS]
+    return {
+        "blocked": {
+            "current": _cost_metric(
+                len(blocked_tasks),
+                source="tasks",
+                confidence="explicit",
+            ),
+            "by_assignee": _retro_blocked_by_assignee(blocked_tasks, confidence=confidence),
+            "blocked_runs": _cost_metric(
+                len([run for run in runs if _retro_run_outcome(run) == "blocked"]),
+                source="run_metadata",
+                confidence=confidence,
+            ),
+        },
+        "slow": {
+            "threshold_seconds": _cost_metric(
+                RETRO_SLOW_RUN_SECONDS,
+                source="server",
+                confidence="explicit",
+            ),
+            "count": _cost_metric(len(slow), source="run_metadata", confidence=confidence),
+            "average_duration_seconds": _cost_metric(
+                int(sum(durations) / len(durations)) if durations else None,
+                source="run_metadata" if durations else "none",
+                confidence=confidence if durations else "unknown",
+                status_value="unknown" if not durations else None,
+            ),
+        },
+    }
+
+
+def _retro_blocked_by_assignee(
+    tasks: Sequence[Task],
+    *,
+    confidence: str,
+) -> list[dict[str, object]]:
+    counts: dict[str, int] = {}
+    for task in tasks:
+        assignee = _safe_public_text(task.assignee or "unassigned")
+        counts[assignee] = counts.get(assignee, 0) + 1
+    return [
+        {
+            "assignee": assignee,
+            "count": _cost_metric(count, source="tasks", confidence=confidence),
+        }
+        for assignee, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def _retro_outcomes_payload(
+    runs: Sequence[Run],
+    *,
+    nodes: Sequence[Mapping[str, str]],
+    confidence: str,
+) -> dict[str, object]:
+    node_info = {_safe_public_text(node["name"]): node for node in nodes}
+    node_counts: dict[str, dict[str, int]] = {}
+    role_counts: dict[str, dict[str, int]] = {}
+    for run in runs:
+        node = _safe_public_text(run.node_id)
+        outcome = _retro_run_outcome(run)
+        counts = node_counts.setdefault(node, _empty_outcome_counts())
+        counts[outcome] = counts.get(outcome, 0) + 1
+        role = _safe_public_text(node_info.get(node, {}).get("role") or "unknown")
+        role_bucket = role_counts.setdefault(role, _empty_outcome_counts())
+        role_bucket[outcome] = role_bucket.get(outcome, 0) + 1
+    return {
+        "by_node": [
+            _retro_outcome_item(
+                key_name="node",
+                key=node,
+                counts=counts,
+                source="run_metadata",
+                confidence=confidence,
+                extra={
+                    "role": _safe_public_text(node_info.get(node, {}).get("role") or "unknown"),
+                    "agent": _safe_public_text(node_info.get(node, {}).get("agent") or "unknown"),
+                },
+            )
+            for node, counts in sorted(node_counts.items())
+        ],
+        "by_role": [
+            _retro_outcome_item(
+                key_name="role",
+                key=role,
+                counts=counts,
+                source="run_metadata",
+                confidence=confidence,
+            )
+            for role, counts in sorted(role_counts.items())
+        ],
+    }
+
+
+def _retro_outcome_item(
+    *,
+    key_name: str,
+    key: str,
+    counts: Mapping[str, int],
+    source: str,
+    confidence: str,
+    extra: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {key_name: key, **dict(extra or {})}
+    for outcome in ("completed", "blocked", "failed", "running", "other"):
+        payload[outcome] = _cost_metric(
+            counts.get(outcome, 0),
+            source=source,
+            confidence=confidence,
+        )
+    return payload
+
+
+def _empty_outcome_counts() -> dict[str, int]:
+    return {"completed": 0, "blocked": 0, "failed": 0, "running": 0, "other": 0}
+
+
+def _retro_run_completed(run: Run) -> bool:
+    return _retro_run_outcome(run) == "completed"
+
+
+def _retro_run_outcome(run: Run) -> str:
+    if run.outcome == "complete" or run.status == "completed":
+        return "completed"
+    if run.outcome == "blocked" or run.status == "blocked":
+        return "blocked"
+    if run.status == "running":
+        return "running"
+    if run.outcome in {"failed", "abort", "rollback"} or run.status in {"failed", "aborted"}:
+        return "failed"
+    return "other"
+
+
+def _retro_day_bucket(ts: int) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(ts))
 
 
 def _ledger_member_rollup(
@@ -4024,6 +4353,11 @@ def _require_quota_enabled(config: WebAppConfig) -> None:
         raise HTTPException(status_code=404, detail="quota is not enabled")
 
 
+def _require_retro_analytics_enabled(config: WebAppConfig) -> None:
+    if not config.retro_analytics_enabled:
+        raise HTTPException(status_code=404, detail="retro analytics is not enabled")
+
+
 def _require_answer_access(auth: AuthContext) -> None:
     _require_operator_access(auth, detail="answer requires operator role")
 
@@ -5361,6 +5695,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Report Slack intent intake as enabled in /api/slack/config/status.",
     )
+    parser.add_argument(
+        "--enable-retro-analytics",
+        action="store_true",
+        help="Enable read-only retro analytics insights.",
+    )
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -5389,6 +5728,7 @@ def main(argv: list[str] | None = None) -> int:
         handoff_ttl_seconds=args.handoff_ttl_seconds,
         quota_enabled=args.enable_quotas,
         slack_intake_enabled=args.enable_intake,
+        retro_analytics_enabled=args.enable_retro_analytics,
     )
     app = create_app(config=config)
     started_at = cast(int, app.state.started_at)

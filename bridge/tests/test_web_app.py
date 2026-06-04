@@ -1562,6 +1562,194 @@ def test_usage_endpoint_scopes_project_and_handles_empty_data(tmp_path: Path) ->
     assert missing.status_code == 404
 
 
+def test_retro_analytics_reports_advisory_insights_without_mutating_work(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    secret = "xoxb-" + ("c" * 44)
+    task = store.create_task(
+        board="dev10",
+        title=f"Do not leak alice@example.com {secret}",
+        body=f"private path /Users/chopin/project/{secret}",
+        assignee="maker",
+        metadata={"self_retro": True},
+    )
+    claim = store.claim_next(board="dev10", assignee="maker", node_id="maker", ttl_seconds=30)
+    assert claim is not None
+    assert store.complete(
+        board="dev10",
+        task_id=task.id,
+        run_id=claim.run_id,
+        claim_lock=claim.claim_lock,
+        result="done",
+        summary="done",
+        metadata={"node": "maker"},
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE runs SET started_at = ?, ended_at = ? WHERE id = ?",
+            (1_704_067_200, 1_704_067_200 + 7_200, claim.run_id),
+        )
+    store.add_comment(
+        board="dev10",
+        task_id=task.id,
+        author="retro:maker",
+        body=f"pytest flaky tests blocked by /Users/chopin/private {secret} alice@example.com",
+        metadata={"kind": "retro", "node": "maker"},
+    )
+    store.create_task(
+        board="dev10",
+        title="Blocked follow-up",
+        body=None,
+        assignee="maker",
+        status="blocked",
+    )
+    store.create_task(
+        board="other",
+        title=f"Other project secret {secret}",
+        body="pytest should not leak",
+        assignee="maker",
+        metadata={"self_retro": True},
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "maker": {
+                "name": "maker",
+                "agent": "codex",
+                "role": "backend",
+                "tmux_pane": "dev10:1.0",
+            },
+            "agy-node": {"name": "agy-node", "agent": "agy", "tmux_pane": "dev10:1.1"},
+        },
+    )
+    client = make_client(tmp_path, store, retro_analytics_enabled=True)
+    before_tasks = len(store.list_tasks(board="dev10"))
+    before_comments = len(store.list_comments(board="dev10", task_id=task.id))
+    before_runs = len(store.list_runs_for_board(board="dev10"))
+
+    missing = client.get("/api/retro/analytics?window=all")
+    response = client.get("/api/retro/analytics?window=all", headers=auth_headers(client))
+
+    assert missing.status_code == 401
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["project"] == "dev10"
+    assert payload["mode"] == "advisory"
+    assert payload["actions"] == []
+    assert payload["sample"]["completed_runs"]["value"] == 1
+    assert payload["sample"]["retro_comments"]["value"] == 1
+    assert payload["throughput"] == [
+        {
+            "bucket": "2024-01-01",
+            "completed": {
+                "value": 1,
+                "source": "run_metadata",
+                "confidence": "low",
+            },
+        }
+    ]
+    themes = {theme["theme"]: theme for theme in payload["themes"]}
+    assert themes["testing"]["count"]["value"] == 1
+    assert themes["blocked"]["count"]["value"] == 1
+    assert payload["patterns"]["blocked"]["current"]["value"] == 1
+    assert payload["patterns"]["slow"]["count"]["value"] == 1
+    by_node = {item["node"]: item for item in payload["outcomes"]["by_node"]}
+    assert by_node["maker"]["role"] == "backend"
+    assert by_node["maker"]["completed"]["value"] == 1
+    assert payload["cost_signals"]["agy_credit"] == {
+        "value": None,
+        "source": "none",
+        "confidence": "unknown",
+        "status": "unknown",
+    }
+    assert any("agy credit is unknown" in item for item in payload["limitations"])
+    rendered = json.dumps(payload)
+    assert secret not in rendered
+    assert "alice@example.com" not in rendered
+    assert "/Users/chopin" not in rendered
+    assert "Other project secret" not in rendered
+    assert len(store.list_tasks(board="dev10")) == before_tasks
+    assert len(store.list_comments(board="dev10", task_id=task.id)) == before_comments
+    assert len(store.list_runs_for_board(board="dev10")) == before_runs
+    audits = store.list_audit_events(board="dev10", action="retro-analytics")
+    assert audits[-1].kind == "audit.retro.analytics"
+    assert audits[-1].payload["advisory_only"] is True
+
+
+def test_retro_analytics_default_off_and_viewer_role_gate(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    default_client = make_client(tmp_path, store)
+
+    disabled = default_client.get("/api/retro/analytics", headers=auth_headers(default_client))
+
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    viewer_client = make_client(
+        tmp_path,
+        store,
+        auth_mode=AuthMode.TEAM_COOKIE,
+        retro_analytics_enabled=True,
+    )
+    login = viewer_client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+    viewer = viewer_client.get("/api/retro/analytics")
+
+    assert disabled.status_code == 404
+    assert login.status_code == 200
+    assert viewer.status_code == 403
+
+
+def test_retro_analytics_project_scope_and_low_confidence_empty(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    secret = "xoxb-" + ("d" * 44)
+    dev10 = store.create_task(
+        board="dev10",
+        title=f"dev10 secret {secret}",
+        body=None,
+        assignee="maker10",
+        metadata={"self_retro": True},
+    )
+    store.add_comment(
+        board="dev10",
+        task_id=dev10.id,
+        author="retro:maker10",
+        body=f"pytest leak {secret}",
+        metadata={"kind": "retro"},
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"maker10": {"name": "maker10", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"maker11": {"name": "maker11", "agent": "claude", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, store, retro_analytics_enabled=True)
+
+    scoped = client.get(
+        "/api/retro/analytics?window=all&project=dev11", headers=auth_headers(client)
+    )
+    invalid = client.get("/api/retro/analytics?project=../dev11", headers=auth_headers(client))
+
+    assert scoped.status_code == 200
+    payload = scoped.json()
+    assert payload["project"] == "dev11"
+    assert payload["confidence"] == "low"
+    assert payload["sample"]["retro_comments"]["value"] == 0
+    assert payload["throughput"] == []
+    assert payload["themes"] == []
+    assert "small sample size; confidence is low" in payload["limitations"]
+    rendered = json.dumps(payload)
+    assert secret not in rendered
+    assert "dev10 secret" not in rendered
+    assert invalid.status_code == 400
+
+
 def test_ledger_rolls_up_members_quota_soft_throttle_and_host_pressure(
     tmp_path: Path,
 ) -> None:
@@ -4265,6 +4453,7 @@ def make_client(
     shared_join_role: team_auth.MemberRole = "operator",
     quota_enabled: bool = False,
     slack_intake_enabled: bool = False,
+    retro_analytics_enabled: bool = False,
 ) -> TestClient:
     dist = tmp_path / "dist"
     dist.mkdir(exist_ok=True)
@@ -4294,6 +4483,7 @@ def make_client(
         shared_join_role=shared_join_role,
         quota_enabled=quota_enabled,
         slack_intake_enabled=slack_intake_enabled,
+        retro_analytics_enabled=retro_analytics_enabled,
     )
     return TestClient(
         create_app(config=config, store=store),
