@@ -4,6 +4,48 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.19.0] — v1.18 (2026-06-04)
+
+Tailnet multi-user — a shared room on your tailnet. Auto-started after v1.17.0, then steered
+by an explicit user request: let tailnet peers open the dashboard, start projects, and use the
+host's local CLIs, with easy connect. Tailnet-scoped, default OFF, per-user identity + audited.
+
+### Shared-access + join
+
+- **--shared-access** (default OFF) turns the grove-web dashboard into a multi-user room: it
+  forces team-cookie auth, and a non-loopback bind requires --allow-host + a Host/Origin
+  allowlist (no accidental public exposure). Single-operator (one token) stays the default.
+- **POST /api/share** (operator-only, CSRF + Host/Origin) issues a one-time, expiring, rate-
+  limited join code + share URL. **POST /api/join** consumes it (atomic), registers a per-user
+  member (server-issued role, default operator, never auto-admin) + a CSRF session.
+- **Viewer = read-only**, enforced centrally (\_require_operator_state_change) across EVERY
+  mutation — project create/load/import, task create/update, delegate, comment, answer, retro,
+  node spawn/update, execution toggle/approve/abort, kill-switch, autopickup, slack, handoff
+  accept. Every action is audited with actor = the member.
+
+### Easy connect
+
+- **ConnectPanel**: an operator clicks invite → a copyable share link + one-time code; a peer
+  opens the link → the join screen pre-fills → enters a name → joins → lands in the shared
+  dashboard. Presence shows connected members (name/role only). The ?join= code is scrubbed from
+  the URL (history.replaceState). Viewers can't invite or create/load projects.
+- **grove-web** prints a friendly startup banner: local URL + a team share URL (best-effort
+  `tailscale ip -4`, graceful, trusts only 100.64/10), wildcard/non-loopback + missing-allow-host
+  warnings, and the invite path (never a code/token).
+
+### Quality / safety
+
+- 3-round adversarial security review of multi-user access: P0 viewer-mutation across many
+  endpoints + handoff-accept; P1 share-CSRF + XFF rate-limit bypass + join-role default; and a
+  P0 caught late — the TS `grove serve` is the chat-completions façade (not the dashboard) and
+  must not bind tailnet unauthenticated (reverted to loopback). 249 py tests; web e2e 429/429
+  (+46 for share/join). README refreshed + corrected (grove-web vs grove serve).
+
+### Deferred (→ v1.19)
+
+- Per-user resource ledger + soft quotas/rate, optional per-user sandbox v0, retro analytics,
+  usage/cost trend reporting v2, notification routing v2 (see docs/V1_19_BRAINSTORM.md).
+
 ## [0.18.0] — v1.17 (2026-06-04)
 
 Hand a task to another room. Auto-started after v1.16.0. Data transfer, not remote control —

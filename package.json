@@ -1,6 +1,6 @@
 {
   "name": "grove",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Grow a tree of AI agents (Claude Code + Codex) in your terminal. Declare an org-chart, bring the whole tree up in tmux, and let any node delegate work to its children.",
   "type": "module",
   "bin": {
