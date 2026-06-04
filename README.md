@@ -69,6 +69,12 @@ grove repair --all
   outcomes. It creates zero actions, tasks, or config changes; operator-only access,
   project scope, redaction, low-confidence labels for small samples, and agy cost
   unknown are part of the contract.
+- **Usage trend and anomaly signals** - v1.23 `--enable-usage-trend` is default OFF.
+  It rolls measured usage/cost over 7d/14d/30d windows, shows node/day trends,
+  deterministic anomaly flags, and a forecast labeled "not a prediction". Signals are
+  advisory-only: they never throttle, abort, kill, change quota, or couple to execution
+  enforcement. Access is operator-only and project-scoped; thin data is low-confidence,
+  and agy cost stays unknown across day totals, trend, forecast, and cost anomalies.
 - **Usage and timeline** - `/api/usage` reports run usage by node/day with source and
   warnings; agy cost/credit is reported as unknown when no local source exists, never
   fabricated. Execution timeline shows step and Gantt-style durations from audit data.
@@ -181,6 +187,11 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   project-scoped, redacted, and advisory-only. It reads retros and completed work but
   performs no action, task creation, or config change; small samples are low-confidence
   and agy cost remains unknown unless locally sourced.
+- Usage trend/anomaly is default OFF (`--enable-usage-trend`), operator-only,
+  project-scoped, redacted, read-only, and advisory-only. Anomaly and forecast signals
+  never throttle, abort, kill, change quota, or call execution enforcement; the forecast
+  is labeled not a prediction, thin data is low-confidence, and agy cost stays unknown
+  instead of becoming a cost anomaly.
 - Multi-machine aggregation is read-only and default OFF.
 - Cross-room handoff is data transfer only and default OFF; receiver-local accept is
   required before any task is created.

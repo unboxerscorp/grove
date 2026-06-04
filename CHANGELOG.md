@@ -4,6 +4,40 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.24.0] — v1.23 (2026-06-04)
+
+Advisory ops signals. Auto-started after v1.22.0. Usage/cost trend + anomaly + forecast over the
+usage/ledger data — a signal a human reads, never an action. Default OFF.
+
+### Usage trend + anomaly + forecast
+
+- **GET /api/usage/trend** (token + operator + project-scoped, --enable-usage-trend, 404 when
+  off) rolls usage/cost over a window (7/14/30d allowlist; invalid → 400) by node/day, shows the
+  trend (delta/ratio), flags deterministic anomalies (fixed ratio≥2 ∥ z≥3 vs. a trailing
+  baseline; thin baseline → low-confidence), and gives a forecast labeled "not a prediction".
+- **Advisory-only**: the response carries actions:[] + enforcement.called=false; it never
+  throttles/aborts/kills or touches quota/execution config (tests monkeypatch those setters to
+  FAIL). agy cost stays unknown — excluded from cost anomalies AND scrubbed in per-day totals (a
+  999.99 agy cost can't leak); codex/claude measured costs are retained. Deterministic (no LLM).
+
+### Trend view
+
+- A trend panel: usage/cost sparkline + window selector, anomaly advisory flags, a forecast
+  "예측 아님 · 참고용 추정" label, thin-data "낮은 신뢰도", agy "알 수 없음" (never a false
+  spike). Operator-only; viewer (403) / disabled (404) render fixed graceful notices; no
+  throttle/abort button (GET only).
+
+### Quality
+
+- Reviewer: GO — no-enforcement-from-signal (actions:[]/enforcement-false + setter-monkeypatch
+  test), agy honesty incl. per-day totals (999.99 not exposed), deterministic, mock contract
+  (invalid-window 400). 269 py tests; web e2e 571/571 (+47).
+
+### Deferred (→ v1.24)
+
+- Notification routing v2, Slack digest/reminder, optional per-user sandbox v0 (see
+  docs/V1_24_BRAINSTORM.md).
+
 ## [0.23.0] — v1.22 (2026-06-04)
 
 Retro analytics. Auto-started after v1.21.0. Read-only, advisory-only — turn the v1.10 self-retro
