@@ -103,13 +103,10 @@ def test_live_journey_viewer_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     )
     assert task_res.status_code == 403
 
-    # Viewer can ask read-only master-chat questions, but operator actions must
-    # be denied inside the response envelope.
+    # Master chat records audit events, so the POST surface is operator gated.
     chat_res = viewer.post("/api/master/chat", json={"message": "Summary?"}, headers=headers)
-    assert chat_res.status_code == 200
+    assert chat_res.status_code == 403
     action_res = viewer.post(
         "/api/master/chat", json={"message": "새 프로젝트 만들어줘"}, headers=headers
     )
-    assert action_res.status_code == 200
-    assert action_res.json()["response_type"] == "denied"
-    assert action_res.json()["operator_gate"]["allowed"] is False
+    assert action_res.status_code == 403

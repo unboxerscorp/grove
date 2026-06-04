@@ -1468,25 +1468,26 @@ def test_board_workflow_payload_is_project_scoped_and_aliases_statuses(
     assert payload["done_visible"] is True
     assert payload["canonical_statuses"] == [
         "ready",
-        "in_progress",
+        "running",
         "review",
         "blocked",
         "ask_human",
         "done",
     ]
-    assert payload["aliases"]["claimed"] == "in_progress"
-    assert payload["aliases"]["executing"] == "in_progress"
+    assert payload["aliases"]["in_progress"] == "running"
+    assert payload["aliases"]["claimed"] == "running"
+    assert payload["aliases"]["executing"] == "running"
     assert payload["aliases"]["complete"] == "done"
     assert payload["aliases"]["completed"] == "done"
     columns = {column["key"]: column for column in payload["columns"]}
-    assert columns["in_progress"]["stored_status"] == "running"
+    assert columns["running"]["aliases"] == ["in_progress", "claimed", "executing"]
     assert columns["ask_human"]["virtual"] is True
     assert columns["done"]["raw_statuses"] == ["done", "complete", "completed"]
     transitions = payload["allowed_transitions"]
     assert all(transition["to"] != "ask_human" for transition in transitions)
     assert all(transition["from"] != "ask_human" for transition in transitions)
     assert all(transition["requires_reason"] is False for transition in transitions)
-    supported_statuses = {"ready", "in_progress", "review", "blocked", "done"}
+    supported_statuses = {"ready", "running", "review", "blocked", "done"}
     assert all(transition["from"] in supported_statuses for transition in transitions)
     assert all(transition["to"] in supported_statuses for transition in transitions)
     assert {"from": "review", "to": "done", "requires_reason": False} in payload[
@@ -1495,6 +1496,43 @@ def test_board_workflow_payload_is_project_scoped_and_aliases_statuses(
     assert payload["manual_transition"]["endpoint"] == "/api/tasks/{task_id}/status"
     assert scoped.status_code == 404
     assert scoped.json()["detail"] == "board 'dev10' not in project 'dev11'"
+
+
+def test_workflow_canonical_statuses_round_trip_through_manual_transition(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="dev10", title="Round trip", body=None, assignee=None)
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+    workflow = client.get("/api/boards/main/workflow", headers=headers).json()
+    statuses = [
+        column["key"]
+        for column in workflow["columns"]
+        if column["key"] != "ask_human" and column["virtual"] is False
+    ]
+
+    for status_value in statuses:
+        response = client.patch(
+            f"/api/tasks/{task.id}/status",
+            headers=headers,
+            json={"status": status_value},
+        )
+        detail = client.get(f"/api/tasks/{task.id}", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json()["status"] == status_value
+        assert detail.status_code == 200
+        assert detail.json()["status"] == status_value
+
+    alias = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers,
+        json={"status": "in_progress"},
+    )
+
+    assert alias.status_code == 200
+    assert alias.json()["status"] == "running"
 
 
 def test_task_create_coerces_nullable_fields_and_rejects_invalid_payloads(
@@ -1717,7 +1755,30 @@ def test_master_chat_returns_feedback_preview_with_default_route(tmp_path: Path)
     assert payload["operator_gate"]["allowed"] is True
 
 
-def test_master_chat_viewer_action_denied_but_answer_allowed(tmp_path: Path) -> None:
+def test_master_chat_team_operator_requires_csrf_and_succeeds(tmp_path: Path) -> None:
+    write_team_member(tmp_path, secret="operator-secret", role="operator")
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        auth_mode=AuthMode.TEAM_COOKIE,
+    )
+    login = client.post("/api/login", json={"name": "alice", "secret": "operator-secret"})
+    csrf = str(login.json()["csrf"])
+
+    missing_csrf = client.post("/api/master/chat", json={"message": "MASTER로 뭐 가능?"})
+    allowed = client.post(
+        "/api/master/chat",
+        headers={CSRF_HEADER: csrf},
+        json={"message": "MASTER로 뭐 가능?"},
+    )
+
+    assert login.status_code == 200
+    assert missing_csrf.status_code == 403
+    assert allowed.status_code == 200
+    assert allowed.json()["response_type"] == "answer"
+
+
+def test_master_chat_viewer_denied_by_state_change_gate(tmp_path: Path) -> None:
     write_team_member(tmp_path, secret="viewer-secret", role="viewer")
     client = make_client(
         tmp_path,
@@ -1725,16 +1786,22 @@ def test_master_chat_viewer_action_denied_but_answer_allowed(tmp_path: Path) -> 
         auth_mode=AuthMode.TEAM_COOKIE,
     )
     login = client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+    csrf = str(login.json()["csrf"])
 
-    denied = client.post("/api/master/chat", json={"message": "새 프로젝트 만들어줘"})
-    answer = client.post("/api/master/chat", json={"message": "MASTER로 뭐 가능?"})
+    denied = client.post(
+        "/api/master/chat",
+        headers={CSRF_HEADER: csrf},
+        json={"message": "새 프로젝트 만들어줘"},
+    )
+    answer = client.post(
+        "/api/master/chat",
+        headers={CSRF_HEADER: csrf},
+        json={"message": "MASTER로 뭐 가능?"},
+    )
 
     assert login.status_code == 200
-    assert denied.status_code == 200
-    assert denied.json()["response_type"] == "denied"
-    assert denied.json()["operator_gate"]["allowed"] is False
-    assert answer.status_code == 200
-    assert answer.json()["response_type"] == "answer"
+    assert denied.status_code == 403
+    assert answer.status_code == 403
 
 
 def test_master_chat_answer_includes_project_board_org_and_human_facts(
@@ -4853,6 +4920,26 @@ def test_load_project_invokes_load_project_and_returns_integrity_result(
     assert response.status_code == 200
     assert response.json() == integrity
     assert calls == [["grove", "load-project", "/repo/dev10", "--json"]]
+
+
+def test_load_project_rejects_flag_and_traversal_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("load-project subprocess should not run for invalid paths")
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    headers = auth_headers(client)
+
+    flag = client.post("/api/projects/load", headers=headers, json={"path": "--help"})
+    traversal = client.post("/api/projects/load", headers=headers, json={"path": "../dev10"})
+
+    assert flag.status_code == 400
+    assert traversal.status_code == 400
+    assert flag.json()["detail"] == "path must not start with '-'"
+    assert traversal.json()["detail"] == "path traversal is not allowed"
 
 
 def test_nodes_expose_all_registry_nodes_with_precise_availability(
