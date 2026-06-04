@@ -122,9 +122,9 @@ MANUAL_TASK_STATUS_ALIASES = {
     "archived": "archived",
 }
 WORKFLOW_ALIASES = {
-    "running": "in_progress",
-    "claimed": "in_progress",
-    "executing": "in_progress",
+    "in_progress": "running",
+    "claimed": "running",
+    "executing": "running",
     "complete": "done",
     "completed": "done",
     "ask-human": "ask_human",
@@ -1370,7 +1370,10 @@ def create_app(
         request: Request,
         payload: MasterChatPayload,
     ) -> dict[str, object]:
-        auth = _require_auth(request)
+        auth = _require_operator_state_change(
+            request,
+            detail="master chat requires operator role",
+        )
         project = resolve_project(request)
         return _handle_master_chat_request(
             request,
@@ -6990,13 +6993,24 @@ def _ensure_project_master_node(
 
 
 def _load_project(payload: ProjectLoadPayload) -> dict[str, object]:
-    project_path = payload.path.strip()
-    if not project_path:
-        raise HTTPException(status_code=400, detail="path is required")
+    project_path = _validated_project_load_path(payload.path)
     return _run_grove_json(
         ["grove", "load-project", project_path, "--json"],
         failure_detail="grove load-project failed",
     )
+
+
+def _validated_project_load_path(value: str) -> str:
+    clean = value.strip()
+    if not clean:
+        raise HTTPException(status_code=400, detail="path is required")
+    if clean.startswith("-"):
+        raise HTTPException(status_code=400, detail="path must not start with '-'")
+    if "\x00" in clean or any(ord(char) < 32 for char in clean):
+        raise HTTPException(status_code=400, detail="path contains invalid characters")
+    if ".." in Path(clean).parts:
+        raise HTTPException(status_code=400, detail="path traversal is not allowed")
+    return clean
 
 
 def _run_grove_json(args: list[str], *, failure_detail: str) -> dict[str, object]:
@@ -8204,12 +8218,11 @@ def _workflow_columns() -> list[dict[str, object]]:
             "virtual": False,
         },
         {
-            "key": "in_progress",
-            "status": "in_progress",
-            "stored_status": "running",
-            "label": "In Progress",
+            "key": "running",
+            "status": "running",
+            "label": "Running",
             "raw_statuses": ["running", "in_progress", "claimed", "executing"],
-            "aliases": ["running", "claimed", "executing"],
+            "aliases": ["in_progress", "claimed", "executing"],
             "virtual": False,
         },
         {
@@ -8250,17 +8263,17 @@ def _workflow_columns() -> list[dict[str, object]]:
 
 def _workflow_allowed_transitions() -> list[dict[str, object]]:
     return [
-        {"from": "ready", "to": "in_progress", "requires_reason": False},
+        {"from": "ready", "to": "running", "requires_reason": False},
         {"from": "ready", "to": "blocked", "requires_reason": False},
-        {"from": "in_progress", "to": "review", "requires_reason": False},
-        {"from": "in_progress", "to": "done", "requires_reason": False},
-        {"from": "in_progress", "to": "blocked", "requires_reason": False},
+        {"from": "running", "to": "review", "requires_reason": False},
+        {"from": "running", "to": "done", "requires_reason": False},
+        {"from": "running", "to": "blocked", "requires_reason": False},
         {"from": "review", "to": "done", "requires_reason": False},
-        {"from": "review", "to": "in_progress", "requires_reason": False},
+        {"from": "review", "to": "running", "requires_reason": False},
         {"from": "review", "to": "blocked", "requires_reason": False},
         {"from": "blocked", "to": "ready", "requires_reason": False},
         {"from": "done", "to": "review", "requires_reason": False},
-        {"from": "done", "to": "in_progress", "requires_reason": False},
+        {"from": "done", "to": "running", "requires_reason": False},
     ]
 
 
