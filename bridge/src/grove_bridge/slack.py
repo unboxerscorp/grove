@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Mapping, MutableSequence, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.config import default_board_db_path
@@ -37,6 +37,12 @@ SLACK_SCOPES = (
     "mpim:history",
 )
 NODE_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_-])@(?P<node>[A-Za-z0-9_-]+)")
+SLACK_COMMAND_TASK_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
+TMUX_TARGET_RE = re.compile(r"^(?P<session>[A-Za-z0-9_-]+):(?P<window>\d+)\.(?P<pane>\d+)$")
+COMMAND_CONFIRM_TTL_SECONDS = 300
+SlackCommandRole = Literal["admin", "operator", "viewer"]
+SlackCommandName = Literal["approve", "abort", "killswitch"]
 
 
 class SlackClientProtocol(Protocol):
@@ -149,6 +155,32 @@ class ChatRouteConfig:
     default_node: str
     channel_nodes: Mapping[str, str] = field(default_factory=dict)
     mention_nodes: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SlackCommandMember:
+    member_id: str
+    name: str
+    role: SlackCommandRole
+
+
+@dataclass(frozen=True)
+class SlackCommandConfig:
+    board: str
+    members: Mapping[str, SlackCommandMember] = field(default_factory=dict)
+    node_names: frozenset[str] = field(default_factory=frozenset)
+    confirmation_ttl_seconds: int = COMMAND_CONFIRM_TTL_SECONDS
+    clock: Callable[[], float] = time.time
+
+
+@dataclass(frozen=True)
+class SlackPendingCommand:
+    confirmation_id: str
+    command: SlackCommandName
+    args: tuple[str, ...]
+    event: SlackEvent
+    actor: SlackCommandMember
+    expires_at: float
 
 
 @dataclass(frozen=True)
@@ -333,6 +365,89 @@ class GroveServeChatFacade:
         return proc.stdout.strip()
 
 
+class SlackConfirmationStore:
+    def __init__(
+        self,
+        *,
+        ttl_seconds: int,
+        clock: Callable[[], float],
+        token_factory: Callable[[], str] | None = None,
+    ) -> None:
+        self.ttl_seconds = ttl_seconds
+        self.clock = clock
+        self.token_factory = token_factory or (lambda: secrets.token_urlsafe(8))
+        self._pending: dict[str, SlackPendingCommand] = {}
+        self._lock = threading.Lock()
+
+    def create(
+        self,
+        *,
+        command: SlackCommandName,
+        args: tuple[str, ...],
+        event: SlackEvent,
+        actor: SlackCommandMember,
+    ) -> SlackPendingCommand:
+        now = self.clock()
+        with self._lock:
+            confirmation_id = self.token_factory()
+            while confirmation_id in self._pending:
+                confirmation_id = self.token_factory()
+            pending = SlackPendingCommand(
+                confirmation_id=confirmation_id,
+                command=command,
+                args=args,
+                event=event,
+                actor=actor,
+                expires_at=now + max(1, self.ttl_seconds),
+            )
+            self._pending[confirmation_id] = pending
+            self._cleanup(now=now)
+            return pending
+
+    def consume(self, confirmation_id: str) -> tuple[SlackPendingCommand | None, str | None]:
+        now = self.clock()
+        with self._lock:
+            pending = self._pending.pop(confirmation_id, None)
+            self._cleanup(now=now)
+            if pending is None:
+                return None, "confirmation id is unknown or already used"
+            if pending.expires_at <= now:
+                return None, "confirmation id expired"
+            return pending, None
+
+    def consume_for_owner(
+        self,
+        confirmation_id: str,
+        *,
+        member_id: str,
+    ) -> tuple[SlackPendingCommand | None, str | None]:
+        now = self.clock()
+        with self._lock:
+            pending = self._pending.get(confirmation_id)
+            if pending is None:
+                self._cleanup(now=now)
+                return None, "confirmation id is unknown or already used"
+            if pending.expires_at <= now:
+                self._pending.pop(confirmation_id, None)
+                self._cleanup(now=now)
+                return None, "confirmation id expired"
+            if pending.actor.member_id != member_id:
+                self._cleanup(now=now)
+                return None, "confirmation owner mismatch"
+            self._pending.pop(confirmation_id, None)
+            self._cleanup(now=now)
+            return pending, None
+
+    def _cleanup(self, *, now: float) -> None:
+        expired = [
+            confirmation_id
+            for confirmation_id, pending in self._pending.items()
+            if pending.expires_at <= now
+        ]
+        for confirmation_id in expired:
+            self._pending.pop(confirmation_id, None)
+
+
 class SlackConnector:
     def __init__(
         self,
@@ -342,12 +457,23 @@ class SlackConnector:
         chat_facade: ChatFacadeProtocol,
         human_gate: HumanGateConfig,
         chat_route: ChatRouteConfig,
+        command_config: SlackCommandConfig | None = None,
+        confirmation_store: SlackConfirmationStore | None = None,
     ) -> None:
         self.store = store
         self.slack_client = slack_client
         self.chat_facade = chat_facade
         self.human_gate = human_gate
         self.chat_route = chat_route
+        self.command_config = command_config
+        self.confirmations = confirmation_store or (
+            SlackConfirmationStore(
+                ttl_seconds=command_config.confirmation_ttl_seconds,
+                clock=command_config.clock,
+            )
+            if command_config is not None
+            else None
+        )
         self._locks: dict[str, threading.Lock] = {}
 
     def poll_human_gates(self) -> int:
@@ -476,7 +602,386 @@ class SlackConnector:
         thread_ts = event.thread_ts or event.ts
         if event.thread_ts is not None and self._handle_human_reply(event, thread_ts=thread_ts):
             return True
+        if self._handle_command(event, thread_ts=thread_ts):
+            return True
         return self._handle_chat(event, thread_ts=thread_ts)
+
+    def _handle_command(self, event: SlackEvent, *, thread_ts: str) -> bool:
+        command_text = _normalize_slack_text(event.text)
+        parts = command_text.split()
+        if not parts:
+            return False
+        command = parts[0].lower()
+        if command not in {"status", "approve", "abort", "killswitch", "confirm"}:
+            return False
+        config = self.command_config
+        if config is None:
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Slack control commands are not enabled for this project.",
+                thread_ts=thread_ts,
+            )
+            return True
+        actor = config.members.get(event.user)
+        if actor is None:
+            self._audit_slack_command(
+                command=command,
+                event=event,
+                actor=_slack_actor(event.user, role="none"),
+                status="denied",
+                summary="unmapped slack identity",
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Denied: this Slack identity is not mapped to a grove member.",
+                thread_ts=thread_ts,
+            )
+            return True
+        if command == "status":
+            self._audit_slack_command(
+                command="status",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="ok",
+                summary="status",
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text=self._command_status_text(config.board),
+                thread_ts=thread_ts,
+            )
+            return True
+        if command == "confirm":
+            self._handle_command_confirm(event, actor=actor, thread_ts=thread_ts, parts=parts)
+            return True
+        if actor.role not in {"admin", "operator"}:
+            self._audit_slack_command(
+                command=command,
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="denied",
+                summary="insufficient role",
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Denied: operator or admin role is required for this command.",
+                thread_ts=thread_ts,
+            )
+            return True
+        preview = self._preview_command(
+            command=command,
+            args=tuple(parts[1:]),
+            event=event,
+            actor=actor,
+        )
+        self.slack_client.post_message(channel=event.channel, text=preview, thread_ts=thread_ts)
+        return True
+
+    def _handle_command_confirm(
+        self,
+        event: SlackEvent,
+        *,
+        actor: SlackCommandMember,
+        thread_ts: str,
+        parts: Sequence[str],
+    ) -> None:
+        if len(parts) != 2:
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Usage: confirm <confirmation-id>",
+                thread_ts=thread_ts,
+            )
+            return
+        if self.confirmations is None:
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="No pending confirmations are available.",
+                thread_ts=thread_ts,
+            )
+            return
+        pending, error = self.confirmations.consume_for_owner(parts[1], member_id=actor.member_id)
+        if pending is None:
+            self._audit_slack_command(
+                command="confirm",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="denied",
+                summary=error or "confirmation failed",
+            )
+            response = (
+                "Denied: only the member who created the preview can confirm it."
+                if error == "confirmation owner mismatch"
+                else f"Denied: {_safe_slack_text(error or 'confirmation failed')}."
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text=response,
+                thread_ts=thread_ts,
+            )
+            return
+        result = self._execute_pending_command(pending)
+        self.slack_client.post_message(channel=event.channel, text=result, thread_ts=thread_ts)
+
+    def _preview_command(
+        self,
+        *,
+        command: str,
+        args: tuple[str, ...],
+        event: SlackEvent,
+        actor: SlackCommandMember,
+    ) -> str:
+        parsed = _parse_mutating_command(command, args)
+        if parsed is None:
+            return "Invalid command. Use: approve <task>, abort <task>, killswitch <on|off>."
+        if self.command_config is None or self.confirmations is None:
+            return "Slack control commands are not enabled for this project."
+        node_denial = self._node_killswitch_denial(parsed[0], parsed[1])
+        if node_denial is not None:
+            self._audit_slack_command(
+                command=parsed[0],
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="denied",
+                summary=node_denial,
+            )
+            return node_denial
+        pending = self.confirmations.create(
+            command=parsed[0],
+            args=parsed[1],
+            event=event,
+            actor=actor,
+        )
+        self._audit_slack_command(
+            command=parsed[0],
+            event=event,
+            actor=_slack_member_actor(event.user, actor),
+            status="preview",
+            summary=_pending_command_summary(pending),
+            payload={"confirmation_id": pending.confirmation_id},
+        )
+        return (
+            f"Preview: {_pending_command_summary(pending)}.\n"
+            f"Confirm with `confirm {pending.confirmation_id}` within "
+            f"{self.command_config.confirmation_ttl_seconds}s."
+        )
+
+    def _execute_pending_command(self, pending: SlackPendingCommand) -> str:
+        if self.command_config is None:
+            return "Denied: Slack control commands are not enabled."
+        actor = _slack_member_actor(pending.event.user, pending.actor)
+        try:
+            if pending.command == "approve":
+                return self._execute_approve(pending, actor=actor)
+            if pending.command == "abort":
+                return self._execute_abort(pending, actor=actor)
+            return self._execute_killswitch(pending, actor=actor)
+        except KeyError:
+            self._audit_slack_command(
+                command=pending.command,
+                event=pending.event,
+                actor=actor,
+                status="denied",
+                summary="task or board not found",
+            )
+            return "Denied: task is not in this project scope."
+
+    def _execute_approve(
+        self,
+        pending: SlackPendingCommand,
+        *,
+        actor: Mapping[str, object],
+    ) -> str:
+        assert self.command_config is not None
+        task_id = pending.args[0]
+        if not _valid_task_ref(task_id):
+            return "Denied: invalid task id."
+        task = self.store.get_task(board=self.command_config.board, task_id=task_id)
+        node = _execution_node_for_task(task)
+        if node is None:
+            return "Denied: task has no execution node."
+        gate = self.store.execution_gate_state(
+            board=self.command_config.board,
+            node=node,
+            task_id=task.id,
+        )
+        if not bool(gate["allowed"]):
+            self._audit_slack_command(
+                command="approve",
+                event=pending.event,
+                actor=actor,
+                status="denied",
+                summary="execution gate is blocked",
+                task_id=task.id,
+                run_id=task.current_run_id,
+            )
+            return "Denied: execution gate is blocked."
+        if not self.store.approve_execution(
+            board=self.command_config.board,
+            task_id=task.id,
+            actor=actor,
+        ):
+            return "Denied: task is not awaiting approval."
+        self._audit_slack_command(
+            command="approve",
+            event=pending.event,
+            actor=actor,
+            status="ok",
+            summary="approved",
+            task_id=task.id,
+            run_id=task.current_run_id,
+        )
+        return f"Approved task `{_safe_slack_text(task.id)}`."
+
+    def _execute_abort(
+        self,
+        pending: SlackPendingCommand,
+        *,
+        actor: Mapping[str, object],
+    ) -> str:
+        assert self.command_config is not None
+        task_id = pending.args[0]
+        if not _valid_task_ref(task_id):
+            return "Denied: invalid task id."
+        task = self.store.get_task(board=self.command_config.board, task_id=task_id)
+        reason = "slack command abort"
+        if not self.store.abort_execution(
+            board=self.command_config.board,
+            task_id=task.id,
+            actor=actor,
+            reason=reason,
+        ):
+            return "Denied: task execution is already terminal."
+        self._audit_slack_command(
+            command="abort",
+            event=pending.event,
+            actor=actor,
+            status="ok",
+            summary=reason,
+            task_id=task.id,
+            run_id=task.current_run_id,
+        )
+        return f"Aborted task `{_safe_slack_text(task.id)}`."
+
+    def _execute_killswitch(
+        self,
+        pending: SlackPendingCommand,
+        *,
+        actor: Mapping[str, object],
+    ) -> str:
+        assert self.command_config is not None
+        scope, target, enabled_text = _parse_killswitch_args(pending.args)
+        enabled = enabled_text == "on"
+        if scope == "node":
+            if target is None or not self._command_node_exists(target):
+                self._audit_slack_command(
+                    command="killswitch",
+                    event=pending.event,
+                    actor=actor,
+                    status="denied",
+                    summary="node is not in this project",
+                )
+                return "Denied: node is not in this project."
+            self.store.set_execution_kill_switch(
+                board=self.command_config.board,
+                level="node",
+                node=target,
+                enabled=enabled,
+            )
+            summary = f"node {target} kill-switch {'enabled' if enabled else 'disabled'}"
+            target_payload = {"type": "node", "id": target, "node": target}
+        elif scope == "board":
+            self.store.set_execution_kill_switch(
+                board=self.command_config.board,
+                level="board",
+                enabled=enabled,
+            )
+            summary = f"board kill-switch {'enabled' if enabled else 'disabled'}"
+            target_payload = {"type": "board", "id": self.command_config.board}
+        else:
+            self.store.set_execution_kill_switch(
+                board=self.command_config.board,
+                level="global",
+                enabled=enabled,
+            )
+            summary = f"global kill-switch {'enabled' if enabled else 'disabled'}"
+            target_payload = {"type": "board", "id": self.command_config.board}
+        self._audit_slack_command(
+            command="killswitch",
+            event=pending.event,
+            actor=actor,
+            status="ok",
+            summary=summary,
+            target=target_payload,
+            payload={"enabled": enabled, "scope": scope},
+        )
+        return _safe_slack_text(summary.capitalize()) + "."
+
+    def _node_killswitch_denial(
+        self,
+        command: SlackCommandName,
+        args: tuple[str, ...],
+    ) -> str | None:
+        if command != "killswitch":
+            return None
+        try:
+            scope, target, _enabled = _parse_killswitch_args(args)
+        except ValueError:
+            return None
+        if scope == "node" and (target is None or not self._command_node_exists(target)):
+            return "Denied: node is not in this project."
+        return None
+
+    def _command_node_exists(self, node: str) -> bool:
+        return self.command_config is not None and node in self.command_config.node_names
+
+    def _command_status_text(self, board: str) -> str:
+        ready = len(self.store.list_tasks(board=board, status="ready"))
+        running = len(self.store.list_tasks(board=board, status="running"))
+        blocked = len(self.store.list_tasks(board=board, status="blocked"))
+        gate = self.store.execution_global_state(board=board)
+        return _safe_slack_text(
+            "Status: "
+            f"board={board} ready={ready} running={running} blocked={blocked} "
+            f"execution={'on' if gate['enabled'] else 'off'} "
+            f"kill_switch={'on' if gate['kill_switch'] else 'off'} "
+            f"board_execution={'on' if gate['board_enabled'] else 'off'} "
+            f"board_kill_switch={'on' if gate['board_kill_switch'] else 'off'}"
+        )
+
+    def _audit_slack_command(
+        self,
+        *,
+        command: str,
+        event: SlackEvent,
+        actor: Mapping[str, object],
+        status: str,
+        summary: str,
+        target: Mapping[str, object] | None = None,
+        task_id: str | None = None,
+        run_id: str | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> None:
+        board = (
+            self.command_config.board if self.command_config is not None else self.human_gate.board
+        )
+        safe_summary = _safe_slack_text(summary)
+        extra = {
+            "team": _safe_slack_text(event.team),
+            "channel": _safe_slack_text(event.channel),
+            **(dict(payload) if payload is not None else {}),
+        }
+        self.store.add_audit_event(
+            board=board,
+            kind="audit.slack.command",
+            actor=actor,
+            action=_safe_slack_text(command),
+            target=target or {"type": "slack_command", "id": _safe_slack_text(command)},
+            task_id=task_id,
+            run_id=run_id,
+            status=status,
+            summary=safe_summary,
+            payload=extra,
+        )
 
     def _handle_human_reply(self, event: SlackEvent, *, thread_ts: str) -> bool:
         sub = self.store.find_notify_sub(
@@ -566,6 +1071,60 @@ def mask_token(value: str) -> str:
     return value[:4] + "..." + value[-4:]
 
 
+def _parse_command_members(values: Sequence[str]) -> dict[str, SlackCommandMember]:
+    members: dict[str, SlackCommandMember] = {}
+    for value in values:
+        slack_user, member_id, name, role = _parse_command_member(value)
+        members[slack_user] = SlackCommandMember(
+            member_id=member_id,
+            name=name,
+            role=role,
+        )
+    return members
+
+
+def _parse_command_member(value: str) -> tuple[str, str, str, SlackCommandRole]:
+    parts = value.split(":", 3)
+    if len(parts) != 4 or any(not part.strip() for part in parts):
+        raise ValueError(
+            "command member must use SLACK_USER:MEMBER_ID:NAME:ROLE with role admin, "
+            "operator, or viewer"
+        )
+    slack_user, member_id, name, raw_role = (part.strip() for part in parts)
+    if raw_role not in {"admin", "operator", "viewer"}:
+        raise ValueError("command member role must be admin, operator, or viewer")
+    return slack_user, member_id, name, cast(SlackCommandRole, raw_role)
+
+
+def _load_command_node_names(grove_home: Path, session: str) -> frozenset[str]:
+    registry_path = grove_home.expanduser() / session / "registry.json"
+    try:
+        loaded = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return frozenset()
+    if not isinstance(loaded, dict):
+        return frozenset()
+    raw_nodes = loaded.get("nodes")
+    if not isinstance(raw_nodes, dict):
+        return frozenset()
+    nodes: set[str] = set()
+    for key, raw_node in raw_nodes.items():
+        if not isinstance(key, str) or not isinstance(raw_node, dict):
+            continue
+        raw_name = raw_node.get("name")
+        node_name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else key
+        pane = raw_node.get("tmux_pane")
+        if not _valid_node_ref(node_name) or not isinstance(pane, str):
+            continue
+        match = TMUX_TARGET_RE.fullmatch(pane.strip())
+        if match is None or match.group("session") != session:
+            continue
+        if int(match.group("window")) == 0 and int(match.group("pane")) == 0:
+            continue
+        nodes.add(node_name)
+    return frozenset(nodes)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the grove Slack connector.")
     parser.add_argument("--config-path", type=Path, default=SLACK_CONFIG_PATH)
@@ -574,6 +1133,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--default-node")
     parser.add_argument("--board-db-path", type=Path, default=default_board_db_path())
     parser.add_argument("--poll-interval", type=float, default=5.0)
+    parser.add_argument("--enable-commands", action="store_true")
+    parser.add_argument(
+        "--command-member",
+        action="append",
+        default=[],
+        dest="command_members",
+        metavar="SLACK_USER:MEMBER_ID:NAME:ROLE",
+    )
+    parser.add_argument(
+        "--grove-home",
+        type=Path,
+        default=Path(os.environ.get("GROVE_HOME", "~/.grove")).expanduser(),
+    )
+    parser.add_argument("--session", default=os.environ.get("GROVE_VIEWER_SESSION", "dev10"))
     args = parser.parse_args(argv)
 
     config = SlackConfigStore(args.config_path).load()
@@ -585,12 +1158,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("Slack default channel is required")
     if node is None:
         raise SystemExit("Slack default node is required")
+    command_config = None
+    if args.enable_commands:
+        try:
+            members = _parse_command_members(args.command_members)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        command_config = SlackCommandConfig(
+            board=args.board,
+            members=members,
+            node_names=_load_command_node_names(args.grove_home, args.session),
+        )
     connector = SlackConnector(
         store=SQLiteBoardStore(args.board_db_path),
         slack_client=SlackSdkClient(bot_token=config.bot_token),
         chat_facade=GroveServeChatFacade(),
         human_gate=HumanGateConfig(board=args.board, channel=channel),
         chat_route=ChatRouteConfig(default_node=node),
+        command_config=command_config,
     )
     socket_client = _build_socket_client(config=config, connector=connector)
     socket_client.connect()
@@ -762,6 +1347,85 @@ def _select_chat_node(event: SlackEvent, route: ChatRouteConfig) -> str:
         mentioned = match.group("node")
         return route.mention_nodes.get(mentioned, mentioned)
     return route.default_node
+
+
+def _parse_mutating_command(
+    command: str,
+    args: tuple[str, ...],
+) -> tuple[SlackCommandName, tuple[str, ...]] | None:
+    if command == "approve" and len(args) == 1 and _valid_task_ref(args[0]):
+        return "approve", args
+    if command == "abort" and len(args) == 1 and _valid_task_ref(args[0]):
+        return "abort", args
+    if command == "killswitch":
+        try:
+            _parse_killswitch_args(args)
+        except ValueError:
+            return None
+        return "killswitch", args
+    return None
+
+
+def _parse_killswitch_args(args: tuple[str, ...]) -> tuple[str, str | None, str]:
+    if len(args) == 1 and args[0] in {"on", "off"}:
+        return "global", None, args[0]
+    if len(args) == 2 and args[0] == "board" and args[1] in {"on", "off"}:
+        return "board", None, args[1]
+    if len(args) == 3 and args[0] == "node" and args[2] in {"on", "off"}:
+        if not _valid_node_ref(args[1]):
+            raise ValueError("invalid node")
+        return "node", args[1], args[2]
+    raise ValueError("invalid killswitch command")
+
+
+def _pending_command_summary(pending: SlackPendingCommand) -> str:
+    if pending.command in {"approve", "abort"}:
+        return f"{pending.command} task {_safe_slack_text(pending.args[0])}"
+    scope, target, enabled = _parse_killswitch_args(pending.args)
+    if scope == "node":
+        return f"set node {_safe_slack_text(target or '')} kill-switch {enabled}"
+    if scope == "board":
+        return f"set board kill-switch {enabled}"
+    return f"set global kill-switch {enabled}"
+
+
+def _execution_node_for_task(task: Task) -> str | None:
+    execution = task.metadata.get("execution")
+    if isinstance(execution, Mapping):
+        node = execution.get("node")
+        if isinstance(node, str) and _valid_node_ref(node):
+            return node
+    if task.assignee is not None and _valid_node_ref(task.assignee):
+        return task.assignee
+    return None
+
+
+def _valid_task_ref(value: str) -> bool:
+    return bool(SLACK_COMMAND_TASK_RE.fullmatch(value))
+
+
+def _valid_node_ref(value: str) -> bool:
+    return bool(NODE_MENTION_RE.fullmatch("@" + value))
+
+
+def _slack_actor(user: str, *, role: str) -> dict[str, object]:
+    safe_user = _safe_slack_text(user)
+    return {"kind": "slack", "id": safe_user, "login": safe_user, "role": role}
+
+
+def _slack_member_actor(user: str, member: SlackCommandMember) -> dict[str, object]:
+    return {
+        "kind": "slack",
+        "id": _safe_slack_text(user),
+        "login": _safe_slack_text(member.name),
+        "role": member.role,
+        "member_id": _safe_slack_text(member.member_id),
+    }
+
+
+def _safe_slack_text(value: object) -> str:
+    without_paths = ABSOLUTE_PATH_RE.sub("[path]", str(value))
+    return redact_secret_text(without_paths)[:500]
 
 
 def _required_str(mapping: Mapping[str, object], key: str) -> str:

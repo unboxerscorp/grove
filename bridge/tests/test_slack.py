@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
@@ -15,14 +16,28 @@ from grove_bridge.slack import (
     FakeStatusProbe,
     GroveServeChatFacade,
     HumanGateConfig,
+    SlackCommandConfig,
+    SlackCommandMember,
     SlackConfig,
     SlackConfigStore,
+    SlackConfirmationStore,
     SlackConnector,
     SlackEvent,
     SlackSdkClient,
     mask_token,
 )
 from grove_bridge.store import SQLiteBoardStore, Task
+
+
+class MutableClock:
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 class FakeSlackClient:
@@ -775,6 +790,259 @@ def test_chat_route_handles_facade_failure_and_post_failure_without_crashing(
     )
 
 
+def execution_task(store: SQLiteBoardStore, *, board: str = "main") -> Task:
+    task = store.create_task(
+        board=board,
+        title="Guarded xoxb-" + ("a" * 44),
+        body="See /Users/chopin/private",
+        assignee="worker",
+    )
+    claimed = store.claim_next(
+        board=board,
+        assignee="worker",
+        node_id="worker",
+        ttl_seconds=300,
+        task_id=task.id,
+    )
+    assert claimed is not None
+    store.set_autopickup_global(board=board, enabled=True)
+    store.set_node_autopickup_enabled(board=board, node="worker", enabled=True)
+    store.begin_guarded_execution(
+        board=board,
+        task_id=task.id,
+        run_id=claimed.run_id,
+        node="worker",
+    )
+    return task
+
+
+def command_connector(
+    store: SQLiteBoardStore,
+    slack: FakeSlackClient,
+    *,
+    board: str = "main",
+    clock: MutableClock | None = None,
+) -> SlackConnector:
+    command_clock = clock or MutableClock()
+    return SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+        command_config=SlackCommandConfig(
+            board=board,
+            members={
+                "UOP": SlackCommandMember("member-op", "olivia", "operator"),
+                "UAD": SlackCommandMember("member-admin", "ada", "admin"),
+                "UVIEW": SlackCommandMember("member-view", "vivi", "viewer"),
+            },
+            node_names=frozenset({"worker"}),
+            confirmation_ttl_seconds=5,
+            clock=command_clock,
+        ),
+    )
+
+
+def slack_event(user: str, text: str, *, ts: str = "444.555") -> SlackEvent:
+    return SlackEvent(
+        team="T1",
+        channel="C123",
+        user=user,
+        text=text,
+        ts=ts,
+        thread_ts=None,
+        event_type="app_mention",
+    )
+
+
+def confirmation_id(text: str) -> str:
+    marker = "confirm "
+    assert marker in text
+    return text.split(marker, 1)[1].split("`", 1)[0].split()[0]
+
+
+def test_slack_confirmation_consume_for_owner_is_atomic_under_concurrency() -> None:
+    clock = MutableClock()
+    member = SlackCommandMember("member-op", "olivia", "operator")
+    confirmations = SlackConfirmationStore(
+        ttl_seconds=5,
+        clock=clock,
+        token_factory=lambda: "confirm-one",
+    )
+    confirmations.create(
+        command="approve",
+        args=("task-1",),
+        event=slack_event("UOP", "approve task-1"),
+        actor=member,
+    )
+    barrier = threading.Barrier(3)
+    result_lock = threading.Lock()
+    results: list[tuple[bool, str | None]] = []
+
+    def consume() -> None:
+        barrier.wait()
+        pending, error = confirmations.consume_for_owner(
+            "confirm-one",
+            member_id="member-op",
+        )
+        with result_lock:
+            results.append((pending is not None, error))
+
+    threads = [threading.Thread(target=consume) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(results) == [
+        (False, "confirmation id is unknown or already used"),
+        (True, None),
+    ]
+
+
+def test_slack_command_role_gate_and_unmapped_identity(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = execution_task(store)
+    slack = FakeSlackClient()
+    connector = command_connector(store, slack)
+
+    assert connector.handle_event(slack_event("UNKNOWN", f"approve {task.id}"))
+    assert connector.handle_event(slack_event("UVIEW", f"abort {task.id}", ts="444.556"))
+
+    assert "not mapped" in slack.posts[0][1]
+    assert "operator or admin" in slack.posts[1][1]
+    assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approval-pending"
+    audits = store.list_audit_events(board="main", action="approve")
+    assert audits[0].payload["status"] == "denied"
+
+
+def test_slack_command_preview_confirm_approve_and_replay_denied(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = execution_task(store)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="worker", enabled=True)
+    slack = FakeSlackClient()
+    connector = command_connector(store, slack)
+
+    assert connector.handle_event(slack_event("UOP", f"<@BOT> approve {task.id}"))
+    confirm = confirmation_id(slack.posts[-1][1])
+    assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approval-pending"
+    assert connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.557"))
+    assert connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.558"))
+
+    state = store.task_execution_state(board="main", task_id=task.id)
+    assert state["state"] == "approved"
+    assert slack.posts[-2][1] == f"Approved task `{task.id}`."
+    assert "already used" in slack.posts[-1][1]
+    assert "xoxb-" not in "\n".join(post[1] for post in slack.posts)
+    assert "/Users" not in "\n".join(post[1] for post in slack.posts)
+    slack_audits = [
+        event
+        for event in store.list_audit_events(board="main", action="approve")
+        if event.kind == "audit.slack.command"
+    ]
+    assert [event.payload["status"] for event in slack_audits] == ["preview", "ok"]
+
+
+def test_slack_command_non_owner_cannot_consume_confirmation(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = execution_task(store)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="worker", enabled=True)
+    slack = FakeSlackClient()
+    connector = command_connector(store, slack)
+
+    assert connector.handle_event(slack_event("UOP", f"approve {task.id}"))
+    confirm = confirmation_id(slack.posts[-1][1])
+    assert connector.handle_event(slack_event("UAD", f"confirm {confirm}", ts="444.557"))
+    assert "only the member" in slack.posts[-1][1]
+    assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approval-pending"
+
+    assert connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.558"))
+
+    assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approved"
+    assert slack.posts[-1][1] == f"Approved task `{task.id}`."
+
+
+def test_slack_command_expired_confirmation_and_cross_project_denied(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = execution_task(store, board="other")
+    clock = MutableClock()
+    slack = FakeSlackClient()
+    connector = command_connector(store, slack, board="main", clock=clock)
+
+    assert connector.handle_event(slack_event("UOP", f"abort {task.id}"))
+    expired = confirmation_id(slack.posts[-1][1])
+    clock.advance(10)
+    assert connector.handle_event(slack_event("UOP", f"confirm {expired}", ts="444.559"))
+    assert "expired" in slack.posts[-1][1]
+
+    assert connector.handle_event(slack_event("UOP", f"approve {task.id}", ts="444.560"))
+    confirm = confirmation_id(slack.posts[-1][1])
+    assert connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.561"))
+    assert "scope" in slack.posts[-1][1]
+    assert store.task_execution_state(board="other", task_id=task.id)["state"] == "approval-pending"
+
+
+def test_slack_command_killswitch_requires_confirm_and_can_clear(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    slack = FakeSlackClient()
+    connector = command_connector(store, slack)
+
+    assert connector.handle_event(slack_event("UAD", "killswitch on"))
+    on_confirm = confirmation_id(slack.posts[-1][1])
+    assert store.execution_global_state(board="main")["kill_switch"] is False
+    assert connector.handle_event(slack_event("UAD", f"confirm {on_confirm}", ts="444.562"))
+    assert store.execution_global_state(board="main")["kill_switch"] is True
+
+    assert connector.handle_event(slack_event("UAD", "killswitch off", ts="444.563"))
+    off_confirm = confirmation_id(slack.posts[-1][1])
+    assert store.execution_global_state(board="main")["kill_switch"] is True
+    assert connector.handle_event(slack_event("UAD", f"confirm {off_confirm}", ts="444.564"))
+    assert store.execution_global_state(board="main")["kill_switch"] is False
+    assert "disabled" in slack.posts[-1][1]
+    audits = [
+        audit
+        for audit in store.list_audit_events(board="main", action="killswitch")
+        if audit.payload["status"] == "ok"
+    ]
+    assert [audit.payload["enabled"] for audit in audits] == [True, False]
+
+
+def test_slack_command_node_killswitch_rejects_unknown_node(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    slack = FakeSlackClient()
+    connector = command_connector(store, slack)
+
+    assert connector.handle_event(slack_event("UAD", "killswitch node typo on"))
+
+    assert "node is not in this project" in slack.posts[-1][1]
+    assert "confirm " not in slack.posts[-1][1]
+    assert store.node_execution_state(board="main", node="typo")["kill_switch"] is False
+    denied = [
+        audit
+        for audit in store.list_audit_events(board="main", action="killswitch")
+        if audit.payload["status"] == "denied"
+    ]
+    assert denied[-1].payload["summary"] == "Denied: node is not in this project."
+
+
+def test_slack_command_approve_reuses_execution_gate(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = execution_task(store)
+    slack = FakeSlackClient()
+    connector = command_connector(store, slack)
+
+    assert connector.handle_event(slack_event("UOP", f"approve {task.id}"))
+    confirm = confirmation_id(slack.posts[-1][1])
+    assert connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.565"))
+
+    assert "gate is blocked" in slack.posts[-1][1]
+    assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approval-pending"
+
+
 def test_slack_connector_ignores_non_message_events(tmp_path: Path) -> None:
     connector = SlackConnector(
         store=SQLiteBoardStore(tmp_path / "board.db"),
@@ -856,6 +1124,7 @@ def test_slack_main_connects_polls_and_closes_socket(
     ) -> FakeSocket:
         assert config.app_token == "xapp-main"
         assert connector.human_gate.channel == "C123"
+        assert connector.command_config is None
         return socket
 
     def stop_after_poll(seconds: float) -> None:
@@ -876,6 +1145,103 @@ def test_slack_main_connects_polls_and_closes_socket(
                 str(board_db_path),
                 "--poll-interval",
                 "0.1",
+            ]
+        )
+
+    assert socket.connected is True
+    assert socket.closed is True
+
+
+def test_slack_main_wires_command_config_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "slack.json"
+    board_db_path = tmp_path / "board.db"
+    grove_home = tmp_path / ".grove"
+    registry_dir = grove_home / "dev10"
+    registry_dir.mkdir(parents=True)
+    (registry_dir / "registry.json").write_text(
+        json.dumps(
+            {
+                "nodes": {
+                    "worker": {"name": "worker", "tmux_pane": "dev10:1.0"},
+                    "lead": {"name": "lead", "tmux_pane": "dev10:0.0"},
+                    "hidden": {"name": "hidden"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    SlackConfigStore(config_path).save(
+        SlackConfig(
+            app_token="xapp-main",
+            bot_token="xoxb-main",
+            default_channel="C123",
+            default_node="chat-node",
+        )
+    )
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.socket_mode_request_listeners: list[object] = []
+            self.connected = False
+            self.closed = False
+
+        def connect(self) -> None:
+            self.connected = True
+
+        def close(self) -> None:
+            self.closed = True
+
+        def send_socket_mode_response(self, response: object) -> None:
+            _ = response
+
+    socket = FakeSocket()
+
+    def fake_slack_sdk_client(*, bot_token: str) -> FakeSlackClient:
+        assert bot_token == "xoxb-main"
+        return FakeSlackClient()
+
+    def fake_chat_facade() -> FakeChatFacade:
+        return FakeChatFacade()
+
+    def fake_build_socket_client(
+        *,
+        config: SlackConfig,
+        connector: SlackConnector,
+    ) -> FakeSocket:
+        assert config.app_token == "xapp-main"
+        assert connector.command_config is not None
+        assert connector.command_config.members["UOP"].role == "operator"
+        assert connector.command_config.node_names == frozenset({"worker"})
+        return socket
+
+    def stop_after_poll(seconds: float) -> None:
+        assert seconds == 0.1
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(slack_module, "SlackSdkClient", fake_slack_sdk_client)
+    monkeypatch.setattr(slack_module, "GroveServeChatFacade", fake_chat_facade)
+    monkeypatch.setattr(slack_module, "_build_socket_client", fake_build_socket_client)
+    monkeypatch.setattr("grove_bridge.slack.time.sleep", stop_after_poll)
+
+    with pytest.raises(KeyboardInterrupt):
+        slack_module.main(
+            [
+                "--config-path",
+                str(config_path),
+                "--board-db-path",
+                str(board_db_path),
+                "--poll-interval",
+                "0.1",
+                "--enable-commands",
+                "--command-member",
+                "UOP:member-op:olivia:operator",
+                "--grove-home",
+                str(grove_home),
+                "--session",
+                "dev10",
             ]
         )
 
