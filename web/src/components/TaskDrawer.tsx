@@ -1,12 +1,57 @@
 import { useEffect, useRef, useState } from "react";
 
-import { api } from "../api";
-import type { PlanCandidate, PlanResult } from "../api";
-import { cx, initials, statusColor } from "../constants";
+import { actorLabel, api } from "../api";
+import type { AuditEvent, PlanCandidate, PlanResult } from "../api";
+import { cx, fmtAgo, initials, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
 import type { Comment, Run, Task } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
+
+/**
+ * Execution timeline: the task's execution-loop transitions (audit.execution.*)
+ * in chronological order. Read-only. Hidden when the task has no execution.
+ */
+function ExecutionTimeline({ taskId, t }: { taskId: string; t: TFn }) {
+  const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api
+      .getAudit({ task_id: taskId, limit: 50 })
+      .then((page) => {
+        if (!alive) return;
+        const items = Array.isArray(page.items) ? page.items : [];
+        setEvents(items.filter((e) => typeof e.type === "string" && e.type.startsWith("audit.execution.")));
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (alive) setLoaded(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [taskId]);
+
+  if (loaded && events.length === 0) return null;
+  return (
+    <section className="dr-drawer__section exec-timeline">
+      <h3 className="dr-drawer__h">
+        {t("exec.timeline")} <span className="dr-drawer__hn">{events.length}</span>
+      </h3>
+      <ol className="exec-timeline__list">
+        {events.map((e, i) => (
+          <li key={e.cursor ?? i} className="exec-timeline__item" data-phase={e.action}>
+            <span className="exec-timeline__dot" />
+            <span className="exec-timeline__phase">{t(`exec.phase.${e.action}`)}</span>
+            <span className="exec-timeline__actor">{actorLabel(e.actor)}</span>
+            <span className="exec-timeline__ts">{fmtAgo(e.ts)}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
 
 function fmtScore(v: number | null | undefined): string {
   return typeof v === "number" ? v.toFixed(2) : "—";
@@ -350,6 +395,8 @@ export function TaskDrawer(props: {
                 </div>
               ))}
             </section>
+
+            <ExecutionTimeline taskId={task.id} t={t} />
 
             <PlannerPanel
               taskId={task.id}

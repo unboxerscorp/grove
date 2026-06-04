@@ -13,6 +13,7 @@
 //   - ws-ticket     (issuance, ttl, project binding, single-use over real WS)
 //   - plan          (read-only ranked candidates, redaction, project/task scope)
 //   - autopickup    (node toggle auth, global gate, scope, team viewer denial)
+//   - execution     (global/node gates, approval/abort, scope, viewer denial)
 //
 // Each check asserts the CORRECT contract. A failing check is a real defect to
 // report as `# BUG(Pn)` — never relax the assertion to match a bug.
@@ -111,6 +112,16 @@ function writeTeamViewer(session, { name, secret }) {
     ),
   );
   chmodSync(membersPath, 0o600);
+}
+function runBridgePython(lines, args) {
+  const result = spawnSync(python, ["-c", lines.join("\n"), ...args], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error(`bridge python failed:\n${result.stderr || result.stdout}`);
+  }
+  return result.stdout.trim();
 }
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -211,21 +222,69 @@ let teamBaseUrl = "";
 
 function setAutopickupGlobal(board, { enabled, killSwitch }) {
   const boolArg = (value) => (value === undefined ? "none" : value ? "true" : "false");
-  const code = [
-    "import sys",
-    "from pathlib import Path",
-    "from grove_bridge.store import SQLiteBoardStore",
-    "def value(raw): return None if raw == 'none' else raw == 'true'",
-    "SQLiteBoardStore(Path(sys.argv[1])).set_autopickup_global(board=sys.argv[2], enabled=value(sys.argv[3]), kill_switch=value(sys.argv[4]))",
-  ].join("\n");
-  const result = spawnSync(
-    python,
-    ["-c", code, dbPath, board, boolArg(enabled), boolArg(killSwitch)],
-    { cwd: repoRoot, encoding: "utf8" },
+  runBridgePython(
+    [
+      "import sys",
+      "from pathlib import Path",
+      "from grove_bridge.store import SQLiteBoardStore",
+      "def value(raw): return None if raw == 'none' else raw == 'true'",
+      "SQLiteBoardStore(Path(sys.argv[1])).set_autopickup_global(board=sys.argv[2], enabled=value(sys.argv[3]), kill_switch=value(sys.argv[4]))",
+    ],
+    [dbPath, board, boolArg(enabled), boolArg(killSwitch)],
   );
-  if (result.status !== 0) {
-    throw new Error(`failed to set autopickup global gate:\n${result.stderr || result.stdout}`);
-  }
+}
+
+function seedGuardedExecutionTask({ database = dbPath, board, title, node }) {
+  const out = runBridgePython(
+    [
+      "import json, sys",
+      "from pathlib import Path",
+      "from grove_bridge.store import SQLiteBoardStore",
+      "store = SQLiteBoardStore(Path(sys.argv[1]))",
+      "task = store.create_task(board=sys.argv[2], title=sys.argv[3], body=None, assignee=sys.argv[4])",
+      "claim = store.claim_next(board=sys.argv[2], assignee=sys.argv[4], node_id=sys.argv[4], ttl_seconds=300, task_id=task.id)",
+      "if claim is None: raise SystemExit('claim failed')",
+      "execution = store.begin_guarded_execution(board=sys.argv[2], task_id=task.id, run_id=claim.run_id, node=sys.argv[4])",
+      "print(json.dumps({'task_id': task.id, 'run_id': claim.run_id, 'state': execution.get('state')}))",
+    ],
+    [database, board, title, node],
+  );
+  return JSON.parse(out);
+}
+
+function setExecutionGlobal({ database = dbPath, board, enabled, killSwitch, boardEnabled, boardKillSwitch }) {
+  const boolArg = (value) => (value === undefined ? "none" : value ? "true" : "false");
+  runBridgePython(
+    [
+      "import sys",
+      "from pathlib import Path",
+      "from grove_bridge.store import SQLiteBoardStore",
+      "def value(raw): return None if raw == 'none' else raw == 'true'",
+      "SQLiteBoardStore(Path(sys.argv[1])).set_execution_global(board=sys.argv[2], enabled=value(sys.argv[3]), kill_switch=value(sys.argv[4]), board_enabled=value(sys.argv[5]), board_kill_switch=value(sys.argv[6]))",
+    ],
+    [
+      database,
+      board,
+      boolArg(enabled),
+      boolArg(killSwitch),
+      boolArg(boardEnabled),
+      boolArg(boardKillSwitch),
+    ],
+  );
+}
+
+function tryMarkExecutionExecuting({ database = dbPath, board, taskId, runId, node }) {
+  const out = runBridgePython(
+    [
+      "import json, sys",
+      "from pathlib import Path",
+      "from grove_bridge.store import SQLiteBoardStore",
+      "ok = SQLiteBoardStore(Path(sys.argv[1])).try_mark_execution_executing(board=sys.argv[2], task_id=sys.argv[3], run_id=sys.argv[4], node=sys.argv[5])",
+      "print(json.dumps({'ok': ok}))",
+    ],
+    [database, board, taskId, runId, node],
+  );
+  return JSON.parse(out).ok === true;
 }
 
 function scaffold() {
@@ -776,6 +835,278 @@ async function run() {
       ),
   );
 
+  // --- execution gates: global/node toggles, guarded task approval, abort ---
+  const executionNodePath = (node) => `/api/nodes/${encodeURIComponent(node)}/execution`;
+  const taskExecutionPath = (taskId) => `/api/tasks/${encodeURIComponent(taskId)}/execution`;
+  const taskApprovePath = (taskId) => `/api/tasks/${encodeURIComponent(taskId)}/approve`;
+  const taskAbortPath = (taskId) => `/api/tasks/${encodeURIComponent(taskId)}/abort`;
+  const guardedExecution = seedGuardedExecutionTask({
+    board: ALPHA,
+    title: "e2e guarded execution",
+    node: "worker",
+  });
+  eq("seed: guarded execution task state approval-pending", guardedExecution.state, "approval-pending");
+
+  eq("execution gate GET 401 without token", (await req("GET", "/api/execution")).status, 401);
+  eq(
+    "execution gate GET 401 with wrong token",
+    (await req("GET", "/api/execution", { token: "wrong-token" })).status,
+    401,
+  );
+  const executionGateInitial = await req("GET", "/api/execution", { token, project: ALPHA });
+  eq("execution gate GET 200 with token", executionGateInitial.status, 200);
+  eq("execution gate payload project == alpha", executionGateInitial.json && executionGateInitial.json.project, ALPHA);
+  check(
+    "execution gate payload exposes boolean gate fields",
+    Boolean(executionGateInitial.json) &&
+      ["enabled", "kill_switch", "board_enabled", "board_kill_switch"].every(
+        (key) => typeof executionGateInitial.json[key] === "boolean",
+      ),
+  );
+  eq("execution gate initially disabled", executionGateInitial.json && executionGateInitial.json.enabled, false);
+  eq("execution gate initial kill-switch off", executionGateInitial.json && executionGateInitial.json.kill_switch, false);
+  eq("execution gate initial board enabled", executionGateInitial.json && executionGateInitial.json.board_enabled, true);
+
+  eq("node execution GET 401 without token", (await req("GET", executionNodePath("worker"))).status, 401);
+  eq(
+    "node execution POST 401 with wrong token",
+    (await req("POST", executionNodePath("worker"), { token: "wrong-token", body: { enabled: true } })).status,
+    401,
+  );
+  const nodeExecutionInitial = await req("GET", executionNodePath("worker"), { token, project: ALPHA });
+  eq("node execution GET 200 with token", nodeExecutionInitial.status, 200);
+  eq("node execution payload project == alpha", nodeExecutionInitial.json && nodeExecutionInitial.json.project, ALPHA);
+  eq("node execution payload node == worker", nodeExecutionInitial.json && nodeExecutionInitial.json.node, "worker");
+  eq("node execution initially disabled", nodeExecutionInitial.json && nodeExecutionInitial.json.enabled, false);
+  eq("node execution initially unconfigured", nodeExecutionInitial.json && nodeExecutionInitial.json.configured, false);
+  eq("node execution sees global disabled", nodeExecutionInitial.json && nodeExecutionInitial.json.global_enabled, false);
+  eq("node execution sees board enabled", nodeExecutionInitial.json && nodeExecutionInitial.json.board_enabled, true);
+
+  eq(
+    "task execution GET 401 without token",
+    (await req("GET", taskExecutionPath(guardedExecution.task_id))).status,
+    401,
+  );
+  const taskExecutionInitial = await req("GET", taskExecutionPath(guardedExecution.task_id), {
+    token,
+    project: ALPHA,
+  });
+  eq("task execution GET 200 with token", taskExecutionInitial.status, 200);
+  eq("task execution state is approval-pending", taskExecutionInitial.json && taskExecutionInitial.json.state, "approval-pending");
+  eq("task execution approved false before approval", taskExecutionInitial.json && taskExecutionInitial.json.approved, false);
+  eq("task execution node == worker", taskExecutionInitial.json && taskExecutionInitial.json.node, "worker");
+  check(
+    "task execution gate blocks before global/node enabled",
+    Boolean(taskExecutionInitial.json) &&
+      taskExecutionInitial.json.gate &&
+      taskExecutionInitial.json.gate.allowed === false &&
+      taskExecutionInitial.json.gate.blocked_by.includes("global-disabled") &&
+      taskExecutionInitial.json.gate.blocked_by.includes("node-disabled"),
+    taskExecutionInitial.text,
+  );
+  check(
+    "task execution is not executing before approval",
+    taskExecutionInitial.json && taskExecutionInitial.json.execution && taskExecutionInitial.json.execution.state !== "executing",
+  );
+  check(
+    "store dispatch refuses executing without approval",
+    tryMarkExecutionExecuting({
+      board: ALPHA,
+      taskId: guardedExecution.task_id,
+      runId: guardedExecution.run_id,
+      node: "worker",
+    }) === false,
+  );
+  const approveBeforeGate = await req("POST", taskApprovePath(guardedExecution.task_id), { token, project: ALPHA });
+  eq("task approve blocked while gate disabled -> 409", approveBeforeGate.status, 409);
+  const pendingAfterBlockedApprove = await req("GET", taskExecutionPath(guardedExecution.task_id), {
+    token,
+    project: ALPHA,
+  });
+  eq(
+    "task remains approval-pending after blocked approve",
+    pendingAfterBlockedApprove.json && pendingAfterBlockedApprove.json.state,
+    "approval-pending",
+  );
+
+  const executionGateEnabled = await req("POST", "/api/execution", {
+    token,
+    project: ALPHA,
+    body: { enabled: true },
+  });
+  eq("execution gate POST enabled:true -> 200", executionGateEnabled.status, 200);
+  eq("execution gate POST enabled:true reflected", executionGateEnabled.json && executionGateEnabled.json.enabled, true);
+  const executionNodeEnabled = await req("POST", executionNodePath("worker"), {
+    token,
+    project: ALPHA,
+    body: { enabled: true },
+  });
+  eq("node execution POST enabled:true -> 200", executionNodeEnabled.status, 200);
+  eq("node execution POST enabled:true reflected", executionNodeEnabled.json && executionNodeEnabled.json.enabled, true);
+  eq("node execution POST enabled:true configured", executionNodeEnabled.json && executionNodeEnabled.json.configured, true);
+  const executionNodeEnabledRead = await req("GET", executionNodePath("worker"), { token, project: ALPHA });
+  eq("node execution GET after enable returns enabled:true", executionNodeEnabledRead.json && executionNodeEnabledRead.json.enabled, true);
+  const executionNodeDisabled = await req("POST", executionNodePath("worker"), {
+    token,
+    project: ALPHA,
+    body: { enabled: false },
+  });
+  eq("node execution POST enabled:false -> 200", executionNodeDisabled.status, 200);
+  eq("node execution POST enabled:false reflected", executionNodeDisabled.json && executionNodeDisabled.json.enabled, false);
+  const executionNodeDisabledRead = await req("GET", executionNodePath("worker"), { token, project: ALPHA });
+  eq("node execution GET after disable returns enabled:false", executionNodeDisabledRead.json && executionNodeDisabledRead.json.enabled, false);
+  eq(
+    "node execution re-enable for approval path -> 200",
+    (await req("POST", executionNodePath("worker"), { token, project: ALPHA, body: { enabled: true } })).status,
+    200,
+  );
+
+  eq(
+    "execution gate POST enabled:false -> 200",
+    (await req("POST", "/api/execution", { token, project: ALPHA, body: { enabled: false } })).status,
+    200,
+  );
+  const nodeEnableGlobalOff = await req("POST", executionNodePath("worker"), {
+    token,
+    project: ALPHA,
+    body: { enabled: true },
+  });
+  eq("node execution POST enable with global gate off -> 409", nodeEnableGlobalOff.status, 409);
+  check("node execution global-off rejection mentions gate", /gate|global|execution/i.test(nodeEnableGlobalOff.text), nodeEnableGlobalOff.text);
+  eq(
+    "execution gate POST kill_switch:true -> 200",
+    (await req("POST", "/api/execution", {
+      token,
+      project: ALPHA,
+      body: { enabled: true, kill_switch: true },
+    })).status,
+    200,
+  );
+  const nodeEnableKillSwitch = await req("POST", executionNodePath("worker"), {
+    token,
+    project: ALPHA,
+    body: { enabled: true },
+  });
+  eq("node execution POST enable with kill-switch on -> 409", nodeEnableKillSwitch.status, 409);
+  check("node execution kill-switch rejection mentions gate", /gate|kill|execution/i.test(nodeEnableKillSwitch.text), nodeEnableKillSwitch.text);
+  eq(
+    "execution gate reset enabled true kill-switch false -> 200",
+    (await req("POST", "/api/execution", {
+      token,
+      project: ALPHA,
+      body: { enabled: true, kill_switch: false },
+    })).status,
+    200,
+  );
+  eq(
+    "node execution enabled for approval after reset -> 200",
+    (await req("POST", executionNodePath("worker"), { token, project: ALPHA, body: { enabled: true } })).status,
+    200,
+  );
+  const executionGateAllowed = await req("GET", taskExecutionPath(guardedExecution.task_id), {
+    token,
+    project: ALPHA,
+  });
+  eq("task execution gate allowed after global+node enable", executionGateAllowed.json && executionGateAllowed.json.gate.allowed, true);
+  const approvedExecution = await req("POST", taskApprovePath(guardedExecution.task_id), { token, project: ALPHA });
+  eq("task approve when approval-pending and gate allowed -> 200", approvedExecution.status, 200);
+  eq("task approve returns state approved", approvedExecution.json && approvedExecution.json.state, "approved");
+  eq("task approve returns approved:true", approvedExecution.json && approvedExecution.json.approved, true);
+  const approvedRead = await req("GET", taskExecutionPath(guardedExecution.task_id), { token, project: ALPHA });
+  eq("task execution remains approved after approve endpoint", approvedRead.json && approvedRead.json.state, "approved");
+  check(
+    "task execution does not auto-enter executing after approval",
+    approvedRead.json && approvedRead.json.execution && approvedRead.json.execution.state !== "executing",
+  );
+  const plainExecutionSeed = await req("POST", `/api/boards/${ALPHA}/tasks`, {
+    token,
+    project: ALPHA,
+    body: { title: "e2e plain execution task", assignee: "worker" },
+  });
+  eq("seed: plain execution task 200", plainExecutionSeed.status, 200);
+  const plainApprove = await req("POST", taskApprovePath(plainExecutionSeed.json && plainExecutionSeed.json.id), {
+    token,
+    project: ALPHA,
+  });
+  eq("task approve rejects non approval-pending task -> 409", plainApprove.status, 409);
+  const abortedExecution = await req("POST", taskAbortPath(guardedExecution.task_id), {
+    token,
+    project: ALPHA,
+    body: { reason: "operator stop /tmp/e2e-execution-secret sk-test-1234567890abcdef012345" },
+  });
+  eq("task abort approved execution -> 200", abortedExecution.status, 200);
+  eq("task abort returns terminal abort state", abortedExecution.json && abortedExecution.json.state, "abort");
+  check(
+    "task abort reason is redacted",
+    !abortedExecution.text.includes("/tmp/e2e-execution-secret") && !hasSecret(abortedExecution.json),
+  );
+  eq(
+    "task abort already-terminal execution -> 409",
+    (await req("POST", taskAbortPath(guardedExecution.task_id), {
+      token,
+      project: ALPHA,
+      body: { reason: "second stop" },
+    })).status,
+    409,
+  );
+
+  const wrongProjectExecutionNode = await req("POST", executionNodePath("worker"), {
+    token,
+    project: SCOPE,
+    body: { enabled: true },
+  });
+  check(
+    "node execution rejects node outside project scope",
+    [400, 404].includes(wrongProjectExecutionNode.status),
+    wrongProjectExecutionNode.status,
+  );
+  const wrongProjectTaskStatus = await req("GET", taskExecutionPath(guardedExecution.task_id), {
+    token,
+    project: SCOPE,
+  });
+  eq("task execution status rejects task outside project scope", wrongProjectTaskStatus.status, 404);
+  const wrongProjectApprove = await req("POST", taskApprovePath(guardedExecution.task_id), {
+    token,
+    project: SCOPE,
+  });
+  eq("task approve rejects task outside project scope", wrongProjectApprove.status, 404);
+  const badExecutionNode = "@sk-test-1234567890abcdef012345";
+  const badExecutionNodeResp = await req("POST", executionNodePath(badExecutionNode), {
+    token,
+    project: ALPHA,
+    body: { enabled: true },
+  });
+  eq("node execution invalid node name -> 400", badExecutionNodeResp.status, 400);
+  check(
+    "execution rejection responses leak no secrets or paths",
+    !hasSecret([
+      approveBeforeGate.json,
+      nodeEnableGlobalOff.json,
+      nodeEnableKillSwitch.json,
+      plainApprove.json,
+      wrongProjectExecutionNode.json,
+      wrongProjectTaskStatus.json,
+      wrongProjectApprove.json,
+      badExecutionNodeResp.json,
+    ]) &&
+      ![
+        approveBeforeGate.text,
+        nodeEnableGlobalOff.text,
+        nodeEnableKillSwitch.text,
+        plainApprove.text,
+        wrongProjectExecutionNode.text,
+        wrongProjectTaskStatus.text,
+        wrongProjectApprove.text,
+        badExecutionNodeResp.text,
+      ].some(
+        (text) =>
+          text.includes(badExecutionNode) ||
+          text.includes("/tmp/") ||
+          text.includes(groveHome) ||
+          text.includes(dbPath),
+      ),
+  );
+
   writeRegistry(TEAM, {
     worker: {
       name: "worker",
@@ -787,6 +1118,13 @@ async function run() {
   });
   writeTeamViewer(TEAM, { name: "viewer", secret: "viewer-secret" });
   const teamDbPath = path.join(tmp, "team-board.db");
+  const teamExecution = seedGuardedExecutionTask({
+    database: teamDbPath,
+    board: TEAM,
+    title: "team viewer execution",
+    node: "worker",
+  });
+  setExecutionGlobal({ database: teamDbPath, board: TEAM, enabled: true });
   await startTeamServer(TEAM, teamDbPath);
   try {
     const viewerLogin = await reqAt(teamBaseUrl, "POST", "/api/login", {
@@ -806,6 +1144,38 @@ async function run() {
     });
     eq("autopickup team viewer POST denied", viewerPost.status, 403);
     check("autopickup team viewer denial leaks no secrets", !hasSecret(viewerPost.json));
+    const viewerExecutionGate = await reqAt(teamBaseUrl, "POST", "/api/execution", {
+      cookie: viewerCookie,
+      csrf: viewerCsrf,
+      body: { enabled: true },
+    });
+    eq("execution team viewer gate POST denied", viewerExecutionGate.status, 403);
+    const viewerExecutionNode = await reqAt(teamBaseUrl, "POST", executionNodePath("worker"), {
+      cookie: viewerCookie,
+      csrf: viewerCsrf,
+      body: { enabled: true },
+    });
+    eq("execution team viewer node POST denied", viewerExecutionNode.status, 403);
+    const viewerExecutionApprove = await reqAt(teamBaseUrl, "POST", taskApprovePath(teamExecution.task_id), {
+      cookie: viewerCookie,
+      csrf: viewerCsrf,
+    });
+    eq("execution team viewer approve POST denied", viewerExecutionApprove.status, 403);
+    const viewerExecutionAbort = await reqAt(teamBaseUrl, "POST", taskAbortPath(teamExecution.task_id), {
+      cookie: viewerCookie,
+      csrf: viewerCsrf,
+      body: { reason: "viewer stop" },
+    });
+    eq("execution team viewer abort POST denied", viewerExecutionAbort.status, 403);
+    check(
+      "execution team viewer denials leak no secrets",
+      !hasSecret([
+        viewerExecutionGate.json,
+        viewerExecutionNode.json,
+        viewerExecutionApprove.json,
+        viewerExecutionAbort.json,
+      ]),
+    );
   } finally {
     await stopTeamServer();
   }

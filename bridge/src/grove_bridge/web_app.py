@@ -839,12 +839,24 @@ def create_app(
         _require_execution_access(auth)
         project = resolve_project(request)
         node_name = _node_in_project(node, config=project.config)
-        state = _store(request).set_node_execution_enabled(
+        store = _store(request)
+        if payload.enabled:
+            global_state = store.execution_global_state(board=project.board)
+            node_state = store.node_execution_state(board=project.board, node=node_name)
+            if not global_state["enabled"] or not global_state["board_enabled"]:
+                raise HTTPException(status_code=409, detail="execution gate is disabled")
+            if (
+                global_state["kill_switch"]
+                or global_state["board_kill_switch"]
+                or bool(node_state["kill_switch"])
+            ):
+                raise HTTPException(status_code=409, detail="execution kill switch is enabled")
+        state = store.set_node_execution_enabled(
             board=project.board,
             node=node_name,
             enabled=payload.enabled,
         )
-        _store(request).add_audit_event(
+        store.add_audit_event(
             board=project.board,
             kind="audit.node.execution",
             actor=_actor_payload(auth),
@@ -854,7 +866,7 @@ def create_app(
             summary=f"{node_name} execution {'enabled' if payload.enabled else 'disabled'}",
         )
         return _node_execution_payload(
-            _store(request),
+            store,
             project=project,
             node=node_name,
             state=state,
@@ -3355,7 +3367,9 @@ def _task_execution_payload(
     project: ProjectContext,
     task: Task,
 ) -> dict[str, object]:
-    execution = store.task_execution_state(board=project.board, task_id=task.id)
+    execution = _public_execution_state(
+        store.task_execution_state(board=project.board, task_id=task.id)
+    )
     node = _execution_node_for_task(store, project=project, task=task)
     gate = store.execution_gate_state(board=project.board, node=node, task_id=task.id)
     return {
@@ -3367,6 +3381,12 @@ def _task_execution_payload(
         "gate": gate,
         "execution": execution,
     }
+
+
+def _public_execution_state(execution: Mapping[str, object]) -> dict[str, object]:
+    public = dict(execution)
+    public.pop("dispatch_lease", None)
+    return public
 
 
 def _execution_node_for_task(

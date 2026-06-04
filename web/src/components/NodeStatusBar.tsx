@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../api";
-import type { AutopickupState, NodeDetail, NodeSummary } from "../api";
+import type { AutopickupState, NodeDetail, NodeExecutionState, NodeSummary } from "../api";
 import { cx, fmtAgo } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 
@@ -43,6 +43,14 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
   const [errNode, setErrNode] = useState<string | null>(null);
   // Set once a POST is rejected with 403 (team viewer): lock all toggles.
   const [denied, setDenied] = useState(false);
+
+  // Per-node EXECUTION flag (separate from autopickup; both gate-aware).
+  const [exec, setExec] = useState<Record<string, NodeExecutionState>>({});
+  const [execBusy, setExecBusy] = useState<string | null>(null);
+  const [execErr, setExecErr] = useState<string | null>(null);
+  const [execDenied, setExecDenied] = useState(false);
+  // Proactive viewer lock (role-based) for the execution toggle.
+  const [execViewer, setExecViewer] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -91,8 +99,12 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
     // while the refetch is in flight after a global-gate / role change).
     if (!open) {
       setPickup({});
+      setExec({});
       setDenied(false);
+      setExecDenied(false);
+      setExecViewer(false);
       setErrNode(null);
+      setExecErr(null);
       return;
     }
     if (!detailNames) return;
@@ -106,6 +118,22 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
       });
       setPickup(map);
     });
+    Promise.all(names.map((n) => api.getNodeExecution(n).catch(() => null))).then((states) => {
+      if (!alive) return;
+      const map: Record<string, NodeExecutionState> = {};
+      states.forEach((st, i) => {
+        if (st) map[names[i]!] = st;
+      });
+      setExec(map);
+    });
+    api
+      .getMe()
+      .then((me) => {
+        if (alive) setExecViewer(me?.member?.role === "viewer");
+      })
+      .catch(() => {
+        if (alive) setExecViewer(false);
+      });
     return () => {
       alive = false;
     };
@@ -127,6 +155,24 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
         // Fixed messages only — never surface the raw cause.
         if (/\b403\b/.test(msg)) setDenied(true); // team viewer: lock toggles
         else setErrNode(name); // 409 (global gate) or transient error
+      });
+  };
+
+  const toggleExec = (name: string, next: boolean) => {
+    if (execBusy || execDenied) return;
+    setExecBusy(name);
+    setExecErr(null);
+    api
+      .setNodeExecution(name, next)
+      .then((st) => {
+        setExecBusy(null);
+        setExec((p) => ({ ...p, [name]: st }));
+      })
+      .catch((e: unknown) => {
+        setExecBusy(null);
+        const msg = e instanceof Error ? e.message : "";
+        if (/\b403\b/.test(msg)) setExecDenied(true);
+        else setExecErr(name);
       });
   };
 
@@ -189,6 +235,20 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
                   : errNode === d.name
                     ? t("pickup.error")
                     : "";
+            // Execution toggle (separate flag). Gate = global/board enabled +
+            // any kill-switch across global/board/node.
+            const ex = exec[d.name];
+            const execOff =
+              !!ex && (!ex.global_enabled || ex.global_kill_switch || !ex.board_enabled || ex.board_kill_switch || ex.kill_switch);
+            const execReason = ex?.global_kill_switch || ex?.board_kill_switch || ex?.kill_switch
+              ? t("exec.killSwitch")
+              : ex && (!ex.global_enabled || !ex.board_enabled)
+                ? t("exec.gateOff")
+                : execDenied || execViewer
+                  ? t("exec.denied")
+                  : execErr === d.name
+                    ? t("exec.toggleError")
+                    : "";
             return (
               <div key={d.name} className="nodestat-row">
                 <span className={cx("nodestat__led", detailClass(d.status))} />
@@ -219,6 +279,28 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
                       <span className="pickup-toggle__label">{t("pickup.label")}</span>
                     </button>
                     {reason && <span className="pickup-toggle__reason">{reason}</span>}
+                  </span>
+                )}
+                {ex && (
+                  <span className="nodestat-row__exec">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={ex.enabled}
+                      aria-label={t("exec.aria", { node: d.name })}
+                      title={execReason || t("exec.hint")}
+                      data-exec-node={d.name}
+                      data-enabled={ex.enabled ? "1" : "0"}
+                      className={cx("exec-toggle", ex.enabled && "is-on", (execOff || execDenied || execViewer) && "is-locked")}
+                      disabled={execBusy === d.name || execOff || execDenied || execViewer}
+                      onClick={() => toggleExec(d.name, !ex.enabled)}
+                    >
+                      <span className="exec-toggle__track">
+                        <span className="exec-toggle__thumb" />
+                      </span>
+                      <span className="exec-toggle__label">{t("exec.label")}</span>
+                    </button>
+                    {execReason && <span className="exec-toggle__reason">{execReason}</span>}
                   </span>
                 )}
                 <span className="nodestat-row__seen">

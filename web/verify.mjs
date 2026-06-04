@@ -223,6 +223,26 @@ async function main() {
     );
     const afterDisable = await page.evaluate(() => window.__MOCK__?.autopickupPost ?? null);
 
+    // v1.13 execution toggle: a SEPARATE per-node flag rendered alongside the
+    // autopickup toggle (both present), flipped via its own POST.
+    const execToggleInit = await page.evaluate(() => ({
+      execCount: document.querySelectorAll(".exec-toggle").length,
+      pickupCount: document.querySelectorAll(".pickup-toggle").length,
+    }));
+    const eNode = await page.evaluate(() => document.querySelector(".exec-toggle")?.getAttribute("data-exec-node"));
+    await page.$eval(`.exec-toggle[data-exec-node="${eNode}"]`, (el) => el.click());
+    await page.waitForFunction(
+      (n) => document.querySelector(`.exec-toggle[data-exec-node="${n}"]`)?.getAttribute("data-enabled") === "1",
+      { timeout: 6000 },
+      eNode,
+    );
+    const execToggled = await page.evaluate(() => window.__MOCK__?.execTogglePost ?? null);
+    const execToggleOk =
+      execToggleInit.execCount >= 1 &&
+      execToggleInit.pickupCount >= 1 && // both flags shown (separate)
+      Boolean(execToggled) &&
+      execToggled.enabled === true;
+
     // global gate OFF -> toggle disabled + reason (no enable possible). Reopen
     // refetches fresh state (pickup is cleared on close, so no stale toggle).
     await page.evaluate(() => window.__MOCK__.setAutopickupGlobal(false, false));
@@ -646,6 +666,108 @@ async function main() {
     // Close the task drawer.
     await page.click(".dr-drawer__close");
     await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
+
+    // v1.13 execution loop — timeline (per-task transitions) + approval queue.
+    // Timeline: open G-2's drawer (it carries audit.execution.* transitions).
+    await page.evaluate(() => {
+      const card = Array.from(document.querySelectorAll(".dr-card")).find((c) =>
+        (c.querySelector(".dr-card__id")?.textContent ?? "").includes("G-2"),
+      );
+      card?.click();
+    });
+    await page.waitForSelector(".exec-timeline__item", { timeout: 8000 });
+    const timeline = await page.evaluate(() => {
+      const items = Array.from(document.querySelectorAll(".exec-timeline__item"));
+      return { count: items.length, phases: items.map((i) => i.getAttribute("data-phase")) };
+    });
+    await page.click(".dr-drawer__close");
+    await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
+    const execTimelineOk =
+      timeline.count === 6 &&
+      timeline.phases[0] === "claim" &&
+      timeline.phases.includes("approve") &&
+      timeline.phases[timeline.phases.length - 1] === "complete";
+
+    // Approval queue: approve + abort are EXPLICIT (button → confirm → POST).
+    await page.click('.dr-tab[data-view="exec"]');
+    await page.waitForSelector(".exec-queue", { timeout: 8000 });
+    await page.waitForFunction(() => document.querySelectorAll(".exec-queue__item").length >= 2, { timeout: 8000 });
+    const queueInit = await page.evaluate(() => ({
+      count: document.querySelectorAll(".exec-queue__item").length,
+      tasks: Array.from(document.querySelectorAll(".exec-queue__item")).map((i) => i.getAttribute("data-task")),
+      gate: !!document.querySelector(".exec-gate"),
+    }));
+
+    // P1: team viewer -> approve/abort/kill-switch controls PROACTIVELY hidden
+    // (queue still populated). Re-enter the tab to refetch /api/me.
+    const reenterExec = async () => {
+      await page.click('.dr-tab[data-view="board"]');
+      await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+      await page.click('.dr-tab[data-view="exec"]');
+      await page.waitForSelector(".exec-queue", { timeout: 8000 });
+    };
+    await page.evaluate(() => window.__MOCK__.setViewer(true));
+    await reenterExec();
+    await page.waitForSelector(".exec-viewer-note", { timeout: 8000 });
+    const viewerLock = await page.evaluate(() => ({
+      note: !!document.querySelector(".exec-viewer-note"),
+      ks: document.querySelectorAll(".exec-ks__btn").length,
+      approve: document.querySelectorAll(".exec-approve-btn").length,
+      abort: document.querySelectorAll(".exec-abort-btn").length,
+      readonly: document.querySelectorAll(".exec-queue__readonly").length,
+    }));
+    const viewerLockOk =
+      viewerLock.note &&
+      viewerLock.ks === 0 &&
+      viewerLock.approve === 0 &&
+      viewerLock.abort === 0 &&
+      viewerLock.readonly >= 2;
+    await page.evaluate(() => window.__MOCK__.setViewer(false));
+    await reenterExec();
+    await page.waitForSelector(".exec-approve-btn", { timeout: 8000 });
+
+    const beforeApprove = await page.evaluate(() => window.__MOCK__?.execApprove ?? null);
+    await page.click('[data-task="G-5"] .exec-approve-btn');
+    await page.waitForSelector('[data-task="G-5"] .exec-confirm-yes', { timeout: 5000 });
+    const execAfterAsk = await page.evaluate(() => window.__MOCK__?.execApprove ?? null);
+    await page.click('[data-task="G-5"] .exec-confirm-yes');
+    await page.waitForFunction(() => !document.querySelector('[data-task="G-5"]'), { timeout: 6000 });
+    const approved = await page.evaluate(() => window.__MOCK__?.execApprove ?? null);
+    await page.click('[data-task="G-6"] .exec-abort-btn');
+    await page.waitForSelector('[data-task="G-6"] .exec-confirm-yes', { timeout: 5000 });
+    await page.click('[data-task="G-6"] .exec-confirm-yes');
+    await page.waitForFunction(() => !document.querySelector('[data-task="G-6"]'), { timeout: 6000 });
+    const aborted = await page.evaluate(() => window.__MOCK__?.execAbort ?? null);
+    const execQueueOk =
+      queueInit.count >= 2 &&
+      queueInit.gate &&
+      queueInit.tasks.includes("G-5") &&
+      queueInit.tasks.includes("G-6") &&
+      beforeApprove === null &&
+      execAfterAsk === null && // confirm step: NO POST before "Confirm"
+      approved === "G-5" &&
+      aborted === "G-6";
+
+    // P2-4: kill-switch arm is also explicit (confirm BEFORE the POST fires).
+    const gateBeforeKs = await page.evaluate(() => JSON.stringify(window.__MOCK__?.execGatePost ?? null));
+    await page.click('.exec-ks__btn[data-ks="global"]');
+    await page.waitForSelector(".exec-confirm--gate .exec-confirm-yes", { timeout: 5000 });
+    const gateAfterAsk = await page.evaluate(() => JSON.stringify(window.__MOCK__?.execGatePost ?? null));
+    await page.click(".exec-confirm--gate .exec-confirm-yes");
+    await page.waitForFunction(() => window.__MOCK__?.execGatePost?.kill_switch === true, { timeout: 6000 });
+    const ksArmed = await page.evaluate(() => window.__MOCK__?.execGatePost?.kill_switch === true);
+    const killSwitchOk = gateBeforeKs === gateAfterAsk && ksArmed; // no POST before confirm
+    // clear it back so the gate is restored.
+    await page.click('.exec-ks__btn[data-ks="global"]');
+    await page.waitForSelector(".exec-confirm--gate .exec-confirm-yes", { timeout: 5000 });
+    await page.click(".exec-confirm--gate .exec-confirm-yes");
+    await page.waitForFunction(() => window.__MOCK__?.execGatePost?.kill_switch === false, { timeout: 6000 });
+
+    // Return to the board view so the remaining board tests run as before.
+    await page.click('.dr-tab[data-view="board"]');
+    await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+
+    const execLoopOk = execToggleOk && execTimelineOk && execQueueOk && viewerLockOk && killSwitchOk;
 
     // #4 board live (claim -> running -> done): a board-tail event must reload
     // the snapshot and re-column the card. The live spark lights while the
@@ -1387,6 +1509,7 @@ async function main() {
       autonomyVisOk &&
       plannerSurfaceOk &&
       pickupToggleOk &&
+      execLoopOk &&
       delegationEdgesOk &&
       delegateOk &&
       diag.projectHeader === projAfterLoad &&
@@ -1467,6 +1590,8 @@ async function main() {
       autonomy: { pick: autoPick, retro: autoRetro, node: autoNode },
       pickupToggleOk,
       pickup: { init: pickInit, enable: afterEnable, disable: afterDisable, globalOff: globalOffState, killSwitch: killSwitchState, viewer: viewerState, nodeReject },
+      execLoopOk,
+      exec: { toggleOk: execToggleOk, timeline, timelineOk: execTimelineOk, queue: queueInit, approved, aborted, queueOk: execQueueOk, viewerLock, viewerLockOk, killSwitchOk },
       plannerSurfaceOk,
       planner: {
         ...planner,

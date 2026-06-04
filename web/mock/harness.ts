@@ -171,6 +171,7 @@ type MockAuditTarget = { type: string; id?: string; node?: string };
 type MockAuditEvent = {
   cursor: number;
   id: string;
+  type?: string; // event kind (e.g. audit.execution.approve) — for the timeline
   actor: MockAuditActor;
   action: string;
   target: MockAuditTarget;
@@ -195,6 +196,13 @@ const AUDIT_EVENTS: MockAuditEvent[] = [
   // v1.10 autonomy events: node self-claim (autopickup) + retrospective (retro).
   { cursor: 11, id: "e11", actor: nodeActor("backend"), action: "autopickup", target: { type: "task", id: "G-10", node: "backend" }, ts: AUDIT_TS0 + 330, task_id: "G-10" },
   { cursor: 12, id: "e12", actor: nodeActor("researcher"), action: "retro", target: { type: "task", id: "G-6", node: "researcher" }, ts: AUDIT_TS0 + 360, task_id: "G-6" },
+  // v1.13 execution-loop transitions for G-2 (timeline source; carry `type`).
+  { cursor: 13, id: "e13", type: "audit.execution.claim", actor: nodeActor("backend"), action: "claim", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 400, task_id: "G-2" },
+  { cursor: 14, id: "e14", type: "audit.execution.preflight", actor: nodeActor("backend"), action: "preflight", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 410, task_id: "G-2" },
+  { cursor: 15, id: "e15", type: "audit.execution.approve", actor: nodeActor("root"), action: "approve", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 420, task_id: "G-2" },
+  { cursor: 16, id: "e16", type: "audit.execution.execute", actor: nodeActor("backend"), action: "execute", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 430, task_id: "G-2" },
+  { cursor: 17, id: "e17", type: "audit.execution.verify", actor: nodeActor("backend"), action: "verify", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 440, task_id: "G-2" },
+  { cursor: 18, id: "e18", type: "audit.execution.complete", actor: nodeActor("backend"), action: "complete", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 450, task_id: "G-2" },
 ];
 
 // Decision inbox seed — MIRRORS web_app.py _inbox_item_payload: blocked +
@@ -269,6 +277,43 @@ let autopickupGlobal = { enabled: true, kill_switch: false };
 const autopickupNodes: Record<string, boolean> = {};
 diag.setAutopickupGlobal = (enabled: boolean, killSwitch: boolean): void => {
   autopickupGlobal = { enabled, kill_switch: killSwitch };
+};
+
+// Execution loop state (SEPARATE from autopickup). Global/board gate, per-node
+// execution flag, and per-task execution state machine.
+let executionGate = { enabled: true, kill_switch: false, board_enabled: true, board_kill_switch: false };
+const nodeExec: Record<string, boolean> = {};
+const taskExec: Record<string, { state: string; approved: boolean; node: string }> = {
+  "G-5": { state: "approval-pending", approved: false, node: "frontend" },
+  "G-6": { state: "approval-pending", approved: false, node: "root" },
+};
+diag.setExecutionGlobal = (enabled: boolean, killSwitch: boolean): void => {
+  executionGate = { ...executionGate, enabled, kill_switch: killSwitch };
+};
+
+// Current-viewer role for /api/me. Default: local-token (operator-equivalent,
+// member null). Verify flips to a team "viewer" to prove proactive control lock.
+let viewerMode = false;
+diag.setViewer = (on: boolean): void => {
+  viewerMode = on;
+};
+const execGateInfo = () => {
+  const blocked: string[] = [];
+  if (!executionGate.enabled) blocked.push("global-disabled");
+  if (executionGate.kill_switch) blocked.push("global-kill-switch");
+  if (!executionGate.board_enabled) blocked.push("board-disabled");
+  if (executionGate.board_kill_switch) blocked.push("board-kill-switch");
+  return {
+    allowed: blocked.length === 0,
+    blocked_by: blocked,
+    global_enabled: executionGate.enabled,
+    global_kill_switch: executionGate.kill_switch,
+    board_enabled: executionGate.board_enabled,
+    board_kill_switch: executionGate.board_kill_switch,
+    node_enabled: true,
+    node_kill_switch: false,
+    task_kill_switch: false,
+  };
 };
 
 interface ProjectMock {
@@ -427,6 +472,39 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         limitations: ["token usage is best-effort from transcripts where available"],
       }),
     );
+  }
+
+  if (p === "/api/me") {
+    // Mirrors web_app.py /api/me: member null = local-token (operator); a team
+    // "viewer" member drives proactive control-lock in the FE.
+    diag.meFetches = ((diag.meFetches as number) ?? 0) + 1;
+    return Promise.resolve(
+      json(
+        viewerMode
+          ? { auth_mode: "team_cookie", member: { id: "v1", name: "viewer1", role: "viewer" } }
+          : { auth_mode: "local_token", member: null },
+      ),
+    );
+  }
+
+  if (p === "/api/execution") {
+    // Mirrors web_app.py _execution_gate_payload + POST partial update.
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    if (method === "POST") {
+      if (diag.denyExecution) {
+        diag.execDenied = ((diag.execDenied as number) ?? 0) + 1;
+        return Promise.resolve(new Response(JSON.stringify({ detail: "execution requires operator role" }), { status: 403 }));
+      }
+      const body = (init?.body ? JSON.parse(init.body as string) : {}) as Partial<typeof executionGate>;
+      if (typeof body.enabled === "boolean") executionGate.enabled = body.enabled;
+      if (typeof body.kill_switch === "boolean") executionGate.kill_switch = body.kill_switch;
+      if (typeof body.board_enabled === "boolean") executionGate.board_enabled = body.board_enabled;
+      if (typeof body.board_kill_switch === "boolean") executionGate.board_kill_switch = body.board_kill_switch;
+      diag.execGatePost = { ...executionGate };
+      return Promise.resolve(json({ project: proj, ...executionGate }));
+    }
+    diag.execGateFetches = ((diag.execGateFetches as number) ?? 0) + 1;
+    return Promise.resolve(json({ project: proj, ...executionGate }));
   }
 
   if (p === "/api/presence") {
@@ -646,6 +724,65 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     );
   }
 
+  m = p.match(/^\/api\/tasks\/([^/]+)\/execution$/);
+  if (m) {
+    // Mirrors web_app.py _task_execution_payload {state, approved, gate, execution}.
+    const id = decodeURIComponent(m[1]!);
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const e = taskExec[id] ?? { state: "none", approved: false, node: "root" };
+    return Promise.resolve(
+      json({
+        project: proj,
+        task_id: id,
+        node: e.node,
+        state: e.state,
+        approved: e.approved,
+        gate: execGateInfo(),
+        execution: { state: e.state, node: e.node, approved: e.approved },
+      }),
+    );
+  }
+
+  m = p.match(/^\/api\/tasks\/([^/]+)\/approve$/);
+  if (m && method === "POST") {
+    const id = decodeURIComponent(m[1]!);
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    if (diag.denyExecution) {
+      diag.execDenied = ((diag.execDenied as number) ?? 0) + 1;
+      return Promise.resolve(new Response(JSON.stringify({ detail: "execution requires operator role" }), { status: 403 }));
+    }
+    const g = execGateInfo();
+    if (!g.allowed) return Promise.resolve(new Response(JSON.stringify({ detail: "execution gate is blocked" }), { status: 409 }));
+    const e = taskExec[id];
+    if (!e || e.state !== "approval-pending") {
+      return Promise.resolve(new Response(JSON.stringify({ detail: "task is not awaiting approval" }), { status: 409 }));
+    }
+    taskExec[id] = { ...e, state: "approved", approved: true };
+    diag.execApprove = id;
+    return Promise.resolve(
+      json({ project: proj, task_id: id, node: e.node, state: "approved", approved: true, gate: g, execution: taskExec[id] }),
+    );
+  }
+
+  m = p.match(/^\/api\/tasks\/([^/]+)\/abort$/);
+  if (m && method === "POST") {
+    const id = decodeURIComponent(m[1]!);
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    if (diag.denyExecution) {
+      diag.execDenied = ((diag.execDenied as number) ?? 0) + 1;
+      return Promise.resolve(new Response(JSON.stringify({ detail: "execution requires operator role" }), { status: 403 }));
+    }
+    const e = taskExec[id];
+    if (!e || e.state === "aborted" || e.state === "complete") {
+      return Promise.resolve(new Response(JSON.stringify({ detail: "task execution is already terminal" }), { status: 409 }));
+    }
+    taskExec[id] = { ...e, state: "aborted" };
+    diag.execAbort = id;
+    return Promise.resolve(
+      json({ project: proj, task_id: id, node: e.node, state: "aborted", approved: e.approved, gate: execGateInfo(), execution: taskExec[id] }),
+    );
+  }
+
   m = p.match(/^\/api\/tasks\/([^/]+)\/comments$/);
   if (m) return Promise.resolve(json(commentsFor(decodeURIComponent(m[1]!))));
 
@@ -792,6 +929,51 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     }
     diag.autopickupFetches = ((diag.autopickupFetches as number) ?? 0) + 1;
     return Promise.resolve(json(apPayload()));
+  }
+
+  m = p.match(/^\/api\/nodes\/([^/]+)\/execution$/);
+  if (m) {
+    // Mirrors web_app.py _node_execution_payload + _node_in_project (400/404).
+    const node = decodeURIComponent(m[1]!).trim();
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(node)) {
+      return Promise.resolve(new Response(JSON.stringify({ detail: "node must contain only letters, digits, hyphen, or underscore" }), { status: 400, headers: { "Content-Type": "application/json" } }));
+    }
+    const projNodes = proj === SOLO_PROJECT ? SOLO_NODES : ORG_NODES;
+    if (!projNodes.some((n) => n.name === node)) {
+      return Promise.resolve(new Response(JSON.stringify({ detail: "node not found" }), { status: 404, headers: { "Content-Type": "application/json" } }));
+    }
+    const nePayload = () => ({
+      project: proj,
+      node,
+      enabled: !!nodeExec[node],
+      configured: node in nodeExec,
+      kill_switch: false,
+      global_enabled: executionGate.enabled,
+      global_kill_switch: executionGate.kill_switch,
+      board_enabled: executionGate.board_enabled,
+      board_kill_switch: executionGate.board_kill_switch,
+    });
+    if (method === "POST") {
+      if (diag.denyExecution) {
+        diag.execDenied = ((diag.execDenied as number) ?? 0) + 1;
+        return Promise.resolve(new Response(JSON.stringify({ detail: "execution requires operator role" }), { status: 403 }));
+      }
+      const body = (init?.body ? JSON.parse(init.body as string) : {}) as { enabled?: boolean };
+      const wantEnable = !!body.enabled;
+      // Mirror web_app.py set_node_execution_endpoint 409 rules.
+      if (wantEnable && (!executionGate.enabled || !executionGate.board_enabled)) {
+        return Promise.resolve(new Response(JSON.stringify({ detail: "execution gate is disabled" }), { status: 409 }));
+      }
+      if (wantEnable && (executionGate.kill_switch || executionGate.board_kill_switch)) {
+        return Promise.resolve(new Response(JSON.stringify({ detail: "execution kill switch is enabled" }), { status: 409 }));
+      }
+      nodeExec[node] = wantEnable;
+      diag.execTogglePost = { node, enabled: wantEnable };
+      return Promise.resolve(json(nePayload()));
+    }
+    diag.execNodeFetches = ((diag.execNodeFetches as number) ?? 0) + 1;
+    return Promise.resolve(json(nePayload()));
   }
 
   m = p.match(/^\/api\/nodes\/([^/]+)$/);

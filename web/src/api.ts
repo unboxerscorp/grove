@@ -60,6 +60,59 @@ export interface StatusSummary {
   node_details?: NodeDetail[]; // present when ?detail=1
 }
 
+// web_app.py /api/me: the current viewer's role (member is null in local-token
+// mode = operator-equivalent). Used to proactively lock controls for viewers.
+export interface MeInfo {
+  auth_mode?: string;
+  member?: { id?: string; name?: string; role?: string } | null;
+}
+
+// Execution loop (web_app.py). The execution gate + per-node execution flag are
+// SEPARATE from autopickup. A task moves claimed→preflight→approval-pending→
+// executing→verify→complete (+abort/rollback); approval is an explicit human act.
+export interface ExecutionGate {
+  project?: string;
+  enabled: boolean;
+  kill_switch: boolean;
+  board_enabled: boolean;
+  board_kill_switch: boolean;
+}
+
+export interface NodeExecutionState {
+  project?: string;
+  node: string;
+  enabled: boolean;
+  configured?: boolean;
+  kill_switch: boolean;
+  global_enabled: boolean;
+  global_kill_switch: boolean;
+  board_enabled: boolean;
+  board_kill_switch: boolean;
+}
+
+// 4-level gate evaluation for a task (global/board/node/task).
+export interface ExecutionGateInfo {
+  allowed: boolean;
+  blocked_by: string[];
+  global_enabled: boolean;
+  global_kill_switch: boolean;
+  board_enabled: boolean;
+  board_kill_switch: boolean;
+  node_enabled: boolean;
+  node_kill_switch: boolean;
+  task_kill_switch: boolean;
+}
+
+export interface TaskExecution {
+  project?: string;
+  task_id: string;
+  node?: string;
+  state: string; // none | claimed | preflight | approval-pending | executing | verify | complete | aborted | ...
+  approved: boolean;
+  gate: ExecutionGateInfo;
+  execution?: Record<string, unknown>;
+}
+
 // web_app.py _node_autopickup_payload: the REAL per-node autonomous-pickup
 // config (distinct from the audit-inferred ⚡ badge). Enabling is gated by the
 // global switch — POST returns 409 when global_enabled is false / kill-switch on.
@@ -83,6 +136,7 @@ export type AuditTarget =
 export interface AuditEvent {
   cursor?: number;
   id?: string;
+  type?: string; // event kind, e.g. "audit.execution.approve"
   actor: AuditActor;
   action: string;
   target: AuditTarget;
@@ -411,6 +465,62 @@ export const api = {
 
   // Live status: project + node liveness summary; detail=1 adds per-node rows.
   getStatus: (detail = false) => getJSON<StatusSummary>(`/api/status${detail ? "?detail=1" : ""}`),
+
+  // Current viewer's identity/role (member null in local-token mode = operator).
+  getMe: () => getJSON<MeInfo>("/api/me"),
+
+  // --- execution loop ------------------------------------------------------
+  getExecutionGate: () => getJSON<ExecutionGate>("/api/execution"),
+
+  // Set global/board execution gate or kill-switch (partial). 403 for viewers.
+  async setExecutionGate(patch: Partial<Pick<ExecutionGate, "enabled" | "kill_switch" | "board_enabled" | "board_kill_switch">>): Promise<ExecutionGate> {
+    const res = await fetch("/api/execution", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(`execution: HTTP ${res.status}`);
+    return (await res.json()) as ExecutionGate;
+  },
+
+  getNodeExecution: (node: string) => getJSON<NodeExecutionState>(`/api/nodes/${enc(node)}/execution`),
+
+  async setNodeExecution(node: string, enabled: boolean): Promise<NodeExecutionState> {
+    const res = await fetch(`/api/nodes/${enc(node)}/execution`, {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) throw new Error(`execution: HTTP ${res.status}`);
+    return (await res.json()) as NodeExecutionState;
+  },
+
+  getTaskExecution: (taskId: string) => getJSON<TaskExecution>(`/api/tasks/${enc(taskId)}/execution`),
+
+  // Approve a task awaiting approval (no body). 409 if gate blocked / not pending.
+  async approveTask(taskId: string): Promise<TaskExecution> {
+    const res = await fetch(`/api/tasks/${enc(taskId)}/approve`, {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) throw new Error(`approve: HTTP ${res.status}`);
+    return (await res.json()) as TaskExecution;
+  },
+
+  async abortTask(taskId: string, reason?: string): Promise<TaskExecution> {
+    const res = await fetch(`/api/tasks/${enc(taskId)}/abort`, {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(reason ? { reason } : {}),
+    });
+    if (!res.ok) throw new Error(`abort: HTTP ${res.status}`);
+    return (await res.json()) as TaskExecution;
+  },
 
   // Per-node autonomous-pickup config (real state, not the inferred badge).
   getAutopickup: (node: string) => getJSON<AutopickupState>(`/api/nodes/${enc(node)}/autopickup`),

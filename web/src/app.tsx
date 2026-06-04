@@ -11,6 +11,7 @@ import { PresenceIndicator } from "./components/PresenceIndicator";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { AuthPanel } from "./components/AuthPanel";
 import { CostPanel } from "./components/CostPanel";
+import { ExecutionPanel } from "./components/ExecutionPanel";
 import { HealthDot } from "./components/HealthDot";
 import { NodeStatusBar } from "./components/NodeStatusBar";
 import { OrgChart } from "./components/OrgChart";
@@ -22,7 +23,7 @@ import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
-type View = "board" | "team" | "terminal" | "integrations" | "cost" | "auth";
+type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "auth";
 
 function GroveMark() {
   return (
@@ -323,6 +324,14 @@ export function App() {
             </button>
             <button
               type="button"
+              data-view="exec"
+              className={cx("dr-tab", view === "exec" && "is-active")}
+              onClick={() => setView("exec")}
+            >
+              {t("tab.exec")}
+            </button>
+            <button
+              type="button"
               data-view="cost"
               className={cx("dr-tab", view === "cost" && "is-active")}
               onClick={() => setView("cost")}
@@ -400,6 +409,13 @@ export function App() {
             />
           ) : view === "integrations" ? (
             <SlackPanel projectTick={projectTick} />
+          ) : view === "exec" ? (
+            <ExecutionPanel
+              boardId={boardId}
+              liveTick={liveTick}
+              projectTick={projectTick}
+              onChanged={() => setLiveTick((x) => x + 1)}
+            />
           ) : view === "cost" ? (
             <CostPanel projectTick={projectTick} />
           ) : view === "auth" ? (

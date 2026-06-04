@@ -2176,6 +2176,137 @@ def test_execution_toggle_approval_status_and_abort_endpoints(tmp_path: Path) ->
     assert "abort" in [event.payload["action"] for event in audits]
 
 
+def test_node_execution_toggle_rejects_global_gate_and_kill_switches(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    global_off = client.post(
+        "/api/nodes/worker/execution",
+        headers=headers,
+        json={"enabled": True},
+    )
+    store.set_execution_global(board="dev10", enabled=True, board_enabled=False)
+    board_off = client.post(
+        "/api/nodes/worker/execution",
+        headers=headers,
+        json={"enabled": True},
+    )
+    store.set_execution_global(
+        board="dev10",
+        enabled=True,
+        kill_switch=True,
+        board_enabled=True,
+        board_kill_switch=False,
+    )
+    global_kill = client.post(
+        "/api/nodes/worker/execution",
+        headers=headers,
+        json={"enabled": True},
+    )
+    store.set_execution_global(board="dev10", kill_switch=False, board_kill_switch=True)
+    board_kill = client.post(
+        "/api/nodes/worker/execution",
+        headers=headers,
+        json={"enabled": True},
+    )
+    store.set_execution_global(board="dev10", board_kill_switch=False)
+    store.set_execution_kill_switch(board="dev10", level="node", node="worker", enabled=True)
+    node_kill = client.post(
+        "/api/nodes/worker/execution",
+        headers=headers,
+        json={"enabled": True},
+    )
+    store.set_node_execution_enabled(board="dev10", node="worker", enabled=True)
+    disable_allowed = client.post(
+        "/api/nodes/worker/execution",
+        headers=headers,
+        json={"enabled": False},
+    )
+    store.set_execution_kill_switch(board="dev10", level="node", node="worker", enabled=False)
+    enabled = client.post(
+        "/api/nodes/worker/execution",
+        headers=headers,
+        json={"enabled": True},
+    )
+
+    assert global_off.status_code == 409
+    assert "execution" in global_off.json()["detail"]
+    assert board_off.status_code == 409
+    assert "execution" in board_off.json()["detail"]
+    assert global_kill.status_code == 409
+    assert "kill switch" in global_kill.json()["detail"]
+    assert board_kill.status_code == 409
+    assert "kill switch" in board_kill.json()["detail"]
+    assert node_kill.status_code == 409
+    assert "kill switch" in node_kill.json()["detail"]
+    assert disable_allowed.status_code == 200
+    assert disable_allowed.json()["enabled"] is False
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+
+
+def test_task_execution_payload_redacts_dispatch_lease_token(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    task = store.create_task(board="dev10", title="Guarded", body=None, assignee="worker")
+    claimed = store.claim_next(
+        board="dev10",
+        assignee="worker",
+        node_id="worker",
+        ttl_seconds=300,
+        task_id=task.id,
+    )
+    assert claimed is not None
+    store.set_autopickup_global(board="dev10", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="dev10", node="worker", enabled=True)
+    store.set_execution_global(board="dev10", enabled=True)
+    store.set_node_execution_enabled(board="dev10", node="worker", enabled=True)
+    store.begin_guarded_execution(
+        board="dev10",
+        task_id=task.id,
+        run_id=claimed.run_id,
+        node="worker",
+    )
+    assert store.approve_execution(
+        board="dev10",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+    token = store.issue_execution_dispatch_lease(
+        board="dev10",
+        task_id=task.id,
+        run_id=claimed.run_id,
+        node="worker",
+    )
+    assert token is not None
+    assert token in str(store.task_execution_state(board="dev10", task_id=task.id))
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    response = client.get(f"/api/tasks/{task.id}/execution", headers=headers)
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["state"] == "executing"
+    assert payload["approved"] is True
+    assert payload["execution"]["state"] == "executing"
+    assert payload["execution"]["run_id"] == claimed.run_id
+    assert "dispatch_lease" not in payload["execution"]
+    assert token not in str(payload)
+
+
 def test_execution_endpoints_reject_scope_viewer_and_invalid_node(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     write_registry(
