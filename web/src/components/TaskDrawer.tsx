@@ -2,15 +2,41 @@ import { useEffect, useRef, useState } from "react";
 
 import { actorLabel, api } from "../api";
 import type { AuditEvent, PlanCandidate, PlanResult } from "../api";
-import { cx, fmtAgo, initials, statusColor } from "../constants";
+import { cx, initials, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
 import type { Comment, Run, Task } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
 
+const PHASE_GLYPH: Record<string, string> = {
+  claim: "◇",
+  preflight: "⚑",
+  "approval-pending": "⏳",
+  approve: "★",
+  execute: "▶",
+  verify: "◎",
+  complete: "●",
+  abort: "✕",
+  rollback: "↺",
+  "release-stale": "⮌",
+};
+
+// Compact duration: "45s", "3m 20s", "1h 5m".
+function fmtDuration(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m ${sec % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 /**
- * Execution timeline: the task's execution-loop transitions (audit.execution.*)
- * in chronological order. Read-only. Hidden when the task has no execution.
+ * Execution timeline as a step / gantt visualization: each audit.execution.*
+ * transition is a phase; the duration of a phase is the gap to the next
+ * transition. Renders proportional gantt bars + a per-step list with durations,
+ * phase colours/icons, the current (latest) phase highlighted, and a total.
+ * READ-ONLY (no mutations). Hidden when the task has no execution; partial
+ * timelines render gracefully.
  */
 function ExecutionTimeline({ taskId, t }: { taskId: string; t: TFn }) {
   const [events, setEvents] = useState<AuditEvent[]>([]);
@@ -34,18 +60,50 @@ function ExecutionTimeline({ taskId, t }: { taskId: string; t: TFn }) {
   }, [taskId]);
 
   if (loaded && events.length === 0) return null;
+
+  const tsOf = (e: AuditEvent): number => (typeof e.ts === "number" ? e.ts : Number(e.ts) || 0);
+  const steps = events.map((e, i) => {
+    const next = events[i + 1];
+    // duration = time spent in this phase before the next transition; null for
+    // the latest (current/terminal) phase.
+    const duration = next ? Math.max(0, tsOf(next) - tsOf(e)) : null;
+    return { key: e.cursor ?? i, phase: e.action, duration, actor: e.actor, current: i === events.length - 1 };
+  });
+  const total = events.length >= 2 ? Math.max(0, tsOf(events[events.length - 1]!) - tsOf(events[0]!)) : 0;
+
   return (
     <section className="dr-drawer__section exec-timeline">
       <h3 className="dr-drawer__h">
         {t("exec.timeline")} <span className="dr-drawer__hn">{events.length}</span>
+        {total > 0 && <span className="exec-timeline__total">{t("exec.totalDuration", { d: fmtDuration(total) })}</span>}
       </h3>
+
+      {/* gantt: each bar proportional to its phase duration */}
+      <div className="exec-gantt" aria-hidden="true">
+        {steps.map((s) => (
+          <span
+            key={`bar-${s.key}`}
+            className={cx("exec-gantt__bar", `is-${s.phase}`, s.current && "is-current")}
+            style={{ flexGrow: s.duration ?? 0.001 }}
+            title={`${t(`exec.phase.${s.phase}`)} · ${s.duration !== null ? fmtDuration(s.duration) : t("exec.current")}`}
+          />
+        ))}
+      </div>
+
       <ol className="exec-timeline__list">
-        {events.map((e, i) => (
-          <li key={e.cursor ?? i} className="exec-timeline__item" data-phase={e.action}>
-            <span className="exec-timeline__dot" />
-            <span className="exec-timeline__phase">{t(`exec.phase.${e.action}`)}</span>
-            <span className="exec-timeline__actor">{actorLabel(e.actor)}</span>
-            <span className="exec-timeline__ts">{fmtAgo(e.ts)}</span>
+        {steps.map((s) => (
+          <li
+            key={s.key}
+            className={cx("exec-timeline__item", `is-${s.phase}`, s.current && "is-current")}
+            data-phase={s.phase}
+            data-duration={s.duration ?? ""}
+          >
+            <span className={cx("exec-timeline__dot", `is-${s.phase}`)} aria-hidden="true">
+              {PHASE_GLYPH[s.phase] ?? "·"}
+            </span>
+            <span className="exec-timeline__phase">{t(`exec.phase.${s.phase}`)}</span>
+            <span className="exec-timeline__actor">{actorLabel(s.actor)}</span>
+            <span className="exec-timeline__dur">{s.duration !== null ? fmtDuration(s.duration) : t("exec.current")}</span>
           </li>
         ))}
       </ol>

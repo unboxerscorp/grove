@@ -678,15 +678,36 @@ async function main() {
     await page.waitForSelector(".exec-timeline__item", { timeout: 8000 });
     const timeline = await page.evaluate(() => {
       const items = Array.from(document.querySelectorAll(".exec-timeline__item"));
-      return { count: items.length, phases: items.map((i) => i.getAttribute("data-phase")) };
+      return {
+        count: items.length,
+        phases: items.map((i) => i.getAttribute("data-phase")),
+        // V15-W2 gantt/step viz: bars + per-phase durations + current highlight + total.
+        bars: document.querySelectorAll(".exec-gantt__bar").length,
+        durations: items.map((i) => i.getAttribute("data-duration")),
+        current: document.querySelector(".exec-timeline__item.is-current")?.getAttribute("data-phase") ?? "",
+        currentBar: !!document.querySelector(".exec-gantt__bar.is-current"),
+        total: (document.querySelector(".exec-timeline__total")?.textContent ?? "").trim(),
+        durText: (document.querySelector(".exec-timeline__dur")?.textContent ?? "").trim(),
+      };
     });
     await page.click(".dr-drawer__close");
     await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
     const execTimelineOk =
-      timeline.count === 6 &&
+      timeline.count === 7 && // full 7-step happy path (mirrors store.py)
       timeline.phases[0] === "claim" &&
+      timeline.phases.includes("approval-pending") && // was missing pre-v1.15
       timeline.phases.includes("approve") &&
       timeline.phases[timeline.phases.length - 1] === "complete";
+    const execTimelineVizOk =
+      timeline.bars === 7 && // one gantt bar per phase
+      timeline.durations[0] === "10" && // claim phase: 10s
+      timeline.durations[1] === "30" && // preflight: 30s
+      timeline.durations[2] === "60" && // approval-pending: 60s (human wait)
+      timeline.durations[6] === "" && // complete (latest) has no duration
+      timeline.current === "complete" && // latest phase highlighted
+      timeline.currentBar &&
+      timeline.total.length > 0 && // total duration shown
+      timeline.durText === "10s"; // first row renders its computed duration
 
     // Approval queue: approve + abort are EXPLICIT (button → confirm → POST).
     await page.click('.dr-tab[data-view="exec"]');
@@ -767,7 +788,8 @@ async function main() {
     await page.click('.dr-tab[data-view="board"]');
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
 
-    const execLoopOk = execToggleOk && execTimelineOk && execQueueOk && viewerLockOk && killSwitchOk;
+    const execLoopOk =
+      execToggleOk && execTimelineOk && execTimelineVizOk && execQueueOk && viewerLockOk && killSwitchOk;
 
     // #4 board live (claim -> running -> done): a board-tail event must reload
     // the snapshot and re-column the card. The live spark lights while the
@@ -1591,7 +1613,7 @@ async function main() {
       pickupToggleOk,
       pickup: { init: pickInit, enable: afterEnable, disable: afterDisable, globalOff: globalOffState, killSwitch: killSwitchState, viewer: viewerState, nodeReject },
       execLoopOk,
-      exec: { toggleOk: execToggleOk, timeline, timelineOk: execTimelineOk, queue: queueInit, approved, aborted, queueOk: execQueueOk, viewerLock, viewerLockOk, killSwitchOk },
+      exec: { toggleOk: execToggleOk, timeline, timelineOk: execTimelineOk, timelineVizOk: execTimelineVizOk, queue: queueInit, approved, aborted, queueOk: execQueueOk, viewerLock, viewerLockOk, killSwitchOk },
       plannerSurfaceOk,
       planner: {
         ...planner,

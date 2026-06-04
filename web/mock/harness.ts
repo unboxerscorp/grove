@@ -196,13 +196,18 @@ const AUDIT_EVENTS: MockAuditEvent[] = [
   // v1.10 autonomy events: node self-claim (autopickup) + retrospective (retro).
   { cursor: 11, id: "e11", actor: nodeActor("backend"), action: "autopickup", target: { type: "task", id: "G-10", node: "backend" }, ts: AUDIT_TS0 + 330, task_id: "G-10" },
   { cursor: 12, id: "e12", actor: nodeActor("researcher"), action: "retro", target: { type: "task", id: "G-6", node: "researcher" }, ts: AUDIT_TS0 + 360, task_id: "G-6" },
-  // v1.13 execution-loop transitions for G-2 (timeline source; carry `type`).
+  // v1.15 execution-loop transitions for G-2 — MIRRORS store.py _add_execution_audit
+  // action names + the full 7-step happy path (incl. approval-pending). kind =
+  // audit.execution.<action>. Spaced ts → distinct per-phase durations:
+  // claim 10s, preflight 30s, approval-pending 60s (human wait), approve 10s,
+  // execute 60s, verify 20s, complete = current.
   { cursor: 13, id: "e13", type: "audit.execution.claim", actor: nodeActor("backend"), action: "claim", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 400, task_id: "G-2" },
   { cursor: 14, id: "e14", type: "audit.execution.preflight", actor: nodeActor("backend"), action: "preflight", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 410, task_id: "G-2" },
-  { cursor: 15, id: "e15", type: "audit.execution.approve", actor: nodeActor("root"), action: "approve", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 420, task_id: "G-2" },
-  { cursor: 16, id: "e16", type: "audit.execution.execute", actor: nodeActor("backend"), action: "execute", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 430, task_id: "G-2" },
-  { cursor: 17, id: "e17", type: "audit.execution.verify", actor: nodeActor("backend"), action: "verify", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 440, task_id: "G-2" },
-  { cursor: 18, id: "e18", type: "audit.execution.complete", actor: nodeActor("backend"), action: "complete", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 450, task_id: "G-2" },
+  { cursor: 15, id: "e15", type: "audit.execution.approval-pending", actor: nodeActor("backend"), action: "approval-pending", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 440, task_id: "G-2" },
+  { cursor: 16, id: "e16", type: "audit.execution.approve", actor: nodeActor("root"), action: "approve", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 500, task_id: "G-2" },
+  { cursor: 17, id: "e17", type: "audit.execution.execute", actor: nodeActor("backend"), action: "execute", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 510, task_id: "G-2" },
+  { cursor: 18, id: "e18", type: "audit.execution.verify", actor: nodeActor("backend"), action: "verify", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 570, task_id: "G-2" },
+  { cursor: 19, id: "e19", type: "audit.execution.complete", actor: nodeActor("backend"), action: "complete", target: { type: "task", id: "G-2", node: "backend" }, ts: AUDIT_TS0 + 590, task_id: "G-2" },
 ];
 
 // Decision inbox seed — MIRRORS web_app.py _inbox_item_payload: blocked +

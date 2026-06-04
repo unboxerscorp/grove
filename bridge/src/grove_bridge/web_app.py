@@ -488,6 +488,25 @@ def create_app(
             include=include,
         )
 
+    @app.get("/api/usage")
+    def usage_endpoint(
+        request: Request,
+        window: str = Query(default="7d"),
+        project_name: str | None = Query(default=None, alias="project"),
+        node: str | None = Query(default=None),
+        agent: str | None = Query(default=None),
+    ) -> dict[str, object]:
+        auth = _require_auth(request)
+        _require_cost_access(auth)
+        project = _cost_project_context(request, project_name)
+        return _usage_payload(
+            _store(request),
+            project=project,
+            window=window,
+            node_filter=node,
+            agent_filter=agent,
+        )
+
     @app.get("/api/plan")
     def plan_endpoint(
         request: Request,
@@ -1579,6 +1598,201 @@ def _cost_payload(
             "estimate": "unknown cost without an explicit price source",
         }
     return payload
+
+
+def _usage_payload(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+    window: str,
+    node_filter: str | None,
+    agent_filter: str | None,
+) -> dict[str, object]:
+    now = int(time.time())
+    window_payload, since = _cost_window(window, now=now)
+    clean_node = node_filter.strip() if node_filter is not None and node_filter.strip() else None
+    clean_agent = _cost_agent_filter(agent_filter)
+    registry_nodes = _cost_registry_node_records(project.config)
+    agent_by_node = {_cost_node_name(node): _cost_node_agent(node) for node in registry_nodes}
+    runs = [
+        run
+        for run in store.list_runs_for_board(board=project.board, since=since)
+        if _usage_run_matches(
+            run,
+            node_filter=clean_node,
+            agent_filter=clean_agent,
+            agent_by_node=agent_by_node,
+        )
+    ]
+    return {
+        "project": project.name,
+        "generated_at": _cost_metric(now, source="server", confidence="explicit"),
+        "window": window_payload,
+        "filters": {
+            "node": _safe_log_text(clean_node) if clean_node is not None else None,
+            "agent": clean_agent,
+        },
+        "totals": _usage_totals_payload(runs),
+        "nodes": _usage_nodes_payload(runs, agent_by_node=agent_by_node),
+        "days": _usage_days_payload(runs, agent_by_node=agent_by_node),
+        "limitations": _usage_limitations(runs),
+    }
+
+
+def _usage_run_matches(
+    run: Run,
+    *,
+    node_filter: str | None,
+    agent_filter: str | None,
+    agent_by_node: Mapping[str, str],
+) -> bool:
+    node = _run_node_name(run)
+    if node_filter is not None and node != node_filter:
+        return False
+    if agent_filter is None:
+        return True
+    return _usage_agent_for_node(node, agent_by_node=agent_by_node) == agent_filter
+
+
+def _usage_agent_for_node(node: str, *, agent_by_node: Mapping[str, str]) -> str:
+    return agent_by_node.get(node, "unknown")
+
+
+def _usage_nodes_payload(
+    runs: Sequence[Run],
+    *,
+    agent_by_node: Mapping[str, str],
+) -> list[dict[str, object]]:
+    grouped = _runs_by_node(runs)
+    return [
+        _usage_node_payload(
+            node,
+            agent=_usage_agent_for_node(node, agent_by_node=agent_by_node),
+            runs=node_runs,
+            include_days=True,
+        )
+        for node, node_runs in sorted(grouped.items())
+    ]
+
+
+def _usage_days_payload(
+    runs: Sequence[Run],
+    *,
+    agent_by_node: Mapping[str, str],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "day": day,
+            "totals": _usage_totals_payload(day_runs),
+            "nodes": [
+                _usage_node_payload(
+                    node,
+                    agent=_usage_agent_for_node(node, agent_by_node=agent_by_node),
+                    runs=node_runs,
+                    include_days=False,
+                )
+                for node, node_runs in sorted(_runs_by_node(day_runs).items())
+            ],
+        }
+        for day, day_runs in sorted(_runs_by_day(runs).items())
+    ]
+
+
+def _usage_node_payload(
+    node: str,
+    *,
+    agent: str,
+    runs: Sequence[Run],
+    include_days: bool,
+) -> dict[str, object]:
+    usage = _usage_from_runs(runs)
+    payload: dict[str, object] = {
+        "node": _safe_log_text(node),
+        "agent": agent,
+        "totals": _usage_totals_from_usage(usage, runs=len(runs)),
+    }
+    warnings = _usage_warnings(usage, agent=agent)
+    if warnings:
+        payload["warnings"] = warnings
+    if agent == "agy":
+        payload["credit_remaining"] = _cost_metric(
+            None,
+            source="none",
+            confidence="unknown",
+            status_value="unknown",
+        )
+        payload["credit_status"] = "unknown"
+    if include_days:
+        payload["days"] = [
+            {"day": day, "totals": _usage_totals_payload(day_runs)}
+            for day, day_runs in sorted(_runs_by_day(runs).items())
+        ]
+    return payload
+
+
+def _runs_by_day(runs: Sequence[Run]) -> dict[str, list[Run]]:
+    grouped: dict[str, list[Run]] = {}
+    for run in runs:
+        grouped.setdefault(_usage_day(run.started_at), []).append(run)
+    return grouped
+
+
+def _usage_day(timestamp: int) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(timestamp))
+
+
+def _usage_totals_payload(runs: Sequence[Run]) -> dict[str, object]:
+    return _usage_totals_from_usage(_usage_from_runs(runs), runs=len(runs))
+
+
+def _usage_totals_from_usage(usage: CostUsage, *, runs: int) -> dict[str, object]:
+    return {
+        "runs": _cost_metric(runs, source="run_metadata", confidence="explicit"),
+        "input_tokens": _usage_int_metric(usage, "input_tokens"),
+        "output_tokens": _usage_int_metric(usage, "output_tokens"),
+        "total_tokens": _usage_int_metric(usage, "total_tokens"),
+        "cost_usd_estimate": _usage_cost_metric(usage),
+        "confidence": usage.confidence if _usage_has_signal(usage) else "unknown",
+    }
+
+
+def _usage_int_metric(usage: CostUsage, field: str) -> dict[str, object]:
+    value = _usage_int_field(usage, field)
+    if value is None:
+        return _cost_metric(None, source="none", confidence="unknown", status_value="unknown")
+    return _cost_metric(value, source=usage.source, confidence=usage.confidence)
+
+
+def _usage_cost_metric(usage: CostUsage) -> dict[str, object]:
+    if usage.cost_usd is None:
+        return _cost_metric(None, source="estimate", confidence="unknown", status_value="unknown")
+    return _cost_metric(
+        round(usage.cost_usd, 6),
+        source=usage.source,
+        confidence=usage.confidence,
+    )
+
+
+def _usage_warnings(usage: CostUsage, *, agent: str) -> list[str]:
+    warnings = [_safe_log_text(warning) for warning in usage.warnings]
+    if agent == "agy":
+        warnings.append(
+            "agy credit is unknown because no reliable local credit source is configured"
+        )
+    return sorted(set(warnings))
+
+
+def _usage_limitations(runs: Sequence[Run]) -> list[str]:
+    limitations = [
+        "usage rollups only use explicit run metadata fields",
+        "no hard-coded model prices are applied",
+        "agy credit is unknown without a reliable local credit source",
+    ]
+    if not runs:
+        limitations.append("no runs matched the requested project and period")
+    elif not _usage_has_signal(_usage_from_runs(runs)):
+        limitations.append("no token usage signals were found in run metadata")
+    return limitations
 
 
 def _plan_payload(

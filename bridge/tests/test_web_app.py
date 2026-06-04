@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -1196,6 +1197,146 @@ def test_cost_endpoint_scopes_project_query_and_header(tmp_path: Path) -> None:
     assert "4321" not in json.dumps(by_query.json())
     assert header_wins.status_code == 200
     assert header_wins.json()["project"] == "dev11"
+    assert invalid.status_code == 400
+    assert missing.status_code == 404
+
+
+def test_usage_endpoint_rolls_up_node_day_usage_and_keeps_agy_unknown(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    secret = "xoxb-" + ("a" * 44)
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="maker",
+        metadata={
+            "node": "maker",
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "cost_usd": 0.12,
+            "transcript_path": f"/Users/chopin/private/{secret}.jsonl",
+        },
+        started_at=1_704_067_200,
+    )
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="maker",
+        metadata={
+            "node": "maker",
+            "input_tokens": 2,
+            "output_tokens": 5,
+            "total_tokens": 7,
+            "cost_usd": 0.02,
+        },
+        started_at=1_704_067_260,
+    )
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="reviewer",
+        metadata={"node": "reviewer", "total_tokens": 30},
+        started_at=1_704_153_600,
+    )
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="agy-node",
+        metadata={"node": "agy-node", "total_tokens": 44},
+        started_at=1_704_153_660,
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "maker": {"name": "maker", "agent": "codex", "tmux_pane": "dev10:1.0"},
+            "reviewer": {"name": "reviewer", "agent": "claude", "tmux_pane": "dev10:1.1"},
+            "agy-node": {"name": "agy-node", "agent": "agy", "tmux_pane": "dev10:1.2"},
+        },
+    )
+    client = make_client(tmp_path, store)
+
+    missing = client.get("/api/usage?window=all")
+    response = client.get("/api/usage?window=all", headers=auth_headers(client))
+
+    assert missing.status_code == 401
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["project"] == "dev10"
+    assert payload["totals"]["runs"]["value"] == 4
+    assert payload["totals"]["total_tokens"] == {
+        "value": 96,
+        "source": "run_metadata",
+        "confidence": "explicit",
+    }
+    nodes = {node["node"]: node for node in payload["nodes"]}
+    assert nodes["maker"]["totals"]["runs"]["value"] == 2
+    assert nodes["maker"]["totals"]["input_tokens"]["value"] == 12
+    assert nodes["maker"]["totals"]["cost_usd_estimate"]["value"] == 0.14
+    assert nodes["agy-node"]["agent"] == "agy"
+    assert nodes["agy-node"]["totals"]["cost_usd_estimate"] == {
+        "value": None,
+        "source": "estimate",
+        "confidence": "unknown",
+        "status": "unknown",
+    }
+    assert nodes["agy-node"]["credit_status"] == "unknown"
+    assert "agy credit is unknown" in nodes["agy-node"]["warnings"][0]
+    days = {day["day"]: day for day in payload["days"]}
+    assert days["2024-01-01"]["totals"]["runs"]["value"] == 2
+    assert days["2024-01-01"]["totals"]["total_tokens"]["value"] == 22
+    assert days["2024-01-02"]["totals"]["runs"]["value"] == 2
+    assert {node["node"] for node in days["2024-01-02"]["nodes"]} == {"agy-node", "reviewer"}
+    rendered = json.dumps(payload)
+    assert secret not in rendered
+    assert "/Users/chopin" not in rendered
+
+
+def test_usage_endpoint_scopes_project_and_handles_empty_data(tmp_path: Path) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    complete_run_at(
+        store,
+        db_path,
+        board="dev10",
+        node="maker10",
+        metadata={"node": "maker10", "total_tokens": 999},
+        started_at=1_704_067_200,
+    )
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"maker10": {"name": "maker10", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"maker11": {"name": "maker11", "agent": "claude", "tmux_pane": "dev11:1.0"}},
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    dev11 = client.get("/api/usage?window=all&project=dev11", headers=headers)
+    invalid = client.get("/api/usage?project=../dev11", headers=headers)
+    missing = client.get("/api/usage?project=missing", headers=headers)
+
+    assert dev11.status_code == 200
+    payload = dev11.json()
+    assert payload["project"] == "dev11"
+    assert payload["totals"]["runs"]["value"] == 0
+    assert payload["nodes"] == []
+    assert payload["days"] == []
+    assert "no runs matched" in payload["limitations"][-1]
+    rendered = json.dumps(payload)
+    assert "maker10" not in rendered
+    assert "999" not in rendered
     assert invalid.status_code == 400
     assert missing.status_code == 404
 
@@ -3325,6 +3466,34 @@ def write_registry(
     path = tmp_path / ".grove" / session / "registry.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(registry), encoding="utf-8")
+
+
+def complete_run_at(
+    store: SQLiteBoardStore,
+    db_path: Path,
+    *,
+    board: str,
+    node: str,
+    metadata: dict[str, object],
+    started_at: int,
+) -> None:
+    task = store.create_task(board=board, title=f"{node} usage", body=None, assignee=node)
+    claim = store.claim_next(board=board, assignee=node, node_id=node, ttl_seconds=30)
+    assert claim is not None
+    assert store.complete(
+        board=board,
+        task_id=task.id,
+        run_id=claim.run_id,
+        claim_lock=claim.claim_lock,
+        result="done",
+        summary="done",
+        metadata=metadata,
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE runs SET started_at = ?, ended_at = ? WHERE id = ?",
+            (started_at, started_at + 60, claim.run_id),
+        )
 
 
 def read_registry(tmp_path: Path, session: str) -> dict[str, object]:
