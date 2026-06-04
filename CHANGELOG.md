@@ -4,6 +4,44 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.16.0] — v1.15 (2026-06-04)
+
+Observe & report. Auto-started after v1.14.0. Read-only — no new mutation or autonomy.
+
+### Cost/usage reporting
+
+- **GET /api/usage** rolls up run cost/usage by node and by day — read-only, token +
+  project-scoped (cross-project leak rejected, path-traversal / missing-project denied),
+  reusing the existing cost logic. agy stays honest: tokens are reported when run_metadata
+  recorded them, but cost/credit is unknown + warning — never fabricated. Response carries
+  node/filter/warnings only (run metadata redacted; no secret/path). The cost tab surfaces it
+  as a node/day usage section.
+
+### Execution timeline visualization
+
+- The v1.13 execution timeline grows into a step/gantt: per-transition duration, proportional
+  bars, phase glyphs/colors, current-phase highlight, total duration. Read-only (audit GET).
+  mock + verify + i18n now mirror the real 7-phase contract from store.py
+  (claim→preflight→approval-pending→approve→execute→verify→complete, + abort/rollback/
+  release-stale) — a dropped approval-pending phase was caught in review.
+
+### Mobile
+
+- A responsive pass (@media max-width:480px) over the safety surfaces (approval queue,
+  kill-switch, status, node-status detail): tabs scroll, panels fit, no horizontal overflow at
+  390px. CSS only, no functional change.
+
+### Quality
+
+- Reviewer + real-server e2e caught two contract drifts (timeline missing approval-pending;
+  usage mock source + agy tokens-known-vs-cost-unknown) — realigned to the real backend. 239 py
+  tests; web e2e 276/276 (+44 for /api/usage).
+
+### Deferred (→ v1.16)
+
+- Signed multi-machine read-only aggregation + privacy policy + trust/freshness badges,
+  cross-room handoff contract, retro analytics, trend reporting (see docs/V1_16_BRAINSTORM.md).
+
 ## [0.15.0] — v1.14 (2026-06-04)
 
 Reach the safety controls from Slack. Auto-started after v1.13.0. Remote control, not remote
