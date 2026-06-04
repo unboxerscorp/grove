@@ -4,6 +4,38 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.26.0] — v1.25 (2026-06-04)
+
+Reach + summarize. Auto-started after v1.24.0.
+
+### Command palette (Cmd-K)
+
+- A command palette complements the v1.24 sidebar: Cmd-K (or a button) opens a fuzzy-filtered
+  list of all 14 views + 3 drawers (17 commands), keyboard nav (↑↓/Enter/Esc), focus trap +
+  restore, role=dialog/listbox/option. **Navigation-only** — it only switches a view / opens a
+  drawer; no mutation (verify asserts the mutation-marker snapshot is unchanged). Mounted fresh
+  per open; no sidebar regression.
+
+### Slack digest / reminder
+
+- On the v1.20 live-announcement upsert: a scheduled board digest (counts / blocked / running)
+  posted and updated **in place** (persisted ts + chat.update, hash-guarded so an unchanged poll
+  does 0 redundant updates), plus a bounded (max_reminders) reminder for stale blocked/ask-human.
+  **Read-only / notify-only** (no task/comment mutation), **dry-run default** (0 outbound),
+  operator-gated config + audited, agy cost unknown, secret/path/email redacted, default OFF
+  (--enable-digest / --enable-reminders).
+
+### Quality
+
+- Reviewer: GO, no NO-GO — palette no-mutation + a11y; digest dry-run/read-only/upsert-no-redundant/
+  bounded/operator/redaction. 280 py tests; web e2e 620/620 (digest is connector-side; no new HTTP
+  endpoint). Continues to dogfood grove (work tracked on the dev-room board).
+
+### Deferred (→ v1.26)
+
+- Board filter/full-text search + saved views, theming (dark/light/high-contrast), keyboard
+  shortcuts/a11y, onboarding wizard v3, optional per-user sandbox v0 (see docs/V1_26_BRAINSTORM.md).
+
 ## [0.25.0] — v1.24 (2026-06-04)
 
 Cleaner navigation + smarter notifications. Auto-started after v1.23.0; the nav change is direct

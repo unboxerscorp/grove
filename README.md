@@ -27,6 +27,11 @@ grove repair --all
   collapsible left sidebar from user UI feedback. It keeps every panel reachable and
   collapses into a responsive drawer on narrow screens; it is a layout change, not a
   new backend or safety surface.
+- **Command palette** - v1.25 adds Cmd-K quick navigation across all shipped views
+  and drawers, with fuzzy filtering, keyboard navigation, focus/ARIA handling, and
+  responsive behavior. It is navigation-only: commands open views/drawers or route to
+  existing gated UI, and do not create tasks, change config, or perform hidden
+  mutations.
 - **Chat-completions facade** - `grove serve` is a local OpenAI-compatible
   `/v1/chat/completions` SSE facade backed by selected grove nodes. It is not the
   dashboard server.
@@ -71,6 +76,11 @@ grove repair --all
   from read-only board/run data. Usage and ledger answers require operator/admin role;
   viewer scope is denied instead of leaked. Thread follow-ups cannot smuggle task,
   comment, or unblock mutations.
+- **Slack digest and reminders** - v1.25 `--enable-digest` and `--enable-reminders`
+  are default OFF. The connector can publish a scheduled board/status digest by
+  reusing persisted message timestamps with `chat.update`, and can remind on stale
+  blocked or ask-human work. Digest/reminder is read-only/notify-only, dry-run by
+  default unless `--digest-live` is set, operator-gated, audited, and redacted.
 - **Retro analytics insights** - v1.22 `--enable-retro-analytics` is default OFF. The
   self-retro lane and completed task/run history feed read-only advisory cards for
   throughput, allowlisted retro themes, blocked/slow patterns, and neutral node/role
@@ -184,6 +194,9 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   approval, concurrency 1, kill-switch checks, and prepared dispatch validation.
 - The v1.24 left sidebar is a layout-only navigation change; the responsive drawer does
   not add a backend mutation or safety surface.
+- The v1.25 command palette is navigation-only. Cmd-K opens views/drawers or routes to
+  existing gated UI; it does not create tasks, update config, send Slack messages, or
+  bypass confirmations.
 - Notification routing v2 is default OFF and dry-run by default. Operator-gated config
   and audit are required before routing/escalation can move beyond simulation, and
   payloads stay redacted.
@@ -196,6 +209,9 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   deterministic, project-scoped, redacted, and read-only; usage/ledger detail is denied
   unless the Slack member is operator/admin, and bounded thread context cannot create
   hidden mutations.
+- Slack digest/reminder is default OFF (`--enable-digest` / `--enable-reminders`) and
+  dry-run by default. Live posting requires explicit `--digest-live`; config is
+  operator-gated, audited, redacted, and notify-only/read-only.
 - Retro analytics is default OFF (`--enable-retro-analytics`), operator-only,
   project-scoped, redacted, and advisory-only. It reads retros and completed work but
   performs no action, task creation, or config change; small samples are low-confidence
