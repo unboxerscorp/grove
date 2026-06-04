@@ -260,7 +260,7 @@ export function ProjectSwitcher(props: {
         onClick={toggleMenu}
       >
         <span className={cx("proj-switcher__dot", statusClass(cur?.status ?? ""))} />
-        <span className="proj-switcher__name">{current ?? t("project.none")}</span>
+        <span className="proj-switcher__name">{cur?.display_name ?? current ?? t("project.none")}</span>
         <span className="proj-switcher__chev">▾</span>
       </button>
 
@@ -281,7 +281,7 @@ export function ProjectSwitcher(props: {
                 >
                   <span className={cx("proj-switcher__dot", statusClass(p.status))} />
                   <span className="proj-item__body">
-                    <span className="proj-item__name">{p.name}</span>
+                    <span className="proj-item__name">{p.display_name ?? p.name}</span>
                     <span className="proj-item__meta">
                       {p.workspace} · {t("project.nodes", { n: p.node_count })}
                     </span>
