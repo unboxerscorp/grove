@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import json
 import logging
@@ -28,6 +29,9 @@ HUMAN_GATE_PENDING_TTL_SECONDS = 60
 HUMAN_GATE_MODE = "human_gate"
 HUMAN_GATE_PENDING_MODE = "human_gate_pending"
 HUMAN_GATE_METADATA_EVENT_TYPE = "grove_human_gate"
+TRIAGE_ANNOUNCEMENT_MODE = "triage_announcement"
+INTAKE_CONFIRM_ACTION_ID = "grove_intake_confirm"
+INTAKE_ANSWER_ONLY_ACTION_ID = "grove_intake_answer_only"
 SLACK_SCOPES = (
     "app_mentions:read",
     "channels:history",
@@ -40,9 +44,13 @@ NODE_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_-])@(?P<node>[A-Za-z0-9_-]+)")
 SLACK_COMMAND_TASK_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 TMUX_TARGET_RE = re.compile(r"^(?P<session>[A-Za-z0-9_-]+):(?P<window>\d+)\.(?P<pane>\d+)$")
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 COMMAND_CONFIRM_TTL_SECONDS = 300
+INTAKE_CONFIDENCE_THRESHOLD = 0.8
 SlackCommandRole = Literal["admin", "operator", "viewer"]
-SlackCommandName = Literal["approve", "abort", "killswitch"]
+SlackCommandName = Literal["approve", "abort", "killswitch", "task_create"]
+SlackIntentName = Literal["bug", "feedback", "task_request", "question", "command"]
+TASK_INTENTS = frozenset({"bug", "feedback", "task_request"})
 
 
 class SlackClientProtocol(Protocol):
@@ -53,7 +61,17 @@ class SlackClientProtocol(Protocol):
         text: str,
         thread_ts: str | None = None,
         metadata: Mapping[str, object] | None = None,
+        blocks: Sequence[Mapping[str, object]] | None = None,
     ) -> str: ...
+
+    def update_message(
+        self,
+        *,
+        channel: str,
+        ts: str,
+        text: str,
+        blocks: Sequence[Mapping[str, object]] | None = None,
+    ) -> None: ...
 
     def find_message_by_metadata(
         self,
@@ -77,6 +95,16 @@ class SlackWebClientProtocol(Protocol):
         text: str,
         thread_ts: str | None = None,
         metadata: Mapping[str, object] | None = None,
+        blocks: Sequence[Mapping[str, object]] | None = None,
+    ) -> Mapping[str, object]: ...
+
+    def chat_update(
+        self,
+        *,
+        channel: str,
+        ts: str,
+        text: str,
+        blocks: Sequence[Mapping[str, object]] | None = None,
     ) -> Mapping[str, object]: ...
 
     def conversations_history(
@@ -120,6 +148,10 @@ class SocketClientFactory(Protocol):
 
 class SocketResponseFactory(Protocol):
     def __call__(self, *, envelope_id: str) -> object: ...
+
+
+class SlackIntentClassifier(Protocol):
+    def classify(self, text: str) -> SlackIntentClassification: ...
 
 
 @dataclass(frozen=True)
@@ -171,6 +203,141 @@ class SlackCommandConfig:
     node_names: frozenset[str] = field(default_factory=frozenset)
     confirmation_ttl_seconds: int = COMMAND_CONFIRM_TTL_SECONDS
     clock: Callable[[], float] = time.time
+    intake_enabled: bool = False
+    intake_assignee: str | None = None
+
+
+@dataclass(frozen=True)
+class SlackIntentClassification:
+    intent: SlackIntentName
+    confidence: float
+    title: str
+    summary: str
+    labels: tuple[str, ...] = ()
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class SlackIntakeProposal:
+    intent: SlackIntentName
+    title: str
+    body: str
+    labels: tuple[str, ...]
+    priority: int
+    assignee: str | None
+    confidence: float
+    reason: str
+    slack: Mapping[str, object]
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "intent": self.intent,
+            "title": self.title,
+            "body": self.body,
+            "labels": list(self.labels),
+            "priority": self.priority,
+            "assignee": self.assignee,
+            "confidence": self.confidence,
+            "reason": self.reason,
+            "slack": dict(self.slack),
+        }
+
+
+@dataclass(frozen=True)
+class SlackBlockMessage:
+    text: str
+    blocks: tuple[Mapping[str, object], ...]
+
+
+class BoundedSlackIntentClassifier:
+    """Small deterministic classifier; it proposes, never mutates."""
+
+    def classify(self, text: str) -> SlackIntentClassification:
+        normalized = _normalize_slack_text(text)
+        lowered = normalized.lower()
+        if not normalized:
+            return SlackIntentClassification(
+                intent="question",
+                confidence=0.0,
+                title="",
+                summary="",
+                reason="empty",
+            )
+        if _looks_like_control_command(lowered):
+            return SlackIntentClassification(
+                intent="command",
+                confidence=1.0,
+                title=normalized,
+                summary=normalized,
+                reason="control_command",
+            )
+        if _contains_prompt_injection(lowered):
+            return SlackIntentClassification(
+                intent="question",
+                confidence=0.2,
+                title=normalized,
+                summary=normalized,
+                reason="unsafe_or_ambiguous",
+            )
+        if _contains_any(
+            lowered, ("bug", "crash", "broken", "fails", "failure", "error", "버그", "오류", "고장")
+        ):
+            return SlackIntentClassification(
+                intent="bug",
+                confidence=0.92,
+                title=_strip_intake_prefix(normalized),
+                summary=normalized,
+                labels=("bug",),
+                reason="bug_terms",
+            )
+        if _contains_any(lowered, ("feedback", "suggest", "suggestion", "피드백", "제안", "개선")):
+            return SlackIntentClassification(
+                intent="feedback",
+                confidence=0.9,
+                title=_strip_intake_prefix(normalized),
+                summary=normalized,
+                labels=("feedback",),
+                reason="feedback_terms",
+            )
+        if _contains_any(
+            lowered,
+            (
+                "task",
+                "todo",
+                "please implement",
+                "implement",
+                "add ",
+                "create ",
+                "작업",
+                "만들",
+                "해줘",
+            ),
+        ):
+            return SlackIntentClassification(
+                intent="task_request",
+                confidence=0.86,
+                title=_strip_intake_prefix(normalized),
+                summary=normalized,
+                labels=("task-request",),
+                reason="task_terms",
+            )
+        if "?" in normalized or _contains_any(
+            lowered, ("how", "what", "why", "질문", "어떻게", "무엇")
+        ):
+            return SlackIntentClassification(
+                intent="question",
+                confidence=0.8,
+                title=normalized,
+                summary=normalized,
+                reason="question_terms",
+            )
+        return SlackIntentClassification(
+            intent="question",
+            confidence=0.35,
+            title=normalized,
+            summary=normalized,
+            reason="low_confidence",
+        )
 
 
 @dataclass(frozen=True)
@@ -287,17 +454,29 @@ class SlackSdkClient:
         text: str,
         thread_ts: str | None = None,
         metadata: Mapping[str, object] | None = None,
+        blocks: Sequence[Mapping[str, object]] | None = None,
     ) -> str:
         response = self._client.chat_postMessage(
             channel=channel,
             text=text,
             thread_ts=thread_ts,
             metadata=metadata,
+            blocks=blocks,
         )
         ts = response.get("ts") if isinstance(response, dict) else None
         if not isinstance(ts, str):
             raise RuntimeError("Slack response did not include ts")
         return ts
+
+    def update_message(
+        self,
+        *,
+        channel: str,
+        ts: str,
+        text: str,
+        blocks: Sequence[Mapping[str, object]] | None = None,
+    ) -> None:
+        self._client.chat_update(channel=channel, ts=ts, text=text, blocks=blocks)
 
     def find_message_by_metadata(
         self,
@@ -459,6 +638,7 @@ class SlackConnector:
         chat_route: ChatRouteConfig,
         command_config: SlackCommandConfig | None = None,
         confirmation_store: SlackConfirmationStore | None = None,
+        intent_classifier: SlackIntentClassifier | None = None,
     ) -> None:
         self.store = store
         self.slack_client = slack_client
@@ -466,6 +646,7 @@ class SlackConnector:
         self.human_gate = human_gate
         self.chat_route = chat_route
         self.command_config = command_config
+        self.intent_classifier = intent_classifier or BoundedSlackIntentClassifier()
         self.confirmations = confirmation_store or (
             SlackConfirmationStore(
                 ttl_seconds=command_config.confirmation_ttl_seconds,
@@ -475,6 +656,7 @@ class SlackConnector:
             else None
         )
         self._locks: dict[str, threading.Lock] = {}
+        self._triage_announcement_dirty = True
 
     def poll_human_gates(self) -> int:
         channel = self.human_gate.channel
@@ -604,7 +786,152 @@ class SlackConnector:
             return True
         if self._handle_command(event, thread_ts=thread_ts):
             return True
+        if self._handle_intake(event, thread_ts=thread_ts):
+            return True
         return self._handle_chat(event, thread_ts=thread_ts)
+
+    def handle_interaction(self, payload: Mapping[str, object]) -> bool:
+        action = _first_block_action(payload)
+        if action is None:
+            return False
+        action_id = action.get("action_id")
+        if action_id not in {INTAKE_CONFIRM_ACTION_ID, INTAKE_ANSWER_ONLY_ACTION_ID}:
+            return False
+        confirmation_id = action.get("value")
+        event = _event_from_interaction_payload(payload, action_id=str(action_id))
+        if not isinstance(confirmation_id, str) or event is None:
+            return False
+        thread_ts = event.thread_ts or event.ts
+        config = self.command_config
+        if config is None:
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Slack control commands are not enabled for this project.",
+                thread_ts=thread_ts,
+            )
+            return True
+        actor = config.members.get(event.user)
+        if actor is None:
+            self._audit_slack_command(
+                command="intake",
+                event=event,
+                actor=_slack_actor(event.user, role="none"),
+                status="denied",
+                summary="unmapped slack identity",
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Denied: this Slack identity is not mapped to a grove member.",
+                thread_ts=thread_ts,
+            )
+            return True
+        if self.confirmations is None:
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="No pending confirmations are available.",
+                thread_ts=thread_ts,
+            )
+            return True
+        pending, error = self.confirmations.consume_for_owner(
+            confirmation_id,
+            member_id=actor.member_id,
+        )
+        if pending is None:
+            self._audit_slack_command(
+                command="confirm",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="denied",
+                summary=error or "confirmation failed",
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text=f"Denied: {_safe_slack_text(error or 'confirmation failed')}.",
+                thread_ts=thread_ts,
+            )
+            return True
+        if action_id == INTAKE_ANSWER_ONLY_ACTION_ID:
+            self._audit_slack_command(
+                command="intake",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="rejected",
+                summary="answer-only selected",
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="No task was created. I will treat this as answer-only.",
+                thread_ts=thread_ts,
+            )
+            return True
+        result = self._execute_pending_command(pending)
+        self.slack_client.post_message(channel=event.channel, text=result, thread_ts=thread_ts)
+        return True
+
+    def upsert_triage_announcement(self, *, channel: str | None = None) -> str | None:
+        config = self.command_config
+        target_channel = channel or self.human_gate.channel
+        if config is None or not config.intake_enabled or target_channel is None:
+            return None
+        existing = self._existing_triage_announcement(channel=target_channel)
+        if existing is not None and not self._triage_announcement_dirty:
+            return existing.thread_ts
+        message = _build_triage_announcement_message(
+            board=config.board,
+            tasks=self.store.list_tasks(board=config.board, limit=50),
+        )
+        content_hash = _block_message_hash(message)
+        if existing is not None:
+            if existing.node == content_hash:
+                self._triage_announcement_dirty = False
+                return existing.thread_ts
+            try:
+                self.slack_client.update_message(
+                    channel=target_channel,
+                    ts=existing.thread_ts,
+                    text=message.text,
+                    blocks=message.blocks,
+                )
+            except Exception:
+                self._triage_announcement_dirty = True
+                raise
+            self.store.upsert_slack_thread(
+                board=config.board,
+                task_id=None,
+                team_id="",
+                channel_id=target_channel,
+                thread_ts=existing.thread_ts,
+                mode=TRIAGE_ANNOUNCEMENT_MODE,
+                node=content_hash,
+            )
+            self._triage_announcement_dirty = False
+            return existing.thread_ts
+        try:
+            ts = self.slack_client.post_message(
+                channel=target_channel,
+                text=message.text,
+                blocks=message.blocks,
+            )
+        except Exception:
+            self._triage_announcement_dirty = True
+            raise
+        self.store.upsert_slack_thread(
+            board=config.board,
+            task_id=None,
+            team_id="",
+            channel_id=target_channel,
+            thread_ts=ts,
+            mode=TRIAGE_ANNOUNCEMENT_MODE,
+            node=content_hash,
+        )
+        self._triage_announcement_dirty = False
+        return ts
+
+    def _existing_triage_announcement(self, *, channel: str) -> SlackThread | None:
+        for thread in self.store.list_slack_threads(mode=TRIAGE_ANNOUNCEMENT_MODE):
+            if thread.task_id is None and thread.channel_id == channel:
+                return thread
+        return None
 
     def _handle_command(self, event: SlackEvent, *, thread_ts: str) -> bool:
         command_text = _normalize_slack_text(event.text)
@@ -612,7 +939,16 @@ class SlackConnector:
         if not parts:
             return False
         command = parts[0].lower()
-        if command not in {"status", "approve", "abort", "killswitch", "confirm"}:
+        if command not in {
+            "status",
+            "approve",
+            "abort",
+            "killswitch",
+            "confirm",
+            "bug",
+            "feedback",
+            "task",
+        }:
             return False
         config = self.command_config
         if config is None:
@@ -654,6 +990,15 @@ class SlackConnector:
         if command == "confirm":
             self._handle_command_confirm(event, actor=actor, thread_ts=thread_ts, parts=parts)
             return True
+        if command in {"bug", "feedback", "task"}:
+            self._handle_intake_command(
+                event,
+                actor=actor,
+                thread_ts=thread_ts,
+                command=command,
+                args=tuple(parts[1:]),
+            )
+            return True
         if actor.role not in {"admin", "operator"}:
             self._audit_slack_command(
                 command=command,
@@ -676,6 +1021,184 @@ class SlackConnector:
         )
         self.slack_client.post_message(channel=event.channel, text=preview, thread_ts=thread_ts)
         return True
+
+    def _handle_intake_command(
+        self,
+        event: SlackEvent,
+        *,
+        actor: SlackCommandMember,
+        thread_ts: str,
+        command: str,
+        args: tuple[str, ...],
+    ) -> None:
+        config = self.command_config
+        if config is None or not config.intake_enabled:
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Slack intake is not enabled for this project.",
+                thread_ts=thread_ts,
+            )
+            return
+        if actor.role not in {"admin", "operator"}:
+            self._audit_slack_command(
+                command="intake",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="denied",
+                summary="insufficient role",
+                payload={"intent": command},
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Denied: operator or admin role is required to create tasks.",
+                thread_ts=thread_ts,
+            )
+            return
+        intent = _intent_from_intake_command(command)
+        body = " ".join(args).strip() or _normalize_slack_text(event.text)
+        classification = SlackIntentClassification(
+            intent=intent,
+            confidence=1.0,
+            title=_strip_intake_prefix(body),
+            summary=body,
+            labels=_labels_for_intent(intent),
+            reason="explicit_intake_command",
+        )
+        preview = self._preview_intake_task(
+            event=event,
+            actor=actor,
+            classification=classification,
+        )
+        self.slack_client.post_message(
+            channel=event.channel,
+            text=preview.text,
+            blocks=preview.blocks,
+            thread_ts=thread_ts,
+        )
+
+    def _handle_intake(self, event: SlackEvent, *, thread_ts: str) -> bool:
+        config = self.command_config
+        if config is None or not config.intake_enabled:
+            return False
+        classification = self.intent_classifier.classify(event.text)
+        if classification.intent == "command":
+            return False
+        if (
+            classification.intent not in TASK_INTENTS
+            or classification.confidence < INTAKE_CONFIDENCE_THRESHOLD
+        ):
+            self._audit_slack_command(
+                command="intake",
+                event=event,
+                actor=_slack_actor(event.user, role="read-only"),
+                status="ok",
+                summary="read-only answer path",
+                payload={
+                    "intent": classification.intent,
+                    "confidence": _rounded_confidence(classification.confidence),
+                    "reason": _safe_slack_text(classification.reason),
+                },
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text=(
+                    "I treated this as a question or clarification; no task was created. "
+                    "Use `bug`, `feedback`, or `task` for an explicit intake preview."
+                ),
+                thread_ts=thread_ts,
+            )
+            return True
+        actor = config.members.get(event.user)
+        if actor is None:
+            self._audit_slack_command(
+                command="intake",
+                event=event,
+                actor=_slack_actor(event.user, role="none"),
+                status="denied",
+                summary="unmapped slack identity",
+                payload={"intent": classification.intent},
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Denied: this Slack identity is not mapped to a grove member.",
+                thread_ts=thread_ts,
+            )
+            return True
+        if actor.role not in {"admin", "operator"}:
+            self._audit_slack_command(
+                command="intake",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="denied",
+                summary="insufficient role",
+                payload={"intent": classification.intent},
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text="Denied: operator or admin role is required to create tasks.",
+                thread_ts=thread_ts,
+            )
+            return True
+        preview = self._preview_intake_task(
+            event=event,
+            actor=actor,
+            classification=classification,
+        )
+        self.slack_client.post_message(
+            channel=event.channel, text=preview.text, blocks=preview.blocks, thread_ts=thread_ts
+        )
+        return True
+
+    def _preview_intake_task(
+        self,
+        *,
+        event: SlackEvent,
+        actor: SlackCommandMember,
+        classification: SlackIntentClassification,
+    ) -> SlackBlockMessage:
+        if self.command_config is None or self.confirmations is None:
+            return SlackBlockMessage(
+                text="Slack intake is not enabled for this project.",
+                blocks=(),
+            )
+        proposal = _build_intake_task_proposal(
+            event=event,
+            classification=classification,
+            config=self.command_config,
+        )
+        pending = self.confirmations.create(
+            command="task_create",
+            args=(json.dumps(proposal.to_json(), sort_keys=True),),
+            event=event,
+            actor=actor,
+        )
+        self._audit_slack_command(
+            command="intake",
+            event=event,
+            actor=_slack_member_actor(event.user, actor),
+            status="preview",
+            summary=_pending_command_summary(pending),
+            payload={
+                "confirmation_id": pending.confirmation_id,
+                "intent": proposal.intent,
+                "confidence": proposal.confidence,
+            },
+        )
+        text = (
+            "Preview: create "
+            f"{_safe_slack_text(proposal.intent)} task "
+            f"`{_safe_slack_text(proposal.title)}`.\n"
+            f"Confirm with `confirm {pending.confirmation_id}` within "
+            f"{self.command_config.confirmation_ttl_seconds}s."
+        )
+        return SlackBlockMessage(
+            text=text,
+            blocks=_build_intake_preview_blocks(
+                proposal=proposal,
+                confirmation_id=pending.confirmation_id,
+                ttl_seconds=self.command_config.confirmation_ttl_seconds,
+            ),
+        )
 
     def _handle_command_confirm(
         self,
@@ -774,6 +1297,8 @@ class SlackConnector:
                 return self._execute_approve(pending, actor=actor)
             if pending.command == "abort":
                 return self._execute_abort(pending, actor=actor)
+            if pending.command == "task_create":
+                return self._execute_task_create(pending, actor=actor)
             return self._execute_killswitch(pending, actor=actor)
         except KeyError:
             self._audit_slack_command(
@@ -784,6 +1309,84 @@ class SlackConnector:
                 summary="task or board not found",
             )
             return "Denied: task is not in this project scope."
+
+    def _execute_task_create(
+        self,
+        pending: SlackPendingCommand,
+        *,
+        actor: Mapping[str, object],
+    ) -> str:
+        config = self.command_config
+        if config is None or not config.intake_enabled:
+            return "Denied: Slack intake is not enabled."
+        if pending.actor.role not in {"admin", "operator"}:
+            self._audit_slack_command(
+                command="intake",
+                event=pending.event,
+                actor=actor,
+                status="denied",
+                summary="insufficient role",
+            )
+            return "Denied: operator or admin role is required to create tasks."
+        proposal = _decode_intake_proposal(pending.args)
+        if proposal is None:
+            self._audit_slack_command(
+                command="intake",
+                event=pending.event,
+                actor=actor,
+                status="denied",
+                summary="invalid intake proposal",
+            )
+            return "Denied: intake proposal is invalid."
+        assignee = proposal.assignee
+        if assignee is not None and not self._command_node_exists(assignee):
+            assignee = None
+        task = self.store.create_task(
+            board=config.board,
+            title=proposal.title,
+            body=proposal.body,
+            assignee=assignee,
+            status="ready",
+            priority=proposal.priority,
+            created_by=pending.actor.member_id,
+            metadata={
+                "labels": list(proposal.labels),
+                "intake": {
+                    "source": "slack",
+                    "intent": proposal.intent,
+                    "confidence": proposal.confidence,
+                    "reason": proposal.reason,
+                },
+                "slack": dict(proposal.slack),
+            },
+        )
+        self._triage_announcement_dirty = True
+        self.store.add_audit_event(
+            board=config.board,
+            kind="audit.task.create",
+            actor=actor,
+            action="slack_intake_create",
+            target={"type": "task", "id": task.id},
+            task_id=task.id,
+            status="ok",
+            summary=f"created {proposal.intent} task",
+            payload={
+                "intent": proposal.intent,
+                "labels": list(proposal.labels),
+                "assignee": assignee,
+            },
+        )
+        self._audit_slack_command(
+            command="intake",
+            event=pending.event,
+            actor=actor,
+            status="ok",
+            summary="created task",
+            target={"type": "task", "id": task.id},
+            task_id=task.id,
+            payload={"intent": proposal.intent},
+        )
+        return f"Created task `{_safe_slack_text(task.id)}`: {_safe_slack_text(task.title)}."
 
     def _execute_approve(
         self,
@@ -1134,6 +1737,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--board-db-path", type=Path, default=default_board_db_path())
     parser.add_argument("--poll-interval", type=float, default=5.0)
     parser.add_argument("--enable-commands", action="store_true")
+    parser.add_argument("--enable-intake", action="store_true")
+    parser.add_argument("--intake-assignee")
     parser.add_argument(
         "--command-member",
         action="append",
@@ -1159,7 +1764,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if node is None:
         raise SystemExit("Slack default node is required")
     command_config = None
-    if args.enable_commands:
+    if args.enable_commands or args.enable_intake:
         try:
             members = _parse_command_members(args.command_members)
         except ValueError as exc:
@@ -1168,6 +1773,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             board=args.board,
             members=members,
             node_names=_load_command_node_names(args.grove_home, args.session),
+            intake_enabled=args.enable_intake,
+            intake_assignee=args.intake_assignee,
         )
     connector = SlackConnector(
         store=SQLiteBoardStore(args.board_db_path),
@@ -1182,6 +1789,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         while True:
             connector.poll_human_gates()
+            try:
+                connector.upsert_triage_announcement()
+            except Exception as exc:
+                LOGGER.warning("Slack triage announcement update failed: %s", _safe_log_error(exc))
             time.sleep(args.poll_interval)
     finally:
         socket_client.close()
@@ -1210,6 +1821,8 @@ def _build_socket_client(*, config: SlackConfig, connector: SlackConnector) -> S
             event = _event_from_socket_payload(cast(Mapping[str, object], request.payload))
             if event is not None:
                 connector.handle_event(event)
+        elif request.type == "interactive" and isinstance(request.payload, Mapping):
+            connector.handle_interaction(cast(Mapping[str, object], request.payload))
         client.send_socket_mode_response(response_cls(envelope_id=request.envelope_id))
 
     socket_client.socket_mode_request_listeners.append(listener)
@@ -1239,6 +1852,50 @@ def _event_from_socket_payload(payload: Mapping[str, object]) -> SlackEvent | No
         thread_ts=thread_ts if isinstance(thread_ts, str) else None,
         event_type=event_type if isinstance(event_type, str) else "message",
     )
+
+
+def _first_block_action(payload: Mapping[str, object]) -> Mapping[str, object] | None:
+    if payload.get("type") != "block_actions":
+        return None
+    actions = payload.get("actions")
+    if not isinstance(actions, list) or not actions:
+        return None
+    first = actions[0]
+    return first if isinstance(first, Mapping) else None
+
+
+def _event_from_interaction_payload(
+    payload: Mapping[str, object],
+    *,
+    action_id: str,
+) -> SlackEvent | None:
+    team = _nested_str(payload, "team", "id") or ""
+    channel = _nested_str(payload, "channel", "id")
+    user = _nested_str(payload, "user", "id")
+    message = payload.get("message")
+    if not isinstance(message, Mapping):
+        return None
+    ts = message.get("ts")
+    thread_ts = message.get("thread_ts")
+    if not isinstance(channel, str) or not isinstance(user, str) or not isinstance(ts, str):
+        return None
+    return SlackEvent(
+        team=team,
+        channel=channel,
+        user=user,
+        text=action_id,
+        ts=ts,
+        thread_ts=thread_ts if isinstance(thread_ts, str) else ts,
+        event_type="block_actions",
+    )
+
+
+def _nested_str(mapping: Mapping[str, object], key: str, nested_key: str) -> str | None:
+    value = mapping.get(key)
+    if not isinstance(value, Mapping):
+        return None
+    nested = value.get(nested_key)
+    return nested if isinstance(nested, str) else None
 
 
 def _needs_human(task: Task) -> bool:
@@ -1349,6 +2006,315 @@ def _select_chat_node(event: SlackEvent, route: ChatRouteConfig) -> str:
     return route.default_node
 
 
+def _looks_like_control_command(lowered_text: str) -> bool:
+    first = lowered_text.split(maxsplit=1)[0] if lowered_text.split() else ""
+    return first in {"status", "approve", "abort", "killswitch", "confirm"}
+
+
+def _contains_prompt_injection(lowered_text: str) -> bool:
+    suspicious = (
+        "ignore previous",
+        "ignore all previous",
+        "bypass",
+        "without confirmation",
+        "no confirmation",
+        "silently create",
+        "force create",
+        "무시하고",
+        "확인 없이",
+    )
+    return _contains_any(lowered_text, suspicious)
+
+
+def _contains_any(text: str, needles: Sequence[str]) -> bool:
+    return any(needle in text for needle in needles)
+
+
+def _strip_intake_prefix(text: str) -> str:
+    clean = _normalize_slack_text(text).strip()
+    lowered = clean.lower()
+    for prefix in ("bug:", "feedback:", "task:", "bug ", "feedback ", "task "):
+        if lowered.startswith(prefix):
+            return clean[len(prefix) :].strip()
+    return clean
+
+
+def _intent_from_intake_command(command: str) -> SlackIntentName:
+    if command == "bug":
+        return "bug"
+    if command == "feedback":
+        return "feedback"
+    return "task_request"
+
+
+def _labels_for_intent(intent: SlackIntentName) -> tuple[str, ...]:
+    if intent == "bug":
+        return ("slack-intake", "bug")
+    if intent == "feedback":
+        return ("slack-intake", "feedback")
+    if intent == "task_request":
+        return ("slack-intake", "task-request")
+    return ("slack-intake",)
+
+
+def _build_intake_task_proposal(
+    *,
+    event: SlackEvent,
+    classification: SlackIntentClassification,
+    config: SlackCommandConfig,
+) -> SlackIntakeProposal:
+    title = _safe_intake_title(classification.title or classification.summary)
+    body = _safe_slack_text(classification.summary or title)
+    labels = _safe_intake_labels(
+        (*classification.labels, *_labels_for_intent(classification.intent))
+    )
+    assignee = config.intake_assignee
+    if assignee is not None and (
+        not _valid_node_ref(assignee) or assignee not in config.node_names
+    ):
+        assignee = None
+    return SlackIntakeProposal(
+        intent=classification.intent,
+        title=title,
+        body=body,
+        labels=labels,
+        priority=1 if classification.intent == "bug" else 0,
+        assignee=assignee,
+        confidence=_rounded_confidence(classification.confidence),
+        reason=_safe_slack_text(classification.reason),
+        slack={
+            "team": _safe_slack_text(event.team),
+            "channel": _safe_slack_text(event.channel),
+            "thread_ts": _safe_slack_text(event.thread_ts or event.ts),
+            "message_ts": _safe_slack_text(event.ts),
+            "user": _safe_slack_text(event.user),
+        },
+    )
+
+
+def _build_intake_preview_blocks(
+    *,
+    proposal: SlackIntakeProposal,
+    confirmation_id: str,
+    ttl_seconds: int,
+) -> tuple[Mapping[str, object], ...]:
+    summary = (
+        "*Slack intake preview*\n"
+        f"Intent: `{_safe_slack_text(proposal.intent)}`  "
+        f"Confidence: `{proposal.confidence:.2f}`\n"
+        f"*Title*: {_safe_slack_text(proposal.title)}\n"
+        f"*Body*: {_safe_slack_text(proposal.body)}\n"
+        f"*Labels*: {', '.join(_safe_slack_text(label) for label in proposal.labels) or 'none'}\n"
+        f"*Assignee*: {_safe_slack_text(proposal.assignee or 'unassigned')}\n"
+        f"Expires in {ttl_seconds}s."
+    )
+    blocks = list(_mrkdwn_section_blocks(summary))
+    blocks.append(
+        {
+            "type": "actions",
+            "block_id": "grove_intake_actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "task로 등록"},
+                    "style": "primary",
+                    "action_id": INTAKE_CONFIRM_ACTION_ID,
+                    "value": confirmation_id,
+                    "confirm": {
+                        "title": {"type": "plain_text", "text": "task 등록"},
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "이 preview를 현재 grove board task로 등록할까요?",
+                        },
+                        "confirm": {"type": "plain_text", "text": "등록"},
+                        "deny": {"type": "plain_text", "text": "취소"},
+                    },
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "답만"},
+                    "action_id": INTAKE_ANSWER_ONLY_ACTION_ID,
+                    "value": confirmation_id,
+                    "confirm": {
+                        "title": {"type": "plain_text", "text": "task 생성 안 함"},
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "이 preview를 폐기하고 답변만 하도록 처리할까요?",
+                        },
+                        "confirm": {"type": "plain_text", "text": "답만"},
+                        "deny": {"type": "plain_text", "text": "취소"},
+                    },
+                },
+            ],
+        }
+    )
+    return tuple(blocks)
+
+
+def _build_triage_announcement_message(*, board: str, tasks: Sequence[Task]) -> SlackBlockMessage:
+    intake_tasks = [task for task in tasks if isinstance(task.metadata.get("intake"), Mapping)]
+    by_status = {"ready": 0, "running": 0, "blocked": 0, "done": 0, "other": 0}
+    for task in intake_tasks:
+        if task.status in by_status:
+            by_status[task.status] += 1
+        else:
+            by_status["other"] += 1
+    open_count = (
+        by_status["ready"] + by_status["running"] + by_status["blocked"] + by_status["other"]
+    )
+    header = f"grove triage queue: {board}"
+    progress = _ascii_progress_bar(done=by_status["done"], total=max(1, len(intake_tasks)))
+    recent = "\n".join(
+        f"- `{_safe_slack_text(task.status)}` {_safe_slack_text(task.title)}"
+        for task in intake_tasks[:10]
+    )
+    if not recent:
+        recent = "No Slack intake tasks yet."
+    text = (
+        f"{header}\n"
+        f"open={open_count} ready={by_status['ready']} running={by_status['running']} "
+        f"blocked={by_status['blocked']} done={by_status['done']}\n"
+        f"{recent}"
+    )
+    blocks: list[Mapping[str, object]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*Open*: {open_count}  *Ready*: {by_status['ready']}  "
+                    f"*Running*: {by_status['running']}  *Blocked*: {by_status['blocked']}  "
+                    f"*Done*: {by_status['done']}\n`{progress}`"
+                ),
+            },
+        },
+    ]
+    blocks.extend(_mrkdwn_section_blocks(recent))
+    blocks.append(
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "새로고침"},
+                    "action_id": "grove_triage_refresh",
+                    "value": board,
+                }
+            ],
+        }
+    )
+    return SlackBlockMessage(text=text, blocks=tuple(blocks))
+
+
+def _block_message_hash(message: SlackBlockMessage) -> str:
+    payload = {
+        "text": message.text,
+        "blocks": list(message.blocks),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _mrkdwn_section_blocks(text: str) -> tuple[Mapping[str, object], ...]:
+    remaining = text.strip()
+    blocks: list[Mapping[str, object]] = []
+    while remaining and len(blocks) < 4:
+        if len(remaining) <= 3000:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": remaining}})
+            return tuple(blocks)
+        split = remaining.rfind("\n\n", 0, 3000)
+        if split <= 0:
+            split = remaining.rfind("\n", 0, 3000)
+        if split <= 0:
+            split = 3000
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": remaining[:split]}})
+        remaining = remaining[split:].lstrip()
+    if remaining:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": "Content was collapsed for Slack limits."}],
+            }
+        )
+    return tuple(blocks)
+
+
+def _ascii_progress_bar(*, done: int, total: int) -> str:
+    filled = round((max(0, done) / max(1, total)) * 10)
+    return "#" * filled + "-" * (10 - filled)
+
+
+def _decode_intake_proposal(args: tuple[str, ...]) -> SlackIntakeProposal | None:
+    if len(args) != 1:
+        return None
+    try:
+        loaded = json.loads(args[0])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    intent = loaded.get("intent")
+    if intent not in TASK_INTENTS:
+        return None
+    title = loaded.get("title")
+    body = loaded.get("body")
+    labels = loaded.get("labels")
+    priority = loaded.get("priority")
+    assignee = loaded.get("assignee")
+    confidence = loaded.get("confidence")
+    reason = loaded.get("reason")
+    slack = loaded.get("slack")
+    if not isinstance(title, str) or not isinstance(body, str):
+        return None
+    if not isinstance(labels, list) or not all(isinstance(label, str) for label in labels):
+        return None
+    if not isinstance(priority, int):
+        return None
+    if assignee is not None and not isinstance(assignee, str):
+        return None
+    if not isinstance(confidence, int | float):
+        return None
+    if not isinstance(reason, str) or not isinstance(slack, dict):
+        return None
+    return SlackIntakeProposal(
+        intent=cast(SlackIntentName, intent),
+        title=_safe_intake_title(title),
+        body=_safe_slack_text(body),
+        labels=_safe_intake_labels(tuple(labels)),
+        priority=max(0, min(priority, 10)),
+        assignee=assignee if assignee is None or _valid_node_ref(assignee) else None,
+        confidence=_rounded_confidence(float(confidence)),
+        reason=_safe_slack_text(reason),
+        slack={str(key): _safe_slack_text(value) for key, value in slack.items()},
+    )
+
+
+def _safe_intake_title(value: str) -> str:
+    title = _safe_slack_text(value).strip()
+    if not title:
+        return "Slack intake"
+    return title[:120]
+
+
+def _safe_intake_labels(labels: Sequence[str]) -> tuple[str, ...]:
+    safe: list[str] = []
+    for label in labels:
+        normalized = label.lower().replace("_", "-").strip()
+        if re.fullmatch(r"[a-z0-9-]{1,32}", normalized) and normalized not in safe:
+            safe.append(normalized)
+    return tuple(safe[:8])
+
+
+def _rounded_confidence(value: float) -> float:
+    return round(max(0.0, min(float(value), 1.0)), 2)
+
+
 def _parse_mutating_command(
     command: str,
     args: tuple[str, ...],
@@ -1381,6 +2347,11 @@ def _parse_killswitch_args(args: tuple[str, ...]) -> tuple[str, str | None, str]
 def _pending_command_summary(pending: SlackPendingCommand) -> str:
     if pending.command in {"approve", "abort"}:
         return f"{pending.command} task {_safe_slack_text(pending.args[0])}"
+    if pending.command == "task_create":
+        proposal = _decode_intake_proposal(pending.args)
+        if proposal is None:
+            return "create slack intake task"
+        return f"create {proposal.intent} task {_safe_slack_text(proposal.title)}"
     scope, target, enabled = _parse_killswitch_args(pending.args)
     if scope == "node":
         return f"set node {_safe_slack_text(target or '')} kill-switch {enabled}"
@@ -1425,7 +2396,8 @@ def _slack_member_actor(user: str, member: SlackCommandMember) -> dict[str, obje
 
 def _safe_slack_text(value: object) -> str:
     without_paths = ABSOLUTE_PATH_RE.sub("[path]", str(value))
-    return redact_secret_text(without_paths)[:500]
+    without_secrets = redact_secret_text(without_paths)
+    return EMAIL_RE.sub("[pii]", without_secrets)[:500]
 
 
 def _required_str(mapping: Mapping[str, object], key: str) -> str:
