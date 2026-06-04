@@ -15,6 +15,7 @@
 //   - autopickup    (node toggle auth, global gate, scope, team viewer denial)
 //   - execution     (global/node gates, approval/abort, scope, viewer denial)
 //   - usage         (node/day rollups, agy unknowns, project scope, redaction)
+//   - summary       (signed counts-only export, aggregate trust, redaction)
 //
 // Each check asserts the CORRECT contract. A failing check is a real defect to
 // report as `# BUG(Pn)` — never relax the assertion to match a bug.
@@ -23,8 +24,8 @@
 // remove the temp tree. Headless: `npm run e2e` (or `pnpm run e2e`) from web/.
 
 import { spawn, spawnSync } from "node:child_process";
-import { pbkdf2Sync } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, createHmac, pbkdf2Sync } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -43,6 +44,7 @@ const SCOPE = "qae2e_scope"; // created during the autopickup checks to prove no
 const TEAM = "qae2e_team"; // created during the autopickup checks for team-auth viewer denial
 const USAGE = "qae2e_usage"; // created during the usage checks for run rollups
 const USAGE_EMPTY = "qae2e_usage_empty"; // created during the usage checks for graceful empty data
+const SUMMARY = "qae2e_summary"; // created during the summary checks for signed aggregate coverage
 const READY_TIMEOUT_MS = 25_000;
 const NODE_LAST_SEEN = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
 
@@ -84,6 +86,23 @@ function teamSecretHash(secret) {
   const salt = Buffer.alloc(16, 0x31);
   const digest = pbkdf2Sync(secret, salt, 200_000, 32, "sha256");
   return `pbkdf2_sha256$200000$${b64Url(salt)}$${b64Url(digest)}`;
+}
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+    .join(",")}}`;
+}
+function summaryKeyId(key) {
+  return createHash("sha256").update(key, "utf8").digest("hex").slice(0, 16);
+}
+function summarySignature(key, payload) {
+  return `sha256:${createHmac("sha256", key).update(stableJson(payload), "utf8").digest("hex")}`;
+}
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 function writeRegistry(session, nodes) {
   const dir = path.join(groveHome, session);
@@ -166,8 +185,10 @@ async function req(method, pathname, { token, project, body, origin } = {}) {
   return { status: resp.status, json, text, headers: resp.headers };
 }
 
-async function reqAt(base, method, pathname, { cookie, csrf, body, origin } = {}) {
+async function reqAt(base, method, pathname, { token, project, cookie, csrf, body, origin } = {}) {
   const headers = {};
+  if (token) headers[SESSION_HEADER] = token;
+  if (project !== undefined) headers[PROJECT_HEADER] = project;
   if (cookie) headers.Cookie = cookie;
   if (csrf) headers["X-Grove-CSRF"] = csrf;
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -222,6 +243,10 @@ let teamChild = null;
 let teamExited = true;
 let teamServerLog = "";
 let teamBaseUrl = "";
+let summaryChild = null;
+let summaryExited = true;
+let summaryServerLog = "";
+let summaryBaseUrl = "";
 
 function setAutopickupGlobal(board, { enabled, killSwitch }) {
   const boolArg = (value) => (value === undefined ? "none" : value ? "true" : "false");
@@ -451,6 +476,50 @@ async function startTeamServer(session, teamDbPath) {
   throw new Error(`team server not ready within ${READY_TIMEOUT_MS}ms:\n${teamServerLog}`);
 }
 
+async function startSummaryServer({ session, freshnessSeconds = 60, trustedKeysPath } = {}) {
+  const port = await freePort();
+  summaryBaseUrl = `http://127.0.0.1:${port}`;
+  summaryServerLog = "";
+  summaryExited = false;
+  const env = { ...process.env, GROVE_HOME: groveHome, HOME: homeDir, GROVE_VIEWER_SESSION: session };
+  const args = [
+    "-m",
+    "grove_bridge.web_app",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(port),
+    "--dist-dir",
+    distDir,
+    "--board-db-path",
+    dbPath,
+    "--session",
+    session,
+    "--enable-summary-export",
+    "--summary-freshness-seconds",
+    String(freshnessSeconds),
+  ];
+  if (trustedKeysPath) args.push("--summary-trusted-keys", trustedKeysPath);
+  summaryChild = spawn(python, args, { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] });
+  summaryChild.stdout.on("data", (d) => (summaryServerLog += d));
+  summaryChild.stderr.on("data", (d) => (summaryServerLog += d));
+  summaryChild.on("exit", () => (summaryExited = true));
+
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (summaryExited) throw new Error(`summary server exited before ready:\n${summaryServerLog}`);
+    try {
+      const r = await fetch(summaryBaseUrl + "/api/health");
+      await r.text();
+      if (r.status === 200) return port;
+    } catch {
+      /* not up yet */
+    }
+    await sleep(150);
+  }
+  throw new Error(`summary server not ready within ${READY_TIMEOUT_MS}ms:\n${summaryServerLog}`);
+}
+
 async function stopTeamServer() {
   try {
     if (teamChild && !teamExited) {
@@ -467,7 +536,24 @@ async function stopTeamServer() {
   }
 }
 
+async function stopSummaryServer() {
+  try {
+    if (summaryChild && !summaryExited) {
+      summaryChild.kill("SIGTERM");
+      const grace = Date.now() + 5000;
+      while (!summaryExited && Date.now() < grace) await sleep(50);
+      if (!summaryExited) summaryChild.kill("SIGKILL");
+    }
+  } catch {
+    /* ignore */
+  } finally {
+    summaryChild = null;
+    summaryExited = true;
+  }
+}
+
 async function teardown() {
+  await stopSummaryServer();
   await stopTeamServer();
   try {
     if (child && !exited) {
@@ -1586,6 +1672,193 @@ async function run() {
   eq("usage path traversal project -> 400", (await req("GET", `/api/usage?project=${encodeURIComponent(`../${USAGE}`)}`, { token })).status, 400);
   eq("usage missing project -> 404", (await req("GET", "/api/usage?project=qae2e_missing_usage", { token })).status, 404);
   eq("usage invalid window -> 400", (await req("GET", `/api/usage?window=forever&project=${encodeURIComponent(USAGE)}`, { token })).status, 400);
+
+  // --- /api/summary + /api/aggregate: signed counts-only export, trust gates ---
+  const summarySecret = "xoxb-" + "b".repeat(44);
+  const summaryAgentSecret = "xapp-" + "c".repeat(20);
+  const summaryPrivatePath = `/Users/chopin/private/${summarySecret}`;
+  writeRegistry(SUMMARY, {
+    "odd-node": {
+      name: "odd-node",
+      agent: summaryAgentSecret,
+      tmux_pane: `${SUMMARY}:1.0`,
+      session_id: "summary-session",
+      status: summaryPrivatePath,
+      transcript_path: `${summaryPrivatePath}.jsonl`,
+    },
+  });
+  const summaryReadySeed = await req("POST", `/api/boards/${SUMMARY}/tasks`, {
+    token,
+    project: SUMMARY,
+    body: {
+      title: `summary ready leak probe ${summarySecret}`,
+      body: `body must not export ${summaryPrivatePath}`,
+      assignee: "odd-node",
+      status: "ready",
+    },
+  });
+  eq("seed: summary ready task 200", summaryReadySeed.status, 200);
+  const summaryOtherSeed = await req("POST", `/api/boards/${SUMMARY}/tasks`, {
+    token,
+    project: SUMMARY,
+    body: {
+      title: "summary other status",
+      body: `transcript ${summaryPrivatePath}/turn.jsonl must not export`,
+      assignee: summaryAgentSecret,
+      status: summaryPrivatePath,
+    },
+  });
+  eq("seed: summary other task 200", summaryOtherSeed.status, 200);
+  const defaultOffSummary = await req("GET", `/api/summary?project=${encodeURIComponent(SUMMARY)}`, { token });
+  check("summary default-off rejects when export is disabled", [403, 404].includes(defaultOffSummary.status), defaultOffSummary.status);
+
+  await startSummaryServer({ session: SUMMARY, freshnessSeconds: 60 });
+  try {
+    const summaryIndex = await reqAt(summaryBaseUrl, "GET", "/");
+    eq("summary server index served (200)", summaryIndex.status, 200);
+    const summaryMatch = summaryIndex.text.match(/window\.__GROVE_SESSION_TOKEN__ = "([^"]+)"/);
+    check("summary server injects session token", Boolean(summaryMatch));
+    const summaryToken = summaryMatch ? summaryMatch[1] : "";
+    eq("summary 401 without token", (await reqAt(summaryBaseUrl, "GET", "/api/summary")).status, 401);
+    eq(
+      "summary 401 with wrong token",
+      (await reqAt(summaryBaseUrl, "GET", "/api/summary", { token: "wrong-token" })).status,
+      401,
+    );
+    const summary = await reqAt(summaryBaseUrl, "GET", "/api/summary", { token: summaryToken });
+    eq("summary 200 when export enabled", summary.status, 200);
+    eq("summary algorithm hmac-sha256", summary.json && summary.json.algorithm, "hmac-sha256");
+    check("summary includes key_id only id shape", typeof (summary.json && summary.json.key_id) === "string" && summary.json.key_id.length === 16);
+    check("summary includes sha256 signature", /^sha256:[0-9a-f]{64}$/.test((summary.json && summary.json.signature) || ""));
+    const summaryPayload = summary.json && summary.json.payload;
+    eq("summary payload schema", summaryPayload && summaryPayload.schema, "grove.summary.v1");
+    eq("summary payload project == summary project", summaryPayload && summaryPayload.project, SUMMARY);
+    check("summary payload generated_at is epoch int", Number.isInteger(summaryPayload && summaryPayload.generated_at));
+    const summaryCounts = summaryPayload && summaryPayload.summary;
+    eq("summary boards total == 1", summaryCounts && summaryCounts.boards && summaryCounts.boards.total, 1);
+    eq("summary tasks total == 2", summaryCounts && summaryCounts.tasks && summaryCounts.tasks.total, 2);
+    eq("summary task ready bucket == 1", summaryCounts && summaryCounts.tasks && summaryCounts.tasks.by_status.ready, 1);
+    eq("summary arbitrary task status buckets as other", summaryCounts && summaryCounts.tasks && summaryCounts.tasks.by_status.other, 1);
+    eq("summary nodes total == 1", summaryCounts && summaryCounts.nodes && summaryCounts.nodes.total, 1);
+    eq("summary arbitrary node status buckets as other", summaryCounts && summaryCounts.nodes && summaryCounts.nodes.by_status.other, 1);
+    eq("summary arbitrary node agent buckets as other", summaryCounts && summaryCounts.nodes && summaryCounts.nodes.by_agent.other, 1);
+    check(
+      "summary response is counts-only allowlist",
+      Boolean(summaryCounts) &&
+        !summary.text.includes(summarySecret) &&
+        !summary.text.includes(summaryAgentSecret) &&
+        !summary.text.includes(summaryPrivatePath) &&
+        !summary.text.includes("body must not export") &&
+        !summary.text.includes("transcript") &&
+        !summary.text.includes("odd-node") &&
+        !summary.text.includes("assignee") &&
+        !summary.text.includes("title"),
+      summary.text.slice(0, 200),
+    );
+    const summaryKey = readFileSync(path.join(groveHome, SUMMARY, "summary-signing-key"), "utf8").trim();
+    eq("summary key_id matches local signing key", summary.json && summary.json.key_id, summaryKeyId(summaryKey));
+    check(
+      "summary response exposes key_id but not signing key",
+      summary.text.includes(summary.json.key_id) && !summary.text.includes(summaryKey) && !summary.text.includes("summary-signing-key"),
+    );
+    eq(
+      "summary path traversal project -> 400",
+      (await reqAt(summaryBaseUrl, "GET", `/api/summary?project=${encodeURIComponent(`../${SUMMARY}`)}`, { token: summaryToken })).status,
+      400,
+    );
+    eq(
+      "summary missing project -> 404",
+      (await reqAt(summaryBaseUrl, "GET", "/api/summary?project=qae2e_missing_summary", { token: summaryToken })).status,
+      404,
+    );
+
+    eq("aggregate 401 without token", (await reqAt(summaryBaseUrl, "POST", "/api/aggregate", { body: { summaries: [] } })).status, 401);
+    eq(
+      "aggregate 401 with wrong token",
+      (await reqAt(summaryBaseUrl, "POST", "/api/aggregate", { token: "wrong-token", body: { summaries: [] } })).status,
+      401,
+    );
+    const trustedAggregate = await reqAt(summaryBaseUrl, "POST", "/api/aggregate", {
+      token: summaryToken,
+      body: { summaries: [summary.json] },
+    });
+    eq("aggregate trusted summary 200", trustedAggregate.status, 200);
+    check("aggregate generated_at is tagged metric", isTaggedMetric(trustedAggregate.json && trustedAggregate.json.generated_at));
+    eq("aggregate trusted count == 1", trustedAggregate.json && trustedAggregate.json.trust && trustedAggregate.json.trust.trusted, 1);
+    eq("aggregate untrusted count == 0", trustedAggregate.json && trustedAggregate.json.trust && trustedAggregate.json.trust.untrusted, 0);
+    eq("aggregate combined sources == 1", trustedAggregate.json && trustedAggregate.json.combined && trustedAggregate.json.combined.sources, 1);
+    check(
+      "aggregate combined includes summary project only",
+      JSON.stringify((trustedAggregate.json && trustedAggregate.json.combined && trustedAggregate.json.combined.projects) || []) ===
+        JSON.stringify([SUMMARY]),
+    );
+    eq("aggregate combined task total == 2", trustedAggregate.json && trustedAggregate.json.combined && trustedAggregate.json.combined.tasks.total, 2);
+
+    const tamperedSummary = cloneJson(summary.json);
+    tamperedSummary.payload.summary.tasks.total = 999;
+    const unknownKeySummary = cloneJson(summary.json);
+    unknownKeySummary.key_id = "unknown-key-id";
+    const now = Math.floor(Date.now() / 1000);
+    const staleSummary = cloneJson(summary.json);
+    staleSummary.payload.generated_at = now - 120;
+    staleSummary.signature = summarySignature(summaryKey, staleSummary.payload);
+    const futureSummary = cloneJson(summary.json);
+    futureSummary.payload.generated_at = now + 120;
+    futureSummary.signature = summarySignature(summaryKey, futureSummary.payload);
+    const aggregateMixed = await reqAt(summaryBaseUrl, "POST", "/api/aggregate", {
+      token: summaryToken,
+      body: { summaries: [summary.json, tamperedSummary, unknownKeySummary, staleSummary, futureSummary] },
+    });
+    eq("aggregate mixed summaries 200", aggregateMixed.status, 200);
+    eq("aggregate mixed trusted count includes fresh+stale", aggregateMixed.json && aggregateMixed.json.trust && aggregateMixed.json.trust.trusted, 2);
+    eq("aggregate mixed untrusted count == tampered+unknown+future", aggregateMixed.json && aggregateMixed.json.trust && aggregateMixed.json.trust.untrusted, 3);
+    eq("aggregate mixed stale count == 1", aggregateMixed.json && aggregateMixed.json.trust && aggregateMixed.json.trust.stale, 1);
+    const aggregateItems = (aggregateMixed.json && aggregateMixed.json.summaries) || [];
+    eq("aggregate trusted summary marked fresh", aggregateItems[0] && aggregateItems[0].freshness, "fresh");
+    check("aggregate tampered signature is untrusted", aggregateItems[1] && aggregateItems[1].trust === "untrusted" && /signature/i.test(aggregateItems[1].reason));
+    check("aggregate unknown key_id is untrusted", aggregateItems[2] && aggregateItems[2].trust === "untrusted" && /unknown/i.test(aggregateItems[2].reason));
+    check("aggregate stale signed summary is excluded", aggregateItems[3] && aggregateItems[3].trust === "trusted" && aggregateItems[3].freshness === "stale");
+    check("aggregate future timestamp is untrusted", aggregateItems[4] && aggregateItems[4].trust === "untrusted" && /timestamp/i.test(aggregateItems[4].reason));
+    eq("aggregate mixed combined excludes stale/untrusted sources", aggregateMixed.json && aggregateMixed.json.combined && aggregateMixed.json.combined.sources, 1);
+    eq("aggregate mixed combined excludes tampered totals", aggregateMixed.json && aggregateMixed.json.combined && aggregateMixed.json.combined.tasks.total, 2);
+    check(
+      "aggregate responses leak no key/secret/path/task body",
+      !hasSecret(trustedAggregate.json) &&
+        !hasSecret(aggregateMixed.json) &&
+        !trustedAggregate.text.includes(summaryKey) &&
+        !aggregateMixed.text.includes(summaryKey) &&
+        !aggregateMixed.text.includes(summarySecret) &&
+        !aggregateMixed.text.includes(summaryAgentSecret) &&
+        !aggregateMixed.text.includes(summaryPrivatePath) &&
+        !aggregateMixed.text.includes("body must not export") &&
+        !aggregateMixed.text.includes("summary-signing-key"),
+    );
+    const aggregateWrongProject = await reqAt(summaryBaseUrl, "POST", `/api/aggregate?project=${encodeURIComponent(ALPHA)}`, {
+      token: summaryToken,
+      body: { summaries: [summary.json] },
+    });
+    eq("aggregate other project scope returns 200 read-only", aggregateWrongProject.status, 200);
+    eq(
+      "aggregate other project treats summary key as untrusted",
+      aggregateWrongProject.json && aggregateWrongProject.json.trust && aggregateWrongProject.json.trust.untrusted,
+      1,
+    );
+    eq(
+      "aggregate other project excludes foreign summary from combined",
+      aggregateWrongProject.json && aggregateWrongProject.json.combined && aggregateWrongProject.json.combined.sources,
+      0,
+    );
+    eq(
+      "aggregate missing project -> 404",
+      (await reqAt(summaryBaseUrl, "POST", "/api/aggregate?project=qae2e_missing_summary", {
+        token: summaryToken,
+        body: { summaries: [summary.json] },
+      })).status,
+      404,
+    );
+  } finally {
+    await stopSummaryServer();
+  }
 
   // --- /api/cost: by_agent{} + totals{}, token/path non-exposure ---
   eq("cost 401 without token", (await req("GET", "/api/cost")).status, 401);

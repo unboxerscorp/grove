@@ -1326,6 +1326,94 @@ async function main() {
       usage.backendTok === "890.1k" && // real backend total_tokens rendered
       usage.fetched;
 
+    // V16-W2 aggregation view (GET /api/summary + POST /api/aggregate, read-only):
+    // own (trusted+fresh) + operator-pasted peer summaries (one stale-trusted,
+    // one untrusted-key) are ACTUALLY submitted and verified; combined =
+    // trusted+fresh only; untrusted/stale flagged excluded; default-OFF graceful.
+    await page.$eval('.dr-tab[data-view="agg"]', (el) => el.click());
+    await page.waitForSelector(".agg-combined", { timeout: 8000 });
+    // initially own only (1 room).
+    await page.waitForFunction(() => document.querySelectorAll(".agg-room").length === 1, { timeout: 6000 });
+    // paste a trusted-but-stale peer (room-beta, old ts) -> excluded from combined.
+    const stalePeer = JSON.stringify({
+      algorithm: "hmac-sha256",
+      key_id: "room-beta",
+      signature: "sig-beta",
+      payload: {
+        schema: "grove.summary.v1",
+        project: "infra-ops",
+        version: "1.16",
+        generated_at: 1000000000,
+        summary: { boards: { total: 2 }, tasks: { total: 12, by_status: { ready: 5, done: 7 } }, nodes: { total: 4 }, runs: { total: 8 } },
+      },
+    });
+    // paste an untrusted-key peer -> untrusted, excluded.
+    const untrustedPeer = JSON.stringify({
+      algorithm: "hmac-sha256",
+      key_id: "ghost-key",
+      signature: "x",
+      payload: {
+        schema: "grove.summary.v1",
+        project: "ghost",
+        version: "1.16",
+        generated_at: 1780543000,
+        summary: { boards: { total: 9 }, tasks: { total: 99 }, nodes: { total: 9 }, runs: { total: 9 } },
+      },
+    });
+    await page.type(".agg-paste__input", stalePeer);
+    await page.click(".agg-paste__add");
+    await page.waitForFunction(() => document.querySelectorAll(".agg-room").length === 2, { timeout: 6000 });
+    await page.type(".agg-paste__input", untrustedPeer);
+    await page.click(".agg-paste__add");
+    await page.waitForFunction(() => document.querySelectorAll(".agg-room").length === 3, { timeout: 6000 });
+    const agg = await page.evaluate(() => ({
+      combined: !!document.querySelector(".agg-combined"),
+      sources: (document.querySelector(".agg-combined__sources")?.textContent ?? "").trim(),
+      rooms: document.querySelectorAll(".agg-room").length,
+      trusted: document.querySelectorAll(".agg-badge.is-trusted").length,
+      untrusted: document.querySelectorAll(".agg-badge.is-untrusted").length,
+      fresh: document.querySelectorAll(".agg-fresh.is-fresh").length,
+      stale: document.querySelectorAll(".agg-fresh.is-stale").length,
+      untrustedExcluded: !!document.querySelector('.agg-room[data-trust="untrusted"].is-excluded .agg-room__excluded'),
+      staleExcluded: !!document.querySelector('.agg-room[data-freshness="stale"].is-excluded .agg-room__excluded'),
+      keyShown: !!document.querySelector('.agg-room[data-key="room-alpha"]'),
+      // only key_id surfaces — never the signature/algorithm/keys.
+      noSecret: !/sig-alpha|sig-beta|signature|hmac/i.test(document.querySelector(".agg")?.textContent ?? ""),
+      // allowlist: own's non-allowed "weird" task status is bucketed to "other".
+      otherBucket: !!document.querySelector('.agg-bystatus__chip[data-status="other"]'),
+      submitted: window.__MOCK__?.aggregateSubmitted ?? 0,
+      aggregated: window.__MOCK__?.aggregated === true,
+    }));
+    await page.evaluate(() => window.__MOCK__.setSummaryEnabled(false));
+    await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
+    await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+    await page.$eval('.dr-tab[data-view="agg"]', (el) => el.click());
+    await page.waitForSelector(".agg-disabled", { timeout: 8000 });
+    const aggDisabled = await page.evaluate(() => ({
+      notice: !!document.querySelector(".agg-disabled"),
+      text: (document.querySelector(".agg-disabled")?.textContent ?? "").trim(),
+      rooms: document.querySelectorAll(".agg-room").length,
+    }));
+    await page.evaluate(() => window.__MOCK__.setSummaryEnabled(true)); // restore
+    const aggViewOk =
+      agg.combined &&
+      /1/.test(agg.sources) && // combined = 1 trusted-fresh source (own only)
+      agg.rooms === 3 && // own + 2 actually-submitted peers (no fabrication)
+      agg.submitted === 3 && // FE submitted own + 2 pasted summaries
+      agg.trusted === 2 && // own + room-beta
+      agg.untrusted === 1 && // ghost-key
+      agg.fresh >= 1 &&
+      agg.stale >= 1 &&
+      agg.untrustedExcluded &&
+      agg.staleExcluded &&
+      agg.otherBucket && // allowlist: "weird" -> "other"
+      agg.keyShown &&
+      agg.noSecret &&
+      agg.aggregated &&
+      aggDisabled.notice &&
+      aggDisabled.rooms === 0 &&
+      /비활성|disabled/.test(aggDisabled.text);
+
     // #N1 project switch re-scope + no residue (여정1/5): switching to an
     // isolated project swaps org/board/nodes wholesale — none of the default
     // project's nodes/cards may bleed through — and switching back restores it.
@@ -1599,6 +1687,7 @@ async function main() {
       authOk &&
       costOk &&
       usageReportOk &&
+      aggViewOk &&
       mobileOk &&
       projectOk &&
       wsBindOk &&
@@ -1710,6 +1799,8 @@ async function main() {
       cost,
       usageReportOk,
       usage,
+      aggViewOk,
+      agg: { ...agg, disabled: aggDisabled },
       mobileOk,
       mobile: { ...mobile, detailFits },
       delegationEdgesOk,

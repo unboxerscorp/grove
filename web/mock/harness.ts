@@ -302,6 +302,16 @@ let viewerMode = false;
 diag.setViewer = (on: boolean): void => {
   viewerMode = on;
 };
+
+// Summary export / aggregation. Default ENABLED for the view; verify flips it OFF
+// (404) to exercise the default-off graceful path.
+let summaryEnabled = true;
+diag.setSummaryEnabled = (on: boolean): void => {
+  summaryEnabled = on;
+};
+// Aggregation reference clock + freshness window (mirrors web_app.py 300s).
+const AGG_NOW = AUDIT_TS0 + 1000;
+const AGG_FRESHNESS = 300;
 const execGateInfo = () => {
   const blocked: string[] = [];
   if (!executionGate.enabled) blocked.push("global-disabled");
@@ -547,6 +557,142 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
           },
         ],
         limitations: ["usage rollups only use explicit run metadata fields", "agy credit is unknown without a reliable local credit source"],
+      }),
+    );
+  }
+
+  if (p === "/api/summary") {
+    // Mirrors web_app.py _signed_summary_payload (signed allowlist summary). 404
+    // when export disabled. Only key_id is exposed (signature is opaque). The
+    // raw counts may include a non-allowlist status ("weird") — the aggregator's
+    // public view buckets it to "other".
+    if (!summaryEnabled) {
+      return Promise.resolve(new Response(JSON.stringify({ detail: "summary export is not enabled" }), { status: 404 }));
+    }
+    diag.summaryFetched = true;
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    return Promise.resolve(
+      json({
+        algorithm: "hmac-sha256",
+        key_id: "room-alpha",
+        payload: {
+          schema: "grove.summary.v1",
+          project: proj,
+          version: "1.16",
+          generated_at: AGG_NOW,
+          summary: {
+            boards: { total: 1 },
+            tasks: { total: 7, by_status: { ready: 2, running: 1, done: 3, weird: 1 } },
+            nodes: { total: 5, by_status: { running: 2, idle: 2, error: 1 }, by_agent: { codex: 2, claude: 3 } },
+            runs: { total: 3, by_status: { ok: 3 } },
+          },
+        },
+        signature: "sig-alpha-opaque",
+      }),
+    );
+  }
+
+  if (p === "/api/aggregate" && method === "POST") {
+    // Mirrors web_app.py _aggregate_summary_payload: process the ACTUALLY
+    // submitted summaries — key_id trust (allowlist), freshness by generated_at,
+    // public view clamped to enum allowlists ("other"), combined=trusted+fresh.
+    // No fabrication: only submitted rooms appear.
+    if (!summaryEnabled) {
+      return Promise.resolve(new Response(JSON.stringify({ detail: "summary export is not enabled" }), { status: 404 }));
+    }
+    diag.aggregated = true;
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as { summaries?: unknown[] };
+    const submitted = Array.isArray(body.summaries) ? body.summaries : [];
+    diag.aggregateSubmitted = submitted.length;
+    const TRUSTED = new Set(["room-alpha", "room-beta"]); // own + allowlisted peer
+    const TASK = new Set(["ready", "running", "blocked", "done", "archived"]);
+    const RUN = new Set(["running", "ok", "blocked", "failed", "released"]);
+    const NSTAT = new Set(["running", "idle", "error", "blocked", "dead", "stale"]);
+    const NAGENT = new Set(["codex", "claude", "antigravity", "agy"]);
+    const clamp = (obj: unknown, allowed: Set<string>): Record<string, number> => {
+      const out: Record<string, number> = {};
+      if (obj && typeof obj === "object") {
+        for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+          const key = allowed.has(String(k).toLowerCase()) ? String(k).toLowerCase() : "other";
+          out[key] = (out[key] ?? 0) + (Number(v) || 0);
+        }
+      }
+      return out;
+    };
+    const publicView = (pl: Record<string, unknown>) => {
+      const s = (pl.summary ?? {}) as Record<string, Record<string, unknown>>;
+      const sec = (k: string) => (s[k] ?? {}) as Record<string, unknown>;
+      return {
+        schema: "grove.summary.v1",
+        project: pl.project,
+        version: pl.version,
+        generated_at: Number(pl.generated_at) || 0,
+        summary: {
+          boards: { total: Number(sec("boards").total) || 0 },
+          tasks: { total: Number(sec("tasks").total) || 0, by_status: clamp(sec("tasks").by_status, TASK) },
+          nodes: {
+            total: Number(sec("nodes").total) || 0,
+            by_status: clamp(sec("nodes").by_status, NSTAT),
+            by_agent: clamp(sec("nodes").by_agent, NAGENT),
+          },
+          runs: { total: Number(sec("runs").total) || 0, by_status: clamp(sec("runs").by_status, RUN) },
+        },
+      };
+    };
+    const items = submitted.map((raw) => {
+      const env = (raw ?? {}) as Record<string, unknown>;
+      if (typeof env.payload !== "object" || env.payload === null || typeof env.signature !== "string")
+        return { trust: "untrusted", freshness: "unknown", reason: "invalid summary envelope" };
+      if (env.algorithm !== "hmac-sha256")
+        return { trust: "untrusted", freshness: "unknown", reason: "unsupported summary algorithm" };
+      if (typeof env.key_id !== "string" || !TRUSTED.has(env.key_id))
+        return { trust: "untrusted", freshness: "unknown", reason: "unknown summary key" };
+      const pv = publicView(env.payload as Record<string, unknown>);
+      if (pv.generated_at > AGG_NOW + 60)
+        return { trust: "untrusted", freshness: "unknown", reason: "summary timestamp is invalid" };
+      const freshness = AGG_NOW - pv.generated_at > AGG_FRESHNESS ? "stale" : "fresh";
+      return { trust: "trusted", freshness, key_id: env.key_id, project: pv.project, generated_at: pv.generated_at, payload: pv };
+    });
+    const fresh = items.filter((i) => i.trust === "trusted" && i.freshness === "fresh").map((i) => i.payload!);
+    const combineSec = (section: string, keys: string[]) => {
+      const out: Record<string, unknown> = { total: 0 };
+      let total = 0;
+      const grouped: Record<string, Record<string, number>> = {};
+      for (const key of keys) grouped[key] = {};
+      for (const p of fresh) {
+        const sec = ((p.summary as Record<string, Record<string, unknown>>)[section] ?? {}) as Record<string, unknown>;
+        total += Number(sec.total) || 0;
+        for (const key of keys) {
+          for (const [k, v] of Object.entries((sec[key] ?? {}) as Record<string, unknown>)) {
+            grouped[key]![k] = (grouped[key]![k] ?? 0) + (Number(v) || 0);
+          }
+        }
+      }
+      out.total = total;
+      for (const key of keys) out[key] = grouped[key];
+      return out;
+    };
+    return Promise.resolve(
+      json({
+        generated_at: { value: AGG_NOW, source: "server", confidence: "explicit" },
+        trust: {
+          trusted: items.filter((i) => i.trust === "trusted").length,
+          untrusted: items.filter((i) => i.trust === "untrusted").length,
+          stale: items.filter((i) => i.trust === "trusted" && i.freshness === "stale").length,
+        },
+        summaries: items,
+        combined: {
+          sources: fresh.length,
+          projects: [...new Set(fresh.map((p) => p.project).filter((x): x is string => typeof x === "string"))].sort(),
+          boards: combineSec("boards", []),
+          tasks: combineSec("tasks", ["by_status"]),
+          nodes: combineSec("nodes", ["by_status", "by_agent"]),
+          runs: combineSec("runs", ["by_status"]),
+        },
+        limitations: [
+          "aggregate is read-only and does not perform cross-machine control",
+          "stale summaries are excluded from the live combined rollup",
+        ],
       }),
     );
   }

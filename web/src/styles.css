@@ -4308,3 +4308,73 @@ button {
   /* drawers full-width on phones */
   .dr-drawer__panel { width: 100vw; max-width: 100vw; }
 }
+
+/* ── room aggregation (V16-W2, read-only) ────────────────────────────────── */
+.agg { display: flex; flex-direction: column; min-height: 0; width: 100%; }
+.agg__scroll {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 14px;
+  max-width: 760px; width: 100%; margin: 0 auto; padding: 4px 2px 24px;
+}
+.agg__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.agg__mark { color: var(--teal); }
+.agg__title { margin: 0; font-size: 16px; font-weight: 700; }
+.agg__note { margin: 0; font-size: 12px; color: var(--faint); }
+.agg__msg {
+  font-family: var(--mono); font-size: 12px; color: var(--faint);
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+}
+.agg__msg.is-error { color: var(--coral); border-color: rgba(229, 115, 99, 0.4); }
+.agg__msg.is-warn { color: var(--amber); border-color: rgba(240, 184, 96, 0.4); background: rgba(240, 184, 96, 0.06); }
+
+.agg-combined {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px; border: 1px solid rgba(84, 199, 184, 0.35); border-radius: 12px;
+  background: linear-gradient(180deg, rgba(84, 199, 184, 0.07), transparent);
+}
+.agg-combined__head { display: flex; align-items: baseline; gap: 10px; }
+.agg-combined__title { font-size: 14px; font-weight: 700; color: var(--text); }
+.agg-combined__sources { font-family: var(--mono); font-size: 11px; color: var(--teal); }
+.agg-combined__trust { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+
+.agg-rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.agg-room {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel);
+}
+.agg-room.is-excluded { opacity: 0.82; border-style: dashed; }
+.agg-room.is-untrusted { border-color: rgba(229, 115, 99, 0.4); }
+.agg-room__head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.agg-badge {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase;
+  border-radius: 999px; padding: 1px 8px;
+}
+.agg-badge.is-trusted { color: var(--teal); border: 1px solid rgba(84, 199, 184, 0.5); }
+.agg-badge.is-untrusted { color: var(--coral); border: 1px solid rgba(229, 115, 99, 0.5); }
+.agg-fresh {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase;
+  border-radius: 999px; padding: 1px 8px; color: var(--dim); border: 1px solid var(--line);
+}
+.agg-fresh.is-fresh { color: var(--teal); border-color: rgba(84, 199, 184, 0.4); }
+.agg-fresh.is-stale { color: var(--amber); border-color: rgba(240, 184, 96, 0.5); }
+.agg-fresh__ago { color: var(--faint); }
+.agg-room__key { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--faint); }
+.agg-room__project { font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--text); }
+.agg-room__counts { display: flex; flex-wrap: wrap; gap: 10px; }
+.agg-count { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
+.agg-count__k { color: var(--faint); }
+.agg-room__reason { font-family: var(--mono); font-size: 11px; color: var(--coral); }
+.agg-room__excluded { font-family: var(--mono); font-size: 10.5px; color: var(--amber); }
+
+/* aggregation: paste-peer input + combined by-status chips */
+.agg-paste { display: flex; flex-direction: column; gap: 6px; }
+.agg-paste__input { resize: vertical; min-height: 40px; font-family: var(--mono); font-size: 11px; line-height: 1.5; }
+.agg-paste__add { align-self: flex-start; font-size: 11px; padding: 3px 10px; }
+.agg-paste__err { font-family: var(--mono); font-size: 11px; color: var(--coral); }
+.agg-paste__count { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+.agg-bystatus { display: flex; flex-wrap: wrap; gap: 5px; }
+.agg-bystatus__chip {
+  font-family: var(--mono); font-size: 10px; color: var(--dim);
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px;
+}
+.agg-bystatus__chip[data-status="other"] { color: var(--amber); border-color: rgba(240, 184, 96, 0.4); }

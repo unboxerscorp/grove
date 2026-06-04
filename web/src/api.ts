@@ -277,6 +277,48 @@ export interface UsageReport {
   limitations?: string[];
 }
 
+// Cross-room aggregation (web_app.py). GET /api/summary returns a signed
+// allowlist summary; POST /api/aggregate verifies a set of summaries by key_id
+// trust + freshness and returns a READ-ONLY combined rollup (trusted+fresh only).
+// Both 404 when the export is disabled (default OFF). Only key_id is exposed.
+export interface AggCounts {
+  boards?: { total?: number };
+  tasks?: { total?: number; by_status?: Record<string, number> };
+  nodes?: { total?: number; by_status?: Record<string, number>; by_agent?: Record<string, number> };
+  runs?: { total?: number; by_status?: Record<string, number> };
+}
+
+export interface SignedSummary {
+  algorithm: string;
+  key_id: string;
+  payload: { project?: string; generated_at?: number; summary?: AggCounts; [k: string]: unknown };
+  signature: string;
+}
+
+export interface AggregateItem {
+  trust: string; // "trusted" | "untrusted"
+  freshness: string; // "fresh" | "stale" | "unknown"
+  key_id?: string;
+  project?: string;
+  generated_at?: number;
+  reason?: string;
+  payload?: { project?: string; generated_at?: number; summary?: AggCounts };
+}
+
+export interface AggregateResult {
+  trust?: { trusted: number; untrusted: number; stale: number };
+  summaries: AggregateItem[];
+  combined?: {
+    sources?: number;
+    projects?: string[];
+    boards?: { total?: number };
+    tasks?: { total?: number; by_status?: Record<string, number> };
+    nodes?: { total?: number; by_status?: Record<string, number>; by_agent?: Record<string, number> };
+    runs?: { total?: number; by_status?: Record<string, number> };
+  };
+  limitations?: string[];
+}
+
 // Decision inbox (web_app.py _inbox_item_payload). A blocked / ask-human task
 // awaiting a human decision. `answer.endpoint` is the POST target that comments
 // + unblocks the task (operator/admin; team viewers get 403).
@@ -598,6 +640,20 @@ export const api = {
 
   // Usage rollup (node/day) — project-scoped; 403 for team viewers.
   getUsage: () => getJSON<UsageReport>("/api/usage"),
+
+  // Cross-room aggregation (read-only). 404 when summary export is disabled.
+  getSummary: () => getJSON<SignedSummary>("/api/summary"),
+
+  async aggregate(summaries: SignedSummary[]): Promise<AggregateResult> {
+    const res = await fetch("/api/aggregate", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ summaries }),
+    });
+    if (!res.ok) throw new Error(`aggregate: HTTP ${res.status}`);
+    return (await res.json()) as AggregateResult;
+  },
 
   // Presence: who's viewing this project (name/role for team auth; anonymous
   // count for local-token). Project-scoped via headers.

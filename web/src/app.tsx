@@ -10,6 +10,7 @@ import { InboxDrawer } from "./components/InboxDrawer";
 import { PresenceIndicator } from "./components/PresenceIndicator";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { AuthPanel } from "./components/AuthPanel";
+import { AggregationPanel } from "./components/AggregationPanel";
 import { CostPanel } from "./components/CostPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { HealthDot } from "./components/HealthDot";
@@ -23,7 +24,7 @@ import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
-type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "auth";
+type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "agg" | "auth";
 
 function GroveMark() {
   return (
@@ -340,6 +341,14 @@ export function App() {
             </button>
             <button
               type="button"
+              data-view="agg"
+              className={cx("dr-tab", view === "agg" && "is-active")}
+              onClick={() => setView("agg")}
+            >
+              {t("tab.agg")}
+            </button>
+            <button
+              type="button"
               data-view="auth"
               className={cx("dr-tab", view === "auth" && "is-active")}
               onClick={() => setView("auth")}
@@ -418,6 +427,8 @@ export function App() {
             />
           ) : view === "cost" ? (
             <CostPanel projectTick={projectTick} />
+          ) : view === "agg" ? (
+            <AggregationPanel projectTick={projectTick} />
           ) : view === "auth" ? (
             <AuthPanel />
           ) : (
