@@ -4,6 +4,39 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.15.0] — v1.14 (2026-06-04)
+
+Reach the safety controls from Slack. Auto-started after v1.13.0. Remote control, not remote
+automation — every Slack action carries the v1.13 gates.
+
+### Slack command surface v1 (off by default)
+
+- **status / approve / abort / killswitch** from Slack, each safety-gated:
+  - **Role-gated** — Slack identity maps to a member; only operator/admin can approve/abort/
+    arm-kill; viewers and unmapped identities are rejected before any mutating preview.
+  - **Preview → confirm** — a command returns a preview; execution needs an explicit confirm
+    with a one-shot, expiring confirmation id. The id store is mutex-guarded so owner-check +
+    consume is a single critical section — exactly-once even under concurrent confirms; a
+    non-owner can't burn the owner's id.
+  - **Reuses the v1.13 execution path** — approve/abort/kill go through the same store
+    transitions; no second path that bypasses a gate (reviewer confirmed no direct-execute).
+  - **killswitch node** is validated against the project registry allowlist (typo / unexposed
+    node rejected); project-scoped (no cross-project control).
+  - **Audited** (actor = Slack identity) and **redacted** (no token/path/lease in any
+    preview/status/error). main() wires the commands only under --enable-commands.
+
+### Quality / safety
+
+- Adversarial review found no gate-bypass; P1 production-wiring + owner-before-consume +
+  unknown-node-reject, then one-shot-consume atomicity (mutex) — all fixed and re-reviewed.
+  237 py tests (incl. replay, expiry, owner-griefing, unknown-node, concurrent consume), 88%
+  coverage. Slack-side feature (no new HTTP endpoint); web e2e unchanged at 232/232.
+
+### Deferred (→ v1.15)
+
+- Mobile approval/kill-switch surface, execution timeline visualization, multi-machine
+  read-only aggregation, cross-room handoff, cost/usage reporting (see docs/V1_15_BRAINSTORM.md).
+
 ## [0.14.0] — v1.13 (2026-06-04)
 
 The guarded autonomous execution loop. Auto-started after v1.12.0. Built safety-first over
