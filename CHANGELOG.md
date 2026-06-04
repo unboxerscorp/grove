@@ -4,6 +4,28 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.32.0] — v1.31 (2026-06-05)
+
+Stabilization release: node-failure resilience, exhaustive UI testing, and a board that finally agrees with itself. Auto-started after v1.30.0; driven by a 3-panel-vetted Stable Loop. Exit criteria: tree clean, `pnpm check` GREEN, real-browser `live.mjs` 102/102, e2e 697/697, board bugs 0 open.
+
+### Node-failure resilience (triumvirate)
+
+- **watchdog** (`grove watchdog`): external pane+transcript observer detecting rate-limited / usage-limit (parses `resets HH:MM`) / login-required / crashed (incl. shell-fallback) / hung; pane-scoped activity (capture hash + transcript delta, not window-shared) with durable per-session state. Health surfaced in the dashboard.
+- **recovery scheduler** (dry-run default / `--execute` only): backoff + timer re-wake, global staggered wake queue (1 concurrent, ≥90s, CAS-locked), circuit breaker (success+failure paths) — no wake-loops/storms.
+- **triumvirate**: board decision-ledger + 2/3 quorum (survives one member down), voter identity bound to the authenticated actor (no impersonation), exactly-once dispatch (idempotency + lock).
+
+### Stable Loop (exhaustive UI verification)
+
+- 2-tier harness (auto-inventory + oracle registry; isolated seed harness + thin live read-only smoke) with coverage-ratchet + K-green flake gate. Found+fixed **14 bugs**: project-load path traversal/flag-injection, master-chat CSRF, board-ws global scan, ws-ticket GC, terminal-ws silent exit, registry-only dispatch, viewer POST ws-ticket/aggregate, Tier-2 live guard hard-block, TS registry write clobber, et al.
+
+### Board status vocabulary unified
+
+- Canonical status is now **`running`** (label "In Progress"); FE columns, board, live tests, backend workflow/manual/store, and the `in_progress` alias + startup normalization all agree. Fixes the long-standing "in_progress tasks invisible / can't move cards" class of bugs.
+
+### Other
+
+- Event-driven `wait` (fs.watch, safety-poll fallback) + durable submit baseline (send→wait correlation survives crashes, fleet-wide). `grove task` CLI + skill for node self-status (start/done/review/block/ask-human). Slack live-announcement spam loop removed.
+
 ## [0.31.0] — v1.30 (2026-06-04)
 
 Four features harvested in parallel (worktree-isolated orchestrators), merged after per-branch sync. Auto-started after v1.29.0.

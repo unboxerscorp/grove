@@ -13,6 +13,8 @@ grove-web --port 8765            # open the dev-room web SPA + dashboard APIs
 grove-web --enable-node-input     # optional: operator-gated web input to node panes
 grove serve --port 8787          # optional local OpenAI-compatible chat facade
 grove delegate maker-1 "Fix auth retry handling" --body "Add tests and report risks."
+grove task start task_123 --from-status ready
+grove watchdog --json            # dry-run node health and recovery plan
 grove ask reviewer "Review the current diff"
 grove repair --all
 ```
@@ -45,6 +47,9 @@ grove repair --all
   group, agent type, workspace, and model metadata.
 - **Board-based delegation** - `grove delegate <node> "<title>"` creates an assigned
   board task; the pull executor claims it and runs it in the target real session.
+- **Task self-status CLI** - v1.31 adds `grove task start|review|done|block|ask-human`
+  so a node can durably report its own board status, reviewer handoff, block reason, or
+  human question through the same project-scoped board API.
 - **Project room model** - v1.27 makes the dashboard use one active project, one tmux
   session, and one project board. The old board selector is gone; the `"default"` board
   alias resolves to the active project's board. New projects get a `project-master`
@@ -56,13 +61,15 @@ grove repair --all
   Operators can save named board views; results are project-scoped, role-aware, and
   redacted.
 - **Immortal task board** - v1.29 makes the board render every registered task:
-  canonical workflow columns `ready`, `in_progress`, `review`, `blocked`,
-  `ask_human`, and `done` are always visible, unknown statuses fall into a catch-all
+  canonical workflow columns `ready`, `running`, `review`, `blocked`, `ask_human`, and
+  `done` are always visible, unknown statuses fall into a catch-all
   column, and completed work remains on the board instead of vanishing.
-- **Status discipline and review** - tasks move through ready/start, in-progress,
-  review, and done, with blocked/ask-human as explicit side states. Manual status
-  changes and reviewer changes use the board as source of truth; each task can carry
-  an assignee plus a per-task reviewer so reviewers can pull from the review column.
+- **Status discipline and review** - tasks move through ready/start, running, review,
+  and done, with blocked/ask-human as explicit side states. v1.31 standardizes
+  the stored running status as `running` while keeping `in_progress`, `claimed`, and
+  `executing` as aliases. Manual status changes and reviewer changes use the board as
+  source of truth; each task can carry an assignee plus a per-task reviewer so reviewers
+  can pull from the review column.
 - **GROVE MASTER chat and org** - v1.30 makes `POST /api/master/chat` produce real
   read-only answers from scoped project, org, and board facts while keeping action
   proposals as gated previews. The org view adds a cross-project GROVE MASTER root
@@ -93,10 +100,17 @@ grove repair --all
   bugs, feedback, tasks, or questions from Slack; task creation stays gated/audited,
   and answer-only or human-gate replies flow back through Slack threads and board
   comments. `/api/slack/test` is still being upgraded from a stub to a real send.
-- **Event-driven turn detection** - transcript/event watchers wake waits promptly,
-  with deadline-bounded fallbacks so waits do not hang forever.
+- **Event-driven wait and durable submit** - transcript/event watchers wake waits
+  promptly, with deadline-bounded fallbacks so waits do not hang forever. v1.31
+  hardens send-to-wait correlation so submitted turns survive crashes and can still be
+  matched to durable terminal events.
 - **Repair and lifecycle tools** - `repair`, `rebind`, and `despawn` recover stale
   pane bindings, reattach broken transcripts, and tear down nodes safely.
+- **Node failure resilience** - v1.31 adds `grove watchdog` for external pane and
+  transcript health: rate-limit, usage-limit, login-required, crash/shell-fallback, and
+  hung detection. The recovery scheduler is dry-run by default, uses backoff, timer
+  re-wake, a staggered one-at-a-time wake queue, and circuit breakers; quorum decisions
+  use a decision-ledger with 2/3 approval and idempotent dispatch.
 - **Project portability** - `new-project`, `load-project`, `export-project`, and
   `import-project` support local project rooms and portable bundles with machine-local
   paths, sessions, transcripts, and secrets stripped.
@@ -166,9 +180,11 @@ grove repair --all
   per-member usage rolls up measured runs/tokens/cost, operator-set soft quotas warn
   and queue/throttle instead of hard-killing running work, and host-pressure signals
   show when local capacity is saturated. agy cost stays unknown when no local source exists.
-- **Release hardening** - v1.29 expands backend and real-server e2e coverage around
-  board visibility, status aliases, task/reviewer mutations, project scope,
-  validation negatives, concurrency, and viewer/operator gates.
+- **Stable Loop release hardening** - v1.31 adds a 2-tier exhaustive verification
+  harness: inventory plus oracle registry, isolated seed checks, and thin live
+  read-only smoke. The stabilization pass fixed 14 safety/runtime bugs across
+  path-traversal and flag-injection guards, CSRF, WebSocket scope/lifecycle,
+  registry clobbering, viewer permissions, Tier-2 live guards, and board status drift.
 
 ## Concepts
 
@@ -186,9 +202,9 @@ grove.yaml / project scaffold
 The board is the source of truth for delegated work. Orchestrators assign by creating
 tasks; executors claim, heartbeat, complete, block, unblock, and comment. The dashboard
 is a cockpit over that same state, plus live terminals for the actual sessions. The
-default workflow is ready -> in_progress/running -> review -> done, with blocked and
-ask-human surfaced explicitly; legacy running/complete-style aliases are normalized for
-display so old tasks still render.
+default workflow is ready -> running -> review -> done, with blocked and ask-human
+surfaced explicitly; legacy `in_progress`/claimed/executing and complete-style aliases
+are normalized for display so old tasks still render.
 
 ## Quick start
 
@@ -242,8 +258,10 @@ mypy strict, and pytest. Python checks use `uv`.
 | `grove up [--config f]`                  | start or adopt the tmux org chart              |
 | `grove serve [--port 8787]`              | run a local OpenAI-compatible chat facade      |
 | `grove status`                           | show node state, liveness, and recent activity |
+| `grove watchdog [--execute]`             | inspect health and optionally run one recovery |
 | `grove spawn <node>`                     | create a persistent node                       |
 | `grove delegate <node> "<title>"`        | create an assigned board task                  |
+| `grove task start/review/done ...`       | update an existing board task status           |
 | `grove send <node> "<msg>"`              | send a non-blocking message to a node          |
 | `grove wait <node>`                      | wait for the node's current turn to finish     |
 | `grove ask <node> "<msg>"`               | send and wait in one command                   |
@@ -265,6 +283,16 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   and audited.
 - Autonomous pickup and guarded execution are default OFF and require explicit gates,
   approval, concurrency 1, kill-switch checks, and prepared dispatch validation.
+- Watchdog recovery is not an always-on restart loop. `grove watchdog` observes pane
+  and transcript health and plans recovery in dry-run mode by default; `--execute`
+  performs at most one due action under backoff, timer re-wake, global staggering,
+  CAS locks, and circuit breakers. Login-required states stay manual.
+- Triumvirate decisions use the board decision-ledger with 2/3 quorum, authenticated
+  voter identity, idempotency keys, and dispatch locks so a repeated request cannot
+  impersonate a voter or double-dispatch.
+- Stable Loop live checks are guarded and read-only where they touch a real room. The
+  v1.31 two-tier harness keeps isolated seed tests separate from thin live smoke so
+  exhaustive verification does not mutate an operator's active project by accident.
 - The v1.24 left sidebar is a layout-only navigation change; the responsive drawer does
   not add a backend mutation or safety surface.
 - The v1.25 command palette is navigation-only. Cmd-K opens views/drawers or routes to
@@ -287,10 +315,16 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   into a canonical column or catch-all, `done` stays visible, and terminal task buckets
   are limited to done/deleted/cancelled/deferred in the product model. Deletion is
   admin-only soft-delete when exposed; no hard-delete path is part of normal task flow.
+- The canonical in-progress task status is `running`, labeled "In Progress" in the UI.
+  Legacy `in_progress`, `claimed`, and `executing` values normalize to `running` at the
+  store/API/UI boundary so old tasks remain visible and movable.
 - Manual task status and reviewer changes are board mutations. They require the same
   operator/admin state-change gate, project scope, CSRF/Origin protections, and audit
   trail as other dashboard mutations; virtual states such as `ask_human` are display
   states, not hidden alternate stores.
+- `grove task` status updates use the local `grove-web` board API and should be treated
+  as durable board mutations. Use `--from-status` and `--idempotency-key` for stale or
+  repeated executor updates; non-loopback dashboard URLs require explicit remote opt-in.
 - The dashboard follows a 1:1:1 project model: one project, one tmux session, one
   board. The `"default"` alias resolves to the active project board, not a global
   board picker. New task forms require choosing an assignee from project candidates;
