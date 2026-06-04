@@ -4,6 +4,40 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.25.0] — v1.24 (2026-06-04)
+
+Cleaner navigation + smarter notifications. Auto-started after v1.23.0; the nav change is direct
+user UI feedback.
+
+### Left sidebar navigation (user feedback)
+
+- The crowded top nav moves into a grouped left **sidebar** — 7 collapsible groups (Work / Ops /
+  Comms / Cross-room / Audit / Cost / Setup) covering all 14 views + 3 drawers. The top bar keeps
+  only the hamburger, brand, project + board select, and presence/health/auth/language.
+  Responsive: at ≤760px the sidebar is an off-canvas drawer (no 390px horizontal overflow). Pure
+  layout — every panel stays reachable; no panel lost.
+
+### Notification routing v2
+
+- On the v1.8 notifier: a saved config routes block/ask-human/anomaly events to targets by
+  condition and escalates if unacknowledged (bounded by max_escalations + target count). Wired
+  into the pull_executor (every tick + after a block) reading the stored routing state.
+  **Dry-run default** (disabled / dry_run → 0 sends; no config → legacy path). Config POST is
+  operator-gated + CSRF + audited + redacted; viewers 403. A "routing" dashboard view shows the
+  rules + dry-run state (operator edits behind a confirm; viewers read-only).
+
+### Quality
+
+- Reviewer: sidebar P0 GO (all panels reachable, mobile, no regression); routing P1 missing
+  production-wiring fixed + re-reviewed (dry-run default, bounded escalation, operator/CSRF/audit/
+  redaction). 276 py tests; web e2e 620/620 (+49). **grove-dev now dogfoods grove**: the dev team
+  is constituted as grove org groups (grove-dev / review) and its work is tracked on the dev-room
+  board in the live dashboard.
+
+### Deferred (→ v1.25)
+
+- Slack digest/reminder, optional per-user sandbox v0, command palette (see docs/V1_25_BRAINSTORM.md).
+
 ## [0.24.0] — v1.23 (2026-06-04)
 
 Advisory ops signals. Auto-started after v1.22.0. Usage/cost trend + anomaly + forecast over the

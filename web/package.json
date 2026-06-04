@@ -1,7 +1,7 @@
 {
   "name": "@grove/dev-room-web",
   "private": true,
-  "version": "0.24.0",
+  "version": "0.25.0",
   "description": "Grove Dev Room — standalone single-page app served by the grove web server at /. No external plugin host.",
   "type": "module",
   "scripts": {

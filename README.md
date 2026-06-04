@@ -20,9 +20,13 @@ grove repair --all
 
 - **Real tmux agent tree** - bring up an org chart of `codex`, `claude`, and `agy`
   nodes; each node is a live tmux pane with adapter-specific turn detection.
-- **Web dev-room SPA** - `grove-web` serves the board, org chart, live terminal viewer, project switcher,
-  auth/status panels, audit drawer, cost/usage views, execution timeline, aggregation,
-  and handoff surfaces.
+- **Web dev-room SPA** - `grove-web` serves the board, org chart, live terminal
+  viewer, project switcher, auth/status panels, audit drawer, cost/usage views,
+  execution timeline, aggregation, and handoff surfaces.
+- **Grouped sidebar navigation** - v1.24 moved the crowded top nav into a grouped,
+  collapsible left sidebar from user UI feedback. It keeps every panel reachable and
+  collapses into a responsive drawer on narrow screens; it is a layout change, not a
+  new backend or safety surface.
 - **Chat-completions facade** - `grove serve` is a local OpenAI-compatible
   `/v1/chat/completions` SSE facade backed by selected grove nodes. It is not the
   dashboard server.
@@ -43,6 +47,10 @@ grove repair --all
   team auth with server-side sessions, CSRF, member roles, logout, and role-gated UI/API.
 - **Audit, inbox, presence, notifications** - actor-aware audit events, decision inbox,
   board cursor replay, presence, notification rules, and deduped ask-human/blocked alerts.
+- **Notification routing v2** - v1.24 adds conditional routing and escalation for
+  blocked, ask-human, and anomaly notifications. New routing is default OFF and dry-run
+  by default; configuration is operator-gated, audited, and redacted to avoid surprise
+  outbound sends or secret/PII leaks.
 - **Routing planner** - read-only `/api/plan` recommends candidate nodes using role,
   capability, load, and cost signals. It never claims, delegates, or spawns by itself.
 - **Guarded autonomy** - autonomous pickup and the guarded execution loop are shipped
@@ -174,6 +182,11 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   and audited.
 - Autonomous pickup and guarded execution are default OFF and require explicit gates,
   approval, concurrency 1, kill-switch checks, and prepared dispatch validation.
+- The v1.24 left sidebar is a layout-only navigation change; the responsive drawer does
+  not add a backend mutation or safety surface.
+- Notification routing v2 is default OFF and dry-run by default. Operator-gated config
+  and audit are required before routing/escalation can move beyond simulation, and
+  payloads stay redacted.
 - Slack safety commands are default OFF and require role-gated preview/confirm.
 - Slack intelligent intake is default OFF (`--enable-intake`) and no-LLM. It can propose
   bug/feedback/task previews, but confirmed task creation is role-gated and audited;
