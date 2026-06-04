@@ -32,6 +32,8 @@ HUMAN_GATE_METADATA_EVENT_TYPE = "grove_human_gate"
 TRIAGE_ANNOUNCEMENT_MODE = "triage_announcement"
 INTAKE_CONFIRM_ACTION_ID = "grove_intake_confirm"
 INTAKE_ANSWER_ONLY_ACTION_ID = "grove_intake_answer_only"
+THREAD_CONTEXT_TTL_SECONDS = 600
+THREAD_CONTEXT_MAX = 200
 SLACK_SCOPES = (
     "app_mentions:read",
     "channels:history",
@@ -50,6 +52,7 @@ INTAKE_CONFIDENCE_THRESHOLD = 0.8
 SlackCommandRole = Literal["admin", "operator", "viewer"]
 SlackCommandName = Literal["approve", "abort", "killswitch", "task_create"]
 SlackIntentName = Literal["bug", "feedback", "task_request", "question", "command"]
+SlackQueryName = Literal["summary", "blocked", "running", "nodes", "usage", "ambiguous"]
 TASK_INTENTS = frozenset({"bug", "feedback", "task_request"})
 
 
@@ -247,6 +250,18 @@ class SlackIntakeProposal:
 class SlackBlockMessage:
     text: str
     blocks: tuple[Mapping[str, object], ...]
+
+
+@dataclass(frozen=True)
+class SlackReadOnlyQuery:
+    name: SlackQueryName
+    reason: str
+
+
+@dataclass(frozen=True)
+class SlackThreadContext:
+    query: SlackReadOnlyQuery
+    updated_at: float
 
 
 class BoundedSlackIntentClassifier:
@@ -660,6 +675,7 @@ class SlackConnector:
         )
         self._locks: dict[str, threading.Lock] = {}
         self._triage_announcement_dirty = True
+        self._thread_contexts: dict[str, SlackThreadContext] = {}
 
     def poll_human_gates(self) -> int:
         channel = self.human_gate.channel
@@ -788,6 +804,8 @@ class SlackConnector:
         if event.thread_ts is not None and self._handle_human_reply(event, thread_ts=thread_ts):
             return True
         if self._handle_command(event, thread_ts=thread_ts):
+            return True
+        if self._handle_read_only_query(event, thread_ts=thread_ts):
             return True
         if self._handle_intake(event, thread_ts=thread_ts):
             return True
@@ -935,6 +953,81 @@ class SlackConnector:
             if thread.task_id is None and thread.channel_id == channel:
                 return thread
         return None
+
+    def _handle_read_only_query(self, event: SlackEvent, *, thread_ts: str) -> bool:
+        config = self.command_config
+        if config is None or not config.intake_enabled:
+            return False
+        actor = config.members.get(event.user)
+        if actor is None:
+            return False
+        context_key = _thread_context_key(event, thread_ts=thread_ts)
+        context = self._thread_context(context_key)
+        query = _parse_read_only_query(event.text, context=context)
+        if query is None:
+            return False
+        actor_payload = _slack_member_actor(event.user, actor)
+        if query.name == "usage" and actor.role not in {"admin", "operator"}:
+            self._audit_slack_command(
+                command="nl_status",
+                event=event,
+                actor=actor_payload,
+                status="denied",
+                summary="usage query requires operator role",
+                payload={"query": query.name, "reason": query.reason},
+            )
+            message = _read_only_denied_message("Usage and ledger details require operator role.")
+            self.slack_client.post_message(
+                channel=event.channel,
+                text=message.text,
+                blocks=message.blocks,
+                thread_ts=thread_ts,
+            )
+            self._remember_thread_context(context_key, query)
+            return True
+        message = _build_read_only_query_message(
+            query=query,
+            board=config.board,
+            tasks=self.store.list_tasks(board=config.board, limit=100),
+            runs=self.store.list_runs_for_board(board=config.board),
+            node_names=config.node_names,
+        )
+        self._audit_slack_command(
+            command="nl_status",
+            event=event,
+            actor=actor_payload,
+            status="ok",
+            summary=f"answered {query.name} query",
+            payload={"query": query.name, "reason": query.reason},
+        )
+        self.slack_client.post_message(
+            channel=event.channel,
+            text=message.text,
+            blocks=message.blocks,
+            thread_ts=thread_ts,
+        )
+        self._remember_thread_context(context_key, query)
+        return True
+
+    def _thread_context(self, context_key: str) -> SlackThreadContext | None:
+        context = self._thread_contexts.get(context_key)
+        now = time.time()
+        if context is None:
+            return None
+        if context.updated_at + THREAD_CONTEXT_TTL_SECONDS < now:
+            self._thread_contexts.pop(context_key, None)
+            return None
+        return context
+
+    def _remember_thread_context(self, context_key: str, query: SlackReadOnlyQuery) -> None:
+        self._thread_contexts[context_key] = SlackThreadContext(query=query, updated_at=time.time())
+        if len(self._thread_contexts) <= THREAD_CONTEXT_MAX:
+            return
+        oldest_key = min(
+            self._thread_contexts,
+            key=lambda key: self._thread_contexts[key].updated_at,
+        )
+        self._thread_contexts.pop(oldest_key, None)
 
     def _handle_command(self, event: SlackEvent, *, thread_ts: str) -> bool:
         command_text = _normalize_slack_text(event.text)
@@ -2011,6 +2104,292 @@ def _select_chat_node(event: SlackEvent, route: ChatRouteConfig) -> str:
         mentioned = match.group("node")
         return route.mention_nodes.get(mentioned, mentioned)
     return route.default_node
+
+
+def _thread_context_key(event: SlackEvent, *, thread_ts: str) -> str:
+    team = _safe_slack_text(event.team)
+    channel = _safe_slack_text(event.channel)
+    thread = _safe_slack_text(thread_ts)
+    return f"{team}:{channel}:{thread}"
+
+
+def _parse_read_only_query(
+    text: str,
+    *,
+    context: SlackThreadContext | None,
+) -> SlackReadOnlyQuery | None:
+    normalized = _normalize_slack_text(text)
+    lowered = normalized.lower()
+    if not normalized:
+        return None
+    if _contains_prompt_injection(lowered):
+        return SlackReadOnlyQuery(name="ambiguous", reason="unsafe_or_ambiguous")
+    if _looks_like_task_mutation(lowered):
+        return None
+    if _contains_any(lowered, ("blocked", "stuck", "waiting", "ask-human", "막힘", "블록")):
+        return SlackReadOnlyQuery(name="blocked", reason="blocked_terms")
+    if _contains_any(lowered, ("running", "in progress", "executing", "active", "실행", "진행")):
+        return SlackReadOnlyQuery(name="running", reason="running_terms")
+    if _contains_any(
+        lowered,
+        ("usage", "ledger", "quota", "cost", "token", "tokens", "비용", "사용량"),
+    ):
+        return SlackReadOnlyQuery(name="usage", reason="usage_terms")
+    if _contains_any(lowered, ("node", "nodes", "worker", "agent", "노드", "에이전트")):
+        return SlackReadOnlyQuery(name="nodes", reason="node_terms")
+    if _contains_any(
+        lowered,
+        ("status", "summary", "board", "queue", "overview", "상태", "요약", "보드", "큐"),
+    ):
+        return SlackReadOnlyQuery(name="summary", reason="summary_terms")
+    if context is not None and _is_thread_followup(lowered):
+        return SlackReadOnlyQuery(
+            name=context.query.name, reason=f"thread_context:{context.query.name}"
+        )
+    if "?" in normalized or _contains_any(lowered, ("what", "how", "어때", "뭐", "무엇")):
+        return SlackReadOnlyQuery(name="ambiguous", reason="ambiguous_question")
+    return None
+
+
+def _looks_like_task_mutation(lowered_text: str) -> bool:
+    return _contains_any(
+        lowered_text,
+        (
+            "create task",
+            "make a task",
+            "add task",
+            "file a bug",
+            "turn this into",
+            "task:",
+            "bug:",
+            "feedback:",
+            "만들어",
+            "등록",
+            "태스크",
+        ),
+    )
+
+
+def _is_thread_followup(lowered_text: str) -> bool:
+    stripped = lowered_text.strip(" .?!")
+    return stripped in {
+        "details",
+        "more",
+        "show more",
+        "again",
+        "what about this",
+        "and this",
+        "계속",
+        "자세히",
+        "더",
+    }
+
+
+def _build_read_only_query_message(
+    *,
+    query: SlackReadOnlyQuery,
+    board: str,
+    tasks: Sequence[Task],
+    runs: Sequence[object],
+    node_names: frozenset[str],
+) -> SlackBlockMessage:
+    if query.name == "blocked":
+        return _tasks_query_message(
+            title=f"Blocked tasks on {board}",
+            tasks=[task for task in tasks if task.status == "blocked"],
+            empty="No blocked tasks.",
+        )
+    if query.name == "running":
+        return _tasks_query_message(
+            title=f"Running tasks on {board}",
+            tasks=[task for task in tasks if task.status == "running"],
+            empty="No running tasks.",
+        )
+    if query.name == "nodes":
+        return _nodes_query_message(board=board, tasks=tasks, node_names=node_names)
+    if query.name == "usage":
+        return _usage_query_message(board=board, runs=runs)
+    if query.name == "ambiguous":
+        return _ambiguous_query_message()
+    return _summary_query_message(board=board, tasks=tasks)
+
+
+def _summary_query_message(*, board: str, tasks: Sequence[Task]) -> SlackBlockMessage:
+    counts = _task_status_counts(tasks)
+    text = (
+        f"Board {board}: ready={counts['ready']} running={counts['running']} "
+        f"blocked={counts['blocked']} done={counts['done']} total={len(tasks)}"
+    )
+    blocks = (
+        {"type": "header", "text": {"type": "plain_text", "text": f"Board {board}"}},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*Ready*: {counts['ready']}  *Running*: {counts['running']}  "
+                    f"*Blocked*: {counts['blocked']}  *Done*: {counts['done']}  "
+                    f"*Other*: {counts['other']}\nTotal: {len(tasks)}"
+                ),
+            },
+        },
+    )
+    return SlackBlockMessage(text=text, blocks=blocks)
+
+
+def _tasks_query_message(*, title: str, tasks: Sequence[Task], empty: str) -> SlackBlockMessage:
+    task_lines = [
+        f"- `{_safe_slack_text(task.id)}` {_safe_slack_text(task.title)}"
+        + (f" — {_safe_slack_text(task.assignee)}" if task.assignee else "")
+        for task in tasks[:10]
+    ]
+    if len(tasks) > 10:
+        task_lines.append(f"...and {len(tasks) - 10} more.")
+    body = "\n".join(task_lines) if task_lines else empty
+    text = f"{title}\n{body}"
+    blocks = (
+        {"type": "header", "text": {"type": "plain_text", "text": title[:150]}},
+        *_mrkdwn_section_blocks(body),
+    )
+    return SlackBlockMessage(text=text, blocks=blocks)
+
+
+def _nodes_query_message(
+    *,
+    board: str,
+    tasks: Sequence[Task],
+    node_names: frozenset[str],
+) -> SlackBlockMessage:
+    running_by_node = {
+        task.assignee for task in tasks if task.status == "running" and task.assignee
+    }
+    nodes = sorted(node_names)
+    lines = [
+        f"- `{_safe_slack_text(node)}`: {'running' if node in running_by_node else 'idle'}"
+        for node in nodes[:20]
+    ]
+    if not lines:
+        lines = ["No exposed nodes are configured for Slack commands."]
+    text = f"Node status on {board}\n" + "\n".join(lines)
+    return SlackBlockMessage(
+        text=text,
+        blocks=(
+            {"type": "header", "text": {"type": "plain_text", "text": f"Nodes on {board}"[:150]}},
+            *_mrkdwn_section_blocks("\n".join(lines)),
+        ),
+    )
+
+
+def _usage_query_message(*, board: str, runs: Sequence[object]) -> SlackBlockMessage:
+    totals = _usage_totals_from_runs(runs)
+    text = (
+        f"Usage on {board}: runs={len(runs)} total_tokens={totals['total_tokens']} "
+        f"cost_usd={totals['cost_usd']}"
+    )
+    body = (
+        f"*Runs*: {len(runs)}\n"
+        f"*Total tokens*: {totals['total_tokens']}\n"
+        f"*Cost USD*: {totals['cost_usd']}\n"
+        "_Read-only best effort from explicit run metadata only._"
+    )
+    return SlackBlockMessage(
+        text=text,
+        blocks=(
+            {"type": "header", "text": {"type": "plain_text", "text": f"Usage on {board}"[:150]}},
+            *_mrkdwn_section_blocks(body),
+        ),
+    )
+
+
+def _read_only_denied_message(reason: str) -> SlackBlockMessage:
+    safe = _safe_slack_text(reason)
+    return SlackBlockMessage(
+        text=safe,
+        blocks=({"type": "section", "text": {"type": "mrkdwn", "text": f"*Denied*: {safe}"}},),
+    )
+
+
+def _ambiguous_query_message() -> SlackBlockMessage:
+    text = (
+        "Which read-only status did you mean? I can answer board summary, blocked tasks, "
+        "running tasks, usage, or node status; no task was created."
+    )
+    return SlackBlockMessage(
+        text=text,
+        blocks=(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*Which read-only status did you mean?*\n"
+                        "Try: `board summary`, `blocked tasks`, `running tasks`, "
+                        "`usage`, or `node status`."
+                    ),
+                },
+            },
+        ),
+    )
+
+
+def _task_status_counts(tasks: Sequence[Task]) -> dict[str, int]:
+    counts = {"ready": 0, "running": 0, "blocked": 0, "done": 0, "other": 0}
+    for task in tasks:
+        if task.status in counts:
+            counts[task.status] += 1
+        else:
+            counts["other"] += 1
+    return counts
+
+
+def _usage_totals_from_runs(runs: Sequence[object]) -> dict[str, object]:
+    total_tokens = 0
+    has_tokens = False
+    cost_usd = 0.0
+    has_cost = False
+    for run in runs:
+        metadata = getattr(run, "metadata", None)
+        if not isinstance(metadata, Mapping):
+            continue
+        usage = _usage_mapping(metadata)
+        tokens = _int_from_mapping(usage, "total_tokens")
+        if tokens is not None:
+            total_tokens += tokens
+            has_tokens = True
+        cost = _float_from_mapping(usage, "cost_usd")
+        if cost is not None:
+            cost_usd += cost
+            has_cost = True
+    return {
+        "total_tokens": total_tokens if has_tokens else "unknown",
+        "cost_usd": round(cost_usd, 6) if has_cost else "unknown",
+    }
+
+
+def _usage_mapping(metadata: Mapping[str, object]) -> Mapping[str, object]:
+    for key in ("usage", "token_usage", "tokenUsage", "metrics"):
+        value = metadata.get(key)
+        if isinstance(value, Mapping):
+            return value
+    return metadata
+
+
+def _int_from_mapping(mapping: Mapping[str, object], key: str) -> int | None:
+    value = mapping.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _float_from_mapping(mapping: Mapping[str, object], key: str) -> float | None:
+    value = mapping.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    return None
 
 
 def _looks_like_control_command(lowered_text: str) -> bool:
