@@ -26,7 +26,7 @@ const TASKS: Record<string, MockTask[]> = {
     { id: "G-5", title: "Task drawer: comments + runs", status: "ready", assignee: "frontend" },
     {
       id: "G-1",
-      // raw stored status "running" canonicalizes to the in_progress column.
+      // raw stored status "running" is the canonical "running" column key.
       title: "Stand up the dev-room SPA",
       status: "running",
       assignee: "frontend",
@@ -49,11 +49,12 @@ const TASKS: Record<string, MockTask[]> = {
 
 // v1.29 workflow contract — mirrors web_app.py WORKFLOW_ALIASES + _workflow_columns
 // + MANUAL_TASK_STATUS_ALIASES. Raw stored statuses map onto canonical keys; the
-// manual PATCH maps canonical inputs back to stored values (in_progress→running).
+// canonical "in progress" key is "running" (the backend's stored value), so only
+// legacy/alternate spellings need mapping onto it.
 const MOCK_WORKFLOW_ALIASES: Record<string, string> = {
-  running: "in_progress",
-  claimed: "in_progress",
-  executing: "in_progress",
+  in_progress: "running",
+  claimed: "running",
+  executing: "running",
   complete: "done",
   completed: "done",
   "ask-human": "ask_human",
@@ -76,7 +77,7 @@ const MOCK_MANUAL_STATUS_ALIASES: Record<string, string> = {
 };
 const MOCK_WORKFLOW_COLUMNS = [
   { key: "ready", status: "ready", label: "Ready", raw_statuses: ["ready"], aliases: [] as string[], virtual: false },
-  { key: "in_progress", status: "in_progress", stored_status: "running", label: "In Progress", raw_statuses: ["running", "in_progress", "claimed", "executing"], aliases: ["running", "claimed", "executing"], virtual: false },
+  { key: "running", status: "running", stored_status: "running", label: "In Progress", raw_statuses: ["running", "in_progress", "claimed", "executing"], aliases: ["in_progress", "claimed", "executing"], virtual: false },
   { key: "review", status: "review", label: "Review", raw_statuses: ["review"], aliases: [] as string[], virtual: false },
   { key: "blocked", status: "blocked", label: "Blocked", raw_statuses: ["blocked"], aliases: [] as string[], virtual: false },
   { key: "ask_human", status: "ask_human", label: "Ask Human", raw_statuses: ["blocked"], aliases: ["ask-human", "ask_human_pending"], virtual: true, source: "status=blocked and metadata.needs_human=true" },
@@ -94,11 +95,11 @@ function mockWorkflowPayload(project: string, board: string): Record<string, unk
     // No transition targets the virtual ask_human column, and none requires a
     // reason — mirrors the backend P1 contract.
     allowed_transitions: [
-      { from: "ready", to: "in_progress", requires_reason: false },
-      { from: "in_progress", to: "review", requires_reason: false },
-      { from: "in_progress", to: "done", requires_reason: false },
+      { from: "ready", to: "running", requires_reason: false },
+      { from: "running", to: "review", requires_reason: false },
+      { from: "running", to: "done", requires_reason: false },
       { from: "review", to: "done", requires_reason: false },
-      { from: "review", to: "in_progress", requires_reason: false },
+      { from: "review", to: "running", requires_reason: false },
       { from: "ready", to: "blocked", requires_reason: false },
       { from: "blocked", to: "ready", requires_reason: false },
     ],
@@ -1122,6 +1123,17 @@ function json(body: unknown): Response {
   });
 }
 
+// PR1 watchdog: per-node health, mirroring web_app.py _node_health_payload
+// (GET /api/node-health -> { project, session, nodes: [...] }). Covers a spread
+// of the six real statuses; nodes absent here render a neutral "unknown" badge.
+const MOCK_NODE_HEALTH = [
+  { node: "root", status: "healthy", reason: null, message: null, detected_at: 1780540000, reset_at: null, source: "watchdog", project: "dev10", session: "grove", updated_at: 1780540000 },
+  { node: "backend", status: "rate_limited", reason: "provider 429", message: "retry after 30s", detected_at: 1780540100, reset_at: 1780540400, source: "watchdog", project: "dev10", session: "grove", updated_at: 1780540100 },
+  { node: "frontend", status: "login_required", reason: "session expired", message: null, detected_at: 1780540200, reset_at: null, source: "watchdog", project: "dev10", session: "grove", updated_at: 1780540200 },
+  { node: "researcher", status: "crashed", reason: "exited non-zero", message: null, detected_at: 1780540300, reset_at: null, source: "watchdog", project: "dev10", session: "grove", updated_at: 1780540300 },
+  { node: "docs", status: "cooldown", reason: "post-rate-limit backoff", message: null, detected_at: 1780540400, reset_at: 1780540700, source: "watchdog", project: "dev10", session: "grove", updated_at: 1780540400 },
+];
+
 // --- mock REST --------------------------------------------------------------
 const realFetch = window.fetch.bind(window);
 window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -1133,6 +1145,13 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (p === "/api/health") {
     diag.healthFetched = true;
     return Promise.resolve(json({ ok: true, board_ok: true }));
+  }
+
+  if (p === "/api/node-health") {
+    diag.nodeHealthFetched = true;
+    const one = u.searchParams.get("node");
+    const nodes = one ? MOCK_NODE_HEALTH.filter((h) => h.node === one) : MOCK_NODE_HEALTH;
+    return Promise.resolve(json({ project: "dev10", session: "grove", nodes }));
   }
 
   if (p === "/api/status") {
@@ -2084,7 +2103,8 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   m = p.match(/^\/api\/tasks\/([^/]+)\/status$/);
   if (m && method === "PATCH") {
     // Mirror web_app.py update_task_status_endpoint: operator-only; canonical
-    // status maps to stored (in_progress→running); optional reviewer in same call.
+    // status maps to the stored value (canonical "running" stores "running";
+    // legacy "in_progress" still tolerated); optional reviewer in same call.
     if (viewerMode)
       return Promise.resolve(new Response(JSON.stringify({ detail: "task status mutation requires operator role" }), { status: 403 }));
     const id = decodeURIComponent(m[1]!);

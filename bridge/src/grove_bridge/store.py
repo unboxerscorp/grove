@@ -18,6 +18,14 @@ from typing import cast
 from grove_bridge.auth_status import redact_secret_text
 
 DONE_STATUSES = ("done", "archived")
+RUNNING_STATUS_ALIASES = ("running", "in_progress", "claimed", "executing")
+TASK_STATUS_ALIASES = {
+    "in_progress": "running",
+    "claimed": "running",
+    "executing": "running",
+    "complete": "done",
+    "completed": "done",
+}
 DECISION_VOTERS = ("codex", "claude", "agy")
 DECISION_QUORUM = 2
 NODE_HEALTH_STATUSES = frozenset(
@@ -625,8 +633,7 @@ class SQLiteBoardStore:
         clauses = ["board_id = ?"]
         params: list[object] = [board_id]
         if status is not None:
-            clauses.append("status = ?")
-            params.append(status)
+            clauses.append(_status_filter_clause("status", status, params))
         if assignee is not None:
             clauses.append("assignee = ?")
             params.append(assignee)
@@ -661,8 +668,7 @@ class SQLiteBoardStore:
         clauses = ["board_id = ?"]
         params: list[object] = [board_id]
         if status is not None:
-            clauses.append("status = ?")
-            params.append(status)
+            clauses.append(_status_filter_clause("status", status, params))
         if assignee is not None:
             clauses.append("assignee = ?")
             params.append(assignee)
@@ -1202,12 +1208,12 @@ class SQLiteBoardStore:
                   ON runs.board_id = tasks.board_id
                  AND runs.id = tasks.current_run_id
                 WHERE tasks.board_id = ?
-                  AND tasks.status = 'running'
+                  AND tasks.status IN (?, ?, ?, ?)
                   AND (tasks.claim_expires IS NULL OR tasks.claim_expires >= ?)
                   AND (tasks.assignee = ? OR runs.node_id = ?)
                 LIMIT 1
                 """,
-                (board_id, now, node_id, node_id),
+                (board_id, *RUNNING_STATUS_ALIASES, now, node_id, node_id),
             ).fetchone()
             if active_wip is not None:
                 return None
@@ -3288,6 +3294,7 @@ class SQLiteBoardStore:
             """
         )
         self._ensure_task_reviewer_column(conn)
+        self._normalize_legacy_task_statuses(conn)
 
     def _ensure_task_reviewer_column(self, conn: sqlite3.Connection) -> None:
         columns = {
@@ -3297,6 +3304,15 @@ class SQLiteBoardStore:
         }
         if "reviewer" not in columns:
             conn.execute("ALTER TABLE tasks ADD COLUMN reviewer TEXT")
+
+    def _normalize_legacy_task_statuses(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            UPDATE tasks
+            SET status = 'running'
+            WHERE status IN ('in_progress', 'claimed', 'executing')
+            """
+        )
 
     def _parents_satisfied(
         self,
@@ -3519,7 +3535,8 @@ def _saved_view_from_mapping(
     for key in ("status", "assignee", "label", "q"):
         value = sanitized.get(key)
         if isinstance(value, str) and value.strip():
-            view[key] = value.strip()[:500]
+            clean_value = value.strip()[:500]
+            view[key] = _canonical_task_status(clean_value) if key == "status" else clean_value
     limit = sanitized.get("limit")
     if isinstance(limit, int) and not isinstance(limit, bool):
         view["limit"] = max(1, min(limit, 100))
@@ -3534,6 +3551,27 @@ def _saved_view_from_mapping(
 
 def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _canonical_task_status(value: str) -> str:
+    clean = value.strip().lower().replace("-", "_")
+    return TASK_STATUS_ALIASES.get(clean, clean)
+
+
+def _task_status_filter_values(value: str) -> tuple[str, ...]:
+    canonical = _canonical_task_status(value)
+    if canonical == "running":
+        return RUNNING_STATUS_ALIASES
+    if canonical == "done":
+        return ("done", "complete", "completed")
+    return (canonical,)
+
+
+def _status_filter_clause(column: str, value: str, params: list[object]) -> str:
+    values = _task_status_filter_values(value)
+    params.extend(values)
+    placeholders = ", ".join("?" for _ in values)
+    return f"{column} IN ({placeholders})"
 
 
 def _quota_members(settings: Mapping[str, object]) -> Mapping[str, object]:

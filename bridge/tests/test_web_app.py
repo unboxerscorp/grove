@@ -1480,6 +1480,7 @@ def test_board_workflow_payload_is_project_scoped_and_aliases_statuses(
     assert payload["aliases"]["complete"] == "done"
     assert payload["aliases"]["completed"] == "done"
     columns = {column["key"]: column for column in payload["columns"]}
+    assert columns["running"]["label"] == "In Progress"
     assert columns["running"]["aliases"] == ["in_progress", "claimed", "executing"]
     assert columns["ask_human"]["virtual"] is True
     assert columns["done"]["raw_statuses"] == ["done", "complete", "completed"]

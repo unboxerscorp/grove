@@ -8220,7 +8220,7 @@ def _workflow_columns() -> list[dict[str, object]]:
         {
             "key": "running",
             "status": "running",
-            "label": "Running",
+            "label": "In Progress",
             "raw_statuses": ["running", "in_progress", "claimed", "executing"],
             "aliases": ["in_progress", "claimed", "executing"],
             "virtual": False,

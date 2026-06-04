@@ -568,7 +568,7 @@ async function main() {
       return {
         addButtons: document.querySelectorAll(".dr-col__add").length,
         readyHasAdd: !!document.querySelector('.dr-col[data-col="ready"] .dr-col__add'),
-        progressHasAdd: !!document.querySelector('.dr-col[data-col="in_progress"] .dr-col__add'),
+        progressHasAdd: !!document.querySelector('.dr-col[data-col="running"] .dr-col__add'),
         reviewHasAdd: !!document.querySelector('.dr-col[data-col="review"] .dr-col__add'),
         blockedHasAdd: !!document.querySelector('.dr-col[data-col="blocked"] .dr-col__add'),
         askHumanHasAdd: !!document.querySelector('.dr-col[data-col="ask_human"] .dr-col__add'),
@@ -917,7 +917,7 @@ async function main() {
     // socket is up. COLUMNS: triage,todo,scheduled,ready,running,blocked,review,done.
     await page.waitForSelector(".dr-spark.is-on", { timeout: 8000 });
     const boardLiveSpark = await page.evaluate(() => !!document.querySelector(".dr-spark.is-on"));
-    const RUNNING_COL = 1; // in_progress (canonical order)
+    const RUNNING_COL = 1; // running (canonical order: ready, running, ...)
     const DONE_COL = 5;
     const colIndexOf = (id) =>
       page.evaluate((tid) => {

@@ -88,6 +88,69 @@ def test_task_reviewer_column_migrates_and_status_reviewer_updates_audit(
     assert store.list_audit_events(board="main", action="reviewer-change")
 
 
+def test_legacy_running_statuses_normalize_filter_and_count_as_wip(tmp_path: Path) -> None:
+    db_path = tmp_path / "board.db"
+    store = SQLiteBoardStore(db_path)
+    legacy_in_progress = store.create_task(
+        board="main",
+        title="Legacy in-progress",
+        body=None,
+        assignee="codex-a",
+        status="in_progress",
+    )
+    legacy_claimed = store.create_task(
+        board="main",
+        title="Legacy claimed",
+        body=None,
+        assignee="codex-b",
+        status="claimed",
+    )
+    legacy_executing = store.create_task(
+        board="main",
+        title="Legacy executing",
+        body=None,
+        assignee="codex-c",
+        status="executing",
+    )
+
+    reopened = SQLiteBoardStore(db_path)
+
+    assert reopened.get_task(board="main", task_id=legacy_in_progress.id).status == "running"
+    assert reopened.get_task(board="main", task_id=legacy_claimed.id).status == "running"
+    assert reopened.get_task(board="main", task_id=legacy_executing.id).status == "running"
+
+    raw_legacy = reopened.create_task(
+        board="main",
+        title="Raw legacy after migration",
+        body=None,
+        assignee="codex-a",
+    )
+    queued = reopened.create_task(board="main", title="Queued", body=None, assignee="codex-a")
+    with reopened._connect(immediate=True) as conn:
+        conn.execute("UPDATE tasks SET status = 'in_progress' WHERE id = ?", (raw_legacy.id,))
+
+    running_ids = {task.id for task in reopened.list_tasks(board="main", status="running")}
+    alias_ids = {task.id for task in reopened.list_tasks(board="main", status="in_progress")}
+    queried, _, total = reopened.query_tasks(board="main", status="running")
+    reopened.set_saved_view(board="main", name="active", filters={"status": "in_progress"})
+
+    assert raw_legacy.id in running_ids
+    assert raw_legacy.id in alias_ids
+    assert raw_legacy.id in {task.id for task in queried}
+    assert total == len(running_ids)
+    assert reopened.saved_views(board="main")["active"]["status"] == "running"
+    assert (
+        reopened.claim_next(
+            board="main",
+            assignee="codex-a",
+            node_id="codex-a",
+            ttl_seconds=60,
+            task_id=queued.id,
+        )
+        is None
+    )
+
+
 def test_node_health_persists_upserts_and_redacts_display_text(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     secret = "xoxb-" + ("a" * 44)

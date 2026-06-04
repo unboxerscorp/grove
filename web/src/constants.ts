@@ -2,10 +2,11 @@
 
 // v1.29 canonical workflow columns — the board renders the live workflow API's
 // columns when available, falling back to these (same canonical keys). Order:
-// ready → in_progress → review → blocked → ask_human → done (done always shown).
+// ready → running → review → blocked → ask_human → done (done always shown). The
+// "running" key matches the backend's stored vocabulary; its label stays "In Progress".
 export const CANONICAL_COLUMNS = [
   { key: "ready", label: "Ready" },
-  { key: "in_progress", label: "In Progress" },
+  { key: "running", label: "In Progress" },
   { key: "review", label: "Review" },
   { key: "blocked", label: "Blocked" },
   { key: "ask_human", label: "Ask Human" },
@@ -31,7 +32,6 @@ export const STATUS_COLOR: Record<string, string> = {
   scheduled: "var(--amber)",
   ready: "var(--amber)",
   running: "var(--teal)",
-  in_progress: "var(--teal)",
   blocked: "var(--coral)",
   ask_human: "var(--coral)",
   review: "var(--amber)",

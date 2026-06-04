@@ -261,7 +261,7 @@ export function BoardView(props: {
     [workflow],
   );
 
-  // Group tasks by CANONICAL status (raw "running" → "in_progress" via aliases).
+  // Group tasks by CANONICAL status (raw "claimed"/"executing" → "running" via aliases).
   const byColumn = useMemo(() => {
     const map: Record<string, Task[]> = {};
     for (const c of wfColumns) map[c.key] = [];

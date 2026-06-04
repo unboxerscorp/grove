@@ -3906,14 +3906,14 @@ async function run() {
   const ansTaskId = (ansSeed.json && ansSeed.json.id) || "";
   check("answer: seed returns id", typeof ansTaskId === "string" && ansTaskId.length > 0, ansTaskId);
 
-  // status transition: ready -> running (alias "in_progress"); persists + validates.
+  // status transition: ready -> running (canonical "running"); persists + validates.
   const toRunning = await req("PATCH", taskPath(ansTaskId, "/status"), {
     token,
     project: ALPHA,
-    body: { status: "in_progress" },
+    body: { status: "running" },
   });
-  eq("answer: PATCH status in_progress 200", toRunning.status, 200);
-  eq("answer: status alias in_progress -> running", toRunning.json && toRunning.json.status, "running");
+  eq("answer: PATCH status running 200", toRunning.status, 200);
+  eq("answer: status running persists as running", toRunning.json && toRunning.json.status, "running");
   eq(
     "answer: PATCH invalid status -> 400 (v1.28 _manual_task_status)",
     (await req("PATCH", taskPath(ansTaskId, "/status"), { token, project: ALPHA, body: { status: "/etc/passwd" } })).status,

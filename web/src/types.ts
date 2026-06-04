@@ -129,8 +129,8 @@ export interface MasterOrg {
 }
 
 // v1.29 board workflow (web_app.py _workflow_payload). canonical_statuses +
-// columns drive the board; aliases map raw stored statuses (e.g. "running") onto
-// canonical keys (e.g. "in_progress"). Done is always visible.
+// columns drive the board; aliases map raw stored statuses (e.g. "claimed") onto
+// canonical keys (e.g. "running"). Done is always visible.
 export interface WorkflowColumn {
   key: string; // canonical column key
   status: string;

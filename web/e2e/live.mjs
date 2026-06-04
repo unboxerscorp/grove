@@ -717,7 +717,7 @@ async function main() {
       const label = await textContent(page, ".proj-switcher__name");
       check("project switcher shows isolated p2-test", TEST_PROJECT_LABEL_RE.test(label), label);
       const columns = await page.$$eval(".dr-col", (cols) => cols.map((col) => col.getAttribute("data-col")));
-      check("board renders canonical workflow columns", ["ready", "in_progress", "review", "blocked", "ask_human", "done"].every((c) => columns.includes(c)), columns.join(","));
+      check("board renders canonical workflow columns", ["ready", "running", "review", "blocked", "ask_human", "done"].every((c) => columns.includes(c)), columns.join(","));
     });
 
     let lifecycleTaskId = "";
@@ -738,7 +738,7 @@ async function main() {
       check("task card title renders injection text", cardTitle.includes("<img src=x"), cardTitle);
       assertCheck("task title injection probe does not execute", !titleXss);
       await verifyTaskBodyEscaped(page, lifecycleTaskId);
-      await transitionTask(page, lifecycleTaskId, "in_progress", "running");
+      await transitionTask(page, lifecycleTaskId, "running", "running");
       await transitionTask(page, lifecycleTaskId, "review", "review");
       await transitionTask(page, lifecycleTaskId, "done", "done");
       const apiTask = await apiFetch(page, `/api/tasks/${encodeURIComponent(lifecycleTaskId)}`, { project: TEST_PROJECT });

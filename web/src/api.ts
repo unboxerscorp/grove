@@ -23,24 +23,26 @@ import type {
 
 export type { NodeHealth, NodeHealthStatus } from "./types";
 
-// Canonical FE status keys (v1.29). Raw stored statuses (e.g. "running") map onto
-// these via the workflow aliases below; the board groups + transitions use these.
-export const CANONICAL_STATUSES = ["ready", "in_progress", "review", "blocked", "ask_human", "done"] as const;
+// Canonical FE status keys (v1.29). The canonical "in progress" key is "running"
+// — matching the backend's stored vocabulary (grove-py) so the FE and bridge
+// agree on one word. The board groups + transitions use these keys directly.
+export const CANONICAL_STATUSES = ["ready", "running", "review", "blocked", "ask_human", "done"] as const;
 
 // Mirrors web_app.py WORKFLOW_ALIASES. Used as a fallback when the live workflow
-// payload is unavailable; otherwise prefer the workflow's own alias map.
+// payload is unavailable; otherwise prefer the workflow's own alias map. "running"
+// is canonical, so only legacy/other raw spellings need mapping onto it.
 const WORKFLOW_ALIASES: Record<string, string> = {
-  running: "in_progress",
-  claimed: "in_progress",
-  executing: "in_progress",
+  in_progress: "running",
+  claimed: "running",
+  executing: "running",
   complete: "done",
   completed: "done",
   "ask-human": "ask_human",
   ask_human_pending: "ask_human",
 };
 
-/** Map a raw backend task status to its canonical workflow key (e.g. running →
- *  in_progress). Prefers the live workflow's alias/column map; falls back to the
+/** Map a raw backend task status to its canonical workflow key (e.g. claimed →
+ *  running). Prefers the live workflow's alias/column map; falls back to the
  *  static alias table. Unknown statuses pass through unchanged. */
 export function canonicalStatus(raw: string | undefined, workflow?: BoardWorkflow | null): string {
   const s = (raw ?? "").trim().toLowerCase().replace(/-/g, "_");
@@ -945,8 +947,8 @@ export const api = {
   getWorkflow: (boardId: string) => getJSON<BoardWorkflow>(`/api/boards/${enc(boardId)}/workflow`),
 
   // v1.29 manual status transition (operator only). Send a CANONICAL key
-  // (ready|in_progress|review|blocked|ask_human|done); backend stores via aliases
-  // (in_progress→running). Optionally set a reviewer in the same call.
+  // (ready|running|review|blocked|ask_human|done) — these match the backend's
+  // stored vocabulary directly. Optionally set a reviewer in the same call.
   async setTaskStatus(taskId: string, status: string, reviewer?: string | null): Promise<Task> {
     const body: Record<string, unknown> = { status };
     if (reviewer !== undefined) body.reviewer = reviewer;
