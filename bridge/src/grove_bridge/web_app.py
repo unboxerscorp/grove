@@ -94,7 +94,33 @@ HANDOFF_SCHEMA = "grove.handoff.v1"
 SUMMARY_ALGORITHM = "hmac-sha256"
 SUMMARY_OTHER_BUCKET = "other"
 SUMMARY_TRUSTED_KEYS_FILENAME = "summary-trusted-keys.json"
-SUMMARY_TASK_STATUSES = frozenset({"ready", "running", "blocked", "done", "archived"})
+SUMMARY_TASK_STATUSES = frozenset({"ready", "running", "blocked", "review", "done", "archived"})
+MANUAL_TASK_STATUS_ALIASES = {
+    "ready": "ready",
+    "in_progress": "running",
+    "running": "running",
+    "claimed": "running",
+    "executing": "running",
+    "review": "review",
+    "done": "done",
+    "complete": "done",
+    "completed": "done",
+    "blocked": "blocked",
+    "archived": "archived",
+}
+WORKFLOW_ALIASES = {
+    "running": "in_progress",
+    "claimed": "in_progress",
+    "executing": "in_progress",
+    "complete": "done",
+    "completed": "done",
+    "ask-human": "ask_human",
+    "ask_human_pending": "ask_human",
+}
+WORKFLOW_OPEN_STATUSES = frozenset(
+    {"ready", "running", "in_progress", "claimed", "executing", "review", "blocked", "ask_human"}
+)
+WORKFLOW_DONE_STATUSES = frozenset({"done", "archived", "complete", "completed"})
 SUMMARY_RUN_STATUSES = frozenset({"running", "ok", "blocked", "failed", "released"})
 SUMMARY_NODE_STATUSES = frozenset({"running", "idle", "error", "blocked", "dead", "stale"})
 SUMMARY_NODE_AGENTS = frozenset({"codex", "claude", "antigravity", "agy"})
@@ -325,6 +351,7 @@ class TaskCreatePayload(BaseModel):
     title: str = Field(max_length=500)
     body: str | None = Field(default=None, max_length=20_000)
     assignee: str | None = Field(default=None, max_length=500)
+    reviewer: str | None = Field(default=None, max_length=500)
     status: str = Field(default="ready", min_length=1, max_length=100)
     priority: int = 0
 
@@ -345,6 +372,15 @@ class TaskCreatePayload(BaseModel):
         if isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()) is not None:
             return int(value.strip())
         return value
+
+
+class TaskStatusPayload(BaseModel):
+    status: str = Field(min_length=1, max_length=100)
+    reviewer: str | None = Field(default=None, max_length=500)
+
+
+class TaskReviewerPayload(BaseModel):
+    reviewer: str | None = Field(default=None, max_length=500)
 
 
 class NodeCreatePayload(BaseModel):
@@ -1018,6 +1054,7 @@ def create_app(
         )
         result = {
             **result,
+            "display_name": _project_display_name(created_name, _load_registry(created_config)),
             "node_count": _project_node_count(created_config),
             "default_assignee": PROJECT_MASTER_NODE_NAME,
             "project_master": project_master,
@@ -1077,6 +1114,13 @@ def create_app(
     def empty_board_tasks_post_endpoint(request: Request) -> None:
         _require_operator_state_change(request, detail="task mutation requires operator role")
         raise HTTPException(status_code=400, detail="board id is required")
+
+    @app.get("/api/boards/{board_id}/workflow")
+    def board_workflow_endpoint(request: Request, board_id: str) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        resolved_board = _resolve_board_id(board_id, project=project)
+        return _workflow_payload(project=project, board=resolved_board)
 
     @app.get("/api/boards/{board_id}/tasks")
     def board_tasks_endpoint(
@@ -1253,13 +1297,16 @@ def create_app(
         project = resolve_project(request)
         actor = _actor_payload(auth)
         assignee = _validated_task_assignee(payload.assignee, project=project)
+        reviewer = _validated_task_reviewer(payload.reviewer, project=project)
+        status_value = _manual_task_status(payload.status)
         resolved_board = _resolve_board_id(board_id, project=project)
         task = _store(request).create_task(
             board=resolved_board,
             title=title,
             body=payload.body,
             assignee=assignee,
-            status=payload.status,
+            reviewer=reviewer,
+            status=status_value,
             priority=payload.priority,
             created_by=_actor_id(actor),
         )
@@ -1274,6 +1321,17 @@ def create_app(
                 payload={"project": project.name, "to_node": task.assignee},
                 summary=task.title,
             )
+        if task.reviewer:
+            _store(request).add_audit_event(
+                board=resolved_board,
+                kind="audit.task.reviewer",
+                actor=actor,
+                action="reviewer-set",
+                target={"type": "task", "id": task.id, "reviewer": task.reviewer},
+                task_id=task.id,
+                payload={"project": project.name, "to_reviewer": task.reviewer},
+                summary=task.title,
+            )
         return _task_payload(task)
 
     @app.get("/api/tasks/{task_id}")
@@ -1281,6 +1339,58 @@ def create_app(
         _require_auth(request)
         project = resolve_project(request)
         return _task_payload(_task_for_project(_store(request), task_id, project=project))
+
+    @app.patch("/api/tasks/{task_id}/status")
+    def update_task_status_endpoint(
+        request: Request,
+        task_id: str,
+        payload: TaskStatusPayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="task status mutation requires operator role",
+        )
+        project = resolve_project(request)
+        task = _task_for_project(_store(request), task_id, project=project)
+        board = _store(request).board_slug_for_id(task.board_id)
+        status_value = _manual_task_status(payload.status)
+        updated = _store(request).set_task_status(
+            board=board,
+            task_id=task.id,
+            status=status_value,
+            actor=_actor_payload(auth),
+        )
+        if "reviewer" in payload.model_fields_set:
+            reviewer = _validated_task_reviewer(payload.reviewer, project=project)
+            updated = _store(request).set_task_reviewer(
+                board=board,
+                task_id=task.id,
+                reviewer=reviewer,
+                actor=_actor_payload(auth),
+            )
+        return _task_payload(updated)
+
+    @app.patch("/api/tasks/{task_id}/reviewer")
+    def update_task_reviewer_endpoint(
+        request: Request,
+        task_id: str,
+        payload: TaskReviewerPayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="task reviewer mutation requires operator role",
+        )
+        project = resolve_project(request)
+        task = _task_for_project(_store(request), task_id, project=project)
+        board = _store(request).board_slug_for_id(task.board_id)
+        reviewer = _validated_task_reviewer(payload.reviewer, project=project)
+        updated = _store(request).set_task_reviewer(
+            board=board,
+            task_id=task.id,
+            reviewer=reviewer,
+            actor=_actor_payload(auth),
+        )
+        return _task_payload(updated)
 
     @app.get("/api/tasks/{task_id}/comments")
     def comments_endpoint(request: Request, task_id: str) -> list[dict[str, object]]:
@@ -1672,7 +1782,8 @@ def create_app(
     @app.get("/api/org")
     def org_endpoint(request: Request) -> dict[str, object]:
         _require_auth(request)
-        return _org_payload(resolve_project(request).config)
+        project = resolve_project(request)
+        return _org_payload(project.config, store=_store(request), project=project)
 
     @app.get("/api/slack/manifest")
     def slack_manifest_endpoint(request: Request) -> dict[str, object]:
@@ -5666,6 +5777,8 @@ def _query_task_payload(task: Task) -> dict[str, object]:
     }
     if task.assignee is not None:
         payload["assignee"] = _safe_public_text(task.assignee)
+    if task.reviewer is not None:
+        payload["reviewer"] = _safe_public_text(task.reviewer)
     if task.result is not None:
         payload["latest_summary"] = _safe_public_text(task.result)
     return payload
@@ -6110,12 +6223,107 @@ def _project_payloads(config: WebAppConfig) -> list[dict[str, object]]:
         projects.append(
             {
                 "name": session_dir.name,
+                "display_name": _project_display_name(session_dir.name, loaded),
                 "workspace": _project_workspace(session_dir, loaded),
                 "node_count": len(raw_nodes) if isinstance(raw_nodes, dict) else 0,
                 "status": _tmux_session_status(session_dir.name),
             }
         )
     return projects
+
+
+def _project_metadata(config: WebAppConfig) -> dict[str, object]:
+    registry = _load_registry(config)
+    return {
+        "name": config.registry_session,
+        "board": config.registry_session,
+        "display_name": _project_display_name(config.registry_session, registry),
+    }
+
+
+def _project_display_name(session: str, registry: Mapping[str, object]) -> str:
+    for key in ("display_name", "displayName", "title"):
+        value = _mapping_string(registry, key)
+        if value is not None:
+            return _safe_public_text(value)
+    raw_project = registry.get("project")
+    if isinstance(raw_project, Mapping):
+        project = _string_mapping(raw_project)
+        for key in ("display_name", "displayName", "title"):
+            value = _mapping_string(project, key)
+            if value is not None:
+                return _safe_public_text(value)
+    if session == "dev10":
+        return "grove-dev"
+    return _safe_public_text(session)
+
+
+def _master_org_metadata(config: WebAppConfig) -> dict[str, object]:
+    return {
+        "id": "grove-master",
+        "name": "GROVE MASTER",
+        "label": "GROVE MASTER",
+        "kind": "master",
+        "role": "orchestrator",
+        "root": True,
+        "current_project": config.registry_session,
+        "chat_target": {
+            "endpoint": "/api/master/chat",
+            "origin_surface": "floating_web_chat",
+            "project": config.registry_session,
+        },
+    }
+
+
+def _project_lead_payloads(config: WebAppConfig) -> list[dict[str, object]]:
+    projects: dict[str, dict[str, object]] = {}
+    for payload in _project_payloads(config):
+        name = payload.get("name")
+        if isinstance(name, str) and name.strip():
+            projects[name] = payload
+    if config.registry_session not in projects:
+        metadata = _project_metadata(config)
+        projects[config.registry_session] = {
+            **metadata,
+            "node_count": _project_node_count(config),
+            "status": _tmux_session_status(config.registry_session),
+        }
+    return [
+        _project_lead_payload(config, payload)
+        for payload in sorted(projects.values(), key=_project_sort_key)
+    ]
+
+
+def _project_sort_key(payload: Mapping[str, object]) -> str:
+    name = payload.get("name")
+    return name if isinstance(name, str) else ""
+
+
+def _project_lead_payload(
+    config: WebAppConfig,
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    name = _safe_public_text(payload.get("name") or config.registry_session)
+    display_name = _safe_public_text(payload.get("display_name") or name)
+    status_value = str(payload.get("status") or "unknown")
+    node_count = payload.get("node_count")
+    return {
+        "id": f"project:{name}:lead",
+        "name": LEAD_NODE_NAME,
+        "label": display_name,
+        "project": name,
+        "display_name": display_name,
+        "status": status_value,
+        "node_count": node_count if isinstance(node_count, int) else 0,
+        "current": name == config.registry_session,
+        "switch_target": name,
+        "click_action": {"type": "switch_project", "project": name},
+        "chat_target": {
+            "endpoint": "/api/master/chat",
+            "origin_surface": "floating_web_chat",
+            "project": name,
+        },
+    }
 
 
 def _project_name_from_result(result: Mapping[str, object], *, fallback: str) -> str:
@@ -6448,6 +6656,10 @@ def _assignee_candidates(config: WebAppConfig) -> list[dict[str, object]]:
     )
 
 
+def _reviewer_candidates(config: WebAppConfig) -> list[dict[str, object]]:
+    return _assignee_candidates(config)
+
+
 def _assignee_candidate_payload(
     node: NodeRecord,
     *,
@@ -6485,6 +6697,28 @@ def _validated_task_assignee(value: str | None, *, project: ProjectContext) -> s
     return assignee
 
 
+def _validated_task_reviewer(value: str | None, *, project: ProjectContext) -> str | None:
+    if value is None:
+        return None
+    reviewer = value.strip()
+    if not reviewer:
+        return None
+    if NODE_NAME_RE.fullmatch(reviewer) is None:
+        raise HTTPException(status_code=400, detail="invalid reviewer")
+    allowed = {str(candidate["name"]) for candidate in _reviewer_candidates(project.config)}
+    if reviewer not in allowed:
+        raise HTTPException(status_code=400, detail="reviewer is not in project")
+    return reviewer
+
+
+def _manual_task_status(value: str) -> str:
+    clean = value.strip().lower().replace("-", "_")
+    status_value = MANUAL_TASK_STATUS_ALIASES.get(clean)
+    if status_value is None:
+        raise HTTPException(status_code=400, detail="invalid task status")
+    return status_value
+
+
 def _org_node_records(config: WebAppConfig) -> list[NodeRecord]:
     nodes = _registry_node_records(config)
     if _project_master_exists(config) and not any(
@@ -6496,7 +6730,160 @@ def _org_node_records(config: WebAppConfig) -> list[NodeRecord]:
     return sorted(nodes, key=lambda node: node["name"])
 
 
-def _org_payload(config: WebAppConfig) -> dict[str, object]:
+def _delegation_payload(
+    store: SQLiteBoardStore | None,
+    *,
+    project: ProjectContext | None,
+) -> dict[str, object]:
+    if store is None or project is None:
+        return {"current": [], "history": [], "mode_labels": _delegation_mode_labels()}
+    return {
+        "current": _current_delegation_snapshot(store, project=project),
+        "history": _delegation_history_summary(store, project=project),
+        "mode_labels": _delegation_mode_labels(),
+    }
+
+
+def _delegation_mode_labels() -> dict[str, str]:
+    return {
+        "current": "Current delegation: open tasks only",
+        "history": "Delegation history: audit trail summary",
+    }
+
+
+def _current_delegation_snapshot(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+) -> list[dict[str, object]]:
+    tasks = [
+        task
+        for task in store.list_tasks(board=project.board)
+        if _workflow_status_for_task(task) not in WORKFLOW_DONE_STATUSES
+    ]
+    edges: dict[tuple[str, str, str], dict[str, object]] = {}
+    for task in tasks:
+        if task.assignee is not None:
+            _add_current_delegation_edge(
+                edges,
+                from_id=task.created_by or LEAD_NODE_NAME,
+                to_id=task.assignee,
+                kind="implementation",
+                task=task,
+            )
+        if task.reviewer is not None:
+            _add_current_delegation_edge(
+                edges,
+                from_id=task.assignee or task.created_by or LEAD_NODE_NAME,
+                to_id=task.reviewer,
+                kind="review_pool",
+                task=task,
+            )
+    return sorted(edges.values(), key=lambda edge: (str(edge["from"]), str(edge["to"])))
+
+
+def _add_current_delegation_edge(
+    edges: dict[tuple[str, str, str], dict[str, object]],
+    *,
+    from_id: str,
+    to_id: str,
+    kind: str,
+    task: Task,
+) -> None:
+    key = (from_id, to_id, kind)
+    edge = edges.setdefault(
+        key,
+        {
+            "from": _safe_public_text(from_id),
+            "to": _safe_public_text(to_id),
+            "kind": kind,
+            "task_ids": [],
+            "count": 0,
+            "latest_assigned_at": task.created_at,
+            "oldest_open_updated_at": task.updated_at,
+            "stale": False,
+            "label": "Current delegation: open tasks",
+        },
+    )
+    task_ids = cast(list[str], edge["task_ids"])
+    task_ids.append(task.id)
+    edge["count"] = _edge_int(edge, "count") + 1
+    edge["latest_assigned_at"] = max(_edge_int(edge, "latest_assigned_at"), task.created_at)
+    edge["oldest_open_updated_at"] = min(_edge_int(edge, "oldest_open_updated_at"), task.updated_at)
+
+
+def _edge_int(edge: Mapping[str, object], key: str) -> int:
+    value = edge.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _delegation_history_summary(
+    store: SQLiteBoardStore,
+    *,
+    project: ProjectContext,
+) -> list[dict[str, object]]:
+    interesting_actions = {
+        "assign",
+        "delegate",
+        "reviewer-set",
+        "reviewer-change",
+        "reviewer-clear",
+        "status-transition",
+        "review-claim",
+        "review-complete",
+    }
+    history: list[dict[str, object]] = []
+    for event in store.list_audit_events(board=project.board, limit=100):
+        action = _mapping_string(event.payload, "action") or ""
+        if action not in interesting_actions:
+            continue
+        history.append(_delegation_history_event_payload(event, action=action))
+    return history
+
+
+def _delegation_history_event_payload(event: BoardEvent, *, action: str) -> dict[str, object]:
+    actor = event.payload.get("actor")
+    actor_map = _string_mapping(actor) if isinstance(actor, Mapping) else {}
+    target = event.payload.get("target")
+    target_map = _string_mapping(target) if isinstance(target, Mapping) else {}
+    to_value = (
+        _mapping_string(event.payload, "to_node")
+        or _mapping_string(event.payload, "to_reviewer")
+        or _mapping_string(target_map, "node")
+        or _mapping_string(target_map, "reviewer")
+        or _mapping_string(target_map, "id")
+    )
+    from_value = (
+        _mapping_string(event.payload, "from_node")
+        or _mapping_string(actor_map, "login")
+        or _mapping_string(actor_map, "id")
+        or LEAD_NODE_NAME
+    )
+    return {
+        "event_id": event.id,
+        "cursor": event.cursor,
+        "task_id": event.task_id,
+        "action": _safe_public_text(action),
+        "from": _safe_public_text(from_value),
+        "to": _safe_public_text(to_value or ""),
+        "ts": event.created_at,
+        "label": f"Delegation history: {_safe_public_text(action)}",
+    }
+
+
+def _workflow_status_for_task(task: Task) -> str:
+    raw_status = task.status.strip().lower().replace("-", "_")
+    if raw_status == "blocked" and bool(task.metadata.get("needs_human")):
+        return "ask_human"
+    return WORKFLOW_ALIASES.get(raw_status, raw_status)
+
+
+def _org_payload(
+    config: WebAppConfig,
+    *,
+    store: SQLiteBoardStore | None = None,
+    project: ProjectContext | None = None,
+) -> dict[str, object]:
     nodes = _org_node_records(config)
     names = {node["name"] for node in nodes}
     children_by_parent: dict[str, list[str]] = {name: [] for name in names}
@@ -6536,6 +6923,9 @@ def _org_payload(config: WebAppConfig) -> dict[str, object]:
 
     return {
         "session": config.registry_session,
+        "project": _project_metadata(config),
+        "master": _master_org_metadata(config),
+        "project_leads": _project_lead_payloads(config),
         "roots": sorted(node["name"] for node in nodes if not parent_by_node[node["name"]]),
         "groups": [
             {"name": group, "parent": LEAD_NODE_NAME, "nodes": sorted(group_nodes)}
@@ -6545,6 +6935,8 @@ def _org_payload(config: WebAppConfig) -> dict[str, object]:
         "default_assignee": _default_assignee(config),
         "assignee_candidates": _assignee_candidates(config),
         "master_org": _master_org_payload(config),
+        "reviewer_candidates": _reviewer_candidates(config),
+        "delegations": _delegation_payload(store, project=project) if store is not None else {},
     }
 
 
@@ -6794,7 +7186,7 @@ def _node_connect_payload(
 ) -> dict[str, object]:
     pane = node["tmux_pane"]
     match = TMUX_PANE_RE.fullmatch(pane)
-    if match is None or not _pane_allowed(pane, config=project.config):
+    if match is None or not _pane_input_allowed(pane, config=project.config):
         raise HTTPException(status_code=404, detail="node not found")
     session = match.group("session")
     return {
@@ -7216,6 +7608,97 @@ def _board_payload(board: Board) -> dict[str, object]:
     return {"id": board.id, "name": board.title, "task_count": board.task_count}
 
 
+def _workflow_payload(*, project: ProjectContext, board: str) -> dict[str, object]:
+    columns = _workflow_columns()
+    labels = {str(column["key"]): str(column["label"]) for column in columns}
+    return {
+        "project": project.name,
+        "board": board,
+        "done_visible": True,
+        "canonical_statuses": [column["key"] for column in columns],
+        "columns": columns,
+        "labels": labels,
+        "aliases": WORKFLOW_ALIASES,
+        "allowed_transitions": _workflow_allowed_transitions(),
+        "manual_transition": {
+            "endpoint": "/api/tasks/{task_id}/status",
+            "method": "PATCH",
+            "body": {"status": "review", "reviewer": "optional-node"},
+        },
+    }
+
+
+def _workflow_columns() -> list[dict[str, object]]:
+    return [
+        {
+            "key": "ready",
+            "status": "ready",
+            "label": "Ready",
+            "raw_statuses": ["ready"],
+            "aliases": [],
+            "virtual": False,
+        },
+        {
+            "key": "in_progress",
+            "status": "in_progress",
+            "stored_status": "running",
+            "label": "In Progress",
+            "raw_statuses": ["running", "in_progress", "claimed", "executing"],
+            "aliases": ["running", "claimed", "executing"],
+            "virtual": False,
+        },
+        {
+            "key": "review",
+            "status": "review",
+            "label": "Review",
+            "raw_statuses": ["review"],
+            "aliases": [],
+            "virtual": False,
+        },
+        {
+            "key": "blocked",
+            "status": "blocked",
+            "label": "Blocked",
+            "raw_statuses": ["blocked"],
+            "aliases": [],
+            "virtual": False,
+        },
+        {
+            "key": "ask_human",
+            "status": "ask_human",
+            "label": "Ask Human",
+            "raw_statuses": ["blocked"],
+            "aliases": ["ask-human", "ask_human_pending"],
+            "virtual": True,
+            "source": "status=blocked and metadata.needs_human=true",
+        },
+        {
+            "key": "done",
+            "status": "done",
+            "label": "Done",
+            "raw_statuses": ["done", "complete", "completed"],
+            "aliases": ["complete", "completed"],
+            "virtual": False,
+        },
+    ]
+
+
+def _workflow_allowed_transitions() -> list[dict[str, object]]:
+    return [
+        {"from": "ready", "to": "in_progress", "requires_reason": False},
+        {"from": "ready", "to": "blocked", "requires_reason": False},
+        {"from": "in_progress", "to": "review", "requires_reason": False},
+        {"from": "in_progress", "to": "done", "requires_reason": False},
+        {"from": "in_progress", "to": "blocked", "requires_reason": False},
+        {"from": "review", "to": "done", "requires_reason": False},
+        {"from": "review", "to": "in_progress", "requires_reason": False},
+        {"from": "review", "to": "blocked", "requires_reason": False},
+        {"from": "blocked", "to": "ready", "requires_reason": False},
+        {"from": "done", "to": "review", "requires_reason": False},
+        {"from": "done", "to": "in_progress", "requires_reason": False},
+    ]
+
+
 def _task_payload(task: Task) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": task.id,
@@ -7226,6 +7709,8 @@ def _task_payload(task: Task) -> dict[str, object]:
     }
     if task.assignee is not None:
         payload["assignee"] = task.assignee
+    if task.reviewer is not None:
+        payload["reviewer"] = task.reviewer
     if task.result is not None:
         payload["latest_summary"] = task.result
     return payload

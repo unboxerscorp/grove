@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { api } from "../api";
-import { COLUMNS, cx, initials, statusColor } from "../constants";
+import { api, CANONICAL_STATUSES, canonicalStatus } from "../api";
+import { CANONICAL_COLUMNS, COLUMNS, MANUAL_STATUS_COLUMNS, cx, initials, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
-import type { AssigneeCandidate, Task } from "../types";
+import type { AssigneeCandidate, BoardWorkflow, Task } from "../types";
 
 const PRIORITIES = ["low", "normal", "high"] as const;
 
@@ -19,7 +19,9 @@ function AddTaskForm(props: { boardId: string; onCreated: () => void; onClose: (
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [assignee, setAssignee] = useState("");
+  const [reviewer, setReviewer] = useState(""); // v1.29 optional reviewer
   const [candidates, setCandidates] = useState<AssigneeCandidate[]>([]);
+  const [reviewerCands, setReviewerCands] = useState<AssigneeCandidate[]>([]);
   const [status, setStatus] = useState<string>(COLUMNS[0].key);
   const [priority, setPriority] = useState<string>("normal");
   const [busy, setBusy] = useState(false);
@@ -39,6 +41,7 @@ function AddTaskForm(props: { boardId: string; onCreated: () => void; onClose: (
             ? o.assignee_candidates
             : (o.nodes ?? []).map((n) => ({ name: n.name, role: n.role, agent: n.agent, status: n.status }));
         setCandidates(cands);
+        setReviewerCands(o.reviewer_candidates && o.reviewer_candidates.length > 0 ? o.reviewer_candidates : cands);
         const def =
           o.default_assignee && cands.some((c) => c.name === o.default_assignee)
             ? o.default_assignee
@@ -67,6 +70,7 @@ function AddTaskForm(props: { boardId: string; onCreated: () => void; onClose: (
         title: titleTrim,
         body: body.trim() || undefined,
         assignee: assignee.trim() || undefined,
+        reviewer: reviewer.trim() || undefined,
         status,
         priority,
       })
@@ -120,6 +124,21 @@ function AddTaskForm(props: { boardId: string; onCreated: () => void; onClose: (
           ))}
         </select>
         <select
+          className="dr-select dr-addform__reviewer"
+          name="reviewer"
+          value={reviewer}
+          aria-label={t("add.reviewer")}
+          onChange={(e) => setReviewer(e.target.value)}
+        >
+          <option value="">{t("add.reviewerNone")}</option>
+          {reviewerCands.map((c) => (
+            <option key={c.name} value={c.name}>
+              {c.name}
+              {c.role ? ` · ${c.role}` : ""}
+            </option>
+          ))}
+        </select>
+        <select
           className="dr-select"
           name="status"
           value={status}
@@ -169,12 +188,31 @@ export function BoardView(props: {
   const { boardId, liveTick, projectTick, boardLive, onOpenTask } = props;
   const { t } = useI18n();
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [workflow, setWorkflow] = useState<BoardWorkflow | null>(null);
+  const [isViewer, setIsViewer] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("");
   const [assigneeFilter, setAssigneeFilter] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const [adding, setAdding] = useState(false);
+
+  // Workflow (canonical columns/aliases). Falls back to local canonical columns
+  // when the endpoint is unavailable (older backend).
+  useEffect(() => {
+    let alive = true;
+    api
+      .getWorkflow(boardId)
+      .then((w) => alive && setWorkflow(w))
+      .catch(() => alive && setWorkflow(null));
+    api
+      .getMe()
+      .then((me) => alive && setIsViewer(me?.member?.role === "viewer"))
+      .catch(() => alive && setIsViewer(false));
+    return () => {
+      alive = false;
+    };
+  }, [boardId, projectTick]);
 
   useEffect(() => {
     let alive = true;
@@ -202,24 +240,54 @@ export function BoardView(props: {
     // adopted/switched, so "default" resolves against the right project board.
   }, [boardId, statusFilter, assigneeFilter, liveTick, projectTick, reloadKey, t]);
 
+  // Workflow columns (live or fallback). Done is always present + visible.
+  const wfColumns = useMemo(
+    () =>
+      workflow?.columns && workflow.columns.length > 0
+        ? workflow.columns.map((c) => ({ key: c.key, label: c.label }))
+        : CANONICAL_COLUMNS.map((c) => ({ key: c.key, label: c.label })),
+    [workflow],
+  );
+
+  // Manual status targets for the on-card dropdown: only NON-virtual workflow
+  // columns (a virtual column like ask_human is display-only — the backend rejects
+  // a manual PATCH to it). Falls back to the static non-virtual canonical list.
+  const manualStatuses = useMemo(
+    () =>
+      workflow?.columns && workflow.columns.length > 0
+        ? workflow.columns.filter((c) => c.virtual !== true).map((c) => c.key)
+        : MANUAL_STATUS_COLUMNS.map((c) => c.key),
+    [workflow],
+  );
+
+  // Group tasks by CANONICAL status (raw "running" → "in_progress" via aliases).
   const byColumn = useMemo(() => {
     const map: Record<string, Task[]> = {};
-    for (const c of COLUMNS) map[c.key] = [];
-    for (const task of tasks) (map[task.status] ??= []).push(task);
+    for (const c of wfColumns) map[c.key] = [];
+    for (const task of tasks) {
+      const key = canonicalStatus(task.status, workflow);
+      (map[key] ??= []).push(task);
+    }
     return map;
-  }, [tasks]);
+  }, [tasks, wfColumns, workflow]);
 
-  // Render the known COLUMNS plus a fallback column for any task whose status
-  // isn't in COLUMNS — otherwise those tasks vanish from the board yet still
-  // count in the total (a confusing mismatch).
+  // Render workflow columns + a fallback column for any unknown canonical key.
   const columns = useMemo(() => {
-    const known = new Set<string>(COLUMNS.map((c) => c.key));
+    const known = new Set<string>(wfColumns.map((c) => c.key));
     const extra = Object.keys(byColumn)
       .filter((k) => !known.has(k) && (byColumn[k]?.length ?? 0) > 0)
       .sort()
-      .map((k) => ({ key: k }));
-    return [...COLUMNS.map((c) => ({ key: c.key })), ...extra];
-  }, [byColumn]);
+      .map((k) => ({ key: k, label: "" }));
+    return [...wfColumns, ...extra];
+  }, [byColumn, wfColumns]);
+
+  const transition = (taskId: string, toStatus: string) => {
+    setError(null);
+    api
+      .setTaskStatus(taskId, toStatus)
+      .then(() => setReloadKey((k) => k + 1)) // refetch-safe: card moves to its new column
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : t("board.statusError")));
+  };
 
   return (
     <section className="dr-board">
@@ -237,9 +305,9 @@ export function BoardView(props: {
             aria-label={t("add.status")}
           >
             <option value="">{t("board.allStatuses")}</option>
-            {COLUMNS.map((c) => (
-              <option key={c.key} value={c.key}>
-                {statusLabel(t, c.key)}
+            {(workflow?.canonical_statuses ?? CANONICAL_STATUSES).map((k) => (
+              <option key={k} value={k}>
+                {statusLabel(t, k)}
               </option>
             ))}
           </select>
@@ -275,41 +343,64 @@ export function BoardView(props: {
         {columns.map((col) => {
           const items = byColumn[col.key] ?? [];
           return (
-            <div key={col.key} className="dr-col">
+            <div key={col.key} className="dr-col" data-col={col.key}>
               <div
                 className="dr-col__head"
                 style={{ "--accent": statusColor(col.key) } as React.CSSProperties}
               >
-                <span className="dr-col__name">{statusLabel(t, col.key)}</span>
+                <span className="dr-col__name">{col.label || statusLabel(t, col.key)}</span>
                 <span className="dr-col__n">{items.length}</span>
               </div>
               <div className="dr-col__cards">
-                {items.map((task, i) => (
-                  <button
-                    key={task.id}
-                    type="button"
-                    className="dr-card"
-                    style={{ animationDelay: `${Math.min(i, 10) * 22}ms` }}
-                    onClick={() => onOpenTask(task.id)}
-                  >
-                    {/* Title is the primary text; the raw id is only a small,
-                        de-emphasized slug (long ids are truncated + wrap). */}
-                    <span className="dr-card__title">{task.title?.trim() || shortId(task.id)}</span>
-                    <span className="dr-card__meta">
-                      {task.title?.trim() && (
-                        <span className="dr-card__id" style={{ color: statusColor(task.status) }} title={task.id}>
+                {items.map((task, i) => {
+                  const canon = canonicalStatus(task.status, workflow);
+                  return (
+                    <div
+                      key={task.id}
+                      className="dr-card"
+                      data-task={task.id}
+                      data-status={canon}
+                      style={{ animationDelay: `${Math.min(i, 10) * 22}ms` }}
+                    >
+                      {/* Title opens the drawer; the status dropdown + badges live in
+                          the meta row (a card can't be a <button> with controls). */}
+                      <button type="button" className="dr-card__open" onClick={() => onOpenTask(task.id)}>
+                        <span className="dr-card__title">{task.title?.trim() || shortId(task.id)}</span>
+                      </button>
+                      <span className="dr-card__meta">
+                        <span className="dr-card__id" style={{ color: statusColor(canon) }} title={task.id}>
                           {shortId(task.id)}
                         </span>
+                        {task.assignee && (
+                          <span className="dr-card__who" title={task.assignee}>
+                            {initials(task.assignee)}
+                          </span>
+                        )}
+                        {task.reviewer && (
+                          <span className="dr-card__reviewer" data-reviewer={task.reviewer} title={t("review.reviewer") + ": " + task.reviewer}>
+                            ⊙ {task.reviewer}
+                          </span>
+                        )}
+                      </span>
+                      {!isViewer && (
+                        <select
+                          className="dr-card__status"
+                          value={canon}
+                          aria-label={t("board.moveTo")}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => transition(task.id, e.target.value)}
+                        >
+                          {manualStatuses.map((k) => (
+                            <option key={k} value={k}>
+                              {statusLabel(t, k)}
+                            </option>
+                          ))}
+                        </select>
                       )}
-                      {task.assignee && (
-                        <span className="dr-card__who" title={task.assignee}>
-                          {initials(task.assignee)}
-                        </span>
-                      )}
-                    </span>
-                    {task.latest_summary && <span className="dr-card__sum">{task.latest_summary}</span>}
-                  </button>
-                ))}
+                      {task.latest_summary && <span className="dr-card__sum">{task.latest_summary}</span>}
+                    </div>
+                  );
+                })}
                 {!loading && items.length === 0 && <div className="dr-col__empty">{t("board.empty")}</div>}
               </div>
             </div>

@@ -1,15 +1,28 @@
 // Board columns + small presentation helpers shared across components.
 
-export const COLUMNS = [
-  { key: "triage", label: "Triage" },
-  { key: "todo", label: "Todo" },
-  { key: "scheduled", label: "Scheduled" },
+// v1.29 canonical workflow columns — the board renders the live workflow API's
+// columns when available, falling back to these (same canonical keys). Order:
+// ready → in_progress → review → blocked → ask_human → done (done always shown).
+export const CANONICAL_COLUMNS = [
   { key: "ready", label: "Ready" },
-  { key: "running", label: "Running" },
-  { key: "blocked", label: "Blocked" },
+  { key: "in_progress", label: "In Progress" },
   { key: "review", label: "Review" },
+  { key: "blocked", label: "Blocked" },
+  { key: "ask_human", label: "Ask Human" },
   { key: "done", label: "Done" },
 ] as const;
+
+// Kept for the add-task status dropdown default + any importer; canonical now.
+export const COLUMNS = CANONICAL_COLUMNS;
+
+// Virtual columns are DISPLAY-ONLY (derived server-side, e.g. ask_human = blocked
+// + needs_human). They render as board columns but must NEVER be offered as a
+// manual status target — the backend rejects a manual PATCH to them.
+export const VIRTUAL_STATUS_KEYS = new Set<string>(["ask_human"]);
+
+// Canonical columns minus virtual ones: the valid targets for a manual status
+// change (on-card dropdown + task-drawer select) when no live workflow is known.
+export const MANUAL_STATUS_COLUMNS = CANONICAL_COLUMNS.filter((c) => !VIRTUAL_STATUS_KEYS.has(c.key));
 
 // Status -> CSS custom property name for accents (defined in styles.css).
 export const STATUS_COLOR: Record<string, string> = {
@@ -18,7 +31,9 @@ export const STATUS_COLOR: Record<string, string> = {
   scheduled: "var(--amber)",
   ready: "var(--amber)",
   running: "var(--teal)",
+  in_progress: "var(--teal)",
   blocked: "var(--coral)",
+  ask_human: "var(--coral)",
   review: "var(--amber)",
   done: "var(--blue)",
 };

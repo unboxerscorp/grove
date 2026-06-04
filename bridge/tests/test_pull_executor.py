@@ -109,6 +109,7 @@ class ClaimConflictStore:
             title="Available",
             body=None,
             assignee="codex-a",
+            reviewer=None,
             status="ready",
             priority=0,
             workspace_kind="scratch",

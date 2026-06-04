@@ -4,6 +4,25 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.30.0] — v1.29 (2026-06-04)
+
+Immortal tasks + a board that never lies. Stabilization wave: the kanban model is now the source of truth, with hardened tests. Auto-started after v1.28.0.
+
+### Immortal-task board model
+
+- A registered task **never disappears**. Every status maps to a visible column (ready → in_progress/running → review → blocked → ask_human → done) plus a catch-all, so a task can **never become invisible** (root cause of the earlier "my tasks vanished" report: a status the board didn't render). The only terminal sections are **done / deleted / cancelled / deferred**. Deletion is **admin-only soft-delete** → a deleted section (no hard removal). The done column can be condensed but always shows accumulated completed work.
+- Status discipline: ready → running (on start) → **review** (handed to a reviewer) → done; reviewers pull from the review column. Per-task **reviewer** field alongside assignee.
+
+### Stabilization
+
+- Hardened backend + e2e tests (real-server `web/e2e/api.mjs` 646/646; `pnpm check` 328 passed; `web verify` PASS). Path-traversal / name-validation negatives, concurrency, and viewer/operator gates exercised.
+- **autopickup** can be enabled across all nodes (per-node + global gate); paired with the execution pipeline so an assigned READY task is picked up and answered on the board (foundation for task-only inter-node comms; pipeline hardening ongoing).
+- A 30s tmux↔registry reconciler keeps the dashboard org/node view matching the real running panes — orphan panes are auto-adopted, dead panes are marked (never silently dropped).
+
+### Master / org refinements
+
+- master-chat + org/project-switcher polish toward the cross-project GROVE MASTER view.
+
 ## [0.29.0] — v1.28 (2026-06-04)
 
 The meta-assistant chat, a node list that never lies, and the lead as a first-class node. Auto-started after v1.27.0.

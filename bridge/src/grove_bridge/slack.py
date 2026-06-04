@@ -1981,7 +1981,11 @@ class SlackConnector:
         if task.status != "blocked" or not _needs_human(task):
             return True
         author = f"slack:{event.user}"
-        self.store.add_comment_to_task(task_id=task.id, author=author, body=event.text)
+        self.store.add_comment_to_task(
+            task_id=task.id,
+            author=author,
+            body=_answer_comment_body(event.text),
+        )
         if self.store.unblock_task_by_id(task_id=task.id, actor=author):
             self.slack_client.post_message(
                 channel=event.channel,
@@ -2312,6 +2316,13 @@ def _nested_str(mapping: Mapping[str, object], key: str, nested_key: str) -> str
 
 def _needs_human(task: Task) -> bool:
     return bool(task.metadata.get("needs_human"))
+
+
+def _answer_comment_body(text: str) -> str:
+    body = text.strip()
+    if body.upper().startswith("ANSWER:"):
+        return body
+    return f"ANSWER: {body}" if body else "ANSWER:"
 
 
 def _pending_human_gate_thread(

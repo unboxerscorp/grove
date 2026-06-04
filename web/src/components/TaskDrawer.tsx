@@ -1,12 +1,90 @@
 import { useEffect, useRef, useState } from "react";
 
-import { actorLabel, api } from "../api";
+import { actorLabel, api, canonicalStatus } from "../api";
 import type { AuditEvent, HandoffPackage, PlanCandidate, PlanResult } from "../api";
-import { cx, fmtAgo, initials, statusColor } from "../constants";
+import { cx, fmtAgo, initials, MANUAL_STATUS_COLUMNS, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
-import type { Comment, Run, Task } from "../types";
+import type { AssigneeCandidate, Comment, Run, Task } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
+
+/** v1.29 workflow controls: status transition + reviewer (operator only). Both
+ *  PATCH the board store and bubble the updated task up to refresh the board. */
+function TaskWorkflow({ task, onUpdated, t }: { task: Task; onUpdated: (task: Task) => void; t: TFn }) {
+  const [reviewerCands, setReviewerCands] = useState<AssigneeCandidate[]>([]);
+  const [isViewer, setIsViewer] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .getOrg()
+      .then((o) => alive && setReviewerCands(o.reviewer_candidates ?? o.assignee_candidates ?? []))
+      .catch(() => {});
+    api
+      .getMe()
+      .then((me) => alive && setIsViewer(me?.member?.role === "viewer"))
+      .catch(() => alive && setIsViewer(false));
+    return () => {
+      alive = false;
+    };
+  }, [task.id]);
+  const canon = canonicalStatus(task.status);
+  const run = (p: Promise<Task>) => {
+    setBusy(true);
+    setErr(null);
+    p.then((u) => {
+      setBusy(false);
+      onUpdated(u);
+    }).catch((e: unknown) => {
+      setBusy(false);
+      setErr(e instanceof Error ? e.message : t("board.statusError"));
+    });
+  };
+  if (isViewer) return null; // read-only for viewers
+  return (
+    <section className="dr-drawer__section dr-workflow">
+      <h3 className="dr-drawer__h">{t("review.workflow")}</h3>
+      <div className="dr-workflow__row">
+        <label className="dr-workflow__field">
+          <span className="dr-workflow__k">{t("board.moveTo")}</span>
+          <select
+            className="dr-select dr-workflow__status"
+            value={canon}
+            disabled={busy}
+            onChange={(e) => run(api.setTaskStatus(task.id, e.target.value))}
+          >
+            {/* ask_human (virtual) is intentionally excluded — it's display-only,
+                not a manual status target. Static list: the drawer has no board
+                workflow context. */}
+            {MANUAL_STATUS_COLUMNS.map((c) => (
+              <option key={c.key} value={c.key}>
+                {statusLabel(t, c.key)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="dr-workflow__field">
+          <span className="dr-workflow__k">{t("review.reviewer")}</span>
+          <select
+            className="dr-select dr-workflow__reviewer"
+            value={task.reviewer ?? ""}
+            disabled={busy}
+            onChange={(e) => run(api.setTaskReviewer(task.id, e.target.value || null))}
+          >
+            <option value="">{t("add.reviewerNone")}</option>
+            {reviewerCands.map((c) => (
+              <option key={c.name} value={c.name}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {err && <div className="dr-workflow__err">{err}</div>}
+    </section>
+  );
+}
 
 const PHASE_GLYPH: Record<string, string> = {
   claim: "◇",
@@ -446,12 +524,12 @@ export function TaskDrawer(props: {
       <aside className="dr-drawer__panel" role="dialog" aria-modal="true" aria-label="task detail" tabIndex={-1} ref={panelRef}>
         <header className="dr-drawer__head">
           <div className="dr-drawer__id">
-            <span className="dr-drawer__ticket" style={{ color: statusColor(task?.status ?? "") }}>
+            <span className="dr-drawer__ticket" style={{ color: statusColor(canonicalStatus(task?.status)) }}>
               {task?.id ?? taskId}
             </span>
             {task?.status && (
-              <span className="dr-pill" style={{ "--accent": statusColor(task.status) } as React.CSSProperties}>
-                {statusLabel(t, task.status)}
+              <span className="dr-pill" style={{ "--accent": statusColor(canonicalStatus(task.status)) } as React.CSSProperties}>
+                {statusLabel(t, canonicalStatus(task.status))}
               </span>
             )}
           </div>
@@ -475,6 +553,12 @@ export function TaskDrawer(props: {
                   </span>
                 </span>
               )}
+              {task.reviewer && (
+                <span className="dr-fact" data-reviewer={task.reviewer}>
+                  <span className="dr-fact__k">{t("review.reviewer")}</span>
+                  <span className="dr-fact__v">⊙ {task.reviewer}</span>
+                </span>
+              )}
               {task.tenant && (
                 <span className="dr-fact">
                   <span className="dr-fact__k">{t("fact.tenant")}</span>
@@ -483,6 +567,15 @@ export function TaskDrawer(props: {
               )}
             </div>
             {task.body && <p className="dr-drawer__body">{task.body}</p>}
+
+            <TaskWorkflow
+              task={task}
+              onUpdated={(u) => {
+                setTask(u);
+                onDelegated?.(); // refresh the board (card moves) + audit
+              }}
+              t={t}
+            />
 
             <section className="dr-drawer__section dr-drawer__runs">
               <h3 className="dr-drawer__h">
