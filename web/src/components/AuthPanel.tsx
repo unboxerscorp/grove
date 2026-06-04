@@ -17,6 +17,11 @@ const GUI_FEATURES: { key: GuiFeatureKey; labelKey: string; noteKey: string }[] 
   { key: "retro-analytics", labelKey: "setup.feature.retro", noteKey: "setup.feature.retro.note" },
 ];
 
+// P1: features whose ENABLE direction is consequential (opens a real capability —
+// web→node input, Slack intake, cross-room handoff). Enabling these requires a
+// 2-step confirm (arm → confirm/cancel); DISABLING stays a single immediate POST.
+const RISK_FEATURES = new Set<GuiFeatureKey>(["node-input", "intake", "handoff"]);
+
 function AuthMark() {
   return (
     <svg className="auth__mark" viewBox="0 0 24 24" width={20} height={20} aria-hidden="true">
@@ -43,6 +48,7 @@ export function AuthPanel() {
   const [featuresLoading, setFeaturesLoading] = useState(true);
   const [featureError, setFeatureError] = useState<string | null>(null);
   const [featureBusy, setFeatureBusy] = useState<GuiFeatureKey | null>(null);
+  const [armed, setArmed] = useState<GuiFeatureKey | null>(null); // P1 risk-enable confirm
   const [isViewer, setIsViewer] = useState(false);
 
   // Keep the translator in a ref so `load` is stable — a language toggle must
@@ -106,17 +112,38 @@ export function AuthPanel() {
     window.setTimeout(() => setCopied((c) => (c === tool ? null : c)), 1500);
   };
 
-  const toggleFeature = (key: GuiFeatureKey) => {
-    const current = features?.[key];
-    if (!current || featureBusy) return;
+  // The actual mutation — a single operator-gated, CSRF-protected POST.
+  const commitFeature = (key: GuiFeatureKey, next: boolean) => {
     setFeatureBusy(key);
     setFeatureError(null);
     api
-      .setGuiFeature(key, !current.enabled)
+      .setGuiFeature(key, next)
       .then((payload) => setFeatures(payload.features))
       .catch(() => setFeatureError(tRef.current("setup.features.saveError")))
       .finally(() => setFeatureBusy(null));
   };
+
+  // P1: enabling a risk feature ARMS a confirm step (no POST yet); everything else
+  // (disabling, or any non-risk toggle) commits immediately.
+  const requestFeature = (key: GuiFeatureKey) => {
+    const current = features?.[key];
+    if (!current || featureBusy) return;
+    const next = !current.enabled;
+    if (next && RISK_FEATURES.has(key)) {
+      setFeatureError(null);
+      setArmed(key); // arm — wait for explicit confirm before POSTing
+      return;
+    }
+    setArmed(null);
+    commitFeature(key, next);
+  };
+
+  const confirmFeature = (key: GuiFeatureKey) => {
+    setArmed(null);
+    commitFeature(key, true); // the single POST happens here, on explicit confirm
+  };
+
+  const cancelFeature = () => setArmed(null); // no POST
 
   return (
     <section className="auth">
@@ -158,22 +185,45 @@ export function AuthPanel() {
                     <span className="setup-feature__label">{t(item.labelKey)}</span>
                     <span className="setup-feature__note">{t(item.noteKey)}</span>
                   </div>
-                  <button
-                    type="button"
-                    className={cx("setup-switch", enabled && "is-on")}
-                    role="switch"
-                    aria-checked={enabled}
-                    data-enabled={enabled ? "1" : "0"}
-                    disabled={featuresLoading || busy || isViewer || !state}
-                    onClick={() => toggleFeature(item.key)}
-                  >
-                    <span className="setup-switch__track">
-                      <span className="setup-switch__knob" />
-                    </span>
-                    <span className="setup-switch__text">
-                      {busy ? t("setup.features.saving") : enabled ? t("setup.features.on") : t("setup.features.off")}
-                    </span>
-                  </button>
+                  {armed === item.key ? (
+                    // P1 risk-enable confirm: arming POSTs nothing; confirm = one
+                    // POST, cancel = none. Operator-only (only operators can arm).
+                    <div className="setup-confirm" data-confirm={item.key}>
+                      <span className="setup-confirm__q">{t("setup.features.confirmEnable")}</span>
+                      <button
+                        type="button"
+                        className="dr-btn dr-btn--primary setup-confirm__yes"
+                        onClick={() => confirmFeature(item.key)}
+                      >
+                        {t("setup.features.confirm")}
+                      </button>
+                      <button
+                        type="button"
+                        className="dr-btn dr-btn--ghost setup-confirm__no"
+                        onClick={cancelFeature}
+                      >
+                        {t("setup.features.cancel")}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className={cx("setup-switch", enabled && "is-on")}
+                      role="switch"
+                      aria-checked={enabled}
+                      data-enabled={enabled ? "1" : "0"}
+                      data-risk={RISK_FEATURES.has(item.key) ? "1" : undefined}
+                      disabled={featuresLoading || busy || isViewer || !state}
+                      onClick={() => requestFeature(item.key)}
+                    >
+                      <span className="setup-switch__track">
+                        <span className="setup-switch__knob" />
+                      </span>
+                      <span className="setup-switch__text">
+                        {busy ? t("setup.features.saving") : enabled ? t("setup.features.on") : t("setup.features.off")}
+                      </span>
+                    </button>
+                  )}
                 </div>
               );
             })}

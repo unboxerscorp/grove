@@ -285,8 +285,9 @@ export interface SlackStatus {
   status: string; // not_configured | tokens_saved | bot_auth_ok | socket_connected
   last_event_at?: string | number | null;
   last_error?: string | null;
-  // v1.20 intent-triage intake (--enable-intake, default OFF). Surfaced read-only
-  // so the dashboard can show whether free-form Slack messages become gated tasks.
+  // v1.20 intent-triage intake (default OFF; operators toggle it in the Setup
+  // panel — the "intake" gui-feature). Surfaced read-only here so the dashboard
+  // can show whether free-form Slack messages become gated tasks.
   intake?: { enabled?: boolean };
 }
 
@@ -995,9 +996,10 @@ export const api = {
 
   getOrg: () => getJSON<Org>("/api/org"),
 
-  // web→node command input (operator only; 404 when --enable-node-input is off,
-  // 429 rate-limited). The live terminal streams the result. Distinct statuses
-  // map to FIXED FE messages; the raw cause is never surfaced.
+  // web→node command input (operator only; 404 when the "node-input" gui-feature
+  // is off — toggled in the Setup panel; 429 rate-limited). The live terminal
+  // streams the result. Distinct statuses map to FIXED FE messages; the raw cause
+  // is never surfaced.
   async sendNode(node: string, text: string): Promise<{ ok?: boolean; node?: string; tmux_pane?: string }> {
     const res = await fetch(`/api/nodes/${enc(node)}/send`, {
       method: "POST",
@@ -1181,13 +1183,14 @@ export const api = {
   // self-only, operator = all members. Read-only; cost/agy stay honestly unknown.
   getLedger: () => getJSON<LedgerReport>("/api/ledger"),
 
-  // Retro analytics insights (operator only; 404 when --enable-retro-analytics
-  // is off). ADVISORY + read-only — never creates/dispatches anything.
+  // Retro analytics insights (operator only; 404 when the "retro-analytics"
+  // gui-feature is off — toggled in the Setup panel). ADVISORY + read-only —
+  // never creates/dispatches anything.
   getRetroAnalytics: () => getJSON<RetroAnalytics>("/api/retro/analytics"),
 
-  // Usage trend + anomaly signals (operator only; 404 when --enable-usage-trend
-  // is off). ADVISORY + read-only — anomaly flags never throttle/abort. window ∈
-  // 7d|14d|30d (default 14d).
+  // Usage trend + anomaly signals (operator only; 404 when the "usage-trend"
+  // gui-feature is off — toggled in the Setup panel). ADVISORY + read-only —
+  // anomaly flags never throttle/abort. window ∈ 7d|14d|30d (default 14d).
   getUsageTrend: (window?: string) =>
     getJSON<UsageTrend>(`/api/usage/trend${window ? `?window=${encodeURIComponent(window)}` : ""}`),
 
@@ -1206,8 +1209,9 @@ export const api = {
     return (await res.json()) as RoutingUpdateResult;
   },
 
-  // Set a member's SOFT budget (operator only; 404 when --enable-quotas is off,
-  // 403 for viewers). Never hard-kills — exceeding only throttles new work.
+  // Set a member's SOFT budget (operator only; 404 when the "quota" gui-feature
+  // is off — toggled in the Setup panel; 403 for viewers). Never hard-kills —
+  // exceeding only throttles new work.
   async setQuota(body: QuotaUpdateBody): Promise<QuotaUpdateResult> {
     const res = await fetch("/api/quota", {
       method: "POST",

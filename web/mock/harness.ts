@@ -566,8 +566,9 @@ diag.setMasterChatEnabled = (on: boolean): void => {
 };
 let masterSeq = 0;
 
-// v1.27 web→node input (--enable-node-input). default ON so the box is
-// exercisable; diag.setNodeInput(false) -> 404. diag.nodeSendRateLimited -> 429.
+// v1.27 web→node input (the "node-input" gui-feature, toggled in the Setup
+// panel). default ON here so the box is exercisable; diag.setNodeInput(false) ->
+// 404. diag.nodeSendRateLimited -> 429.
 let nodeInputEnabled = true;
 diag.setNodeInput = (on: boolean): void => {
   nodeInputEnabled = on;
@@ -592,6 +593,12 @@ const AGG_FRESHNESS = 300;
 let handoffEnabled = true;
 diag.setHandoffEnabled = (on: boolean): void => {
   handoffEnabled = on;
+};
+
+// Slack board digest (a real Setup toggle — operators turn it on/off in the GUI).
+let digestEnabled = true;
+diag.setDigestEnabled = (on: boolean): void => {
+  digestEnabled = on;
 };
 
 const guiFeatureKeys = [
@@ -623,7 +630,7 @@ function guiFeatureEnabled(key: GuiFeatureKey): boolean {
     case "retro-analytics":
       return retroAnalyticsEnabled;
     case "digest":
-      return true;
+      return digestEnabled;
   }
 }
 
@@ -651,6 +658,7 @@ function setGuiFeatureEnabled(key: GuiFeatureKey, enabled: boolean): void {
       retroAnalyticsEnabled = enabled;
       return;
     case "digest":
+      digestEnabled = enabled;
       return;
   }
 }
@@ -1206,6 +1214,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const body = (init?.body ? JSON.parse(init.body as string) : {}) as { enabled?: boolean };
     setGuiFeatureEnabled(key, body.enabled === true);
     diag.guiFeaturePost = { key, enabled: body.enabled === true };
+    diag.guiFeaturePostCount = ((diag.guiFeaturePostCount as number) ?? 0) + 1;
     return Promise.resolve(
       json({
         ok: true,

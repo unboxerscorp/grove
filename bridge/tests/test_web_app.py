@@ -836,6 +836,123 @@ def test_gui_feature_toggles_default_off_persist_and_audit(tmp_path: Path) -> No
     assert [event.payload["enabled"] for event in audits] == [True, True, True]
 
 
+def test_gui_feature_gui_override_wins_over_startup_flags_and_documents_digest(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(
+        tmp_path,
+        store,
+        quota_enabled=True,
+        slack_intake_enabled=True,
+        node_input_enabled=True,
+        summary_export_enabled=True,
+        handoff_enabled=True,
+        usage_trend_enabled=True,
+        retro_analytics_enabled=True,
+    )
+    headers = auth_headers(client)
+    flag_features = (
+        "quota",
+        "intake",
+        "node-input",
+        "summary",
+        "handoff",
+        "usage-trend",
+        "retro-analytics",
+    )
+
+    initial = client.get("/api/gui-features", headers=headers).json()["features"]
+
+    for feature in flag_features:
+        assert initial[feature]["enabled"] is True
+        assert initial[feature]["configured"] is False
+        assert initial[feature]["source"] == "config"
+    assert initial["digest"]["enabled"] is False
+    assert initial["digest"]["source"] == "default"
+    assert initial["digest"]["runtime_contract"] == {
+        "control": "persisted-board-setting",
+        "persistence": "boards.settings_json.gui_features.digest",
+        "runtime_surface": "grove-slack digest polling",
+        "default_enabled": False,
+    }
+
+    for feature in flag_features:
+        response = client.post(
+            f"/api/gui-features/{feature}",
+            headers=headers,
+            json={"enabled": False},
+        )
+        assert response.status_code == 200
+        assert response.json()["feature"] == {
+            "enabled": False,
+            "configured": True,
+            "source": "gui",
+        }
+
+    digest = client.post(
+        "/api/gui-features/digest",
+        headers=headers,
+        json={"enabled": True},
+    )
+    updated = client.get("/api/gui-features", headers=headers).json()["features"]
+
+    assert digest.status_code == 200
+    assert digest.json()["feature"]["enabled"] is True
+    assert digest.json()["feature"]["source"] == "gui"
+    for feature in flag_features:
+        assert updated[feature]["enabled"] is False
+        assert updated[feature]["source"] == "gui"
+    assert updated["digest"]["enabled"] is True
+    assert updated["digest"]["configured"] is True
+    assert store.gui_feature_flags(board="dev10", features=("digest",))["digest"]["enabled"] is True
+
+
+def test_gui_features_get_is_viewer_readable_and_post_requires_operator_csrf(
+    tmp_path: Path,
+) -> None:
+    write_team_member(tmp_path, name="viewer", secret="viewer-secret", role="viewer")
+    write_team_member(
+        tmp_path,
+        name="operator",
+        secret="operator-secret",
+        role="operator",
+        member_id="member-operator",
+        append=True,
+    )
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    viewer = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
+    operator = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
+    viewer_login = viewer.post("/api/login", json={"name": "viewer", "secret": "viewer-secret"})
+    operator_login = operator.post(
+        "/api/login",
+        json={"name": "operator", "secret": "operator-secret"},
+    )
+
+    viewer_read = viewer.get("/api/gui-features")
+    viewer_write = viewer.post(
+        "/api/gui-features/summary",
+        headers={CSRF_HEADER: str(viewer_login.json()["csrf"])},
+        json={"enabled": True},
+    )
+    operator_missing_csrf = operator.post(
+        "/api/gui-features/summary",
+        json={"enabled": True},
+    )
+    operator_write = operator.post(
+        "/api/gui-features/summary",
+        headers={CSRF_HEADER: str(operator_login.json()["csrf"])},
+        json={"enabled": True},
+    )
+
+    assert viewer_login.status_code == 200
+    assert operator_login.status_code == 200
+    assert viewer_read.status_code == 200
+    assert viewer_write.status_code == 403
+    assert operator_missing_csrf.status_code == 403
+    assert operator_write.status_code == 200
+
+
 def test_gui_feature_toggles_wire_existing_feature_gates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

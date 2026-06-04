@@ -939,7 +939,7 @@ class SlackConnector:
 
     def poll_digest(self) -> int:
         config = self.digest_config
-        if config is None or not config.enabled:
+        if config is None or not config.enabled or not self._digest_gui_enabled(config.board):
             return 0
         if config.reminder_enabled:
             return self.poll_digest_reminders()
@@ -950,6 +950,7 @@ class SlackConnector:
         if (
             config is None
             or not config.enabled
+            or not self._digest_gui_enabled(config.board)
             or not config.reminder_enabled
             or config.dry_run
             or config.max_reminders <= 0
@@ -1042,6 +1043,14 @@ class SlackConnector:
             )
             sent += 1
         return sent
+
+    def _digest_gui_enabled(self, board: str) -> bool:
+        try:
+            state = self.store.gui_feature_flags(board=board, features=("digest",))["digest"]
+        except Exception as exc:
+            LOGGER.warning("Slack digest gui flag lookup failed: %s", _safe_log_error(exc))
+            return False
+        return state.get("enabled") is True
 
     def _audit_digest(
         self,
@@ -1321,7 +1330,7 @@ class SlackConnector:
         args: tuple[str, ...],
     ) -> None:
         config = self.command_config
-        if config is None or not config.intake_enabled:
+        if config is None or not self._intake_enabled(config):
             self.slack_client.post_message(
                 channel=event.channel,
                 text="Slack intake is not enabled for this project.",
@@ -1367,7 +1376,7 @@ class SlackConnector:
 
     def _handle_intake(self, event: SlackEvent, *, thread_ts: str) -> bool:
         config = self.command_config
-        if config is None or not config.intake_enabled:
+        if config is None or not self._intake_enabled(config):
             return False
         classification = self.intent_classifier.classify(event.text)
         if classification.intent == "command":
@@ -1606,7 +1615,7 @@ class SlackConnector:
         actor: Mapping[str, object],
     ) -> str:
         config = self.command_config
-        if config is None or not config.intake_enabled:
+        if config is None or not self._intake_enabled(config):
             return "Denied: Slack intake is not enabled."
         if pending.actor.role not in {"admin", "operator"}:
             self._audit_slack_command(
@@ -1675,6 +1684,18 @@ class SlackConnector:
             payload={"intent": proposal.intent},
         )
         return f"Created task `{_safe_slack_text(task.id)}`: {_safe_slack_text(task.title)}."
+
+    def _intake_enabled(self, config: SlackCommandConfig) -> bool:
+        try:
+            state = self.store.gui_feature_flags(board=config.board, features=("intake",))["intake"]
+        except Exception as exc:
+            LOGGER.warning("Slack intake gui flag lookup failed: %s", _safe_log_error(exc))
+            return False
+        configured = state.get("configured")
+        enabled = state.get("enabled")
+        if configured is True and isinstance(enabled, bool):
+            return enabled
+        return config.intake_enabled
 
     def _execute_approve(
         self,

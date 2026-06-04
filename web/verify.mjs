@@ -1485,6 +1485,32 @@ async function main() {
     await page.$eval(".dr-term__send-btn", (el) => el.click());
     await page.waitForFunction(() => window.__MOCK__?.nodeSent != null, { timeout: 6000 });
     const nodeSent = await page.evaluate(() => window.__MOCK__?.nodeSent ?? null);
+    // The send above is async on the FE: waitForFunction(nodeSent) only proves the
+    // MOCK recorded it, NOT that the FE's success handler (setBusy(false) +
+    // setText("")) has run. Wait for the box to actually clear so the next send
+    // starts from an idle box — otherwise the probe races send#1's completion
+    // (busy stays true / setText("") wipes typed text → button stuck disabled).
+    await page.waitForFunction(() => (document.querySelector(".dr-term__send-input")?.value ?? "") === "", {
+      timeout: 8000,
+    });
+    // v1.32: with the "node-input" gui-feature OFF, an operator send 404s and the
+    // disabled copy must point to the Setup toggle (not a CLI --enable flag). A 404
+    // does NOT touch nodeSent, so the prior assertion stays valid.
+    await page.evaluate(() => window.__MOCK__.setNodeInput(false));
+    await page.type(".dr-term__send-input", "echo off");
+    await page.waitForFunction(
+      () => {
+        const b = document.querySelector(".dr-term__send-btn");
+        return !!b && !b.disabled;
+      },
+      { timeout: 8000 },
+    );
+    await page.$eval(".dr-term__send-btn", (el) => el.click());
+    await page.waitForSelector('.dr-term__send-err[data-send-err="disabled"]', { timeout: 8000 });
+    const nodeInputDisabled = await page.evaluate(
+      () => (document.querySelector('.dr-term__send-err[data-send-err="disabled"]')?.textContent ?? "").trim(),
+    );
+    await page.evaluate(() => window.__MOCK__.setNodeInput(true));
     // viewer lock on a worker node -> send box hidden + note.
     await page.evaluate(() => window.__MOCK__.setViewer(true));
     await pickRail("frontend");
@@ -1549,6 +1575,9 @@ async function main() {
       sendBoxOperator &&
       nodeSent?.node === "backend" &&
       nodeSent?.text === "echo hi" &&
+      // node-input disabled copy points to the Setup toggle, not a CLI flag.
+      /Setup/.test(nodeInputDisabled) &&
+      !/--enable/.test(nodeInputDisabled) &&
       // viewer is locked out of node input.
       sendViewer.viewerNote &&
       sendViewer.sendInput === 0;
@@ -1566,7 +1595,9 @@ async function main() {
         hasBlockKit: /Block Kit|블록 키트/.test(text),
         hasBugFeedbackTask: /bug|feedback|task|버그|피드백|태스크/.test(text),
         hasAnswer: /answer|답만|답변/.test(text),
-        hasIntakeToggle: /enable-intake|intake on|intake off|활성|비활성/.test(text),
+        // v1.32: intake guidance points to the Setup toggle, not a CLI flag.
+        hasIntakeToggle: /Setup/.test(text),
+        noEnableFlag: !/--enable/.test(text),
       };
     });
 
@@ -1610,6 +1641,7 @@ async function main() {
       slackGuide.hasBugFeedbackTask &&
       slackGuide.hasAnswer &&
       slackGuide.hasIntakeToggle &&
+      slackGuide.noEnableFlag &&
       manifestFetched &&
       validationErr === true &&
       typeof slackCfg.app_token === "string" &&
@@ -1760,12 +1792,72 @@ async function main() {
     }));
     await page.$eval('.setup-feature[data-feature="digest"] .setup-switch', (el) => el.click());
     await page.waitForFunction(() => window.__MOCK__?.guiFeaturePost?.key === "digest", { timeout: 6000 });
+    // The Setup toggle is the REAL control: after the POST turns digest OFF, the
+    // switch UI must actually flip to OFF (data-enabled="0"), not just record the POST.
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector('.setup-feature[data-feature="digest"] .setup-switch')
+          ?.getAttribute("data-enabled") === "0",
+      { timeout: 6000 },
+    );
     const setupToggle = await page.evaluate(() => ({
       post: window.__MOCK__?.guiFeaturePost ?? null,
       digestAfter: document
         .querySelector('.setup-feature[data-feature="digest"] .setup-switch')
         ?.getAttribute("data-enabled"),
     }));
+
+    // v1.32 P1: a RISK feature's ENABLE requires a 2-step confirm — arming POSTs
+    // nothing, cancel POSTs nothing, confirm POSTs exactly once. (Disable stays a
+    // single immediate POST.) Exercise on handoff: disable it (immediate), then
+    // run the enable→cancel and enable→confirm paths (the confirm restores it ON).
+    await page.$eval('.setup-feature[data-feature="handoff"] .setup-switch', (el) => el.click());
+    await page.waitForFunction(
+      () =>
+        document.querySelector('.setup-feature[data-feature="handoff"] .setup-switch')?.getAttribute("data-enabled") ===
+        "0",
+      { timeout: 6000 },
+    );
+    const riskBaseCount = await page.evaluate(() => window.__MOCK__?.guiFeaturePostCount ?? 0);
+    // arm enable -> confirm affordance appears, NO POST
+    await page.$eval('.setup-feature[data-feature="handoff"] .setup-switch', (el) => el.click());
+    await page.waitForSelector('.setup-feature[data-feature="handoff"] .setup-confirm', { timeout: 6000 });
+    const riskArmCount = await page.evaluate(() => window.__MOCK__?.guiFeaturePostCount ?? 0);
+    // cancel -> NO POST, affordance gone, still OFF
+    await page.$eval('.setup-feature[data-feature="handoff"] .setup-confirm__no', (el) => el.click());
+    await page.waitForFunction(
+      () => !document.querySelector('.setup-feature[data-feature="handoff"] .setup-confirm'),
+      { timeout: 6000 },
+    );
+    const riskCancel = await page.evaluate(() => ({
+      count: window.__MOCK__?.guiFeaturePostCount ?? 0,
+      enabled: document
+        .querySelector('.setup-feature[data-feature="handoff"] .setup-switch')
+        ?.getAttribute("data-enabled"),
+    }));
+    // arm again -> confirm -> exactly one POST, now ON (restores handoff)
+    await page.$eval('.setup-feature[data-feature="handoff"] .setup-switch', (el) => el.click());
+    await page.waitForSelector('.setup-feature[data-feature="handoff"] .setup-confirm__yes', { timeout: 6000 });
+    await page.$eval('.setup-feature[data-feature="handoff"] .setup-confirm__yes', (el) => el.click());
+    await page.waitForFunction(
+      () =>
+        document.querySelector('.setup-feature[data-feature="handoff"] .setup-switch')?.getAttribute("data-enabled") ===
+        "1",
+      { timeout: 6000 },
+    );
+    const riskConfirm = await page.evaluate(() => ({
+      count: window.__MOCK__?.guiFeaturePostCount ?? 0,
+      post: window.__MOCK__?.guiFeaturePost ?? null,
+    }));
+    const riskConfirmOk =
+      riskArmCount === riskBaseCount && // arm: 0 POST
+      riskCancel.count === riskBaseCount && // cancel: 0 POST
+      riskCancel.enabled === "0" && // still off after cancel
+      riskConfirm.count === riskBaseCount + 1 && // confirm: exactly 1 POST
+      riskConfirm.post?.key === "handoff" &&
+      riskConfirm.post?.enabled === true;
+
     const setupFeatureOk =
       setupFeatures.fetched &&
       setupFeatures.cards === 8 &&
@@ -1773,7 +1865,8 @@ async function main() {
       setupFeatures.on + setupFeatures.off === 8 &&
       setupFeatures.digestBefore === "1" &&
       setupToggle.post?.enabled === false &&
-      setupToggle.digestAfter === "1";
+      setupToggle.digestAfter === "0" &&
+      riskConfirmOk;
     const authOk =
       authRows === 5 &&
       authLeds.ok >= 1 &&
@@ -2293,6 +2386,8 @@ async function main() {
     await page.waitForSelector(".ledger-quota__disabled", { timeout: 8000 });
     const ledgerNoQuota = await page.evaluate(() => ({
       disabled: !!document.querySelector(".ledger-quota__disabled"),
+      // v1.32: the disabled notice points to the Setup toggle, not a CLI flag.
+      text: (document.querySelector(".ledger-quota__disabled")?.textContent ?? "").trim(),
       editBtns: document.querySelectorAll(".ledger-quota__edit").length,
       members: document.querySelectorAll(".ledger-member").length, // ledger still renders
     }));
@@ -2328,6 +2423,8 @@ async function main() {
       ledgerViewer.readonly >= 1 &&
       // quotas off: graceful notice, controls gone, ledger still renders.
       ledgerNoQuota.disabled &&
+      /Setup/.test(ledgerNoQuota.text) &&
+      !/--enable/.test(ledgerNoQuota.text) &&
       ledgerNoQuota.editBtns === 0 &&
       ledgerNoQuota.members === 3;
 
@@ -2386,6 +2483,7 @@ async function main() {
     await page.waitForSelector('.insights-msg[data-err="disabled"]', { timeout: 8000 });
     const insightsDisabled = await page.evaluate(() => ({
       disabled: !!document.querySelector('.insights-msg[data-err="disabled"]'),
+      text: (document.querySelector('.insights-msg[data-err="disabled"]')?.textContent ?? "").trim(),
       cards: document.querySelectorAll(".insights-card").length,
     }));
     await page.evaluate(() => window.__MOCK__.setRetroAnalyticsEnabled(true));
@@ -2413,6 +2511,8 @@ async function main() {
       insightsViewer.cards === 0 &&
       // disabled: graceful notice, no cards.
       insightsDisabled.disabled &&
+      /Setup/.test(insightsDisabled.text) &&
+      !/--enable/.test(insightsDisabled.text) &&
       insightsDisabled.cards === 0;
 
     // V23-W2 usage trend / anomaly (advisory, read-only): trend sparkline + delta,
@@ -2488,6 +2588,7 @@ async function main() {
     await page.waitForSelector('.trend-msg[data-err="disabled"]', { timeout: 8000 });
     const trendDisabled = await page.evaluate(() => ({
       disabled: !!document.querySelector('.trend-msg[data-err="disabled"]'),
+      text: (document.querySelector('.trend-msg[data-err="disabled"]')?.textContent ?? "").trim(),
       nodes: document.querySelectorAll(".trend-node").length,
     }));
     await page.evaluate(() => window.__MOCK__.setUsageTrendEnabled(true));
@@ -2526,6 +2627,8 @@ async function main() {
       trendViewer.forbidden &&
       trendViewer.nodes === 0 &&
       trendDisabled.disabled &&
+      /Setup/.test(trendDisabled.text) &&
+      !/--enable/.test(trendDisabled.text) &&
       trendDisabled.nodes === 0;
 
     // V24-W2 notification routing config: read-only rule view + dry-run state +
@@ -3329,7 +3432,7 @@ async function main() {
       n4SparkOff,
       n5Ok,
       projModelOk,
-      projModel: { noBoardSelect, assignee, leadTerm, send00, sshCmd, sendBoxOperator, nodeSent, sendViewer },
+      projModel: { noBoardSelect, assignee, leadTerm, send00, sshCmd, sendBoxOperator, nodeSent, nodeInputDisabled, sendViewer },
       n5Reconnecting,
       n5Relive,
       n5TermReconnected,
@@ -3365,6 +3468,8 @@ async function main() {
       setupFeatureOk,
       setupFeatures,
       setupToggle,
+      riskConfirmOk,
+      riskConfirm: { base: riskBaseCount, arm: riskArmCount, cancel: riskCancel, confirm: riskConfirm },
       authRows,
       codexHint,
       cfHref,

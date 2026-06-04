@@ -979,10 +979,13 @@ def command_connector(
     board: str = "main",
     clock: MutableClock | None = None,
     intake_enabled: bool = False,
+    gui_intake_enabled: bool | None = None,
     intake_assignee: str | None = None,
     digest_config: SlackDigestConfig | None = None,
 ) -> SlackConnector:
     command_clock = clock or MutableClock()
+    if gui_intake_enabled is not None:
+        store.set_gui_feature_enabled(board=board, feature="intake", enabled=gui_intake_enabled)
     return SlackConnector(
         store=store,
         slack_client=slack,
@@ -1278,6 +1281,61 @@ def test_slack_intake_preview_confirm_creates_redacted_task(tmp_path: Path) -> N
     assert len(audits) == 1
     audit_actor = cast(Mapping[str, object], audits[0].payload["actor"])
     assert audit_actor["member_id"] == "member-op"
+
+
+def test_slack_intake_gui_flag_is_runtime_source_of_truth(tmp_path: Path) -> None:
+    fallback_store = SQLiteBoardStore(tmp_path / "fallback.db")
+    fallback_slack = FakeSlackClient()
+    fallback_connector = command_connector(
+        fallback_store,
+        fallback_slack,
+        intake_enabled=True,
+    )
+
+    assert fallback_connector.handle_event(slack_event("UOP", "bug checkout crashes"))
+    fallback_preview = fallback_slack.posts[-1][1]
+    fallback_confirm = confirmation_id(fallback_preview)
+    assert "Preview: create bug task" in fallback_preview
+
+    assert fallback_connector.handle_event(
+        slack_event("UOP", f"confirm {fallback_confirm}", ts="444.566")
+    )
+
+    assert len(fallback_store.list_tasks(board="main")) == 1
+    assert "Created task" in fallback_slack.posts[-1][1]
+
+    cli_on_store = SQLiteBoardStore(tmp_path / "cli-on.db")
+    cli_on_slack = FakeSlackClient()
+    cli_on_connector = command_connector(
+        cli_on_store,
+        cli_on_slack,
+        intake_enabled=True,
+        gui_intake_enabled=False,
+    )
+
+    assert cli_on_connector.handle_event(slack_event("UOP", "bug checkout crashes"))
+    assert "intake is not enabled" in cli_on_slack.posts[-1][1]
+    assert "confirm " not in cli_on_slack.posts[-1][1]
+    assert cli_on_store.list_tasks(board="main") == []
+
+    gui_on_store = SQLiteBoardStore(tmp_path / "gui-on.db")
+    gui_on_slack = FakeSlackClient()
+    gui_on_connector = command_connector(
+        gui_on_store,
+        gui_on_slack,
+        intake_enabled=False,
+        gui_intake_enabled=True,
+    )
+
+    assert gui_on_connector.handle_event(slack_event("UOP", "bug checkout crashes"))
+    preview = gui_on_slack.posts[-1][1]
+    confirm = confirmation_id(preview)
+    assert "Preview: create bug task" in preview
+
+    assert gui_on_connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.566"))
+
+    assert len(gui_on_store.list_tasks(board="main")) == 1
+    assert "Created task" in gui_on_slack.posts[-1][1]
 
 
 def test_slack_intake_dedupes_event_before_preview_and_task_creation(tmp_path: Path) -> None:
@@ -1628,9 +1686,52 @@ def test_slack_digest_default_off_and_dry_run_send_nothing(tmp_path: Path) -> No
     assert dry_run_slack.updates == []
 
 
+def test_slack_digest_reminder_requires_gui_digest_enabled(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board="main")
+    store.add_notify_sub(
+        board="main",
+        task_id=task.id,
+        channel_kind="slack",
+        room_id="C123",
+        thread_id="human-thread",
+    )
+    clock = MutableClock(now=store.get_task(board="main", task_id=task.id).updated_at + 20)
+    config = SlackDigestConfig(
+        board="main",
+        channel="C123",
+        enabled=True,
+        dry_run=False,
+        reminder_enabled=True,
+        reminder_after_seconds=10,
+        max_reminders=1,
+        clock=clock,
+    )
+    slack = FakeSlackClient()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+        digest_config=config,
+    )
+
+    assert connector.poll_digest_reminders() == 0
+    assert connector.poll_digest() == 0
+    assert slack.posts == []
+
+    store.set_gui_feature_enabled(board="main", feature="digest", enabled=True)
+
+    assert connector.poll_digest_reminders() == 1
+    assert len(slack.posts) == 1
+    assert "Reminder 1/1" in slack.posts[0][1]
+
+
 def test_slack_digest_reminder_is_bounded_and_read_only(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = blocked_human_task(store, board="main")
+    store.set_gui_feature_enabled(board="main", feature="digest", enabled=True)
     store.add_notify_sub(
         board="main",
         task_id=task.id,
@@ -1677,6 +1778,7 @@ def test_slack_digest_reminder_post_success_db_failure_does_not_repost(
 ) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = blocked_human_task(store, board="main")
+    store.set_gui_feature_enabled(board="main", feature="digest", enabled=True)
     store.add_notify_sub(
         board="main",
         task_id=task.id,

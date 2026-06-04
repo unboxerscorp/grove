@@ -5642,13 +5642,31 @@ def _gui_feature_state(
 ) -> dict[str, object]:
     stored = store.gui_feature_flags(board=project.board, features=(feature,))[feature]
     enabled = stored.get("enabled")
+    runtime_contract = _gui_feature_runtime_contract(feature)
     if stored.get("configured") is True and isinstance(enabled, bool):
-        return {"enabled": enabled, "configured": True, "source": "gui"}
+        state: dict[str, object] = {"enabled": enabled, "configured": True, "source": "gui"}
+        if runtime_contract is not None:
+            state["runtime_contract"] = runtime_contract
+        return state
     config_enabled = _gui_feature_config_default(project.config, feature)
-    return {
+    state = {
         "enabled": config_enabled,
         "configured": False,
         "source": "config" if config_enabled else "default",
+    }
+    if runtime_contract is not None:
+        state["runtime_contract"] = runtime_contract
+    return state
+
+
+def _gui_feature_runtime_contract(feature: str) -> dict[str, object] | None:
+    if feature != "digest":
+        return None
+    return {
+        "control": "persisted-board-setting",
+        "persistence": "boards.settings_json.gui_features.digest",
+        "runtime_surface": "grove-slack digest polling",
+        "default_enabled": False,
     }
 
 
