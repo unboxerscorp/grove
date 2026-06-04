@@ -2148,6 +2148,26 @@ button {
   color: var(--teal);
 }
 
+/* P1 risk-enable confirm affordance — replaces the switch while armed. */
+.setup-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.setup-confirm__q {
+  font-size: 10px;
+  color: var(--amber);
+  white-space: nowrap;
+}
+
+.setup-confirm__yes,
+.setup-confirm__no {
+  padding: 3px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
 @media (max-width: 760px) {
   .setup-feature-grid {
     grid-template-columns: 1fr;
