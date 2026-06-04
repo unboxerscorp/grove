@@ -18,6 +18,7 @@
 //   - summary       (signed counts-only export, aggregate trust, redaction)
 //   - handoff       (signed export, trusted local accept, idempotency, redaction)
 //   - shared-access (one-time joins, viewer read-only, CSRF/origin/host guards)
+//   - notification routing (operator config, dry-run default, bounded escalation)
 //   - ledger/quota  (member ledger, soft quotas, host pressure, no hard-kill)
 //   - retro analytics (operator-only advisory insights, privacy, low-confidence honesty)
 //   - usage trend   (advisory-only trend/anomaly signals, agy cost honesty)
@@ -53,6 +54,8 @@ const SUMMARY = "qae2e_summary"; // created during the summary checks for signed
 const HANDOFF_SOURCE = "qae2e_handoff_source"; // created during the handoff checks as the sender project
 const HANDOFF_RECEIVER = "qae2e_handoff_receiver"; // created during the handoff checks as the receiver project
 const SHARE = "qae2e_share"; // created during the shared-access checks
+const ROUTING = "qae2e_routing"; // created during the notification routing checks
+const ROUTING_OTHER = "qae2e_routing_other"; // second project used to prove notification routing scope isolation
 const LEDGER = "qae2e_ledger"; // created during the ledger/quota checks
 const RETRO = "qae2e_retro"; // created during the retro analytics checks
 const RETRO_OTHER = "qae2e_retro_other"; // second project used to prove retro scope isolation
@@ -434,6 +437,52 @@ function seedRunningTask({ database = dbPath, board, title, node, createdBy }) {
       "print(json.dumps({'task_id': claim.task.id, 'run_id': claim.run_id, 'status': claim.task.status}))",
     ],
     [database, board, title, node, createdBy],
+  );
+  return JSON.parse(out);
+}
+
+function seedRoutingBlockedTask({ database = dbPath, board, secret, email, privatePath }) {
+  const out = runBridgePython(
+    [
+      "import json, sys",
+      "from pathlib import Path",
+      "from grove_bridge.store import SQLiteBoardStore",
+      "store = SQLiteBoardStore(Path(sys.argv[1]))",
+      "task = store.create_task(board=sys.argv[2], title=f'Routing anomaly for {sys.argv[4]} in {sys.argv[5]} {sys.argv[3]}', body=f'Escalate without leaking {sys.argv[3]} {sys.argv[5]}', assignee='maker', status='blocked', metadata={'notification_event': 'anomaly', 'severity': 'high', 'note': f'{sys.argv[4]} {sys.argv[5]} {sys.argv[3]}'})",
+      "print(json.dumps({'task_id': task.id, 'status': task.status}))",
+    ],
+    [database, board, secret, email, privatePath],
+  );
+  return JSON.parse(out);
+}
+
+function pollNotificationRouting({ database = dbPath, board, now }) {
+  const out = runBridgePython(
+    [
+      "import json, sys",
+      "from pathlib import Path",
+      "from grove_bridge.notification_rules import NotificationRuleRunner, notification_routing_config_from_mapping",
+      "from grove_bridge.store import SQLiteBoardStore",
+      "class RecordingNotifier:",
+      "    enabled = True",
+      "    channel_kind = 'inbox'",
+      "    room_id = 'legacy'",
+      "    def __init__(self): self.calls = []",
+      "    def notify_blocked(self, *, task, sub):",
+      "        self.calls.append({'task_id': task.id, 'title': task.title, 'body': task.body, 'metadata': task.metadata, 'channel_kind': sub.channel_kind, 'room_id': sub.room_id, 'thread_id': sub.thread_id})",
+      "store = SQLiteBoardStore(Path(sys.argv[1]))",
+      "board = sys.argv[2]",
+      "now = None if sys.argv[3] == '__NONE__' else int(sys.argv[3])",
+      "routing = notification_routing_config_from_mapping(store.notification_routing_state(board=board))",
+      "notifier = RecordingNotifier()",
+      "sent = NotificationRuleRunner(store=store, notifier=notifier).poll_board(board, routing=routing, now=now)",
+      "subs = []",
+      "for task in store.list_tasks(board=board):",
+      "    for sub in store.list_notify_subs(board=board, task_id=task.id):",
+      "        subs.append({'task_id': task.id, 'channel_kind': sub.channel_kind, 'room_id': sub.room_id, 'thread_id': sub.thread_id})",
+      "print(json.dumps({'sent': sent, 'calls': notifier.calls, 'subs': subs}))",
+    ],
+    [database, board, now === undefined || now === null ? "__NONE__" : String(now)],
   );
   return JSON.parse(out);
 }
@@ -2704,6 +2753,313 @@ async function run() {
     });
     eq("join expired code -> 410", expiredJoin.status, 410);
     check("expired join response does not echo code", !expiredJoin.text.includes(shortShare.json && shortShare.json.code));
+  } finally {
+    await stopSharedServer();
+  }
+
+  // --- /api/notifications/routing: config persistence, dry-run default, bounded escalation ---
+  const routingOperatorSecret = "routing-operator-secret";
+  const routingViewerSecret = "routing-viewer-secret";
+  const routingSecret = "xoxb-" + "7".repeat(44);
+  const routingEmail = "routing.owner@example.test";
+  const routingPrivatePath = `/Users/chopin/private/${routingSecret}`;
+  writeRegistry(ROUTING, {
+    maker: { name: "maker", agent: "codex", tmux_pane: `${ROUTING}:1.0`, status: "idle", role: "maker" },
+    reviewer: { name: "reviewer", agent: "claude", tmux_pane: `${ROUTING}:1.1`, status: "idle", role: "reviewer" },
+  });
+  writeRegistry(ROUTING_OTHER, {
+    "routing-other": { name: "routing-other", agent: "codex", tmux_pane: `${ROUTING_OTHER}:1.0`, status: "idle", role: "maker" },
+  });
+  writeTeamMembers(ROUTING, [
+    { id: "routing-operator-1", name: "routing-operator", role: "operator", secret: routingOperatorSecret },
+    { id: "routing-viewer-1", name: "routing-viewer", role: "viewer", secret: routingViewerSecret },
+  ]);
+  const routingTask = seedRoutingBlockedTask({
+    board: ROUTING,
+    secret: routingSecret,
+    email: routingEmail,
+    privatePath: routingPrivatePath,
+  });
+  eq("seed: routing blocked task status", routingTask.status, "blocked");
+
+  await startSharedServer({ session: ROUTING, joinRole: "viewer" });
+  try {
+    eq("routing GET 401 without session", (await reqAt(sharedBaseUrl, "GET", "/api/notifications/routing")).status, 401);
+    eq(
+      "routing POST 401 without session",
+      (await reqAt(sharedBaseUrl, "POST", "/api/notifications/routing", {
+        body: { enabled: true, rules: [] },
+      })).status,
+      401,
+    );
+    const routingOperatorLogin = await reqAt(sharedBaseUrl, "POST", "/api/login", {
+      body: { name: "routing-operator", secret: routingOperatorSecret },
+    });
+    eq("routing operator login 200", routingOperatorLogin.status, 200);
+    const routingOperatorCookie = String(routingOperatorLogin.headers.get("set-cookie") || "").split(";")[0];
+    const routingOperatorCsrf = routingOperatorLogin.json && routingOperatorLogin.json.csrf;
+    const routingViewerLogin = await reqAt(sharedBaseUrl, "POST", "/api/login", {
+      body: { name: "routing-viewer", secret: routingViewerSecret },
+    });
+    eq("routing viewer login 200", routingViewerLogin.status, 200);
+    const routingViewerCookie = String(routingViewerLogin.headers.get("set-cookie") || "").split(";")[0];
+    const routingViewerCsrf = routingViewerLogin.json && routingViewerLogin.json.csrf;
+
+    const routingInitial = await reqAt(sharedBaseUrl, "GET", "/api/notifications/routing", {
+      cookie: routingOperatorCookie,
+      project: ROUTING,
+    });
+    eq("routing GET operator 200", routingInitial.status, 200);
+    eq("routing initial project", routingInitial.json && routingInitial.json.project, ROUTING);
+    eq("routing initial configured false", routingInitial.json && routingInitial.json.routing && routingInitial.json.routing.configured, false);
+    eq("routing initial enabled false", routingInitial.json && routingInitial.json.routing && routingInitial.json.routing.enabled, false);
+    eq("routing initial dry_run true", routingInitial.json && routingInitial.json.routing && routingInitial.json.routing.dry_run, true);
+    check(
+      "routing initial rules empty",
+      Boolean(routingInitial.json) &&
+        routingInitial.json.routing &&
+        Array.isArray(routingInitial.json.routing.rules) &&
+        routingInitial.json.routing.rules.length === 0,
+    );
+    const dryRunPayload = {
+      enabled: true,
+      rules: [
+        {
+          name: "anomaly-high",
+          event_type: "anomaly",
+          node: "maker",
+          severity: "high",
+          target: { channel_kind: "inbox", room_id: "ops-route" },
+          escalate_after_seconds: 0,
+          escalation_targets: [
+            { channel_kind: "inbox", room_id: "lead-route" },
+            { channel_kind: "inbox", room_id: "director-route" },
+          ],
+          max_escalations: 5,
+        },
+      ],
+    };
+    eq(
+      "routing POST operator requires CSRF",
+      (await reqAt(sharedBaseUrl, "POST", "/api/notifications/routing", {
+        cookie: routingOperatorCookie,
+        project: ROUTING,
+        body: dryRunPayload,
+      })).status,
+      403,
+    );
+    eq(
+      "routing POST rejects foreign Origin",
+      (await reqAt(sharedBaseUrl, "POST", "/api/notifications/routing", {
+        cookie: routingOperatorCookie,
+        csrf: routingOperatorCsrf,
+        origin: "http://evil.example",
+        project: ROUTING,
+        body: dryRunPayload,
+      })).status,
+      403,
+    );
+    eq(
+      "routing POST viewer denied",
+      (await reqAt(sharedBaseUrl, "POST", "/api/notifications/routing", {
+        cookie: routingViewerCookie,
+        csrf: routingViewerCsrf,
+        project: ROUTING,
+        body: dryRunPayload,
+      })).status,
+      403,
+    );
+    const routingDryRunSave = await reqAt(sharedBaseUrl, "POST", "/api/notifications/routing", {
+      cookie: routingOperatorCookie,
+      csrf: routingOperatorCsrf,
+      project: ROUTING,
+      body: dryRunPayload,
+    });
+    eq("routing POST dry-run config 200", routingDryRunSave.status, 200);
+    eq("routing saved project", routingDryRunSave.json && routingDryRunSave.json.project, ROUTING);
+    eq("routing saved configured true", routingDryRunSave.json && routingDryRunSave.json.routing && routingDryRunSave.json.routing.configured, true);
+    eq("routing saved enabled true", routingDryRunSave.json && routingDryRunSave.json.routing && routingDryRunSave.json.routing.enabled, true);
+    eq("routing saved dry_run defaults true", routingDryRunSave.json && routingDryRunSave.json.routing && routingDryRunSave.json.routing.dry_run, true);
+    const dryRunRule = routingDryRunSave.json && routingDryRunSave.json.routing && routingDryRunSave.json.routing.rules[0];
+    eq("routing saved event_type anomaly", dryRunRule && dryRunRule.event_type, "anomaly");
+    eq("routing saved node condition maker", dryRunRule && dryRunRule.node, "maker");
+    eq("routing saved severity lowercase", dryRunRule && dryRunRule.severity, "high");
+    eq("routing max_escalations bounded to target count", dryRunRule && dryRunRule.max_escalations, 2);
+    check(
+      "routing saved escalation target order",
+      Boolean(dryRunRule) &&
+        Array.isArray(dryRunRule.escalation_targets) &&
+        dryRunRule.escalation_targets.map((target) => target.room_id).join(",") === "lead-route,director-route",
+      dryRunRule && JSON.stringify(dryRunRule.escalation_targets),
+    );
+    const routingDryPoll = pollNotificationRouting({ board: ROUTING, now: Math.floor(Date.now() / 1000) + 60 });
+    eq("routing dry-run sends zero notifications", routingDryPoll.sent, 0);
+    check("routing dry-run creates zero notify_subs", Array.isArray(routingDryPoll.subs) && routingDryPoll.subs.length === 0, JSON.stringify(routingDryPoll.subs));
+
+    const routingLivePayload = {
+      enabled: true,
+      dry_run: false,
+      rules: [
+        {
+          name: "wrong-event",
+          event_type: "blocked",
+          node: "maker",
+          severity: "low",
+          target: { channel_kind: "inbox", room_id: "wrong-route" },
+        },
+        dryRunPayload.rules[0],
+      ],
+    };
+    const routingLiveSave = await reqAt(sharedBaseUrl, "POST", "/api/notifications/routing", {
+      cookie: routingOperatorCookie,
+      csrf: routingOperatorCsrf,
+      project: ROUTING,
+      body: routingLivePayload,
+    });
+    eq("routing POST live config 200", routingLiveSave.status, 200);
+    eq("routing live dry_run false", routingLiveSave.json && routingLiveSave.json.routing && routingLiveSave.json.routing.dry_run, false);
+    check(
+      "routing live saves conditional rule set",
+      Boolean(routingLiveSave.json) &&
+        routingLiveSave.json.routing &&
+        routingLiveSave.json.routing.rules.length === 2 &&
+        routingLiveSave.json.routing.rules[0].target.room_id === "wrong-route" &&
+        routingLiveSave.json.routing.rules[1].target.room_id === "ops-route",
+      routingLiveSave.text,
+    );
+    const routingAfterSave = await reqAt(sharedBaseUrl, "GET", "/api/notifications/routing", {
+      cookie: routingOperatorCookie,
+      project: ROUTING,
+    });
+    eq("routing GET after save 200", routingAfterSave.status, 200);
+    check(
+      "routing GET returns saved live config",
+      Boolean(routingAfterSave.json) &&
+        routingAfterSave.json.routing &&
+        routingAfterSave.json.routing.dry_run === false &&
+        routingAfterSave.json.routing.rules.map((rule) => rule.name).join(",") === "wrong-event,anomaly-high",
+      routingAfterSave.text,
+    );
+    const routingNow = Math.floor(Date.now() / 1000) + 60;
+    const routingPoll1 = pollNotificationRouting({ board: ROUTING, now: routingNow });
+    const routingPoll2 = pollNotificationRouting({ board: ROUTING, now: routingNow + 60 });
+    const routingPoll3 = pollNotificationRouting({ board: ROUTING, now: routingNow + 120 });
+    const routingRooms = [...routingPoll1.calls, ...routingPoll2.calls, ...routingPoll3.calls].map((call) => call.room_id);
+    check("routing condition skips nonmatching rule", !routingRooms.includes("wrong-route"), routingRooms.join(","));
+    check(
+      "routing sends primary plus bounded escalations",
+      routingRooms.join(",") === "ops-route,lead-route,director-route",
+      routingRooms.join(","),
+    );
+    eq("routing bounded poll3 sends zero", routingPoll3.sent, 0);
+    check(
+      "routing notify_subs do not exceed primary+max_escalations",
+      routingPoll3.subs.length === 3 &&
+        routingPoll3.subs.every((sub) => ["ops-route", "lead-route", "director-route"].includes(sub.room_id)),
+      JSON.stringify(routingPoll3.subs),
+    );
+    check(
+      "routing notifier redacts task secret/pii/path",
+      !JSON.stringify([routingPoll1.calls, routingPoll2.calls]).includes(routingSecret) &&
+        !JSON.stringify([routingPoll1.calls, routingPoll2.calls]).includes(routingEmail) &&
+        !JSON.stringify([routingPoll1.calls, routingPoll2.calls]).includes(routingPrivatePath),
+      JSON.stringify([routingPoll1.calls, routingPoll2.calls]),
+    );
+    const routingAudit = await reqAt(sharedBaseUrl, "GET", "/api/audit?action=notification-routing-config", {
+      cookie: routingOperatorCookie,
+      project: ROUTING,
+    });
+    eq("routing audit read 200", routingAudit.status, 200);
+    const routingAuditItems = (routingAudit.json && routingAudit.json.items) || [];
+    const routingAuditEvent = routingAuditItems.find((item) => item.target && item.target.id === ROUTING);
+    check(
+      "routing audit records operator actor and target",
+      Boolean(routingAuditEvent) &&
+        routingAuditEvent.actor &&
+        routingAuditEvent.actor.kind === "member" &&
+        routingAuditEvent.actor.login === "routing-operator" &&
+        routingAuditEvent.target &&
+        routingAuditEvent.target.type === "notification_routing",
+      routingAuditEvent && JSON.stringify(routingAuditEvent),
+    );
+
+    const routingOtherBefore = await reqAt(sharedBaseUrl, "GET", "/api/notifications/routing", {
+      cookie: routingOperatorCookie,
+      project: ROUTING_OTHER,
+    });
+    eq("routing other project GET 200", routingOtherBefore.status, 200);
+    eq("routing other project name", routingOtherBefore.json && routingOtherBefore.json.project, ROUTING_OTHER);
+    eq("routing other project initially unconfigured", routingOtherBefore.json && routingOtherBefore.json.routing && routingOtherBefore.json.routing.configured, false);
+    check("routing other project does not leak primary config", !routingOtherBefore.text.includes("ops-route") && !routingOtherBefore.text.includes("anomaly-high"), routingOtherBefore.text);
+    const routingOtherSave = await reqAt(sharedBaseUrl, "POST", "/api/notifications/routing", {
+      cookie: routingOperatorCookie,
+      csrf: routingOperatorCsrf,
+      project: ROUTING_OTHER,
+      body: {
+        enabled: true,
+        dry_run: true,
+        rules: [
+          {
+            name: "other-route",
+            event_type: "blocked",
+            target: { channel_kind: "inbox", room_id: "other-room" },
+          },
+        ],
+      },
+    });
+    eq("routing other project POST 200", routingOtherSave.status, 200);
+    eq("routing other project POST scoped name", routingOtherSave.json && routingOtherSave.json.project, ROUTING_OTHER);
+    const routingPrimaryAfterOther = await reqAt(sharedBaseUrl, "GET", "/api/notifications/routing", {
+      cookie: routingOperatorCookie,
+      project: ROUTING,
+    });
+    check(
+      "routing primary project unchanged after other POST",
+      Boolean(routingPrimaryAfterOther.json) &&
+        routingPrimaryAfterOther.json.routing &&
+        routingPrimaryAfterOther.json.routing.rules.some((rule) => rule.name === "anomaly-high") &&
+        !routingPrimaryAfterOther.text.includes("other-route"),
+      routingPrimaryAfterOther.text,
+    );
+    eq(
+      "routing path traversal project -> 400",
+      (await reqAt(sharedBaseUrl, "GET", "/api/notifications/routing", {
+        cookie: routingOperatorCookie,
+        project: `../${ROUTING}`,
+      })).status,
+      400,
+    );
+    eq(
+      "routing missing project -> 404",
+      (await reqAt(sharedBaseUrl, "GET", "/api/notifications/routing", {
+        cookie: routingOperatorCookie,
+        project: "qae2e_missing_routing",
+      })).status,
+      404,
+    );
+    const routingInvalid = await reqAt(sharedBaseUrl, "POST", "/api/notifications/routing", {
+      cookie: routingOperatorCookie,
+      csrf: routingOperatorCsrf,
+      project: ROUTING,
+      body: {
+        enabled: true,
+        rules: [
+          {
+            name: "bad-route",
+            event_type: "blocked",
+            target: { channel_kind: "inbox", room_id: `${routingPrivatePath}/${routingSecret}` },
+          },
+        ],
+      },
+    });
+    eq("routing invalid target rejected", routingInvalid.status, 400);
+    check(
+      "routing responses leak no secret/pii/path",
+      !hasSecret([routingDryRunSave.json, routingLiveSave.json, routingAfterSave.json, routingAudit.json, routingInvalid.json]) &&
+        ![routingDryRunSave.text, routingLiveSave.text, routingAfterSave.text, routingAudit.text, routingInvalid.text].some(
+          (text) => text.includes(routingSecret) || text.includes(routingEmail) || text.includes(routingPrivatePath),
+        ),
+    );
   } finally {
     await stopSharedServer();
   }

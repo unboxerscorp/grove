@@ -585,6 +585,50 @@ let usageTrendEnabled = true;
 diag.setUsageTrendEnabled = (on: boolean): void => {
   usageTrendEnabled = on;
 };
+
+// Notification routing v2 (V24-W2). Mirrors web_app.py /api/notifications/routing:
+// GET readable by any member; POST operator-only (403 viewer). default dry-run.
+// configured=false => never set up (graceful). diag.setRoutingConfigured(false)
+// reproduces the unconfigured path.
+let routingConfigured = true;
+diag.setRoutingConfigured = (on: boolean): void => {
+  routingConfigured = on;
+};
+type RoutingTarget = { channel_kind: string; room_id: string };
+type RoutingRule = {
+  name: string;
+  event_type: string;
+  node?: string;
+  severity?: string;
+  target: RoutingTarget;
+  escalation_targets: RoutingTarget[];
+  max_escalations: number;
+  escalate_after_seconds?: number;
+};
+let routingState: { configured: boolean; enabled: boolean; dry_run: boolean; rules: RoutingRule[] } = {
+  configured: true,
+  enabled: true,
+  dry_run: true, // default OFF the wire — dry-run, no real sends
+  rules: [
+    {
+      name: "blocked-to-ops",
+      event_type: "blocked",
+      node: "backend",
+      severity: "high",
+      target: { channel_kind: "slack", room_id: "C-ops" },
+      escalation_targets: [{ channel_kind: "slack", room_id: "C-leads" }],
+      max_escalations: 1,
+      escalate_after_seconds: 900,
+    },
+    {
+      name: "ask-human",
+      event_type: "ask_human_pending",
+      target: { channel_kind: "slack", room_id: "C-team" },
+      escalation_targets: [],
+      max_escalations: 0,
+    },
+  ],
+};
 const UT_WINDOWS: Record<string, number> = { "7d": 7, "14d": 14, "30d": 30 };
 const utMean = (vals: number[]): number => (vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0);
 const utStdev = (vals: number[], mean: number): number =>
@@ -1212,6 +1256,32 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     return Promise.resolve(
       json({ auth_mode: "team_cookie", member, csrf: "csrf-" + member.id, expires_at: HANDOFF_NOW + 3600 }),
     );
+  }
+
+  if (p === "/api/notifications/routing") {
+    // Mirrors web_app.py: GET any member (read-only view); POST operator-only.
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    if (method === "POST") {
+      if (viewerMode)
+        return Promise.resolve(
+          new Response(JSON.stringify({ detail: "notification routing requires operator role" }), { status: 403 }),
+        );
+      const body = (init?.body ? JSON.parse(init.body as string) : {}) as Partial<typeof routingState>;
+      routingState = {
+        configured: true,
+        enabled: !!body.enabled,
+        dry_run: body.dry_run !== false, // default dry-run unless explicitly false
+        rules: Array.isArray(body.rules) ? (body.rules as RoutingRule[]) : [],
+      };
+      routingConfigured = true;
+      diag.routingPosted = { enabled: routingState.enabled, dry_run: routingState.dry_run, rules: routingState.rules.length };
+      return Promise.resolve(json({ ok: true, project: proj, routing: routingState }));
+    }
+    diag.routingFetches = ((diag.routingFetches as number) ?? 0) + 1;
+    const routing = routingConfigured
+      ? routingState
+      : { configured: false, enabled: false, dry_run: true, rules: [] };
+    return Promise.resolve(json({ project: proj, routing }));
   }
 
   if (p === "/api/usage/trend") {

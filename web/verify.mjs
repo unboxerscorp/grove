@@ -2137,6 +2137,91 @@ async function main() {
       trendDisabled.disabled &&
       trendDisabled.nodes === 0;
 
+    // V24-W2 notification routing config: read-only rule view + dry-run state +
+    // escalation, operator-only config (explicit confirm), viewer lock, graceful
+    // unconfigured. Mirrors web_app.py /api/notifications/routing.
+    const reenterRouting = async () => {
+      await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
+      await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+      await page.$eval('.dr-tab[data-view="routing"]', (el) => el.click());
+      await page.waitForSelector(".routing", { timeout: 8000 });
+    };
+    await page.$eval('.dr-tab[data-view="routing"]', (el) => el.click());
+    await page.waitForSelector(".routing-rule", { timeout: 8000 });
+    const routing = await page.evaluate(() => {
+      const r1 = document.querySelector('.routing-rule[data-rule="blocked-to-ops"]');
+      return {
+        rules: document.querySelectorAll(".routing-rule").length,
+        dryRunBadge: !!document.querySelector(".routing-dryrun.is-dry"),
+        dryRunText: (document.querySelector(".routing-dryrun")?.textContent ?? "").trim(),
+        enabledBadge: !!document.querySelector(".routing-badge.is-on"),
+        // rule 1 shows its condition + target + escalation (window + max)
+        cond: !!r1?.querySelector(".routing-cond"),
+        target: (r1?.querySelector(".routing-target")?.textContent ?? "").trim(),
+        escWindow: !!r1?.querySelector(".routing-esc__window"),
+        escMax: (r1?.querySelector(".routing-esc__max")?.textContent ?? "").trim(),
+        // operator sees the config affordance
+        configBtn: !!document.querySelector(".routing-edit__btn"),
+        readonly: !!document.querySelector(".routing-readonly"),
+      };
+    });
+    // operator config: edit → save → CONFIRM (no POST yet) → confirm → POST.
+    await page.$eval(".routing-edit__btn", (el) => el.click());
+    await page.waitForSelector('.routing-editor[data-editor="open"]', { timeout: 6000 });
+    await page.type(".routing-edit__name", "anomaly-route");
+    await page.type(".routing-edit__room", "C-alerts");
+    await page.$eval(".routing-edit__save", (el) => el.click());
+    await page.waitForSelector(".routing-confirm__yes", { timeout: 6000 });
+    const routingBeforeYes = await page.evaluate(() => window.__MOCK__?.routingPosted ?? null);
+    await page.$eval(".routing-confirm__yes", (el) => el.click());
+    await page.waitForFunction(() => window.__MOCK__?.routingPosted != null, { timeout: 8000 });
+    const routingPosted = await page.evaluate(() => window.__MOCK__?.routingPosted ?? null);
+    // viewer lock: read-only note, no config editor.
+    await page.evaluate(() => window.__MOCK__.setViewer(true));
+    await reenterRouting();
+    await page.waitForSelector(".routing-readonly", { timeout: 8000 });
+    const routingViewer = await page.evaluate(() => ({
+      readonly: !!document.querySelector(".routing-readonly"),
+      configBtn: !!document.querySelector(".routing-edit__btn"),
+      rules: document.querySelectorAll(".routing-rule").length, // still readable
+    }));
+    await page.evaluate(() => window.__MOCK__.setViewer(false));
+    await reenterRouting();
+    // graceful unconfigured.
+    await page.evaluate(() => window.__MOCK__.setRoutingConfigured(false));
+    await reenterRouting();
+    await page.waitForSelector('.routing-empty[data-empty="1"]', { timeout: 8000 });
+    const routingEmpty = await page.evaluate(() => ({
+      empty: !!document.querySelector('.routing-empty[data-empty="1"]'),
+      rules: document.querySelectorAll(".routing-rule").length,
+    }));
+    await page.evaluate(() => window.__MOCK__.setRoutingConfigured(true));
+
+    const routingConfigOk =
+      // read-only rule view + dry-run prominently shown.
+      routing.rules === 2 &&
+      routing.dryRunBadge &&
+      /dry-run/.test(routing.dryRunText) &&
+      routing.enabledBadge &&
+      routing.cond &&
+      /slack:C-ops/.test(routing.target) &&
+      // escalation window + bounded max surfaced.
+      routing.escWindow &&
+      /1/.test(routing.escMax) &&
+      // operator config: confirm-gated POST (nothing before confirm).
+      routing.configBtn &&
+      !routing.readonly &&
+      routingBeforeYes === null &&
+      routingPosted?.rules === 1 &&
+      routingPosted?.dry_run === true &&
+      // viewer locked to read-only (still reads the rules, no editor).
+      routingViewer.readonly &&
+      !routingViewer.configBtn &&
+      routingViewer.rules >= 1 &&
+      // graceful unconfigured.
+      routingEmpty.empty &&
+      routingEmpty.rules === 0;
+
     // #N1 project switch re-scope + no residue (여정1/5): switching to an
     // isolated project swaps org/board/nodes wholesale — none of the default
     // project's nodes/cards may bleed through — and switching back restores it.
@@ -2311,7 +2396,7 @@ async function main() {
     // flags above don't regress. (Viewport is back to desktop after mobileOk.)
     const SIDEBAR_VIEWS = [
       "board", "team", "terminal", "integrations", "exec", "cost",
-      "ledger", "insights", "trend", "agg", "handoff", "connect", "auth",
+      "ledger", "insights", "trend", "agg", "handoff", "connect", "routing", "auth",
     ];
     const sidebar = await page.evaluate((views) => {
       const sb = document.querySelector(".dr-sidebar");
@@ -2497,6 +2582,7 @@ async function main() {
       ledgerQuotaOk &&
       retroAnalyticsOk &&
       trendAnomalyOk &&
+      routingConfigOk &&
       mobileOk &&
       sidebarNavOk &&
       projectOk &&
@@ -2623,6 +2709,8 @@ async function main() {
       retro: { insights, low: insightsLow, viewer: insightsViewer, disabled: insightsDisabled },
       trendAnomalyOk,
       trend: { ...trend, window: trendWindow, windowContract: trendWindowContract, viewer: trendViewer, disabled: trendDisabled },
+      routingConfigOk,
+      routing: { ...routing, beforeYes: routingBeforeYes, posted: routingPosted, viewer: routingViewer, empty: routingEmpty },
       mobileOk,
       mobile: { ...mobile, detailFits },
       sidebarNavOk,

@@ -462,6 +462,46 @@ export interface UsageTrend {
   limitations?: string[];
 }
 
+// Notification routing v2 (web_app.py /api/notifications/routing). Conditional
+// rules + escalation. GET is readable by any member (read-only view); POST is
+// operator-gated (403 for viewers). DRY-RUN by default (no real sends).
+// `configured:false` = never set up (graceful empty). Targets carry only a
+// channel_kind + room_id (backend-redacted; no secrets/PII).
+export interface NotificationTarget {
+  channel_kind: string;
+  room_id: string;
+}
+export interface NotificationRule {
+  name: string;
+  event_type: string; // "*" | "blocked" | "ask_human_pending" | "anomaly"
+  node?: string;
+  severity?: string;
+  target: NotificationTarget;
+  escalation_targets: NotificationTarget[];
+  max_escalations: number; // 0..5, bounded by escalation_targets length
+  escalate_after_seconds?: number; // 0..86400
+}
+export interface NotificationRouting {
+  configured: boolean;
+  enabled: boolean;
+  dry_run: boolean;
+  rules: NotificationRule[];
+}
+export interface RoutingResponse {
+  project?: string;
+  routing: NotificationRouting;
+}
+export interface RoutingUpdateBody {
+  enabled: boolean;
+  dry_run: boolean;
+  rules: NotificationRule[];
+}
+export interface RoutingUpdateResult {
+  ok: boolean;
+  project?: string;
+  routing: NotificationRouting;
+}
+
 // Cross-room handoff (web_app.py). export → signed allowlist package (task →
 // {title,body,priority,labels}); accept → verify (trust/freshness) + EXPLICIT
 // accept → local task (idempotent by handoff_id, receiver TTL). Default OFF.
@@ -883,6 +923,21 @@ export const api = {
   // 7d|14d|30d (default 14d).
   getUsageTrend: (window?: string) =>
     getJSON<UsageTrend>(`/api/usage/trend${window ? `?window=${encodeURIComponent(window)}` : ""}`),
+
+  // Notification routing config: GET readable by any member; POST operator-only
+  // (403 viewer). Default dry-run (no real sends).
+  getNotificationRouting: () => getJSON<RoutingResponse>("/api/notifications/routing"),
+
+  async setNotificationRouting(body: RoutingUpdateBody): Promise<RoutingUpdateResult> {
+    const res = await fetch("/api/notifications/routing", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`/api/notifications/routing: HTTP ${res.status}`);
+    return (await res.json()) as RoutingUpdateResult;
+  },
 
   // Set a member's SOFT budget (operator only; 404 when --enable-quotas is off,
   // 403 for viewers). Never hard-kills — exceeding only throttles new work.

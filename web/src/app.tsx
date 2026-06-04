@@ -16,6 +16,7 @@ import { CostPanel } from "./components/CostPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { HandoffPanel } from "./components/HandoffPanel";
 import { InsightsPanel } from "./components/InsightsPanel";
+import { RoutingPanel } from "./components/RoutingPanel";
 import { TrendPanel } from "./components/TrendPanel";
 import { LedgerPanel } from "./components/LedgerPanel";
 import { HealthDot } from "./components/HealthDot";
@@ -29,7 +30,7 @@ import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
-type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "ledger" | "insights" | "trend" | "agg" | "handoff" | "connect" | "auth";
+type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "ledger" | "insights" | "trend" | "agg" | "handoff" | "connect" | "routing" | "auth";
 
 // A share URL deep-links as <index>?join=<code> (web_app.py _share_url). Read the
 // code once at startup so opening a share link lands on the join screen with the
@@ -92,6 +93,7 @@ const NAV_GROUPS: { id: string; labelKey: string; items: NavItem[] }[] = [
     items: [
       { kind: "view", view: "integrations", labelKey: "tab.integrations", icon: "#" },
       { kind: "view", view: "connect", labelKey: "tab.connect", icon: "⚯" },
+      { kind: "view", view: "routing", labelKey: "tab.routing", icon: "⤳" },
       { kind: "drawer", drawer: "inbox", labelKey: "inbox.open", icon: "⚑" },
     ],
   },
@@ -579,6 +581,8 @@ export function App() {
               initialJoinCode={joinCode}
               onJoined={() => setLiveTick((x) => x + 1)}
             />
+          ) : view === "routing" ? (
+            <RoutingPanel projectTick={projectTick} />
           ) : view === "auth" ? (
             <AuthPanel />
           ) : (
