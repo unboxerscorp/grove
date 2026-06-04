@@ -4,6 +4,44 @@ All notable changes to grove are documented here. grove is the standalone,
 self-contained dev-room / team-OS product (kanban board + channels + live-terminal
 web), driving a tree of real codex / claude / antigravity (agy) CLI sessions in tmux.
 
+## [0.18.0] — v1.17 (2026-06-04)
+
+Hand a task to another room. Auto-started after v1.16.0. Data transfer, not remote control —
+the receiver always decides. Default OFF.
+
+### Signed cross-room handoff
+
+- **GET/POST /api/handoff/export** (token + project-scoped) exports a signed handoff package: a
+  privacy-allowlisted payload (title/body/priority/labels only — token/path/email/PII/transcript
+  redacted), signed with the v1.16 key model (key_id, never the key), one-shot id.
+- **POST /api/handoff/accept** verifies the package (HMAC + trusted key_id, fail-closed on
+  tamper/unknown key) and, only on explicit accept, creates ONE local task (ready, unassigned,
+  scratch) — the sender can never create or execute anything remotely. Idempotent (a repeated
+  handoff id makes no duplicate; concurrent double-accept yields exactly one task). The
+  receiver's handoff_ttl_seconds is authoritative (a package older than the receiver window is
+  410, even if the signed expiry is longer); future beyond a 60s skew is rejected. Export +
+  accept are audited; the audit sanitizer now also redacts email PII.
+
+### Handoff UI
+
+- A task drawer "hand off to another room" action exports the copyable signed package (human view
+  shows handoff_id + key_id only, never the digest). An "인계" tab pastes a package → local preview
+  (trust + freshness badges) → an explicit two-step accept that creates the task only on confirm
+  (nothing before); re-accept shows "existing", tampered/unknown/expired/disabled render a fixed
+  message with no raw/secret.
+
+### Quality / safety
+
+- Adversarial review: P0 receiver-local/no-remote-exec/allowlist/forge-fail-closed/default-off
+  GO; P1 receiver-TTL enforcement + audit email-PII redaction + P2 concurrent-accept test, fixed
+  and re-reviewed. 246 py tests; web e2e 383/383 (+56 for the handoff endpoints).
+
+### Deferred (→ v1.18)
+
+- **Tailnet multi-user access** (user request): tailnet peers open the dashboard + start projects
+  on the host's local CLIs, easy connect. Plus retro analytics, usage/cost trend reporting v2,
+  notification routing v2 (see docs/V1_18_BRAINSTORM.md).
+
 ## [0.17.0] — v1.16 (2026-06-04)
 
 See many rooms in one view. Auto-started after v1.15.0. Read-only and privacy-first —
