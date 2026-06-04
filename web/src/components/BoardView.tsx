@@ -7,6 +7,12 @@ import type { Task } from "../types";
 
 const PRIORITIES = ["low", "normal", "high"] as const;
 
+/** Short, de-emphasized id slug for a card — long raw ids (task_2398…) are
+ *  truncated so they never dominate or overflow; short ids (G-2) pass through. */
+function shortId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 10)}…` : id;
+}
+
 function AddTaskForm(props: { boardId: string; onCreated: () => void; onClose: () => void }) {
   const { boardId, onCreated, onClose } = props;
   const { t } = useI18n();
@@ -247,17 +253,21 @@ export function BoardView(props: {
                     style={{ animationDelay: `${Math.min(i, 10) * 22}ms` }}
                     onClick={() => onOpenTask(task.id)}
                   >
-                    <span className="dr-card__top">
-                      <span className="dr-card__id" style={{ color: statusColor(task.status) }}>
-                        {task.id}
-                      </span>
+                    {/* Title is the primary text; the raw id is only a small,
+                        de-emphasized slug (long ids are truncated + wrap). */}
+                    <span className="dr-card__title">{task.title?.trim() || shortId(task.id)}</span>
+                    <span className="dr-card__meta">
+                      {task.title?.trim() && (
+                        <span className="dr-card__id" style={{ color: statusColor(task.status) }} title={task.id}>
+                          {shortId(task.id)}
+                        </span>
+                      )}
                       {task.assignee && (
                         <span className="dr-card__who" title={task.assignee}>
                           {initials(task.assignee)}
                         </span>
                       )}
                     </span>
-                    <span className="dr-card__title">{task.title}</span>
                     {task.latest_summary && <span className="dr-card__sum">{task.latest_summary}</span>}
                   </button>
                 ))}

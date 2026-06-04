@@ -522,6 +522,38 @@ async function main() {
       cards: document.querySelectorAll(".dr-card").length,
     }));
 
+    // 긴급 #4 board card: the TITLE is the primary text (>= the id slug), the raw
+    // id is only a small secondary slug, and long ids/titles WRAP — never causing
+    // horizontal overflow. We inject a 60-char unbreakable token into a title to
+    // prove wrapping without needing a long-id fixture.
+    const boardCard = await page.evaluate(() => {
+      const card = document.querySelector(".dr-card");
+      const titleEl = card?.querySelector(".dr-card__title");
+      const idEl = card?.querySelector(".dr-card__id");
+      const titleCs = titleEl ? getComputedStyle(titleEl) : null;
+      const titleFs = titleEl ? parseFloat(titleCs.fontSize) : 0;
+      const idFs = idEl ? parseFloat(getComputedStyle(idEl).fontSize) : 0;
+      // probe overflow with a long unbreakable token in a real card title
+      const probe = document.querySelector(".dr-card__title");
+      const orig = probe ? probe.textContent : "";
+      if (probe) probe.textContent = "task_" + "2398abcdef0123456789".repeat(3); // 65 chars, no spaces
+      const cards = Array.from(document.querySelectorAll(".dr-card"));
+      const cols = Array.from(document.querySelectorAll(".dr-col"));
+      const noOverflow =
+        cards.every((c) => c.scrollWidth <= c.clientWidth + 1) &&
+        cols.every((c) => c.scrollWidth <= c.clientWidth + 1);
+      if (probe) probe.textContent = orig; // restore
+      return {
+        titlePresent: (titleEl?.textContent ?? "").trim().length > 0,
+        titleProminent: titleFs >= idFs && titleFs >= 13, // title is the largest text
+        idSecondary: idFs > 0 && idFs < titleFs, // id slug is smaller/secondary
+        wraps: !!titleCs && (titleCs.overflowWrap === "anywhere" || titleCs.wordBreak === "break-word" || titleCs.wordBreak === "break-all"),
+        noOverflow,
+      };
+    });
+    const boardCardOk =
+      boardCard.titlePresent && boardCard.titleProminent && boardCard.idSecondary && boardCard.wraps && boardCard.noOverflow;
+
     // #3 add task: open the form, submit, expect a new card + a recorded POST.
     const NEW_TITLE = "QA verify task";
     await page.click(".dr-addbtn");
@@ -2655,6 +2687,7 @@ async function main() {
       diag.nodes >= 1 &&
       board.columns === 8 &&
       board.cards >= 1 &&
+      boardCardOk &&
       drawer.runs >= 1 &&
       drawer.comments >= 1 &&
       term.termChars > 20 &&
@@ -2707,6 +2740,8 @@ async function main() {
       ...diag,
       ...drawer,
       ...board,
+      boardCardOk,
+      boardCard,
       ...term,
       orgNodes: orgView.nodes,
       edges: orgView.edges,

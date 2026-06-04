@@ -2513,8 +2513,9 @@ button {
 .dr-card {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 6px;
   width: 100%;
+  min-width: 0; /* allow long tokens to wrap instead of widening the column */
   text-align: left;
   padding: 11px 12px;
   border: 1px solid var(--line);
@@ -2534,23 +2535,31 @@ button {
   box-shadow: 0 12px 28px -18px rgba(0, 0, 0, 0.9);
 }
 
-.dr-card__top {
+/* meta row under the title: small id slug (left) + assignee avatar (right) */
+.dr-card__meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
 }
 
 .dr-card__id {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
+  color: var(--faint);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap; /* secondary slug stays one line, truncated if long */
 }
 
 .dr-card__who {
   display: inline-grid;
   place-items: center;
+  flex: none;
   width: 20px;
   height: 20px;
   border-radius: 50%;
@@ -2561,16 +2570,24 @@ button {
   background: var(--amber);
 }
 
+/* title is the primary card text — largest + prominent, wraps (never overflows) */
 .dr-card__title {
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 600;
   line-height: 1.35;
   color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .dr-card__sum {
   font-size: 11.5px;
   line-height: 1.4;
   color: var(--dim);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
