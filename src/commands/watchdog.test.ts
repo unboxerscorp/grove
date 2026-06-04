@@ -517,10 +517,35 @@ describe("watchdog node health", () => {
     });
   });
 
-  test("ignores spinner and clock-only pane redraws when deciding activity", async () => {
+  test("does not mark idle prompt panes as hung without transcript output", async () => {
     let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const runtime: MockRuntime = {
-      paneText: { "dev10:0.0": "Working | elapsed 00:00 1%" },
+      paneText: { "dev10:0.0": "╭── ready ──╮\n│ ❯ > │\n╰──────────╯" },
+      transcriptBytes: { "/repo/worker.jsonl": 42 },
+      transcriptMtimeMs: { "/repo/worker.jsonl": nowMs - 301_000 },
+    };
+    const ctx = context(["worker"], runtime);
+    const memory = new Map<string, WatchdogMemory>();
+    const injected = deps(ctx, runtime, () => new Date(nowMs));
+
+    const first = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
+    nowMs += 301_000;
+    const second = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
+
+    expect(healthByNode(first).get("worker")).toMatchObject({
+      health: "healthy",
+      reason: "idle",
+    });
+    expect(healthByNode(second).get("worker")).toMatchObject({
+      health: "healthy",
+      reason: "idle",
+    });
+  });
+
+  test("does not mark active panes as hung without transcript output", async () => {
+    let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
+    const runtime: MockRuntime = {
+      paneText: { "dev10:0.0": "Working | esc to interrupt | elapsed 00:00 1%" },
       transcriptBytes: { "/repo/worker.jsonl": 42 },
     };
     const ctx = context(["worker"], runtime);
@@ -529,7 +554,29 @@ describe("watchdog node health", () => {
 
     const first = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
     nowMs += 301_000;
-    runtime.paneText!["dev10:0.0"] = "Working / elapsed 00:05 2%";
+    runtime.paneText!["dev10:0.0"] = "Working / esc to interrupt / elapsed 00:05 2%";
+    const second = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
+
+    expect(healthByNode(first).get("worker")?.health).toBe("healthy");
+    expect(healthByNode(second).get("worker")).toMatchObject({
+      health: "healthy",
+      reason: "active",
+    });
+  });
+
+  test("ignores spinner and clock-only pane redraws without active or idle markers", async () => {
+    let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
+    const runtime: MockRuntime = {
+      paneText: { "dev10:0.0": "| elapsed 00:00 1%" },
+      transcriptBytes: { "/repo/worker.jsonl": 42 },
+    };
+    const ctx = context(["worker"], runtime);
+    const memory = new Map<string, WatchdogMemory>();
+    const injected = deps(ctx, runtime, () => new Date(nowMs));
+
+    const first = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
+    nowMs += 301_000;
+    runtime.paneText!["dev10:0.0"] = "/ elapsed 00:05 2%";
     const second = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
 
     expect(healthByNode(first).get("worker")?.health).toBe("healthy");

@@ -150,6 +150,8 @@ const RATE_LIMIT_RE = /temporarily limiting requests/i;
 const USAGE_LIMIT_RE = /session limit[\s\S]{0,160}?resets?(?:\s+at)?\s+(\d{1,2}):(\d{2})/i;
 const LOGIN_REQUIRED_RE =
   /\b(?:login required|not logged in|please log in|please sign in|authentication required|authentication expired|auth expired|token expired|credentials expired)\b/i;
+const ACTIVE_PANE_RE =
+  /\b(?:working|thinking|processing|running|streaming|esc\s+to\s+interrupt|press\s+esc\s+to\s+interrupt)\b/i;
 const SHELL_COMMANDS = new Set(["zsh", "-zsh", "bash", "-bash", "sh", "fish", "tmux"]);
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-?]*[ -/]*[@-~]`, "g");
 
@@ -321,6 +323,23 @@ function normalizePaneText(text: string): string {
 
 function paneHash(text: string): string {
   return createHash("sha256").update(normalizePaneText(text)).digest("hex");
+}
+
+function paneLineContent(line: string): string {
+  return line
+    .replace(/[│┃┆┊╎╏]/g, "")
+    .replace(/[╭╮╰╯─═━┄┅┈┉]+/g, "")
+    .trim();
+}
+
+function hasIdlePrompt(text: string): boolean {
+  return normalizePaneText(text)
+    .split("\n")
+    .some((line) => /^(?:[❯›>]\s*){1,3}$/.test(paneLineContent(line)));
+}
+
+function hasActiveIndicator(text: string): boolean {
+  return ACTIVE_PANE_RE.test(text);
 }
 
 function cloneWatchdogMemory(memory: Map<string, WatchdogMemory>): Map<string, WatchdogMemory> {
@@ -645,9 +664,11 @@ async function nodeState(
   });
 
   const limit = classifyText(combinedText, now);
+  const idlePrompt = hasIdlePrompt(paneText);
+  const activeIndicator = hasActiveIndicator(paneText);
   const idleMs = Math.max(0, nowMs - lastActivityMs);
   let health: WatchdogHealth = "healthy";
-  let reason = "active";
+  let reason = idlePrompt ? "idle" : "active";
   let usageLimitResetAt: string | undefined;
   if (limit?.reason === "login-required") {
     health = "login_required";
@@ -659,7 +680,7 @@ async function nodeState(
   } else if (limit?.reason === "rate-limit") {
     health = "rate_limited";
     reason = limit.reason;
-  } else if (idleMs >= opts.hungAfterMs) {
+  } else if (!idlePrompt && !activeIndicator && idleMs >= opts.hungAfterMs) {
     health = "hung";
     reason = "no-pane-or-transcript-output";
   }
