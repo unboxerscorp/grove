@@ -100,6 +100,7 @@ NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 PROJECT_NAME_RE = NODE_NAME_RE
 HANDOFF_ID_RE = re.compile(r"^handoff_[A-Za-z0-9_-]{16,}$")
 JOIN_MEMBER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$")
+NOTIFICATION_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 STACK_TRACE_RE = re.compile(r"(?i)(traceback|\bfile \"|\bat .+\(.+:\d+:\d+\))")
@@ -358,6 +359,28 @@ class QuotaPayload(BaseModel):
     soft_run_limit: int | None = Field(default=None, ge=0)
     soft_token_limit: int | None = Field(default=None, ge=0)
     soft_cost_usd: float | None = Field(default=None, ge=0)
+
+
+class NotificationTargetPayload(BaseModel):
+    channel_kind: str = Field(min_length=1, max_length=100)
+    room_id: str = Field(min_length=1, max_length=200)
+
+
+class NotificationRoutePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    event_type: str = Field(default="*", min_length=1, max_length=50)
+    node: str | None = Field(default=None, max_length=100)
+    severity: str | None = Field(default=None, max_length=50)
+    target: NotificationTargetPayload
+    escalate_after_seconds: int | None = Field(default=None, ge=0, le=86_400)
+    escalation_targets: list[NotificationTargetPayload] = Field(default_factory=list, max_length=5)
+    max_escalations: int = Field(default=0, ge=0, le=5)
+
+
+class NotificationRoutingPayload(BaseModel):
+    enabled: bool = False
+    dry_run: bool = True
+    rules: list[NotificationRoutePayload] = Field(default_factory=list, max_length=50)
 
 
 class WsTicketPayload(BaseModel):
@@ -759,6 +782,40 @@ def create_app(
             "member": _ledger_member_payload(member_id, _member_lookup(config_value)),
             "quota": _quota_public_payload(state, usage=_unknown_usage(), quota_enabled=True),
         }
+
+    @app.get("/api/notifications/routing")
+    def notification_routing_get_endpoint(request: Request) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        return {
+            "project": project.name,
+            "routing": _store(request).notification_routing_state(board=project.board),
+        }
+
+    @app.post("/api/notifications/routing")
+    def notification_routing_post_endpoint(
+        request: Request,
+        payload: NotificationRoutingPayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="notification routing requires operator role",
+        )
+        project = resolve_project(request)
+        state = _store(request).set_notification_routing(
+            board=project.board,
+            state=_notification_routing_state_from_payload(payload),
+        )
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.notification.routing",
+            actor=_actor_payload(auth),
+            action="notification-routing-config",
+            target={"type": "notification_routing", "id": project.name},
+            payload={"project": project.name, "routing": state},
+            summary="notification routing updated",
+        )
+        return {"ok": True, "project": project.name, "routing": state}
 
     @app.get("/api/summary")
     def summary_endpoint(
@@ -4822,6 +4879,52 @@ def _quota_member_id(value: str, *, config: WebAppConfig) -> str:
         raise HTTPException(status_code=404, detail="member not found")
     if NODE_NAME_RE.fullmatch(clean) is None:
         raise HTTPException(status_code=400, detail="invalid member_id")
+    return clean
+
+
+def _notification_routing_state_from_payload(
+    payload: NotificationRoutingPayload,
+) -> dict[str, object]:
+    return {
+        "enabled": payload.enabled,
+        "dry_run": payload.dry_run,
+        "rules": [_notification_rule_payload(rule) for rule in payload.rules],
+    }
+
+
+def _notification_rule_payload(rule: NotificationRoutePayload) -> dict[str, object]:
+    clean_event = rule.event_type.strip()
+    if clean_event not in {"*", "blocked", "ask_human_pending", "anomaly"}:
+        raise HTTPException(status_code=400, detail="invalid notification event_type")
+    clean_rule: dict[str, object] = {
+        "name": _notification_text(rule.name, field_name="name"),
+        "event_type": clean_event,
+        "target": _notification_target_payload(rule.target),
+        "escalation_targets": [
+            _notification_target_payload(target) for target in rule.escalation_targets
+        ],
+        "max_escalations": min(rule.max_escalations, len(rule.escalation_targets)),
+    }
+    if rule.node is not None:
+        clean_rule["node"] = _optional_node_ref(rule.node, field_name="node")
+    if rule.severity is not None:
+        clean_rule["severity"] = _notification_text(rule.severity, field_name="severity").lower()
+    if rule.escalate_after_seconds is not None:
+        clean_rule["escalate_after_seconds"] = rule.escalate_after_seconds
+    return clean_rule
+
+
+def _notification_target_payload(target: NotificationTargetPayload) -> dict[str, object]:
+    return {
+        "channel_kind": _notification_text(target.channel_kind, field_name="channel_kind"),
+        "room_id": _notification_text(target.room_id, field_name="room_id"),
+    }
+
+
+def _notification_text(value: str, *, field_name: str) -> str:
+    clean = value.strip()
+    if NOTIFICATION_TEXT_RE.fullmatch(clean) is None:
+        raise HTTPException(status_code=400, detail=f"invalid notification {field_name}")
     return clean
 
 

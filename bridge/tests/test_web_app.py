@@ -1723,6 +1723,107 @@ def test_usage_trend_default_off_viewer_gate_project_scope_and_thin_data(
     assert "/Users/chopin" not in rendered
 
 
+def test_notification_routing_endpoint_persists_rules_audits_and_redacts(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+    secret = "xoxb-" + ("g" * 44)
+
+    initial = client.get("/api/notifications/routing", headers=headers)
+    saved = client.post(
+        "/api/notifications/routing",
+        headers=headers,
+        json={
+            "enabled": True,
+            "dry_run": True,
+            "rules": [
+                {
+                    "name": "blocked-high",
+                    "event_type": "blocked",
+                    "node": "maker",
+                    "severity": "high",
+                    "target": {"channel_kind": "inbox", "room_id": "ops"},
+                    "escalate_after_seconds": 60,
+                    "escalation_targets": [
+                        {"channel_kind": "inbox", "room_id": "lead"},
+                    ],
+                    "max_escalations": 1,
+                }
+            ],
+        },
+    )
+    invalid = client.post(
+        "/api/notifications/routing",
+        headers=headers,
+        json={
+            "enabled": True,
+            "rules": [
+                {
+                    "name": "bad",
+                    "event_type": "blocked",
+                    "target": {
+                        "channel_kind": "inbox",
+                        "room_id": f"/Users/chopin/{secret}",
+                    },
+                }
+            ],
+        },
+    )
+
+    assert initial.status_code == 200
+    assert initial.json()["routing"] == {
+        "configured": False,
+        "enabled": False,
+        "dry_run": True,
+        "rules": [],
+    }
+    assert saved.status_code == 200
+    payload = saved.json()
+    assert payload["routing"]["enabled"] is True
+    assert payload["routing"]["dry_run"] is True
+    assert payload["routing"]["rules"][0]["target"] == {
+        "channel_kind": "inbox",
+        "room_id": "ops",
+    }
+    audits = store.list_audit_events(board="dev10", action="notification-routing-config")
+    assert audits[-1].kind == "audit.notification.routing"
+    audit_routing = cast(dict[str, Any], audits[-1].payload["routing"])
+    assert audit_routing["dry_run"] is True
+    assert invalid.status_code == 400
+    rendered = json.dumps(saved.json()) + json.dumps(invalid.json())
+    assert secret not in rendered
+    assert "/Users/chopin" not in rendered
+
+
+def test_notification_routing_endpoint_rejects_team_viewer(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_team_member(tmp_path, secret="viewer-secret", role="viewer")
+    client = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
+    login = client.post("/api/login", json={"name": "alice", "secret": "viewer-secret"})
+    csrf = str(login.json()["csrf"])
+
+    response = client.post(
+        "/api/notifications/routing",
+        headers={CSRF_HEADER: csrf},
+        json={
+            "enabled": True,
+            "rules": [
+                {
+                    "name": "blocked",
+                    "event_type": "blocked",
+                    "target": {"channel_kind": "inbox", "room_id": "ops"},
+                }
+            ],
+        },
+    )
+
+    assert login.status_code == 200
+    assert response.status_code == 403
+    assert store.notification_routing_state(board="dev10")["configured"] is False
+
+
 def test_retro_analytics_reports_advisory_insights_without_mutating_work(
     tmp_path: Path,
 ) -> None:

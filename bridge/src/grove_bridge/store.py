@@ -1272,6 +1272,29 @@ class SQLiteBoardStore:
             self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
         return self.member_quota_state(board=board, member_id=member_id)
 
+    def notification_routing_state(self, *, board: str) -> dict[str, object]:
+        settings = self._board_settings(board) or {}
+        raw = settings.get("notification_routing")
+        return _notification_routing_state_from_mapping(
+            raw if isinstance(raw, Mapping) else {},
+            configured=isinstance(raw, Mapping),
+        )
+
+    def set_notification_routing(
+        self,
+        *,
+        board: str,
+        state: Mapping[str, object],
+    ) -> dict[str, object]:
+        now = _now()
+        board_id = self._ensure_board(board)
+        clean = _notification_routing_state_from_mapping(state, configured=True)
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            settings["notification_routing"] = clean
+            self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
+        return self.notification_routing_state(board=board)
+
     def execution_global_state(self, *, board: str) -> dict[str, bool]:
         settings = self._board_settings(board) or {}
         raw = _execution_settings(settings)
@@ -2570,6 +2593,24 @@ def _quota_state_from_mapping(
     updated_at = raw.get("updated_at")
     if isinstance(updated_at, int) and not isinstance(updated_at, bool):
         state["updated_at"] = updated_at
+    return state
+
+
+def _notification_routing_state_from_mapping(
+    raw: Mapping[str, object],
+    *,
+    configured: bool,
+) -> dict[str, object]:
+    sanitized = _sanitize_audit_mapping(raw)
+    state: dict[str, object] = {
+        "configured": configured,
+        "enabled": _setting_bool(sanitized.get("enabled"), default=False),
+        "dry_run": _setting_bool(sanitized.get("dry_run"), default=True),
+        "rules": [],
+    }
+    rules = sanitized.get("rules")
+    if isinstance(rules, list):
+        state["rules"] = [rule for rule in rules if isinstance(rule, Mapping)]
     return state
 
 

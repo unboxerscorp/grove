@@ -239,6 +239,9 @@ class ClaimConflictStore:
             created_at=1,
         )
 
+    def notification_routing_state(self, *, board: str) -> dict[str, object]:
+        return {"configured": False, "enabled": False, "dry_run": True, "rules": []}
+
     def add_audit_event(
         self,
         *,
@@ -668,6 +671,158 @@ def test_run_once_blocks_failed_task_and_notifies_after_block(tmp_path: Path) ->
     assert len(subs) == 1
     assert subs[0].channel_kind == "inbox"
     assert subs[0].room_id == "ops"
+    assert notifier.calls == [(task.id, subs[0])]
+
+
+def test_run_once_uses_stored_notification_routing_config(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Needs routed escalation",
+        body=None,
+        assignee="claude-a",
+    )
+    store.set_notification_routing(
+        board="main",
+        state={
+            "enabled": True,
+            "dry_run": False,
+            "rules": [
+                {
+                    "name": "human-gate",
+                    "event_type": "ask_human_pending",
+                    "node": "claude-a",
+                    "target": {"channel_kind": "inbox", "room_id": "route-ops"},
+                    "escalate_after_seconds": 0,
+                    "escalation_targets": [{"channel_kind": "inbox", "room_id": "route-lead"}],
+                    "max_escalations": 1,
+                }
+            ],
+        },
+    )
+    runner = FakeRunner(
+        GroveRunResult(
+            node="claude-a",
+            returncode=2,
+            stdout="partial output",
+            stderr="missing input",
+            session_id=None,
+            transcript_path=None,
+            turn_id=None,
+            tmux_pane=None,
+        )
+    )
+    notifier = RecordingNotifier()
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"claude-a": LaneConfig(assignee="claude-a", nodes=("claude-a",))},
+        board_db_path=tmp_path / "board.db",
+        notifier=NotifierConfig(
+            enabled=True,
+            dry_run=False,
+            channel_kind="inbox",
+            room_id="legacy-ops",
+        ),
+        max_tasks_per_tick=1,
+        autonomous_pickup=AutonomousPickupConfig(
+            enabled=True,
+            nodes={"claude-a": AutoPickupNodeConfig(enabled=True)},
+        ),
+    )
+    executor = PullExecutor(config=config, store=store, grove_runner=runner, notifier=notifier)
+
+    executor.run_once()
+    store.set_autopickup_global(board="main", enabled=True, kill_switch=False)
+    store.set_node_autopickup_enabled(board="main", node="claude-a", enabled=True)
+    store.set_execution_global(board="main", enabled=True)
+    store.set_node_execution_enabled(board="main", node="claude-a", enabled=True)
+    assert store.approve_execution(
+        board="main",
+        task_id=task.id,
+        actor={"kind": "member", "id": "lead", "login": "lead", "role": "admin"},
+    )
+
+    result = executor.run_once()
+
+    assert result.blocked == 1
+    subs = store.list_notify_subs(board="main", task_id=task.id)
+    assert [sub.room_id for _, sub in notifier.calls] == ["route-ops", "route-lead"]
+    assert all(sub.room_id != "legacy-ops" for sub in subs)
+    subs_by_thread = {sub.thread_id: sub for sub in subs}
+    assert subs_by_thread[f"route:human-gate:ask_human_pending:{task.id}:0"].room_id == (
+        "route-ops"
+    )
+    assert subs_by_thread[f"route:human-gate:ask_human_pending:{task.id}:1"].room_id == (
+        "route-lead"
+    )
+
+
+def test_run_once_notification_routing_dry_run_sends_nothing(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Dry-run blocked",
+        body=None,
+        assignee="codex-a",
+        status="blocked",
+        metadata={"needs_human": True},
+    )
+    store.set_notification_routing(
+        board="main",
+        state={
+            "enabled": True,
+            "dry_run": True,
+            "rules": [
+                {
+                    "name": "dry-run",
+                    "event_type": "ask_human_pending",
+                    "target": {"channel_kind": "inbox", "room_id": "ops"},
+                }
+            ],
+        },
+    )
+    notifier = RecordingNotifier()
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        notifier=NotifierConfig(enabled=True, dry_run=False, channel_kind="inbox", room_id="ops"),
+    )
+
+    result = PullExecutor(config=config, store=store, notifier=notifier).run_once()
+
+    assert result.claimed == 0
+    assert notifier.calls == []
+    assert store.list_notify_subs(board="main", task_id=task.id) == []
+
+
+def test_run_once_notification_config_absent_keeps_default_notifier_path(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board="main",
+        title="Legacy blocked",
+        body=None,
+        assignee="codex-a",
+        status="blocked",
+        metadata={"needs_human": True},
+    )
+    notifier = RecordingNotifier()
+    config = BridgeConfig(
+        boards=("main",),
+        lanes={"codex-a": LaneConfig(assignee="codex-a", nodes=("codex-a",))},
+        board_db_path=tmp_path / "board.db",
+        notifier=NotifierConfig(enabled=True, dry_run=False, channel_kind="inbox", room_id="ops"),
+    )
+
+    result = PullExecutor(config=config, store=store, notifier=notifier).run_once()
+
+    assert result.claimed == 0
+    subs = store.list_notify_subs(board="main", task_id=task.id)
+    assert len(subs) == 1
+    assert subs[0].room_id == "ops"
+    assert subs[0].thread_id == f"ask_human_pending:{task.id}"
     assert notifier.calls == [(task.id, subs[0])]
 
 
