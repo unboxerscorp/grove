@@ -217,10 +217,11 @@ function ProjModal(props: {
 export function ProjectSwitcher(props: {
   projects: Project[];
   current: string | null;
+  canManage: boolean;
   onSwitch: (name: string) => void;
   onProjectsChanged: () => void;
 }) {
-  const { projects, current, onSwitch, onProjectsChanged } = props;
+  const { projects, current, canManage, onSwitch, onProjectsChanged } = props;
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [menuPos, setMenuPos] = useState({ left: 0, top: 0 });
@@ -290,12 +291,19 @@ export function ProjectSwitcher(props: {
               ))}
             </div>
             <div className="proj-menu__divider" />
-            <button type="button" className="proj-menu__action proj-menu__new" onClick={() => setModal("new")}>
-              {t("project.new")}
-            </button>
-            <button type="button" className="proj-menu__action proj-menu__load" onClick={() => setModal("load")}>
-              {t("project.load")}
-            </button>
+            {canManage ? (
+              <>
+                <button type="button" className="proj-menu__action proj-menu__new" onClick={() => setModal("new")}>
+                  {t("project.new")}
+                </button>
+                <button type="button" className="proj-menu__action proj-menu__load" onClick={() => setModal("load")}>
+                  {t("project.load")}
+                </button>
+              </>
+            ) : (
+              // viewer: project create/load is operator-only — make read-only explicit.
+              <div className="proj-menu__readonly">{t("project.readonly")}</div>
+            )}
             </div>
           </>,
           document.body,

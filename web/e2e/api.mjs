@@ -17,6 +17,7 @@
 //   - usage         (node/day rollups, agy unknowns, project scope, redaction)
 //   - summary       (signed counts-only export, aggregate trust, redaction)
 //   - handoff       (signed export, trusted local accept, idempotency, redaction)
+//   - shared-access (one-time joins, viewer read-only, CSRF/origin/host guards)
 //
 // Each check asserts the CORRECT contract. A failing check is a real defect to
 // report as `# BUG(Pn)` — never relax the assertion to match a bug.
@@ -27,7 +28,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createHmac, pbkdf2Sync } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +49,7 @@ const USAGE_EMPTY = "qae2e_usage_empty"; // created during the usage checks for 
 const SUMMARY = "qae2e_summary"; // created during the summary checks for signed aggregate coverage
 const HANDOFF_SOURCE = "qae2e_handoff_source"; // created during the handoff checks as the sender project
 const HANDOFF_RECEIVER = "qae2e_handoff_receiver"; // created during the handoff checks as the receiver project
+const SHARE = "qae2e_share"; // created during the shared-access checks
 const READY_TIMEOUT_MS = 25_000;
 const NODE_LAST_SEEN = 1_780_542_000; // ~2026-06-04T03:00Z, epoch seconds
 
@@ -115,6 +117,9 @@ function writeRegistry(session, nodes) {
   chmodSync(regPath, 0o444);
 }
 function writeTeamViewer(session, { name, secret }) {
+  writeTeamMember(session, { name, secret, role: "viewer", id: "viewer-1" });
+}
+function writeTeamMember(session, { name, secret, role, id = `${role}-1` }) {
   const dir = path.join(groveHome, session);
   mkdirSync(dir, { recursive: true });
   const membersPath = path.join(dir, "members.json");
@@ -124,9 +129,9 @@ function writeTeamViewer(session, { name, secret }) {
       {
         members: [
           {
-            id: "viewer-1",
+            id,
             name,
-            role: "viewer",
+            role,
             enabled: true,
             secret_hash: teamSecretHash(secret),
           },
@@ -211,6 +216,42 @@ async function reqAt(base, method, pathname, { token, project, cookie, csrf, bod
   return { status: resp.status, json, text, headers: resp.headers };
 }
 
+function rawHttpAt(base, method, pathname, { host, cookie, csrf, body, origin } = {}) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(base);
+    const payload = body === undefined ? "" : JSON.stringify(body);
+    const headers = [
+      `${method} ${pathname} HTTP/1.1`,
+      `Host: ${host ?? url.host}`,
+      "Connection: close",
+    ];
+    if (origin !== undefined) headers.push(`Origin: ${origin}`);
+    if (cookie) headers.push(`Cookie: ${cookie}`);
+    if (csrf) headers.push(`X-Grove-CSRF: ${csrf}`);
+    if (body !== undefined) {
+      headers.push("Content-Type: application/json");
+      headers.push(`Content-Length: ${Buffer.byteLength(payload)}`);
+    }
+    const socket = createConnection({ host: url.hostname, port: Number(url.port) }, () => {
+      socket.write(`${headers.join("\r\n")}\r\n\r\n${payload}`);
+    });
+    let raw = "";
+    socket.setTimeout(5000);
+    socket.on("data", (chunk) => {
+      raw += chunk.toString("utf8");
+    });
+    socket.on("timeout", () => {
+      socket.destroy(new Error("raw http timeout"));
+    });
+    socket.on("error", reject);
+    socket.on("end", () => {
+      const status = Number(raw.match(/^HTTP\/1\.[01]\s+(\d+)/)?.[1] || 0);
+      const text = raw.slice(raw.indexOf("\r\n\r\n") + 4);
+      resolve({ status, text, raw });
+    });
+  });
+}
+
 // Resolve open-vs-rejected for a websocket upgrade. A valid ticket -> 'open';
 // a denied ticket (server closes before accept) -> 'error'/'close', never open.
 function wsProbe(wsUrl, timeoutMs = 4000) {
@@ -254,6 +295,10 @@ let handoffChild = null;
 let handoffExited = true;
 let handoffServerLog = "";
 let handoffBaseUrl = "";
+let sharedChild = null;
+let sharedExited = true;
+let sharedServerLog = "";
+let sharedBaseUrl = "";
 
 function setAutopickupGlobal(board, { enabled, killSwitch }) {
   const boolArg = (value) => (value === undefined ? "none" : value ? "true" : "false");
@@ -595,6 +640,83 @@ async function startHandoffServer({ session, ttlSeconds = 60, trustedKeysPath } 
   throw new Error(`handoff server not ready within ${READY_TIMEOUT_MS}ms:\n${handoffServerLog}`);
 }
 
+async function startSharedServer({
+  session,
+  joinRole = "viewer",
+  joinTtlSeconds,
+  host = "127.0.0.1",
+  allowHosts = [],
+} = {}) {
+  const port = await freePort();
+  sharedBaseUrl = `http://127.0.0.1:${port}`;
+  sharedServerLog = "";
+  sharedExited = false;
+  const env = { ...process.env, GROVE_HOME: groveHome, HOME: homeDir, GROVE_VIEWER_SESSION: session };
+  let args;
+  if (joinTtlSeconds === undefined) {
+    args = [
+      "-m",
+      "grove_bridge.web_app",
+      "--host",
+      host,
+      "--port",
+      String(port),
+      "--dist-dir",
+      distDir,
+      "--board-db-path",
+      dbPath,
+      "--session",
+      session,
+      "--shared-access",
+      "--shared-join-role",
+      joinRole,
+    ];
+    for (const allowed of allowHosts) args.push("--allow-host", allowed);
+  } else {
+    args = [
+      "-c",
+      [
+        "import os, sys",
+        "from pathlib import Path",
+        "import uvicorn",
+        "from grove_bridge.team_auth import TeamJoinCodeStore",
+        "from grove_bridge.web_app import WebAppConfig, create_app",
+        "allow_hosts = tuple(item for item in sys.argv[6].split(',') if item)",
+        "config = WebAppConfig(dist_dir=Path(sys.argv[1]), board_db_path=Path(sys.argv[2]), grove_home=Path(os.environ['GROVE_HOME']), registry_session=sys.argv[3], host=sys.argv[4], port=int(sys.argv[5]), allowed_hosts=allow_hosts, shared_access=True, shared_join_role=sys.argv[7])",
+        "app = create_app(config=config)",
+        "app.state.team_join_code_store = TeamJoinCodeStore(ttl_seconds=int(sys.argv[8]))",
+        "uvicorn.run(app, host=config.host, port=config.port)",
+      ].join("\n"),
+      distDir,
+      dbPath,
+      session,
+      host,
+      String(port),
+      allowHosts.join(","),
+      joinRole,
+      String(joinTtlSeconds),
+    ];
+  }
+  sharedChild = spawn(python, args, { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] });
+  sharedChild.stdout.on("data", (d) => (sharedServerLog += d));
+  sharedChild.stderr.on("data", (d) => (sharedServerLog += d));
+  sharedChild.on("exit", () => (sharedExited = true));
+
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (sharedExited) throw new Error(`shared server exited before ready:\n${sharedServerLog}`);
+    try {
+      const r = await fetch(sharedBaseUrl + "/api/health");
+      await r.text();
+      if (r.status === 200) return port;
+    } catch {
+      /* not up yet */
+    }
+    await sleep(150);
+  }
+  throw new Error(`shared server not ready within ${READY_TIMEOUT_MS}ms:\n${sharedServerLog}`);
+}
+
 async function stopTeamServer() {
   try {
     if (teamChild && !teamExited) {
@@ -643,7 +765,24 @@ async function stopHandoffServer() {
   }
 }
 
+async function stopSharedServer() {
+  try {
+    if (sharedChild && !sharedExited) {
+      sharedChild.kill("SIGTERM");
+      const grace = Date.now() + 5000;
+      while (!sharedExited && Date.now() < grace) await sleep(50);
+      if (!sharedExited) sharedChild.kill("SIGKILL");
+    }
+  } catch {
+    /* ignore */
+  } finally {
+    sharedChild = null;
+    sharedExited = true;
+  }
+}
+
 async function teardown() {
+  await stopSharedServer();
   await stopHandoffServer();
   await stopSummaryServer();
   await stopTeamServer();
@@ -2235,6 +2374,276 @@ async function run() {
     );
   } finally {
     await stopHandoffServer();
+  }
+
+  // --- /api/share + /api/join: shared-access gate, one-time join, viewer read-only ---
+  const shareOperatorSecret = "operator-secret";
+  writeRegistry(SHARE, {
+    owner: { name: "owner", agent: "codex", tmux_pane: `${SHARE}:1.0`, status: "idle" },
+    receiver: { name: "receiver", agent: "claude", tmux_pane: `${SHARE}:1.1`, status: "idle" },
+  });
+  writeTeamMember(SHARE, { name: "owner", secret: shareOperatorSecret, role: "operator", id: "operator-1" });
+
+  const meSingleOperator = await req("GET", "/api/me");
+  eq("shared-access off keeps single-operator local-token auth mode", meSingleOperator.json && meSingleOperator.json.auth_mode, "local-token");
+  eq(
+    "shared-access off makes join unavailable",
+    (await req("POST", "/api/join", { body: { code: "join-disabled", name: "nobody" } })).status,
+    404,
+  );
+
+  const guardPort = await freePort();
+  const sharedGuard = spawnSync(
+    python,
+    [
+      "-m",
+      "grove_bridge.web_app",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      String(guardPort),
+      "--dist-dir",
+      distDir,
+      "--board-db-path",
+      path.join(tmp, "shared-guard.db"),
+      "--session",
+      SHARE,
+      "--shared-access",
+    ],
+    {
+      cwd: repoRoot,
+      env: { ...process.env, GROVE_HOME: groveHome, HOME: homeDir, GROVE_VIEWER_SESSION: SHARE },
+      encoding: "utf8",
+      timeout: 5000,
+    },
+  );
+  check(
+    "shared-access non-loopback bind requires --allow-host",
+    sharedGuard.status !== 0 && /allow-host/i.test(`${sharedGuard.stderr}\n${sharedGuard.stdout}`),
+    `${sharedGuard.status} ${sharedGuard.stderr || sharedGuard.stdout}`,
+  );
+
+  await startSharedServer({ session: SHARE, joinRole: "viewer" });
+  try {
+    const sharedIndex = await reqAt(sharedBaseUrl, "GET", "/");
+    eq("shared server index served (200)", sharedIndex.status, 200);
+    check("shared server does not inject local session token", !/window\.__GROVE_SESSION_TOKEN__/.test(sharedIndex.text));
+    eq("shared /api/me 401 without session", (await reqAt(sharedBaseUrl, "GET", "/api/me")).status, 401);
+    const ownerLogin = await reqAt(sharedBaseUrl, "POST", "/api/login", {
+      body: { name: "owner", secret: shareOperatorSecret },
+    });
+    eq("shared operator login 200", ownerLogin.status, 200);
+    eq("shared operator role == operator", ownerLogin.json && ownerLogin.json.member && ownerLogin.json.member.role, "operator");
+    const ownerCookie = String(ownerLogin.headers.get("set-cookie") || "").split(";")[0];
+    const ownerCsrf = ownerLogin.json && ownerLogin.json.csrf;
+    check(
+      "shared operator login returns cookie+csrf",
+      ownerCookie.startsWith("grove_team_session=") && typeof ownerCsrf === "string" && ownerCsrf.length > 0,
+    );
+
+    eq("share GET -> 405", (await reqAt(sharedBaseUrl, "GET", "/api/share", { cookie: ownerCookie })).status, 405);
+    eq("share POST 401 unauthenticated", (await reqAt(sharedBaseUrl, "POST", "/api/share")).status, 401);
+    eq(
+      "share POST requires CSRF for operator",
+      (await reqAt(sharedBaseUrl, "POST", "/api/share", { cookie: ownerCookie })).status,
+      403,
+    );
+    eq(
+      "share POST rejects foreign Origin",
+      (await reqAt(sharedBaseUrl, "POST", "/api/share", {
+        cookie: ownerCookie,
+        csrf: ownerCsrf,
+        origin: "http://evil.example",
+      })).status,
+      403,
+    );
+    const hostSpoof = await rawHttpAt(sharedBaseUrl, "POST", "/api/share", {
+      host: "evil.example",
+      origin: sharedBaseUrl,
+      cookie: ownerCookie,
+      csrf: ownerCsrf,
+    });
+    eq("share POST rejects spoofed Host", hostSpoof.status, 403);
+
+    const share = await reqAt(sharedBaseUrl, "POST", "/api/share", {
+      cookie: ownerCookie,
+      csrf: ownerCsrf,
+    });
+    eq("share POST operator 200", share.status, 200);
+    const joinCode = share.json && share.json.code;
+    const joinCodeText = typeof joinCode === "string" ? joinCode : "__missing_join_code__";
+    check("share returns one-time join code", typeof joinCode === "string" && joinCode.length >= 16);
+    eq("share grants configured viewer role", share.json && share.json.role, "viewer");
+    check("share returns URL containing join code", typeof (share.json && share.json.url) === "string" && share.json.url.includes(`join=${joinCodeText}`));
+    check("share expires_at is epoch int", Number.isInteger(share.json && share.json.expires_at));
+    eq("share exposes code only in code field and URL", share.text.split(joinCodeText).length - 1, 2);
+    check(
+      "share response leaks no member/session secrets",
+      !share.text.includes(shareOperatorSecret) &&
+        !share.text.includes(ownerCookie.split("=")[1]) &&
+        !share.text.includes(ownerCsrf) &&
+        !share.text.includes("secret_hash"),
+    );
+
+    eq(
+      "join rejects foreign Origin before consuming code",
+      (await reqAt(sharedBaseUrl, "POST", "/api/join", {
+        origin: "http://evil.example",
+        body: { code: joinCodeText, name: "viewer-bad-origin" },
+      })).status,
+      403,
+    );
+    const joined = await reqAt(sharedBaseUrl, "POST", "/api/join", {
+      body: { code: joinCodeText, name: "viewer-e2e" },
+    });
+    eq("join valid code 200", joined.status, 200);
+    eq("join returns team-cookie auth mode", joined.json && joined.json.auth_mode, "team-cookie");
+    eq("join creates viewer member", joined.json && joined.json.member && joined.json.member.role, "viewer");
+    eq("join member name echoed", joined.json && joined.json.member && joined.json.member.name, "viewer-e2e");
+    const viewerCookie = String(joined.headers.get("set-cookie") || "").split(";")[0];
+    const viewerCsrf = joined.json && joined.json.csrf;
+    check(
+      "join returns viewer cookie+csrf",
+      viewerCookie.startsWith("grove_team_session=") && typeof viewerCsrf === "string" && viewerCsrf.length > 0,
+    );
+    check(
+      "join response does not echo join code or secrets",
+      !joined.text.includes(joinCodeText) &&
+        !joined.text.includes(shareOperatorSecret) &&
+        !joined.text.includes("secret_hash") &&
+        !joined.text.includes(viewerCookie.split("=")[1]),
+    );
+    const reusedJoin = await reqAt(sharedBaseUrl, "POST", "/api/join", {
+      body: { code: joinCodeText, name: "viewer-reuse" },
+    });
+    eq("join code is one-time; reuse rejected", reusedJoin.status, 403);
+    const invalidJoin = await reqAt(sharedBaseUrl, "POST", "/api/join", {
+      body: { code: "not-a-real-join-code", name: "viewer-invalid" },
+    });
+    eq("join rejects invalid code", invalidJoin.status, 403);
+    const rateStatuses = [];
+    for (let i = 0; i < 6; i += 1) {
+      const r = await reqAt(sharedBaseUrl, "POST", "/api/join", {
+        body: { code: `bad-code-${i}`, name: `viewer-rate-${i}` },
+      });
+      rateStatuses.push(r.status);
+      if (r.status === 429) break;
+    }
+    check("join repeated invalid attempts trigger 429", rateStatuses.includes(429), rateStatuses.join(","));
+    check(
+      "join failure responses do not echo code secrets",
+      ![reusedJoin.text, invalidJoin.text].some((text) => text.includes(joinCodeText) || text.includes(shareOperatorSecret)),
+    );
+
+    const viewerBoards = await reqAt(sharedBaseUrl, "GET", "/api/boards", {
+      cookie: viewerCookie,
+      project: SHARE,
+    });
+    eq("joined viewer can read boards", viewerBoards.status, 200);
+    const viewerShare = await reqAt(sharedBaseUrl, "POST", "/api/share", {
+      cookie: viewerCookie,
+      csrf: viewerCsrf,
+    });
+    eq("joined viewer cannot share", viewerShare.status, 403);
+    eq(
+      "joined viewer cannot create project",
+      (await reqAt(sharedBaseUrl, "POST", "/api/projects", {
+        cookie: viewerCookie,
+        csrf: viewerCsrf,
+        body: { name: "viewer-created-project" },
+      })).status,
+      403,
+    );
+    eq(
+      "joined viewer cannot create task",
+      (await reqAt(sharedBaseUrl, "POST", `/api/boards/${SHARE}/tasks`, {
+        cookie: viewerCookie,
+        csrf: viewerCsrf,
+        project: SHARE,
+        body: { title: "viewer task denied" },
+      })).status,
+      403,
+    );
+    eq(
+      "joined viewer cannot approve execution",
+      (await reqAt(sharedBaseUrl, "POST", "/api/tasks/task_missing_share/approve", {
+        cookie: viewerCookie,
+        csrf: viewerCsrf,
+        project: SHARE,
+      })).status,
+      403,
+    );
+    eq(
+      "joined viewer cannot mutate execution gate",
+      (await reqAt(sharedBaseUrl, "POST", "/api/execution", {
+        cookie: viewerCookie,
+        csrf: viewerCsrf,
+        project: SHARE,
+        body: { enabled: true },
+      })).status,
+      403,
+    );
+
+    const ownerTask = await reqAt(sharedBaseUrl, "POST", `/api/boards/${SHARE}/tasks`, {
+      cookie: ownerCookie,
+      csrf: ownerCsrf,
+      project: SHARE,
+      body: { title: "shared operator assign", assignee: "receiver" },
+    });
+    eq("shared operator can create task", ownerTask.status, 200);
+    const sharedAudit = await reqAt(sharedBaseUrl, "GET", "/api/audit?action=assign", {
+      cookie: ownerCookie,
+      project: SHARE,
+    });
+    eq("shared operator can read audit", sharedAudit.status, 200);
+    const sharedAuditItems = (sharedAudit.json && sharedAudit.json.items) || [];
+    const ownerAudit = sharedAuditItems.find((item) => item.summary === "shared operator assign");
+    check(
+      "shared audit actor is per-member operator",
+      Boolean(ownerAudit) &&
+        ownerAudit.actor &&
+        ownerAudit.actor.kind === "member" &&
+        ownerAudit.actor.login === "owner" &&
+        ownerAudit.actor.role === "operator",
+      ownerAudit && JSON.stringify(ownerAudit.actor),
+    );
+    check(
+      "shared access denial/audit responses leak no secrets",
+      !hasSecret([viewerShare.json, sharedAudit.json]) &&
+        ![viewerShare.text, sharedAudit.text].some(
+          (text) =>
+            text.includes(shareOperatorSecret) ||
+            text.includes(joinCodeText) ||
+            text.includes(ownerCookie.split("=")[1]) ||
+            text.includes(viewerCookie.split("=")[1]) ||
+            text.includes("secret_hash"),
+        ),
+    );
+  } finally {
+    await stopSharedServer();
+  }
+
+  await startSharedServer({ session: SHARE, joinRole: "viewer", joinTtlSeconds: 1 });
+  try {
+    const ownerLogin = await reqAt(sharedBaseUrl, "POST", "/api/login", {
+      body: { name: "owner", secret: shareOperatorSecret },
+    });
+    eq("shared short-ttl operator login 200", ownerLogin.status, 200);
+    const ownerCookie = String(ownerLogin.headers.get("set-cookie") || "").split(";")[0];
+    const ownerCsrf = ownerLogin.json && ownerLogin.json.csrf;
+    const shortShare = await reqAt(sharedBaseUrl, "POST", "/api/share", {
+      cookie: ownerCookie,
+      csrf: ownerCsrf,
+    });
+    eq("shared short-ttl share 200", shortShare.status, 200);
+    await sleep(1500);
+    const expiredJoin = await reqAt(sharedBaseUrl, "POST", "/api/join", {
+      body: { code: shortShare.json && shortShare.json.code, name: "viewer-expired" },
+    });
+    eq("join expired code -> 410", expiredJoin.status, 410);
+    check("expired join response does not echo code", !expiredJoin.text.includes(shortShare.json && shortShare.json.code));
+  } finally {
+    await stopSharedServer();
   }
 
   // --- /api/cost: by_agent{} + totals{}, token/path non-exposure ---

@@ -1560,6 +1560,155 @@ async function main() {
       hDisabled.reject === "disabled" &&
       /비활성|disabled/.test(hDisabled.text);
 
+    // V18-W2 easy connection (shared-access): operator mints a one-time join code
+    // + share URL; a peer opens the share URL (?join=) -> join screen pre-filled
+    // -> joins -> dashboard; viewers cannot create projects/invites; presence
+    // surfaces who is connected. Mirrors web_app.py /api/share + /api/join.
+    const SHARE_DEMO_CODE = "grove-demo-join-0001"; // matches the mock's seeded code
+    await page.evaluate(() => window.__MOCK__?.setPresenceMode("team")); // an earlier test left it "local"
+    await page.$eval('.dr-tab[data-view="connect"]', (el) => el.click());
+    await page.waitForSelector('.connect-share[data-card="share"]', { timeout: 8000 });
+    // operator: create an invite -> one-time code + share URL + copy + reissue.
+    await page.$eval(".connect-invite__btn", (el) => el.click());
+    await page.waitForSelector('.connect-invite[data-share="issued"]', { timeout: 8000 });
+    const shareIssue = await page.evaluate(() => ({
+      url: document.querySelector('input[name="shareUrl"]')?.value ?? "",
+      code: document.querySelector('input[name="shareCode"]')?.value ?? "",
+      copyUrl: !!document.querySelector(".connect-copy--url"),
+      copyCode: !!document.querySelector(".connect-copy--code"),
+      oneTimeNote: !!document.querySelector(".connect-invite__note"),
+      reissue: !!document.querySelector(".connect-reissue"),
+      issued: window.__MOCK__?.shareIssued ?? "",
+    }));
+    // presence: who's connected (name/role chips, no PII).
+    await page.waitForFunction(() => document.querySelectorAll(".connect-presence .connect-chip").length >= 3, { timeout: 8000 });
+    const connPresence = await page.evaluate(() => ({
+      chips: document.querySelectorAll(".connect-presence .connect-chip").length,
+      names: Array.from(document.querySelectorAll(".connect-presence .connect-chip")).map((c) => c.getAttribute("data-member")),
+      noSecret: !/secret|csrf|member_/i.test(document.querySelector(".connect-presence")?.textContent ?? ""),
+    }));
+    // operator can reach project create (new-project action present in switcher).
+    await page.click(".proj-switcher__btn");
+    await page.waitForSelector(".proj-menu", { timeout: 6000 });
+    const projOperator = await page.evaluate(() => ({
+      newBtn: !!document.querySelector(".proj-menu__new"),
+      loadBtn: !!document.querySelector(".proj-menu__load"),
+      readonly: !!document.querySelector(".proj-menu__readonly"),
+    }));
+    await page.evaluate(() => document.querySelector(".proj-menu__scrim")?.click());
+    // viewer: invites + project create are locked (read-only made explicit).
+    const reenterConnect = async () => {
+      await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
+      await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+      await page.$eval('.dr-tab[data-view="connect"]', (el) => el.click());
+      await page.waitForSelector('.connect-share[data-card="share"]', { timeout: 8000 });
+    };
+    await page.evaluate(() => window.__MOCK__.setViewer(true));
+    await reenterConnect();
+    await page.waitForSelector(".connect-share__viewer", { timeout: 8000 });
+    await page.click(".proj-switcher__btn");
+    await page.waitForSelector(".proj-menu", { timeout: 6000 });
+    await page.waitForFunction(() => !document.querySelector(".proj-menu__new"), { timeout: 6000 });
+    const projViewer = await page.evaluate(() => ({
+      inviteBtn: !!document.querySelector(".connect-invite__btn"), // hidden for viewers
+      viewerNote: !!document.querySelector(".connect-share__viewer"),
+      newBtn: !!document.querySelector(".proj-menu__new"), // hidden for viewers
+      readonly: !!document.querySelector(".proj-menu__readonly"),
+    }));
+    await page.evaluate(() => document.querySelector(".proj-menu__scrim")?.click());
+    await page.evaluate(() => window.__MOCK__.setViewer(false));
+    await reenterConnect(); // restore operator state for any later checks
+
+    // PEER join via a share URL deep-link (?join=) — isolated page so the main
+    // page's mock state is untouched. The join screen opens pre-filled; a wrong
+    // code shows a FIXED message; the seeded code joins -> member session.
+    const page2 = await browser.newPage();
+    await page2.setViewport({ width: 1100, height: 800, deviceScaleFactor: 1 });
+    const join2Errors = [];
+    page2.on("pageerror", (e) => join2Errors.push("pageerror: " + String(e)));
+    // a peer arriving via a share link should not meet the first-run wizard.
+    await page2.evaluateOnNewDocument(() => {
+      try {
+        localStorage.setItem("grove.onboarded.v2", "1");
+      } catch {
+        /* ignore */
+      }
+    });
+    await page2.goto("file://" + htmlPath + "?join=" + SHARE_DEMO_CODE, { waitUntil: "load" });
+    await page2.waitForSelector('.connect-join[data-card="join"]', { timeout: 8000 });
+    // P2: the one-time code is scrubbed from the URL (replaceState) once captured.
+    await page2.waitForFunction(() => !window.location.href.includes("join="), { timeout: 8000 });
+    const joinPrefill = await page2.evaluate(() => ({
+      connectActive: !!document.querySelector('.dr-tab[data-view="connect"].is-active'),
+      code: document.querySelector(".connect-join__code")?.value ?? "",
+      // code lives only in state now — neither the search string nor the full
+      // href (address bar + history entry) may still carry it.
+      urlScrubbed: !/[?&]join=/.test(window.location.search) && !window.location.href.includes("grove-demo-join-0001"),
+    }));
+    // wrong code -> fixed "invalid" message (no raw leak), no session.
+    await page2.$eval(".connect-join__code", (el) => {
+      const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+      d.set.call(el, "totally-wrong-code");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await page2.type(".connect-join__name", "jiwoo");
+    await page2.click(".connect-join__btn");
+    await page2.waitForSelector("[data-join-err]", { timeout: 8000 });
+    const joinBad = await page2.evaluate(() => ({
+      err: document.querySelector("[data-join-err]")?.getAttribute("data-join-err") ?? "",
+      text: (document.querySelector("[data-join-err]")?.textContent ?? "").trim(),
+      joined: window.__MOCK__?.joined ?? null, // no session created on a bad code
+    }));
+    // correct (seeded) code -> member session -> joined card.
+    await page2.$eval(".connect-join__code", (el, v) => {
+      const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+      d.set.call(el, v);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }, SHARE_DEMO_CODE);
+    await page2.click(".connect-join__btn");
+    await page2.waitForSelector('.connect-joined[data-join="ok"]', { timeout: 8000 });
+    const joinOk = await page2.evaluate(() => ({
+      member: document.querySelector(".connect-joined__member .connect-chip")?.textContent?.trim() ?? "",
+      role: (document.querySelector(".connect-joined__role")?.textContent ?? "").trim(),
+      joined: window.__MOCK__?.joined ?? null,
+    }));
+    await page2.close();
+
+    const sharedAccessOk =
+      // share: a real one-time code + ?join= URL, both copyable, with notices.
+      shareIssue.code.length > 0 &&
+      shareIssue.code === shareIssue.issued &&
+      /^join-/.test(shareIssue.code) &&
+      shareIssue.url.includes("?join=" + shareIssue.code) &&
+      shareIssue.copyUrl &&
+      shareIssue.copyCode &&
+      shareIssue.oneTimeNote &&
+      shareIssue.reissue &&
+      // presence: members surfaced (name/role), no secret/id leak.
+      connPresence.chips >= 3 &&
+      ["alice", "bob", "carol"].every((n) => connPresence.names.includes(n)) &&
+      connPresence.noSecret &&
+      // project-start reachability: operator sees create/load; viewer is locked.
+      projOperator.newBtn &&
+      projOperator.loadBtn &&
+      !projOperator.readonly &&
+      !projViewer.inviteBtn &&
+      projViewer.viewerNote &&
+      !projViewer.newBtn &&
+      projViewer.readonly &&
+      // join deep-link: ?join= pre-fills the code; bad code is rejected (fixed
+      // msg, no session); seeded code yields a member session.
+      joinPrefill.connectActive &&
+      joinPrefill.code === SHARE_DEMO_CODE &&
+      joinPrefill.urlScrubbed &&
+      joinBad.err === "invalid" &&
+      /잘못된|Invalid/.test(joinBad.text) &&
+      joinBad.joined === null &&
+      joinOk.member.includes("jiwoo") &&
+      joinOk.role === "operator" &&
+      joinOk.joined?.name === "jiwoo" &&
+      join2Errors.length === 0;
+
     // #N1 project switch re-scope + no residue (여정1/5): switching to an
     // isolated project swaps org/board/nodes wholesale — none of the default
     // project's nodes/cards may bleed through — and switching back restores it.
@@ -1835,6 +1984,7 @@ async function main() {
       usageReportOk &&
       aggViewOk &&
       handoffOk &&
+      sharedAccessOk &&
       mobileOk &&
       projectOk &&
       wsBindOk &&
@@ -1950,6 +2100,8 @@ async function main() {
       agg: { ...agg, disabled: aggDisabled },
       handoffOk,
       handoff: { export: hExport, preview: hPreview, preConfirm: hPreConfirm, created: hCreated, existing: hExisting, reject: hReject, disabled: hDisabled },
+      sharedAccessOk,
+      sharedAccess: { share: shareIssue, presence: connPresence, projOperator, projViewer, joinPrefill, joinBad, joinOk },
       mobileOk,
       mobile: { ...mobile, detailFits },
       delegationEdgesOk,

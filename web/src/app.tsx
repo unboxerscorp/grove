@@ -11,6 +11,7 @@ import { PresenceIndicator } from "./components/PresenceIndicator";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { AuthPanel } from "./components/AuthPanel";
 import { AggregationPanel } from "./components/AggregationPanel";
+import { ConnectPanel } from "./components/ConnectPanel";
 import { CostPanel } from "./components/CostPanel";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { HandoffPanel } from "./components/HandoffPanel";
@@ -25,7 +26,33 @@ import { cx } from "./constants";
 import { useI18n } from "./i18n";
 import type { Board, GroveNode } from "./types";
 
-type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "agg" | "handoff" | "auth";
+type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "agg" | "handoff" | "connect" | "auth";
+
+// A share URL deep-links as <index>?join=<code> (web_app.py _share_url). Read the
+// code once at startup so opening a share link lands on the join screen with the
+// code pre-filled — the core "easy connection" path for a peer.
+function initialJoinCode(): string | null {
+  try {
+    const c = new URLSearchParams(window.location.search).get("join");
+    return c && c.trim() ? c.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+// The join code is a ONE-TIME secret: once it's read into state, strip it from
+// the address bar + browser history (replaceState, no new entry) so a refresh,
+// shared screenshot, or back/forward never re-exposes it. State keeps the value.
+function scrubJoinFromUrl(): void {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("join")) return;
+    url.searchParams.delete("join");
+    window.history.replaceState(window.history.state, "", url.toString());
+  } catch {
+    /* history API unavailable — best-effort */
+  }
+}
 
 function GroveMark() {
   return (
@@ -50,7 +77,11 @@ export function App() {
   const [boardId, setBoardId] = useState<string | null>(null);
   const [nodes, setNodes] = useState<GroveNode[]>([]);
   const [selectedPane, setSelectedPane] = useState<string | null>(null);
-  const [view, setView] = useState<View>("board");
+  const [joinCode] = useState<string | null>(initialJoinCode);
+  const [view, setView] = useState<View>(joinCode ? "connect" : "board");
+  // Current member role: member null (local-token) = operator; only a team
+  // "viewer" loses project-create + share. Re-confirmed on navigation / refresh.
+  const [isViewer, setIsViewer] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
   const [chainOpen, setChainOpen] = useState(false);
@@ -88,6 +119,25 @@ export function App() {
   useEffect(() => {
     void loadProjects();
   }, [loadProjects]);
+
+  // Scrub the one-time join code from the URL right after it's captured into
+  // state, so the secret never lingers in the address bar / history.
+  useEffect(() => {
+    scrubJoinFromUrl();
+  }, []);
+
+  // Role for control-gating (project create + share). Re-confirmed on navigation
+  // and after a join (liveTick) so a freshly-joined member's role takes effect.
+  useEffect(() => {
+    let alive = true;
+    api
+      .getMe()
+      .then((me) => alive && setIsViewer(me?.member?.role === "viewer"))
+      .catch(() => alive && setIsViewer(false));
+    return () => {
+      alive = false;
+    };
+  }, [projectTick, liveTick, view]);
 
   const switchProject = useCallback((name: string) => {
     setProject(name); // api header
@@ -271,6 +321,7 @@ export function App() {
           <ProjectSwitcher
             projects={projects}
             current={project}
+            canManage={!isViewer}
             onSwitch={switchProject}
             onProjectsChanged={() => void loadProjects()}
           />
@@ -358,6 +409,14 @@ export function App() {
             </button>
             <button
               type="button"
+              data-view="connect"
+              className={cx("dr-tab", view === "connect" && "is-active")}
+              onClick={() => setView("connect")}
+            >
+              {t("tab.connect")}
+            </button>
+            <button
+              type="button"
               data-view="auth"
               className={cx("dr-tab", view === "auth" && "is-active")}
               onClick={() => setView("auth")}
@@ -440,6 +499,12 @@ export function App() {
             <AggregationPanel projectTick={projectTick} />
           ) : view === "handoff" ? (
             <HandoffPanel projectTick={projectTick} onAccepted={() => setLiveTick((x) => x + 1)} />
+          ) : view === "connect" ? (
+            <ConnectPanel
+              projectTick={projectTick}
+              initialJoinCode={joinCode}
+              onJoined={() => setLiveTick((x) => x + 1)}
+            />
           ) : view === "auth" ? (
             <AuthPanel />
           ) : (

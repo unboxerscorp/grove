@@ -4434,3 +4434,66 @@ button {
 .handoff-result.is-trusted { color: var(--teal); }
 .handoff-result.is-rejected { color: var(--coral); }
 .handoff-result__task { color: var(--faint); font-weight: 400; }
+
+/* ── connect (V18-W2): easy team connection — share invite + peer join ─────── */
+.connect { display: flex; flex-direction: column; min-height: 0; width: 100%; }
+.connect__scroll {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 16px;
+  max-width: 920px; width: 100%; margin: 0 auto; padding: 4px 2px 24px;
+}
+.connect__head { display: flex; flex-direction: column; gap: 4px; }
+.connect__title-wrap { display: flex; align-items: center; gap: 10px; }
+.connect__mark { color: var(--teal); }
+.connect__title { margin: 0; font-size: 16px; font-weight: 700; }
+.connect__note { margin: 0; font-size: 12.5px; color: var(--faint); }
+.connect__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 760px) { .connect__grid { grid-template-columns: 1fr; } }
+
+.connect-card {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel);
+}
+.connect-card__h { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: 0.01em; }
+.connect-card__sub { margin: 0; font-size: 11.5px; color: var(--faint); }
+.connect-msg {
+  font-family: var(--mono); font-size: 11px; padding: 7px 10px; border-radius: 9px;
+  border: 1px solid var(--line); color: var(--faint);
+}
+.connect-msg.is-error { color: var(--coral); border-color: rgba(229, 115, 99, 0.4); }
+.connect-msg.is-warn { color: var(--amber); border-color: rgba(240, 184, 96, 0.4); background: rgba(240, 184, 96, 0.06); }
+
+.connect-invite__btn, .connect-join__btn { align-self: flex-start; font-size: 12px; }
+.connect-invite { display: flex; flex-direction: column; gap: 9px; }
+.connect-field { display: flex; flex-direction: column; gap: 4px; }
+.connect-field__k { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+.connect-field__row { display: flex; gap: 6px; align-items: stretch; }
+.connect-field__val { flex: 1; font-family: var(--mono); font-size: 11px; }
+.connect-field__code { letter-spacing: 0.06em; color: var(--teal); }
+.connect-copy { white-space: nowrap; font-size: 11px; padding: 4px 10px; }
+.connect-invite__note { margin: 0; font-size: 11px; color: var(--amber); line-height: 1.5; }
+.connect-reissue { align-self: flex-start; font-size: 11px; padding: 3px 10px; }
+
+.connect-join__form { display: flex; flex-direction: column; gap: 9px; }
+.connect-joined { display: flex; flex-direction: column; gap: 8px; }
+.connect-joined__badge { font-family: var(--mono); font-size: 12.5px; font-weight: 700; color: var(--teal); }
+.connect-joined__member { display: flex; align-items: center; gap: 8px; }
+.connect-joined__role { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+.connect-joined__hint { margin: 0; font-size: 11.5px; color: var(--dim); line-height: 1.5; }
+
+.connect-presence__list { display: flex; flex-wrap: wrap; gap: 7px; }
+.connect-presence__empty { font-size: 11.5px; color: var(--faint); }
+.connect-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; color: var(--text);
+}
+.connect-chip__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+.connect-chip__role { font-family: var(--mono); font-size: 9.5px; color: var(--faint); }
+.connect-chip.is-admin .connect-chip__dot { background: var(--coral); }
+.connect-chip.is-operator .connect-chip__dot { background: var(--teal); }
+.connect-chip.is-viewer .connect-chip__dot { background: var(--amber); }
+
+/* viewer lock in the project switcher menu */
+.proj-menu__readonly {
+  font-size: 11px; color: var(--faint); padding: 7px 10px; font-style: italic;
+}

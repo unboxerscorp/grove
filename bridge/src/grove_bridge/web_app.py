@@ -8,12 +8,14 @@ import base64
 import hashlib
 import hmac
 import importlib.metadata
+import ipaddress
 import json
 import logging
 import os
 import re
 import secrets
 import subprocess
+import sys
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -77,6 +79,7 @@ POLL_INTERVAL_SECONDS = 1.0
 TMUX_TIMEOUT_SECONDS = 5.0
 GROVE_SPAWN_TIMEOUT_SECONDS = 30.0
 GROVE_PROJECT_TIMEOUT_SECONDS = 30.0
+TAILSCALE_IP_TIMEOUT_SECONDS = 1.0
 TRANSCRIPT_MAX_BYTES = 2_000_000
 MAX_TIMESTAMP_SECONDS = 4_102_444_800
 PRESENCE_ACTIVE_SECONDS = 5 * 60
@@ -3861,6 +3864,103 @@ def _is_shared_remote_bind(host: str) -> bool:
     return normalized not in LOOPBACK_HOSTS
 
 
+def _startup_connect_lines(config: WebAppConfig) -> list[str]:
+    bind_host = _normalize_hostname(config.host) or config.host
+    tailnet_ip = _detect_tailnet_ip()
+    local_url = _http_url("127.0.0.1", config.port)
+    lines = [
+        "Grove dev-room is starting.",
+        f"Local dashboard: {local_url}",
+    ]
+    if _is_shared_remote_bind(config.host):
+        if bind_host in WILDCARD_BIND_HOSTS:
+            lines.append("Warning: wildcard bind exposes grove-web on every network interface.")
+            if tailnet_ip is not None:
+                lines.append(
+                    f"Team dashboard: {_http_url(tailnet_ip, config.port)} "
+                    "(Tailscale tailnet address)"
+                )
+            else:
+                lines.append(
+                    "Team dashboard: use this host's trusted tailnet/LAN IP with the same port."
+                )
+        else:
+            lines.append(f"Team dashboard: {_http_url(bind_host, config.port)}")
+        if config.allowed_hosts:
+            lines.append(f"Allowed browser hosts: {', '.join(config.allowed_hosts)}")
+        else:
+            lines.append(
+                "Warning: no --allow-host entries; remote state-changing requests are denied."
+            )
+    elif tailnet_ip is not None:
+        lines.append(
+            "For teammates on your tailnet, restart with "
+            f"--host 0.0.0.0 --allow-host {tailnet_ip} and share "
+            f"{_http_url(tailnet_ip, config.port)}."
+        )
+    if config.shared_access:
+        lines.append(
+            "Shared access: enabled. Invite teammates from the dashboard, or issue a "
+            "one-time code with POST /api/share from an operator session."
+        )
+    else:
+        lines.append("Shared access: off. Use --shared-access for teammate join codes.")
+    return lines
+
+
+def _print_startup_connect_hint(config: WebAppConfig) -> None:
+    for line in _startup_connect_lines(config):
+        print(line, file=sys.stderr, flush=True)
+
+
+def _print_bind_refusal_hint(host: str) -> None:
+    print(
+        "Grove dev-room refused shared-access on a non-loopback bind without "
+        "--allow-host. Add trusted tailnet/LAN hosts explicitly.",
+        file=sys.stderr,
+        flush=True,
+    )
+    if _normalize_hostname(host) in WILDCARD_BIND_HOSTS:
+        print(
+            "Wildcard bind requested: keep --allow-host limited to trusted peer hosts.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _detect_tailnet_ip() -> str | None:
+    try:
+        proc = subprocess.run(
+            ["tailscale", "ip", "-4"],
+            capture_output=True,
+            text=True,
+            timeout=TAILSCALE_IP_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    tailnet = ipaddress.ip_network("100.64.0.0/10")
+    for line in proc.stdout.splitlines():
+        candidate = line.strip()
+        if not candidate:
+            continue
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if isinstance(address, ipaddress.IPv4Address) and address in tailnet:
+            return candidate
+    return None
+
+
+def _http_url(host: str, port: int) -> str:
+    if ":" in host and not host.startswith("["):
+        return f"http://[{host}]:{port}"
+    return f"http://{host}:{port}"
+
+
 def _normalize_allowed_hosts(values: Sequence[str]) -> tuple[str, ...]:
     hosts: dict[str, None] = {}
     for value in values:
@@ -4894,6 +4994,9 @@ def main(argv: list[str] | None = None) -> int:
 
     import uvicorn
 
+    allowed_hosts = _normalize_allowed_hosts(args.allow_host)
+    if args.shared_access and _is_shared_remote_bind(args.host) and not allowed_hosts:
+        _print_bind_refusal_hint(args.host)
     config = WebAppConfig(
         dist_dir=args.dist_dir,
         board_db_path=args.board_db_path,
@@ -4902,7 +5005,7 @@ def main(argv: list[str] | None = None) -> int:
         host=args.host,
         port=args.port,
         unsafe_bind_token_bootstrap=args.unsafe_bind,
-        allowed_hosts=_normalize_allowed_hosts(args.allow_host),
+        allowed_hosts=allowed_hosts,
         auth_mode=AuthMode.TEAM_COOKIE
         if args.team_auth or args.shared_access
         else AuthMode.LOCAL_TOKEN,
@@ -4916,6 +5019,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     app = create_app(config=config)
     started_at = cast(int, app.state.started_at)
+    _print_startup_connect_hint(config)
     try:
         uvicorn.run(app, host=config.host, port=config.port)
     finally:

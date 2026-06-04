@@ -451,6 +451,25 @@ export interface LoadResult {
   name?: string;
 }
 
+// Shared-access connection (web_app.py /api/share + /api/join). --shared-access
+// must be on (else 404). POST /api/share (operator only) mints a ONE-TIME join
+// code + a share URL (index?join=<code>); POST /api/join exchanges a code + name
+// for a member cookie session. Only the code/url surface — never the signing
+// secret. The code itself is shown but treated as a secret (one-time, expiring).
+export interface ShareResult {
+  code: string;
+  role: string;
+  expires_at: number;
+  url: string;
+}
+
+export interface JoinResult {
+  auth_mode?: string;
+  member?: { id?: string; name?: string; role?: string };
+  csrf?: string;
+  expires_at?: number;
+}
+
 const TOKEN = window.__GROVE_SESSION_TOKEN__ ?? "";
 export const AUTH_REQUIRED = window.__GROVE_AUTH_REQUIRED__ ?? false;
 const SESSION_HEADER = "X-Grove-Session-Token";
@@ -758,6 +777,32 @@ export const api = {
     });
     if (!res.ok) throw new Error(`/api/projects/load: HTTP ${res.status}`);
     return (await res.json()) as LoadResult;
+  },
+
+  // Shared-access invite: operator-only one-time join code + share URL. 404 when
+  // --shared-access is off; 403 for non-operators. Secret-free (code/url only).
+  async createShare(): Promise<ShareResult> {
+    const res = await fetch("/api/share", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error(`/api/share: HTTP ${res.status}`);
+    return (await res.json()) as ShareResult;
+  },
+
+  // Peer join: exchange a one-time code + display name for a member session.
+  // Distinct statuses map to FIXED FE messages (403 invalid / 410 expired / 429
+  // rate-limited / 409 name taken / 400 bad name); the raw cause never surfaces.
+  async join(code: string, name: string): Promise<JoinResult> {
+    const res = await fetch("/api/join", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ code, name }),
+    });
+    if (!res.ok) throw new Error(`/api/join: HTTP ${res.status}`);
+    return (await res.json()) as JoinResult;
   },
 
   // Slack integration. The manifest is a file download, so this returns the raw

@@ -241,7 +241,7 @@ program
   .command("serve [nodes...]")
   .description("serve an OpenAI-compatible chat completions SSE facade backed by grove nodes")
   .option("-c, --config <file>", "path to grove.yaml")
-  .option("--host <host>", "host to bind", "127.0.0.1")
+  .option("--host <host>", "loopback host to bind (default: 127.0.0.1)")
   .option("-p, --port <port>", "port to bind", "8787")
   .option("-t, --timeout <dur>", "max grove turn wait, e.g. 30s 20m 1h", "30m")
   .action(

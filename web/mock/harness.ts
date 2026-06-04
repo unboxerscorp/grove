@@ -337,6 +337,23 @@ function mockHandoffSig(keyId: string, payload: unknown): string {
   for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
   return "hs_" + (h >>> 0).toString(16).padStart(8, "0");
 }
+
+// Shared-access connection (V18-W2): one-time join codes + share URL. Mirrors
+// web_app.py /api/share (operator-only) + /api/join (code -> member session) +
+// _require_shared_access_enabled (404 when off). default ON in the mock so the
+// connect panel is exercisable; diag.setSharedAccess(false) reproduces the 404
+// disabled path. A stable demo code is seeded so a ?join= deep-link verifies
+// even after a fresh page load (the real code would be the issued one).
+let sharedAccessEnabled = true;
+diag.setSharedAccess = (on: boolean): void => {
+  sharedAccessEnabled = on;
+};
+const JOIN_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$/; // mirrors JOIN_MEMBER_NAME_RE
+const SHARE_DEMO_CODE = "grove-demo-join-0001"; // stable valid one-time code (deep-link demo)
+const SHARE_EXPIRED_CODE = "grove-expired-0002"; // always 410 (expiry path)
+const joinCodes = new Set<string>([SHARE_DEMO_CODE]); // live one-time codes
+const joinedNames = new Set<string>(["root"]); // existing member names -> 409 on collision
+let joinSeq = 0;
 const execGateInfo = () => {
   const blocked: string[] = [];
   if (!executionGate.enabled) blocked.push("global-disabled");
@@ -797,6 +814,53 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
           "the receiver controls the local lifecycle from here",
         ],
       }),
+    );
+  }
+
+  if (p === "/api/share" && method === "POST") {
+    // Mirrors web_app.py /api/share: operator-only one-time join code + share URL
+    // (index?join=<code>). 404 when shared access is off; 403 for viewers. The
+    // signing secret never appears — only code/url/role/expiry.
+    if (!sharedAccessEnabled)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "shared access is not enabled" }), { status: 404 }));
+    if (viewerMode)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "share requires operator role" }), { status: 403 }));
+    joinSeq += 1;
+    const code = "join-" + String(joinSeq).padStart(4, "0") + "-" + (Math.abs((joinSeq * 2654435761) | 0)).toString(36);
+    joinCodes.add(code);
+    diag.shareIssued = code;
+    const url = `${(window.location.href.split("?")[0] ?? "")}?join=${code}`;
+    return Promise.resolve(json({ code, role: "operator", expires_at: HANDOFF_NOW + 600, url }));
+  }
+
+  if (p === "/api/join" && method === "POST") {
+    // Mirrors web_app.py /api/join: exchange a one-time code + display name for a
+    // member session. Validation order matches the backend: 404 disabled, then
+    // name (400), rate-limit (429), expired (410), invalid (403), name-taken
+    // (409). Codes are one-time (consumed). Joined role = shared_join_role
+    // ("operator") so a joined peer can create projects. Fixed detail strings.
+    if (!sharedAccessEnabled)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "shared access is not enabled" }), { status: 404 }));
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as { code?: string; name?: string };
+    const cleanName = (typeof body.name === "string" ? body.name : "").replace(/\s+/g, " ").trim();
+    if (!JOIN_NAME_RE.test(cleanName))
+      return Promise.resolve(new Response(JSON.stringify({ detail: "invalid member name" }), { status: 400 }));
+    if (diag.joinRateLimited)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "join rate limit exceeded" }), { status: 429 }));
+    const cleanCode = (typeof body.code === "string" ? body.code : "").trim();
+    if (cleanCode === SHARE_EXPIRED_CODE)
+      return Promise.resolve(new Response(JSON.stringify({ detail: "join code expired" }), { status: 410 }));
+    if (!joinCodes.has(cleanCode))
+      return Promise.resolve(new Response(JSON.stringify({ detail: "invalid join code" }), { status: 403 }));
+    if (joinedNames.has(cleanName))
+      return Promise.resolve(new Response(JSON.stringify({ detail: "member name already exists" }), { status: 409 }));
+    joinCodes.delete(cleanCode); // one-time
+    joinedNames.add(cleanName);
+    joinSeq += 1;
+    const member = { id: "member_" + String(joinSeq).padStart(3, "0"), name: cleanName, role: "operator" };
+    diag.joined = { name: cleanName, role: member.role };
+    return Promise.resolve(
+      json({ auth_mode: "team_cookie", member, csrf: "csrf-" + member.id, expires_at: HANDOFF_NOW + 3600 }),
     );
   }
 
