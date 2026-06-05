@@ -7601,6 +7601,8 @@ def _default_assignee(config: WebAppConfig) -> str:
     candidates = _persistent_assignee_nodes(config)
     if LEAD_NODE_NAME in candidates:
         return LEAD_NODE_NAME
+    if GROVE_MASTER_NODE_NAME in candidates:
+        return GROVE_MASTER_NODE_NAME
     return candidates[0] if candidates else LEAD_NODE_NAME
 
 

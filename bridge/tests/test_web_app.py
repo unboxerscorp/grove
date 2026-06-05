@@ -5377,6 +5377,62 @@ def test_org_does_not_synthesize_project_lead_when_grove_master_is_real(
     ]
 
 
+def test_org_keeps_grove_master_as_default_when_advisor_exists(
+    tmp_path: Path,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "grove-master": {
+                "name": "grove-master",
+                "agent": "codex",
+                "role": "GROVE MASTER",
+                "parent": "",
+                "group": "master",
+                "tmux_pane": "dev10:0.0",
+            },
+            "advisor": {
+                "name": "advisor",
+                "agent": "claude",
+                "role": "advisor node: monitor only",
+                "parent": "grove-master",
+                "group": "advisory",
+                "tmux_pane": "dev10:3.0",
+            },
+            "web": {
+                "name": "web",
+                "agent": "codex",
+                "parent": "grove-master",
+                "group": "services",
+                "tmux_pane": "dev10:1.0",
+            },
+            "slack": {
+                "name": "slack",
+                "agent": "codex",
+                "parent": "grove-master",
+                "group": "services",
+                "tmux_pane": "dev10:2.0",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/org", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["default_assignee"] == "grove-master"
+    assert payload["master_org"]["project_master"] == {
+        "name": "grove-master",
+        "present": True,
+        "default_assignee": True,
+    }
+    candidates = {candidate["name"]: candidate for candidate in payload["assignee_candidates"]}
+    assert candidates["grove-master"]["default"] is True
+    assert candidates["advisor"]["default"] is False
+
+
 def test_org_nodes_use_grove_master_as_cross_project_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
