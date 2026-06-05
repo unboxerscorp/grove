@@ -22,8 +22,10 @@ from grove_bridge.assistant import (
     ASSISTANT_TRANSPORT_FALLBACK_TEXT,
     AssistantActor,
     AssistantBroker,
+    AssistantContentBlocked,
     AssistantContext,
     AssistantScope,
+    AssistantTransportError,
     AssistantUnavailable,
 )
 from grove_bridge.auth_status import redact_secret_text
@@ -2070,7 +2072,18 @@ class SlackConnector:
         try:
             with lock:
                 response = self.assistant_broker.handle_turn(text, context)
-        except AssistantUnavailable as exc:
+        except AssistantContentBlocked as exc:
+            LOGGER.warning("Slack assistant response hidden: %s", _safe_log_error(exc))
+            response_text = "assistant response blocked"
+            should_post_response = False
+            self._audit_slack_command(
+                command="assistant",
+                event=event,
+                actor=self._assistant_actor_payload(event),
+                status="failed",
+                summary=response_text,
+            )
+        except AssistantTransportError as exc:
             LOGGER.warning("Slack assistant transport failed: %s", _safe_log_error(exc))
             response_text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
             self._audit_slack_command(
@@ -2080,9 +2093,21 @@ class SlackConnector:
                 status="unavailable",
                 summary=response_text,
             )
+        except AssistantUnavailable as exc:
+            LOGGER.warning("Slack assistant response hidden: %s", _safe_log_error(exc))
+            response_text = "assistant response unavailable without transport signal"
+            should_post_response = False
+            self._audit_slack_command(
+                command="assistant",
+                event=event,
+                actor=self._assistant_actor_payload(event),
+                status="failed",
+                summary=response_text,
+            )
         except Exception as exc:
             LOGGER.warning("Slack assistant broker failed: %s", _safe_log_error(exc))
-            response_text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
+            response_text = "assistant response failed"
+            should_post_response = False
             self._audit_slack_command(
                 command="assistant",
                 event=event,
@@ -2093,7 +2118,7 @@ class SlackConnector:
         else:
             try:
                 response_text = _assistant_response_text(response)
-            except AssistantUnavailable as exc:
+            except AssistantContentBlocked as exc:
                 LOGGER.warning("Slack assistant response hidden: %s", _safe_log_error(exc))
                 response_text = "assistant response missing answer text"
                 should_post_response = False
@@ -2206,12 +2231,18 @@ class SlackConnector:
                 requires_confirmation=requires_confirmation,
                 metadata=metadata,
             )
-        except AssistantUnavailable as exc:
+        except AssistantContentBlocked:
+            raise
+        except AssistantTransportError as exc:
             LOGGER.warning("Slack assistant notice transport failed: %s", _safe_log_error(exc))
             return ASSISTANT_TRANSPORT_FALLBACK_TEXT
+        except AssistantUnavailable as exc:
+            raise AssistantContentBlocked(
+                "assistant notice unavailable without transport signal"
+            ) from exc
         except Exception as exc:
             LOGGER.warning("Slack assistant notice failed: %s", _safe_log_error(exc))
-            return ASSISTANT_TRANSPORT_FALLBACK_TEXT
+            raise AssistantContentBlocked("assistant notice failed") from exc
         return _assistant_response_text(response)
 
     def _post_assistant_notice(
@@ -2236,7 +2267,7 @@ class SlackConnector:
                 requires_confirmation=requires_confirmation,
                 metadata=metadata,
             )
-        except AssistantUnavailable as exc:
+        except AssistantContentBlocked as exc:
             LOGGER.warning("Slack assistant notice hidden: %s", _safe_log_error(exc))
             return ""
         return self.slack_client.post_message(
@@ -2746,7 +2777,7 @@ def _slack_assistant_request_id(event: SlackEvent) -> str:
 def _assistant_response_text(response: MasterChatResponse) -> str:
     if response.answer is not None and response.answer.text.strip():
         return _safe_slack_text(response.answer.text)
-    raise AssistantUnavailable("assistant response missing answer text")
+    raise AssistantContentBlocked("assistant response missing answer text")
 
 
 def _slack_notice_decision_from_result(result: str) -> str:

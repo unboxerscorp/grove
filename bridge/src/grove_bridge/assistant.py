@@ -99,10 +99,18 @@ AssistantSurface = Literal["floating_web_chat", "slack", "api"]
 
 
 class AssistantUnavailable(RuntimeError):
-    """Raised when the bridge-direct LLM client cannot produce an answer."""
+    """Base class for assistant failures."""
 
 
-class AssistantBusy(AssistantUnavailable):
+class AssistantTransportError(AssistantUnavailable):
+    """Raised when the assistant transport cannot reach or parse the LLM service."""
+
+
+class AssistantContentBlocked(AssistantUnavailable):
+    """Raised when an LLM response exists but cannot be shown to a user."""
+
+
+class AssistantBusy(AssistantTransportError):
     """Raised when the assistant transport is temporarily unavailable."""
 
 
@@ -187,7 +195,7 @@ class AnthropicAssistantClient:
 
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         if not self.api_key:
-            raise AssistantUnavailable("GROVE_ASSISTANT_API_KEY is required")
+            raise AssistantTransportError("GROVE_ASSISTANT_API_KEY is required")
         request_body = {
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -210,14 +218,14 @@ class AnthropicAssistantClient:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             detail = _safe_public_text(exc.read(2000).decode("utf-8", errors="replace"))
-            raise AssistantUnavailable(f"Anthropic API error {exc.code}: {detail}") from exc
+            raise AssistantTransportError(f"Anthropic API error {exc.code}: {detail}") from exc
         except (OSError, TimeoutError, urllib.error.URLError) as exc:
             detail = _safe_public_text(exc)
-            raise AssistantUnavailable(f"Anthropic API request failed: {detail}") from exc
+            raise AssistantTransportError(f"Anthropic API request failed: {detail}") from exc
         try:
             decoded = json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError as exc:
-            raise AssistantUnavailable("Anthropic API returned invalid JSON") from exc
+            raise AssistantTransportError("Anthropic API returned invalid JSON") from exc
         return _anthropic_text(decoded)
 
 
@@ -286,7 +294,7 @@ class NodeRoutedAssistantClient:
             raise AssistantBusy("assistant node timed out") from exc
         except OSError as exc:
             detail = _safe_public_text(exc)
-            raise AssistantUnavailable(f"assistant node transport failed: {detail}") from exc
+            raise AssistantTransportError(f"assistant node transport failed: {detail}") from exc
         output = _safe_public_text(proc.stdout).strip()
         if proc.returncode == 0 and output:
             return output
@@ -295,7 +303,7 @@ class NodeRoutedAssistantClient:
         )
         if _transport_busy_detail(detail):
             raise AssistantBusy(detail)
-        raise AssistantUnavailable(f"assistant node failed: {detail}")
+        raise AssistantTransportError(f"assistant node failed: {detail}")
 
     def _command(self, prompt: str) -> list[str]:
         command = [
@@ -890,7 +898,7 @@ def _complete_visible_text(
         llm_client.complete(system_prompt=system_prompt, user_prompt=user_prompt)
     ).strip()
     if not answer_text:
-        raise AssistantUnavailable("assistant returned an empty answer")
+        raise AssistantContentBlocked("assistant returned an empty answer")
     if not _contains_internal_implementation_terms(answer_text):
         return answer_text
     rewrite_prompt = (
@@ -908,7 +916,7 @@ def _complete_visible_text(
     ).strip()
     if rewritten and not _contains_internal_implementation_terms(rewritten):
         return rewritten
-    raise AssistantUnavailable("assistant returned internal implementation terms after rewrite")
+    raise AssistantContentBlocked("assistant returned internal implementation terms after rewrite")
 
 
 def _contains_internal_implementation_terms(text: str) -> bool:
@@ -1085,10 +1093,10 @@ def _string_key_mapping(value: object) -> dict[str, object]:
 
 def _anthropic_text(decoded: object) -> str:
     if not isinstance(decoded, Mapping):
-        raise AssistantUnavailable("Anthropic API returned an invalid message")
+        raise AssistantTransportError("Anthropic API returned an invalid message")
     content = decoded.get("content")
     if not isinstance(content, Sequence) or isinstance(content, str | bytes):
-        raise AssistantUnavailable("Anthropic API response did not include text content")
+        raise AssistantTransportError("Anthropic API response did not include text content")
     texts: list[str] = []
     for block in content:
         if not isinstance(block, Mapping):
@@ -1096,7 +1104,7 @@ def _anthropic_text(decoded: object) -> str:
         if block.get("type") == "text" and isinstance(block.get("text"), str):
             texts.append(cast(str, block["text"]))
     if not texts:
-        raise AssistantUnavailable("Anthropic API response text was empty")
+        raise AssistantTransportError("Anthropic API response text was empty")
     return "\n".join(texts)
 
 
@@ -1208,9 +1216,11 @@ __all__ = [
     "AssistantActor",
     "AssistantBusy",
     "AssistantBroker",
+    "AssistantContentBlocked",
     "AssistantContext",
     "AssistantLLMClient",
     "AssistantScope",
+    "AssistantTransportError",
     "AssistantUnavailable",
     "NodeRoutedAssistantClient",
     "build_assistant_facts",

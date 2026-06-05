@@ -20,7 +20,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import grove_bridge.team_auth as team_auth
 import grove_bridge.web_app as web_app
-from grove_bridge.assistant import AssistantBusy, AssistantLLMClient, AssistantUnavailable
+from grove_bridge.assistant import AssistantBusy, AssistantLLMClient, AssistantTransportError
 from grove_bridge.auth_status import ToolAuthStatus
 from grove_bridge.store import BoardEvent, SQLiteBoardStore
 from grove_bridge.team_auth import (
@@ -49,13 +49,27 @@ class FakeAssistantLLMClient:
 class UnavailableAssistantLLMClient:
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         _ = (system_prompt, user_prompt)
-        raise AssistantUnavailable("llm unavailable")
+        raise AssistantTransportError("llm unavailable")
 
 
 class BusyAssistantLLMClient:
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         _ = (system_prompt, user_prompt)
         raise AssistantBusy("assistant node rate limited")
+
+
+class ContentBlockedAssistantLLMClient:
+    def __init__(self) -> None:
+        self.texts = [
+            "PR1 cannot do action handoff yet.",
+            "PR3 routing still cannot do it.",
+        ]
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        _ = (system_prompt, user_prompt)
+        if self.texts:
+            return self.texts.pop(0)
+        return "classifier routing handoff"
 
 
 def payload_contains_number(value: object, needle: int | float) -> bool:
@@ -2155,6 +2169,25 @@ def test_master_chat_busy_assistant_node_returns_retry_answer(tmp_path: Path) ->
     assert payload["response_type"] == "answer"
     assert payload["answer"]["text"] == "지금은 답변을 만들 수 없어요. 잠시 뒤 다시 시도해 주세요."
     assert payload["answer"]["metadata"]["llm"]["status"] == "busy"
+
+
+def test_master_chat_content_blocked_does_not_return_unavailable_fallback(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        assistant_client=ContentBlockedAssistantLLMClient(),
+    )
+
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={"message": "새 프로젝트 만들어줘"},
+    )
+
+    assert response.status_code == 204
+    assert response.text == ""
 
 
 def test_inbox_returns_blocked_and_ask_human_items_with_cursor_and_redaction(

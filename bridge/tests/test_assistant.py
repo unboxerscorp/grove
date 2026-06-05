@@ -13,9 +13,10 @@ from grove_bridge.assistant import (
     AssistantActor,
     AssistantBroker,
     AssistantBusy,
+    AssistantContentBlocked,
     AssistantContext,
     AssistantScope,
-    AssistantUnavailable,
+    AssistantTransportError,
     NodeRoutedAssistantClient,
     build_assistant_facts,
     create_default_assistant_client,
@@ -51,7 +52,7 @@ class SequenceLLMClient:
 class FailingLLMClient:
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         _ = (system_prompt, user_prompt)
-        raise AssistantUnavailable("llm unavailable")
+        raise AssistantTransportError("llm unavailable")
 
 
 class BusyLLMClient:
@@ -329,7 +330,7 @@ def test_handle_turn_fails_closed_when_internal_terms_survive_rewrite(
     )
     broker = AssistantBroker(llm_client=llm)
 
-    with pytest.raises(AssistantUnavailable, match="internal implementation terms"):
+    with pytest.raises(AssistantContentBlocked, match="internal implementation terms"):
         broker.handle_turn(
             "새 프로젝트 만들어줘",
             _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
@@ -471,10 +472,10 @@ def test_handle_turn_surfaces_llm_unavailable(tmp_path: Path) -> None:
             "보드 상태 알려줘",
             _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
         )
-    except AssistantUnavailable as exc:
+    except AssistantTransportError as exc:
         assert "llm unavailable" in str(exc)
     else:
-        raise AssertionError("AssistantUnavailable was not raised")
+        raise AssertionError("AssistantTransportError was not raised")
 
 
 def _context(*, store: SQLiteBoardStore, workspace_path: Path) -> AssistantContext:
