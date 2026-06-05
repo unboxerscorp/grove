@@ -1042,24 +1042,28 @@ class SlackConnector:
                 thread_ts=task_thread_ts,
                 event_type="message",
             )
-            text = self._assistant_notice_text(
-                reminder_event,
-                thread_ts=task_thread_ts or pending_thread_ts,
-                decision="digest_reminder",
-                reason=_digest_reminder_notice_reason(
-                    task=task,
-                    step=step,
-                    max_reminders=config.max_reminders,
-                ),
-                metadata={
-                    "task_id": task.id,
-                    "title": task.title,
-                    "status": task.status,
-                    "needs_human": _needs_human(task),
-                    "step": step,
-                    "max_reminders": config.max_reminders,
-                },
-            )
+            try:
+                text = self._assistant_notice_text(
+                    reminder_event,
+                    thread_ts=task_thread_ts or pending_thread_ts,
+                    decision="digest_reminder",
+                    reason=_digest_reminder_notice_reason(
+                        task=task,
+                        step=step,
+                        max_reminders=config.max_reminders,
+                    ),
+                    metadata={
+                        "task_id": task.id,
+                        "title": task.title,
+                        "status": task.status,
+                        "needs_human": _needs_human(task),
+                        "step": step,
+                        "max_reminders": config.max_reminders,
+                    },
+                )
+            except AssistantUnavailable as exc:
+                LOGGER.warning("Slack digest reminder hidden: %s", _safe_log_error(exc))
+                continue
             try:
                 self.store.upsert_slack_thread(
                     board=config.board,
@@ -2062,6 +2066,7 @@ class SlackConnector:
         text = _normalize_slack_text(event.text)
         context = self._assistant_context(event, thread_ts=thread_ts)
         lock = self._locks.setdefault(session_id, threading.Lock())
+        should_post_response = True
         try:
             with lock:
                 response = self.assistant_broker.handle_turn(text, context)
@@ -2086,19 +2091,37 @@ class SlackConnector:
                 summary=response_text,
             )
         else:
-            response_text = _assistant_response_text(response)
-            self._audit_slack_command(
-                command="assistant",
-                event=event,
-                actor=self._assistant_actor_payload(event),
-                status=response.response_type,
-                summary=response_text,
-                payload={
-                    "conversation_id": _safe_slack_text(response.conversation_id),
-                    "request_id": _safe_slack_text(response.request_id),
-                    "classification": response.classification.kind,
-                },
-            )
+            try:
+                response_text = _assistant_response_text(response)
+            except AssistantUnavailable as exc:
+                LOGGER.warning("Slack assistant response hidden: %s", _safe_log_error(exc))
+                response_text = "assistant response missing answer text"
+                should_post_response = False
+                self._audit_slack_command(
+                    command="assistant",
+                    event=event,
+                    actor=self._assistant_actor_payload(event),
+                    status="failed",
+                    summary=response_text,
+                    payload={
+                        "conversation_id": _safe_slack_text(response.conversation_id),
+                        "request_id": _safe_slack_text(response.request_id),
+                        "classification": response.classification.kind,
+                    },
+                )
+            else:
+                self._audit_slack_command(
+                    command="assistant",
+                    event=event,
+                    actor=self._assistant_actor_payload(event),
+                    status=response.response_type,
+                    summary=response_text,
+                    payload={
+                        "conversation_id": _safe_slack_text(response.conversation_id),
+                        "request_id": _safe_slack_text(response.request_id),
+                        "classification": response.classification.kind,
+                    },
+                )
         self.store.upsert_slack_thread(
             board=self.human_gate.board,
             task_id=None,
@@ -2108,14 +2131,18 @@ class SlackConnector:
             mode="chat",
             node="assistant",
         )
-        try:
-            self.slack_client.post_message(
-                channel=event.channel,
-                text=response_text,
-                thread_ts=thread_ts,
-            )
-        except Exception as exc:
-            LOGGER.warning("Slack assistant response could not be posted: %s", _safe_log_error(exc))
+        if should_post_response:
+            try:
+                self.slack_client.post_message(
+                    channel=event.channel,
+                    text=response_text,
+                    thread_ts=thread_ts,
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "Slack assistant response could not be posted: %s",
+                    _safe_log_error(exc),
+                )
         return True
 
     def _assistant_context(self, event: SlackEvent, *, thread_ts: str) -> AssistantContext:
@@ -2199,15 +2226,19 @@ class SlackConnector:
         metadata: Mapping[str, object] | None = None,
         blocks: Sequence[Mapping[str, object]] | None = None,
     ) -> str:
-        text = self._assistant_notice_text(
-            event,
-            thread_ts=thread_ts,
-            decision=decision,
-            reason=reason,
-            response_type=response_type,
-            requires_confirmation=requires_confirmation,
-            metadata=metadata,
-        )
+        try:
+            text = self._assistant_notice_text(
+                event,
+                thread_ts=thread_ts,
+                decision=decision,
+                reason=reason,
+                response_type=response_type,
+                requires_confirmation=requires_confirmation,
+                metadata=metadata,
+            )
+        except AssistantUnavailable as exc:
+            LOGGER.warning("Slack assistant notice hidden: %s", _safe_log_error(exc))
+            return ""
         return self.slack_client.post_message(
             channel=event.channel,
             text=text,
@@ -2715,9 +2746,7 @@ def _slack_assistant_request_id(event: SlackEvent) -> str:
 def _assistant_response_text(response: MasterChatResponse) -> str:
     if response.answer is not None and response.answer.text.strip():
         return _safe_slack_text(response.answer.text)
-    if response.operator_gate is not None and response.operator_gate.reason.strip():
-        return _safe_slack_text(response.operator_gate.reason)
-    return ASSISTANT_TRANSPORT_FALLBACK_TEXT
+    raise AssistantUnavailable("assistant response missing answer text")
 
 
 def _slack_notice_decision_from_result(result: str) -> str:

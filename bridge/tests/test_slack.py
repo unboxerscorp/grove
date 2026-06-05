@@ -16,6 +16,7 @@ from grove_bridge.master import (
     MasterAnswer,
     MasterChatResponse,
     MasterChatResponseType,
+    OperatorGateDecision,
     classify_master_message,
 )
 from grove_bridge.slack import (
@@ -216,6 +217,52 @@ class FailingAssistantBroker:
         _ = (decision, reason, response_type, requires_confirmation, metadata)
         self.notice_calls.append((message, context))
         raise RuntimeError(self.message)
+
+
+class LegacyDeniedAssistantBroker:
+    def __init__(self, reason: str = "RULE BASED GATE") -> None:
+        self.reason = reason
+        self.calls: list[tuple[str, AssistantContext]] = []
+        self.notice_calls: list[tuple[str, AssistantContext]] = []
+
+    def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse:
+        self.calls.append((message, context))
+        return self._response(message, context)
+
+    def handle_notice(
+        self,
+        message: str,
+        context: AssistantContext,
+        *,
+        decision: str,
+        reason: str,
+        response_type: MasterChatResponseType = "answer",
+        requires_confirmation: bool = False,
+        metadata: Mapping[str, object] | None = None,
+    ) -> MasterChatResponse:
+        _ = (decision, reason, response_type, requires_confirmation, metadata)
+        self.notice_calls.append((message, context))
+        return self._response(message, context)
+
+    def _response(self, message: str, context: AssistantContext) -> MasterChatResponse:
+        return MasterChatResponse(
+            conversation_id=context.conversation_id,
+            request_id=context.request_id,
+            response_type="denied",
+            classification=classify_master_message(message),
+            answer=None,
+            proposal=None,
+            feedback_route=None,
+            operator_gate=OperatorGateDecision(
+                allowed=False,
+                reason=self.reason,
+                actor_id=context.actor.id,
+                target_project=context.scope.selected_project,
+                audit_metadata={},
+            ),
+            requires_confirmation=False,
+            audit_events=(),
+        )
 
 
 class FailingPostSlackClient(FakeSlackClient):
@@ -1072,6 +1119,37 @@ def test_chat_route_handles_facade_failure_and_post_failure_without_crashing(
             event_type="message",
         )
     )
+
+
+def test_chat_route_does_not_expose_operator_gate_reason_without_answer(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    slack = FakeSlackClient()
+    assistant = LegacyDeniedAssistantBroker("RULE BASED GATE")
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FailingChatFacade("chat facade must not be used"),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+        assistant_broker=assistant,
+    )
+
+    assert connector.handle_event(slack_event("UOP", "hello"))
+
+    assert assistant.calls
+    assert slack.posts == []
+
+
+def test_notice_route_does_not_expose_operator_gate_reason_without_answer(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    slack = FakeSlackClient()
+    assistant = LegacyDeniedAssistantBroker("RULE BASED GATE")
+    connector = command_connector(store, slack, assistant_broker=assistant)
+
+    assert connector.handle_event(slack_event("UOP", "status"))
+
+    assert assistant.notice_calls
+    assert slack.posts == []
 
 
 def execution_task(store: SQLiteBoardStore, *, board: str = "main") -> Task:
@@ -1947,6 +2025,47 @@ def test_slack_digest_reminder_requires_gui_digest_enabled(tmp_path: Path) -> No
     assert len(slack.posts) == 1
     assert slack.posts[0][1] == "LLM digest reminder"
     assert assistant.notice_calls[-1]["decision"] == "digest_reminder"
+
+
+def test_slack_digest_reminder_does_not_expose_operator_gate_reason_without_answer(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = blocked_human_task(store, board="main")
+    store.set_gui_feature_enabled(board="main", feature="digest", enabled=True)
+    store.add_notify_sub(
+        board="main",
+        task_id=task.id,
+        channel_kind="slack",
+        room_id="C123",
+        thread_id="human-thread",
+    )
+    clock = MutableClock(now=store.get_task(board="main", task_id=task.id).updated_at + 20)
+    slack = FakeSlackClient()
+    assistant = LegacyDeniedAssistantBroker("RULE BASED GATE")
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+        digest_config=SlackDigestConfig(
+            board="main",
+            channel="C123",
+            enabled=True,
+            dry_run=False,
+            reminder_enabled=True,
+            reminder_after_seconds=10,
+            max_reminders=1,
+            clock=clock,
+        ),
+        assistant_broker=assistant,
+    )
+
+    assert connector.poll_digest_reminders() == 0
+
+    assert assistant.notice_calls
+    assert slack.posts == []
 
 
 def test_slack_digest_reminder_is_bounded_and_read_only(tmp_path: Path) -> None:
