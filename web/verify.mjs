@@ -24,7 +24,8 @@ function assertNoDelegateTaskCopy() {
   const source = readFileSync(path.join(root, "src", "i18n.tsx"), "utf8");
   const rolePresets = readFileSync(path.join(root, "src", "rolePresets.ts"), "utf8");
   const bundle = existsSync(path.join(root, "dist", "app.js")) ? readFileSync(path.join(root, "dist", "app.js"), "utf8") : "";
-  const forbidden = /(작업 위임|작업 부여|보드 task|Delegate task|Assign task|Delegate to this node|이 노드로 위임)/i;
+  const forbidden =
+    /(작업 위임|작업 부여|보드 task|위임한 범위|Delegate task|Assign task|Delegate to this node|이 노드로 위임)/i;
   if (forbidden.test(`${source}\n${rolePresets}\n${bundle}`)) {
     throw new Error("node action copy must describe creating human-facing items, not delegated tasks");
   }
