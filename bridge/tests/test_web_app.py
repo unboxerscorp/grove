@@ -589,6 +589,12 @@ def test_rest_reads_and_writes_board_store(tmp_path: Path) -> None:
         assignee="grove:codex",
         status="blocked",
     )
+    store.create_task(
+        board="p2-test",
+        title="Historical task from another project",
+        body=None,
+        assignee=None,
+    )
     store.add_comment(board="dev10", task_id=first.id, author="maker", body="hello")
     client = make_client(tmp_path, store)
     headers = auth_headers(client)

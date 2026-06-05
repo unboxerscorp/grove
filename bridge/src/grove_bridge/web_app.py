@@ -1531,11 +1531,10 @@ def create_app(
         _require_auth(request)
         project = resolve_project(request)
         boards = _store(request).list_boards()
-        if project.from_header:
-            allowed_boards = {project.board}
-            if project.name == DELEGATE_BOARD_OWNER_PROJECT:
-                allowed_boards.update(DELEGATE_BOARD_ALIASES)
-            boards = [board for board in boards if board.id in allowed_boards]
+        allowed_boards = {project.board}
+        if project.from_header and project.name == DELEGATE_BOARD_OWNER_PROJECT:
+            allowed_boards.update(DELEGATE_BOARD_ALIASES)
+        boards = [board for board in boards if board.id in allowed_boards]
         return [_board_payload(board) for board in boards]
 
     @app.get("/api/boards//tasks")
