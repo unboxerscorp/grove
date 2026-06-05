@@ -1,5 +1,5 @@
 {
-  "_doc": "UI control registry v1 (single source of truth). Coverage closure: every ENABLED discovered control in button-inventory.json must match one entry here or in ignore-list.json (by view + match.classContains); unmatched = coverage-gap FAIL (ratchet, never shrinks). oracle_class drives the assertion; allowed_roles drives the 2-axis role-denial oracle (viewer 'forbidden' => UI hidden/disabled AND direct-API 403). live_safe=false controls are HARD-BLOCKED from firing on :9131 (external/destructive isolated-only).",
+  "_doc": "UI control registry v1 (single source of truth). Coverage closure: every ENABLED discovered control in button-inventory.json must match one entry here or in ignore-list.json (by view + match.classContains); unmatched = coverage-gap FAIL (ratchet, never shrinks). oracle_class drives the assertion; allowed_roles drives the 2-axis role-denial oracle (viewer 'forbidden' => UI hidden/disabled AND direct-API 403). live_safe=false controls are HARD-BLOCKED from firing on the live cockpit (external/destructive isolated-only).",
   "roles": [
     "viewer",
     "operator",

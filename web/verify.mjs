@@ -57,6 +57,7 @@ function assertLiveE2eDefaultsCurrentPort() {
   const liveScripts = [
     readFileSync(path.join(root, "e2e", "live.mjs"), "utf8"),
     readFileSync(path.join(root, "e2e", "tier1", "runner.mjs"), "utf8"),
+    readFileSync(path.join(root, "e2e", "registry", "controls.json"), "utf8"),
   ].join("\n");
   if (/127\.0\.0\.1:9131|:9131\b/.test(liveScripts)) {
     throw new Error("live e2e defaults must target the current cockpit port 8765, not stale 9131");

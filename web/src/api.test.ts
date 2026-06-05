@@ -113,7 +113,7 @@ describe("node termination API", () => {
     vi.stubGlobal("window", {
       __GROVE_AUTH_REQUIRED__: false,
       __GROVE_SESSION_TOKEN__: "tok",
-      location: { host: "127.0.0.1:9131", pathname: "/", protocol: "http:" },
+      location: { host: "127.0.0.1:8765", pathname: "/", protocol: "http:" },
     });
   }
 
