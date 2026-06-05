@@ -780,7 +780,7 @@ def test_decision_ledger_api_quorum_and_dispatch_idempotency(tmp_path: Path) -> 
         headers=codex_headers,
         json={
             "proposer": "codex",
-            "title": "Build delegated task",
+            "title": "Create human-facing item",
             "body": "Create the child human-facing item.",
             "assignee": "maker",
             "reviewer": "reviewer",
@@ -2441,7 +2441,7 @@ def test_master_chat_answer_includes_project_board_org_and_human_facts(
     response = client.post(
         "/api/master/chat",
         headers=auth_headers(client),
-        json={"message": "리뷰어 몇 명이고 보드 task 상태 알려줘?"},
+        json={"message": "리뷰어 몇 명이고 사람용 항목 상태 알려줘?"},
     )
 
     assert response.status_code == 200
@@ -3869,7 +3869,7 @@ def test_board_query_respects_project_scope(tmp_path: Path) -> None:
     assert cross_board.json()["detail"] == "board 'dev10' not in project 'dev11'"
 
 
-def test_delegate_project_header_can_create_dev_room_board_task(tmp_path: Path) -> None:
+def test_delegate_project_header_can_create_dev_room_item(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     write_registry(
         tmp_path,
@@ -3882,13 +3882,13 @@ def test_delegate_project_header_can_create_dev_room_board_task(tmp_path: Path) 
     created = client.post(
         "/api/boards/dev-room/tasks",
         headers=headers,
-        json={"title": "delegate task", "assignee": "worker"},
+        json={"title": "human-facing item", "assignee": "worker"},
     )
     listed = client.get("/api/boards/dev-room/tasks", headers=headers)
     boards = client.get("/api/boards", headers=headers)
 
     assert created.status_code == 200
-    assert created.json()["title"] == "delegate task"
+    assert created.json()["title"] == "human-facing item"
     assert listed.status_code == 200
     assert [task["id"] for task in listed.json()] == [created.json()["id"]]
     assert {board["id"] for board in boards.json()} == {"dev-room"}

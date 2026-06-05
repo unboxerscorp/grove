@@ -140,7 +140,7 @@ nodes:
   lead:
     agent: claude
     role: "팀 리드"
-    description: "요구사항 정리와 위임"
+    description: "요구사항 정리와 조율"
     children: [maker]
     group: core
   maker:
