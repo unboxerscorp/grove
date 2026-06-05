@@ -787,23 +787,73 @@ class SlackConnector:
             self._seen_event_keys.discard(expired)
         return True
 
+    def _has_assistant_thread(self, event: SlackEvent, *, thread_ts: str) -> bool:
+        for thread in self.store.list_slack_threads(mode="chat"):
+            if (
+                thread.team_id == event.team
+                and thread.channel_id == event.channel
+                and thread.thread_ts == thread_ts
+                and thread.node == "assistant"
+            ):
+                return True
+        return False
+
+    def _has_human_reply_thread(self, event: SlackEvent, *, thread_ts: str) -> bool:
+        return (
+            self.store.find_notify_sub(
+                channel_kind="slack",
+                room_id=event.channel,
+                thread_id=thread_ts,
+            )
+            is not None
+        )
+
+    def _event_was_seen(self, event: SlackEvent) -> bool:
+        key = self._event_dedupe_key(event)
+        if key is None or key not in self._seen_event_keys:
+            return False
+        LOGGER.info("Slack duplicate event ignored: %s", key)
+        return True
+
     def handle_event(self, event: SlackEvent) -> bool:
         if event.event_type not in {"app_mention", "message"}:
             return False
         if self._should_ignore_event(event):
             return False
-        if not self._remember_event(event):
+        if self._event_was_seen(event):
             return True
         thread_ts = event.thread_ts or event.ts
-        if self._assistant_priority_event(event):
+        is_thread_reply = event.thread_ts is not None
+        is_addressed = _assistant_mentioned(event, bot_user_id=self.bot_user_id)
+        is_human_reply_thread = is_thread_reply and self._has_human_reply_thread(
+            event,
+            thread_ts=thread_ts,
+        )
+        is_assistant_thread = is_thread_reply and self._has_assistant_thread(
+            event,
+            thread_ts=thread_ts,
+        )
+        is_slash_command = _normalize_slack_text(event.text).startswith("/")
+        if (
+            not is_addressed
+            and not is_human_reply_thread
+            and not is_assistant_thread
+            and not is_slash_command
+        ):
+            return False
+        if not self._remember_event(event):
+            return True
+        if is_addressed and not _explicit_reserved_command_text(event.text):
             return self._handle_assistant_turn(event, thread_ts=thread_ts)
-        if event.thread_ts is not None and self._handle_human_reply(event, thread_ts=thread_ts):
+        if is_human_reply_thread and self._handle_human_reply(event, thread_ts=thread_ts):
             return True
         if _explicit_reserved_command_text(event.text) and self._handle_command(
             event, thread_ts=thread_ts
         ):
             return True
-        return self._handle_chat(event, thread_ts=thread_ts)
+        if is_assistant_thread:
+            return self._handle_chat(event, thread_ts=thread_ts)
+        return False
 
     def _assistant_priority_event(self, event: SlackEvent) -> bool:
         if not _assistant_mentioned(event, bot_user_id=self.bot_user_id):
