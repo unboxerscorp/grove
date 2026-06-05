@@ -5856,6 +5856,7 @@ def _assistant_context(
         ),
         store=store,
         workspace_path=workspace_path,
+        grove_home=project.config.grove_home,
     )
 
 

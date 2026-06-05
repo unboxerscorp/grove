@@ -2069,7 +2069,23 @@ def test_master_chat_answer_includes_project_board_org_and_human_facts(
         "Running backend",
         "Needs human decision",
     }
-    assert facts["agent_health"]["nodes"] == []
+    agent_health = facts["agent_health"]
+    assert agent_health["status_counts"] == {}
+    assert agent_health["node_count"] == 5
+    assert agent_health["reviewer_count"] == 2
+    assert agent_health["reviewer_names"] == ["human-lead", "r-qa"]
+    nodes = {node["node"]: node for node in agent_health["nodes"]}
+    assert set(nodes) == {"human-lead", "lead", "m-py", "project-master", "r-qa"}
+    assert nodes["r-qa"] == {
+        "node": "r-qa",
+        "agent": "claude",
+        "role": "reviewer",
+        "group": "review",
+        "source": "registry",
+    }
+    rendered_health = json.dumps(agent_health, ensure_ascii=False, sort_keys=True)
+    assert "tmux_pane" not in rendered_health
+    assert "dev10:1.2" not in rendered_health
     assert facts["recent_commits"] == []
 
 
