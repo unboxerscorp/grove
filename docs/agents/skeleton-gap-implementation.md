@@ -32,18 +32,20 @@
 
 ---
 
-## 판정 요약 (3-감사 합치)
+## 과거 판정 요약 (3-감사 합치)
 
-| 항  | 영역                 | 판정                                                                                                                                                                                         |
-| --- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A   | 계층/조직도          | ⚠️ 부분 — MASTER→lead→org가 /api/org 합성에만 존재, 코어 registry 미저장. `grove org`엔 계층 없음. lead가 합성 meta.                                                                         |
-| B   | 프로젝트 cwd         | ⚠️ 부분/결함 — CLI는 OK. **웹 노드생성 `--cwd` 누락**, spawn `findGroveRoot` 폴백이 grove repo 루트로 드리프트, NodeRuntime에 cwd 필드 없음.                                                 |
-| C   | cross-project 통신   | ⚠️ 부분 — 프로젝트 내 평면통신 OK. **프로젝트 간 direct send/ask 누락**(단일세션 스코프, `node@project` 주소 없음). 보드 delegate(--session)만 부분 충족.                                    |
-| D   | 고용/해고            | ⚠️ 부분 — spawn 자유 OK. **terminate 소유권 미강제**(despawn이 caller/parent 무검사, --group/--all 임의 종료). **웹 terminate 엔드포인트 부재.**                                             |
-| E   | 역할 템플릿          | ❌ 누락 — role은 free-text 라벨뿐. 프리셋/템플릿 라이브러리 전무.                                                                                                                            |
-| F   | 조직인지 + task 첨부 | ❌ 누락(MAJOR) — dispatch(delegate/send/pull_executor)가 조직도/업무방식 **자동첨부 전무**. 베이스 MD도 부분/모순(AGENTS.md stream-scoped·read-only가 캐논 자유통신과 상충). CLAUDE.md 없음. |
-| G   | 사람↔MASTER+SSH      | ⚠️ 부분 — Slack/웹 MASTER ✅. **lead SSH는 로컬 `tmux attach` 문자열 copy뿐**(ssh user@host 미생성), lead가 합성 meta라 connect 404. master-chat이 read도 operator-gated.                    |
-| H   | 지속세션(은닉 아님)  | ⚠️ 대부분 OK. 단 assistant.py 직접 API 클라이언트(키 set 시)는 비가시 경로 → node-routed만 프로덕션 기본으로.                                                                                |
+아래 표는 2026-06-05 감사 당시의 과거 판정이다. 현재 운영 지침은 위의 v2 현재 기준과 `AGENTS.md`/`CLAUDE.md`/`docs/agents/workstream-registry.md`를 우선한다.
+
+| 항  | 영역                 | 판정                                                                                                                                                                                                                                        |
+| --- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A   | 계층/조직도          | ⚠️ 부분 — MASTER→lead→org가 /api/org 합성에만 존재, 코어 registry 미저장. `grove org`엔 계층 없음. lead가 합성 meta.                                                                                                                        |
+| B   | 프로젝트 cwd         | ⚠️ 부분/결함 — CLI는 OK. **웹 노드생성 `--cwd` 누락**, spawn `findGroveRoot` 폴백이 grove repo 루트로 드리프트, NodeRuntime에 cwd 필드 없음.                                                                                                |
+| C   | cross-project 통신   | ⚠️ 부분 — 프로젝트 내 평면통신 OK. **프로젝트 간 direct send/ask 누락**(단일세션 스코프, `node@project` 주소 없음). 보드 delegate(--session)만 부분 충족.                                                                                   |
+| D   | 고용/해고            | ⚠️ 부분 — spawn 자유 OK. **terminate 소유권 미강제**(despawn이 caller/parent 무검사, --group/--all 임의 종료). **웹 terminate 엔드포인트 부재.**                                                                                            |
+| E   | 역할 템플릿          | ❌ 누락 — role은 free-text 라벨뿐. 프리셋/템플릿 라이브러리 전무.                                                                                                                                                                           |
+| F   | 조직인지 + task 첨부 | 과거 누락(MAJOR) — dispatch(delegate/send/pull_executor)가 조직도/업무방식 **자동첨부 전무**였고, 베이스 MD도 부분/모순(AGENTS.md stream-scoped·read-only가 캐논 자유통신과 상충), CLAUDE.md도 없었다. 현재 문서 기준은 v2 섹션을 우선한다. |
+| G   | 사람↔MASTER+SSH      | ⚠️ 부분 — Slack/웹 MASTER ✅. **lead SSH는 로컬 `tmux attach` 문자열 copy뿐**(ssh user@host 미생성), lead가 합성 meta라 connect 404. master-chat이 read도 operator-gated.                                                                   |
+| H   | 지속세션(은닉 아님)  | ⚠️ 대부분 OK. 단 assistant.py 직접 API 클라이언트(키 set 시)는 비가시 경로 → node-routed만 프로덕션 기본으로.                                                                                                                               |
 
 **리뷰어 합치 우선순위(과거 감사 기준): ① F (조직/업무방식 영속 인지) ② E (역할 프리셋) ③ A+B+C (프로젝트 경계 모델).**
 

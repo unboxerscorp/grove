@@ -2,7 +2,7 @@
 
 ## Ownership
 
-- Work in the assigned stream unless the lead expands scope.
+- Treat streams as ownership and coordination metadata, not hard permission boundaries. Work in the assigned stream by default, and cross streams when the human request or practical task requires it.
 - If a change crosses streams, name the dependency in the handoff.
 - Do not rewrite another maker's work without first identifying the conflict.
 
