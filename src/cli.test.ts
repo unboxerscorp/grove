@@ -32,6 +32,18 @@ describe("CLI help text", () => {
     );
   });
 
+  test("task compatibility command describes human-facing items", () => {
+    const source = readFileSync(join(here, "cli.ts"), "utf8");
+
+    expect(source).toContain(
+      'description("transition a human-facing grove TODO/feedback/ask-human item")',
+    );
+    expect(source).toContain(
+      'taskTransitionCommand("start", "mark a human-facing item as running")',
+    );
+    expect(source).not.toContain("human-facing task");
+  });
+
   test("init command describes direct-org scaffolding", () => {
     const source = readFileSync(join(here, "cli.ts"), "utf8");
 

@@ -170,22 +170,22 @@ program
 
 const taskCommand = program
   .command("task")
-  .description("transition a human-facing grove TODO/feedback/ask-human task");
+  .description("transition a human-facing grove TODO/feedback/ask-human item");
 
 function taskTransitionCommand(action: TaskAction, description: string): void {
   taskCommand
-    .command(`${action} <task_id>`)
+    .command(`${action} <item_id>`)
     .description(description)
     .option("--board <board>", "target board slug", "default")
     .option("--session <session>", "target grove session/project")
     .option("--allow-remote", "allow sending the dashboard token to a non-loopback grove-web URL")
-    .option("--from-status <status>", "expected previous task status")
-    .option("--run-id <id>", "task run id for idempotent executor updates")
+    .option("--from-status <status>", "expected previous item status")
+    .option("--run-id <id>", "item run id for idempotent executor updates")
     .option("--idempotency-key <key>", "idempotency key for repeat-safe transitions")
     .option("--comment <text>", "status transition comment")
     .option("--reviewer <node>", "reviewer node for review transitions")
     .option("-c, --config <file>", "path to grove.yaml")
-    .option("--json", "print the updated task as JSON")
+    .option("--json", "print the updated item as JSON")
     .action(
       run((taskId: string, opts: Record<string, unknown>) =>
         cmdTask(action, taskId, withConfig(opts)),
@@ -193,11 +193,11 @@ function taskTransitionCommand(action: TaskAction, description: string): void {
     );
 }
 
-taskTransitionCommand("start", "mark a human-facing task as running");
-taskTransitionCommand("done", "mark a human-facing task as done");
-taskTransitionCommand("review", "mark a human-facing task as ready for review");
-taskTransitionCommand("block", "mark a human-facing task as blocked");
-taskTransitionCommand("ask-human", "mark a human-facing task as waiting for human input");
+taskTransitionCommand("start", "mark a human-facing item as running");
+taskTransitionCommand("done", "mark a human-facing item as done");
+taskTransitionCommand("review", "mark a human-facing item as ready for review");
+taskTransitionCommand("block", "mark a human-facing item as blocked");
+taskTransitionCommand("ask-human", "mark a human-facing item as waiting for human input");
 
 program
   .command("send <node> <message...>")
