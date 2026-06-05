@@ -321,7 +321,8 @@ export interface SlackStatus {
   last_error?: string | null;
   // v1.20 intent-triage intake (default OFF; operators toggle it in the Setup
   // panel — the "intake" gui-feature). Surfaced read-only here so the dashboard
-  // can show whether free-form Slack messages become gated tasks.
+  // can show whether explicit Slack feedback/ask-human messages can become
+  // human-facing list candidates.
   intake?: { enabled?: boolean };
 }
 
@@ -687,9 +688,9 @@ export interface AggregateResult {
   limitations?: string[];
 }
 
-// Decision inbox (web_app.py _inbox_item_payload). A blocked / ask-human task
-// awaiting a human decision. `answer.endpoint` is the POST target that comments
-// + unblocks the task (operator/admin; team viewers get 403).
+// Decision inbox (web_app.py _inbox_item_payload). A blocked / ask-human item
+// awaiting a human decision. `answer.endpoint` is the POST target that records
+// the answer for the item (operator/admin; team viewers get 403).
 export interface InboxAnswer {
   endpoint: string;
   method?: string;
@@ -1039,10 +1040,10 @@ export const api = {
     return (await res.json()) as Task;
   },
 
-  // Web equivalent of `grove delegate`: hand a node a task by creating a board
-  // task assigned to it. Reuses POST /api/boards/{board}/tasks (project-scoped
-  // via the X-Grove-Project header on the shared client); status defaults to
-  // "ready" so the assignee can pick it up. The backend records audit.task.assign.
+  // Web equivalent of `grove delegate`: create a human-facing item assigned to
+  // a node. Reuses POST /api/boards/{board}/tasks (project-scoped via the
+  // X-Grove-Project header on the shared client); status defaults to "ready".
+  // The backend records audit.task.assign for compatibility.
   delegate(boardId: string, node: string, payload: { title: string; body?: string }): Promise<Task> {
     return api.createTask(boardId, {
       title: payload.title,
@@ -1377,8 +1378,8 @@ export const api = {
     return getJSON<InboxPage>(`/api/inbox${qs ? `?${qs}` : ""}`);
   },
 
-  // Answer a blocked/ask-human task: POSTs to the item's answer.endpoint
-  // (/api/tasks/{id}/answer) which comments + unblocks. 403 for team viewers.
+  // Answer a blocked/ask-human item: POSTs to the item's answer.endpoint
+  // (/api/tasks/{id}/answer) and records the human answer. 403 for team viewers.
   async answerTask(endpoint: string, text: string): Promise<{ ok?: boolean }> {
     const res = await fetch(endpoint, {
       method: "POST",

@@ -100,9 +100,10 @@ grove repair --all
   direct.
 - **Slack bot human channel** - v1.30 improves the Slack panel with usage guidance,
   available commands, intake flow, and Block Kit previews/buttons. Humans can file
-  bugs, feedback, tasks, or questions from Slack; task creation stays gated/audited,
-  and answer-only or human-gate replies flow back through Slack threads and board
-  comments. `/api/slack/test` is still being upgraded from a stub to a real send.
+  bugs, feedback, ask-human items, or questions from Slack; human-facing item
+  registration stays gated/audited, and answer-only replies flow back through Slack
+  threads and item comments. `/api/slack/test` is still being upgraded from a stub to
+  a real send.
 - **Event-driven wait and durable submit** - transcript/event watchers wake waits
   promptly, with deadline-bounded fallbacks so waits do not hang forever. v1.31
   hardens send-to-wait correlation so submitted turns survive crashes and can still be
@@ -349,14 +350,14 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   payloads stay redacted.
 - Slack safety commands are default OFF and require role-gated preview/confirm.
 - Slack bot UX improvements are communication surface, not a new mutation bypass.
-  Block Kit intake/task previews, human-gate replies, and thread answers reuse the
+  Block Kit intake/item previews, ask-human replies, and thread answers reuse the
   same role, project-scope, confirmation, audit, and redaction rules as the existing
   Slack connector. `/api/slack/test` should still be treated as incomplete until the
   real-send upgrade lands.
 - Slack intelligent intake is default OFF (`--enable-intake`) and no-LLM. It can propose
-  bug/feedback/task previews, but confirmed task creation is role-gated and audited;
-  viewer or unmapped users cannot create tasks. Questions route to the GROVE MASTER,
-  and injection-like text falls back to no task.
+  bug/feedback/ask-human item previews, but confirmed item registration is role-gated
+  and audited; viewer or unmapped users cannot create items. Questions route to the
+  GROVE MASTER, and injection-like text falls back to plain chat/no item.
 - Slack assistant routing also requires `--enable-intake`. Natural-language answers are
   project-scoped and redacted; usage/ledger detail is denied unless the Slack member is
   operator/admin, and bounded thread context cannot create hidden mutations.
