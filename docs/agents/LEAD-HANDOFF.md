@@ -14,6 +14,7 @@
   - Slack은 `dev10:2.0`에서 `/Users/chopin/.grove/dev10/run-slack-loop.sh`로 실행한다. `/api/slack/config/status`는 `socket_connected`, `~/.grove/dev10/slack-runtime.json` heartbeat가 갱신된다.
   - advisor는 `dev10:3.0`의 Claude 노드이며 약 5분마다 `grove-master`를 점검한다. 사용자가 명시 중단하기 전까지 루프를 멈추지 않는다.
   - `/api/projects`는 `dev10` 하나만 반환해야 한다. `/api/boards`는 프로젝트 헤더가 없어도 현재 active project board만 반환해야 하며, 과거 `p2-test` 같은 stale board가 섞이면 회귀다. `/api/org`의 `default_assignee`와 `master_org.project_master.name`은 `grove-master`여야 하며 advisor가 default가 되면 회귀다.
+  - `~/.grove/boards/board.db`의 stale `p2-test` board/task 찌꺼기는 삭제했다. 삭제 전 백업은 `~/.grove/boards/board.db.bak.pre-p2-cleanup-1780682270`이다. 이후 DB 전체 `tasks=0`, live `/api/boards/default/tasks=[]`, `/api/inbox.total=0`을 확인했다.
   - 최신 product-code 커밋은 `137d66f fix: scope board listing to active project`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
   - 최신 검증: `pnpm check` green, `web npm run e2e` 693/693 green, remote terminal ticket 200, Slack `socket_connected`, heartbeat fresh, tailnet browser terminal smoke green.
 - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
