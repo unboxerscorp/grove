@@ -5551,10 +5551,6 @@ button {
 
 .dr-mchat__list { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .dr-mchat__empty { margin: auto; padding: 0 18px; text-align: center; color: var(--faint); font-size: 13px; }
-.dr-mchat__notice {
-  margin: 0 0 4px; padding: 8px 10px; border-radius: 9px; font-size: 12px; line-height: 1.45;
-  color: var(--dim); background: var(--amber-soft); border: 1px solid rgba(240, 184, 96, 0.22);
-}
 
 .dr-mchat__row { display: flex; flex-direction: column; max-width: 84%; }
 .dr-mchat__row--user { align-self: flex-end; align-items: flex-end; }
