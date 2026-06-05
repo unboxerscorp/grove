@@ -82,9 +82,9 @@ function preferredTerminalPane(nodes: GroveNode[]): string | null {
 }
 
 // Left-sidebar navigation. v2 keeps the operator surface focused on the live
-// cockpit: human lists, org, terminal, Slack/master chat, SSH/share, audit, setup.
-// Older analytics/execution/cross-room panels remain routable for compatibility,
-// but they no longer crowd the default UI.
+// cockpit: human lists, org, terminal, Slack/master chat, audit, setup.
+// Older analytics/execution/cross-room panels and join flows remain routable for
+// compatibility, but they no longer crowd the default UI.
 type NavItem =
   | { kind: "view"; view: View; labelKey: string; icon: string }
   | { kind: "drawer"; drawer: "audit" | "inbox"; labelKey: string; icon: string };
@@ -103,7 +103,6 @@ const NAV_GROUPS: { id: string; labelKey: string; items: NavItem[] }[] = [
     labelKey: "nav.group.comms",
     items: [
       { kind: "view", view: "integrations", labelKey: "tab.integrations", icon: "#" },
-      { kind: "view", view: "connect", labelKey: "tab.connect", icon: "⚯" },
       { kind: "drawer", drawer: "inbox", labelKey: "inbox.open", icon: "⚑" },
     ],
   },

@@ -837,31 +837,18 @@ async function main() {
 
     await runStep(page, "legacy ops panels stay out of the default sidebar", async () => {
       const tabs = await page.$$eval(".dr-tab[data-view]", (items) => items.map((item) => item.getAttribute("data-view")));
-      const hidden = ["exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
+      const hidden = ["connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
       check("default sidebar hides legacy ops views", hidden.every((view) => !tabs.includes(view)), tabs.join(","));
       skip("legacy ops panel UI journey", "covered by isolated API/verify suites; hidden from the simplified default cockpit");
     });
 
-    await runStep(page, "connect share disabled state and join validation", async () => {
-      await nav(page, "connect");
+    await runStep(page, "connect stays hidden while join deep-link validates", async () => {
+      const tabs = await page.$$eval(".dr-tab[data-view]", (items) => items.map((item) => item.getAttribute("data-view")));
+      check("connect is hidden from the default sidebar", !tabs.includes("connect"), tabs.join(","));
+      await page.goto(`${BASE_URL}/?join=${encodeURIComponent(`${RUN_ID}-bad-code`)}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
       await page.waitForSelector(".connect", { visible: true, timeout: 15_000 });
-      await page.waitForSelector(".connect-presence", { visible: true, timeout: 15_000 });
-      const invite = await page.$(".connect-invite__btn");
-      if (invite) {
-        const sharePromise = waitForApi(page, { path: "/api/share", method: "POST" });
-        await page.click(".connect-invite__btn");
-        const shareResponse = await sharePromise;
-        const shareJson = await responseJson(shareResponse);
-        if (shareResponse.ok()) {
-          await page.waitForSelector('.connect-invite[data-share="issued"]', { visible: true, timeout: 10_000 });
-          check("connect invite issues share when feature is enabled", true);
-          check("connect share DOM does not expose platform tokens", !hasRawSecret(await textContent(page, ".connect-share")));
-        } else {
-          check("connect invite fails with fixed disabled/forbidden state", [403, 404].includes(shareResponse.status()), `HTTP ${shareResponse.status()} ${safeJson(shareJson)}`);
-          await page.waitForSelector(".connect-share .connect-msg", { visible: true, timeout: 10_000 });
-        }
-      }
-      await fillField(page, ".connect-join__code", `${RUN_ID}-bad-code`);
+      await page.waitForSelector(".connect-join__code", { visible: true, timeout: 15_000 });
+      await page.waitForFunction(() => !window.location.href.includes("join="), { timeout: 10_000 });
       await fillField(page, ".connect-join__name", "P2 Live Join");
       const joinPromise = waitForApi(page, { path: "/api/join", method: "POST" });
       await page.click(".connect-join__btn");
@@ -871,6 +858,7 @@ async function main() {
       await page.waitForSelector(".connect-msg[data-join-err]", { visible: true, timeout: 10_000 });
       const reason = await page.$eval(".connect-msg[data-join-err]", (el) => el.getAttribute("data-join-err"));
       check("connect join error is mapped to fixed reason", ["invalid", "expired", "rateLimit", "nameExists", "invalidName", "disabled", "generic"].includes(reason ?? ""), reason ?? "");
+      await nav(page, "board");
     });
 
     await runStep(page, "terminal view, connect command, operator send", async () => {
@@ -988,6 +976,7 @@ async function main() {
     await runStep(page, "sidebar, command palette, and logo", async () => {
       const tabs = await page.$$eval(".dr-tab[data-view]", (items) => items.map((item) => item.getAttribute("data-view")));
       check("sidebar exposes expected cockpit views", ["board", "team", "terminal", "integrations", "auth"].every((view) => tabs.includes(view)), tabs.join(","));
+      check("sidebar does not expose connect by default", !tabs.includes("connect"), tabs.join(","));
       await page.click(".cmdk-trigger");
       await page.waitForSelector(".cmdk .cmdk__input", { visible: true, timeout: 10_000 });
       await fillField(page, ".cmdk__input", "terminal");
