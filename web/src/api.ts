@@ -133,6 +133,7 @@ export interface StatusSummary {
 export interface MeInfo {
   auth_mode?: string;
   member?: { id?: string; name?: string; role?: string } | null;
+  csrf?: string | null;
 }
 
 // Execution loop (web_app.py). The execution gate + per-node execution flag are
@@ -815,8 +816,17 @@ export interface MasterChatSendBody {
   origin_page?: string;
 }
 
+export interface MasterChatConfirmBody {
+  confirmation_id: string;
+  idempotency_key: string;
+  conversation_id?: string;
+  request_id?: string;
+  origin_surface?: "floating_web_chat" | "api";
+  origin_page?: string;
+}
+
 // Raw MasterChatResponse from grove-py. Surfaced as-is; masterReplyText() picks
-// the human reply by response_type and the FE threads conversation_id forward.
+// only assistant-authored answer.text and the FE threads conversation_id forward.
 export type MasterChatResponseType = "answer" | "preview" | "denied";
 
 export interface MasterChatFacts {
@@ -851,30 +861,35 @@ export interface MasterChatResponse {
   response_type: MasterChatResponseType;
   classification?: string;
   answer?: { text?: string; metadata?: { facts?: MasterChatFacts; [key: string]: unknown } } | null;
-  proposal?: { summary?: string } | null;
+  proposal?: {
+    proposal_id?: string;
+    summary?: string;
+    payload?: {
+      confirmation_id?: string;
+      confirm?: { command?: string; endpoint?: string };
+      [key: string]: unknown;
+    };
+  } | null;
   feedback_route?: string | { id?: string; title?: string } | null;
   operator_gate?: { reason?: string } | null;
   requires_confirmation?: boolean;
   audit_events?: unknown[];
 }
 
-/** User-visible reply text for a master response. Only LLM-authored text is ever
- *  shown: answer.text (any type) or, for a preview, the proposal summary. A denied
- *  response renders ONLY answer.text — operator_gate.reason is a non-LLM rule/gate
- *  string and must never reach the user; absent answer.text returns "" so the
- *  caller treats it as an error/unavailable exchange. */
+/** User-visible reply text for a master response. Only LLM-authored answer.text is
+ *  ever shown. proposal.summary and operator_gate.reason are rule/gate metadata
+ *  and must never reach the user; absent answer.text returns "" so the caller
+ *  treats the exchange as error/unavailable without inventing a reply. */
 export function masterReplyText(res: MasterChatResponse): string {
-  const fr = res.feedback_route;
-  const routeTitle = typeof fr === "string" ? fr : (fr?.title ?? "");
   switch (res.response_type) {
     case "answer":
       return res.answer?.text ?? "";
     case "preview":
-      return res.proposal?.summary ?? routeTitle;
+      return res.answer?.text ?? "";
     case "denied":
       return res.answer?.text ?? "";
     default:
-      return res.answer?.text ?? res.proposal?.summary ?? "";
+      return res.answer?.text ?? "";
   }
 }
 
@@ -882,22 +897,40 @@ export function masterReplyFacts(res: MasterChatResponse): MasterChatFacts | und
   return res.response_type === "answer" ? res.answer?.metadata?.facts : undefined;
 }
 
+export function masterConfirmationId(res: MasterChatResponse): string | undefined {
+  if (res.response_type !== "preview" || !res.requires_confirmation) return undefined;
+  const direct = res.proposal?.payload?.confirmation_id;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const proposalId = res.proposal?.proposal_id;
+  if (typeof proposalId === "string" && proposalId.startsWith("assistant_")) return proposalId;
+  const command = res.proposal?.payload?.confirm?.command;
+  const match = typeof command === "string" ? /^confirm\s+(\S+)$/i.exec(command.trim()) : null;
+  return match?.[1];
+}
+
 const TOKEN = window.__GROVE_SESSION_TOKEN__ ?? "";
 export const AUTH_REQUIRED = window.__GROVE_AUTH_REQUIRED__ ?? false;
 const SESSION_HEADER = "X-Grove-Session-Token";
 const PROJECT_HEADER = "X-Grove-Project";
+const CSRF_HEADER = "X-Grove-CSRF";
 
 // The active project (= grove session). All REST calls carry it as a header so
 // the backend scopes org/boards/nodes to the selected project.
 let currentProject = "";
+let csrfToken: string | null = null;
 export function setProject(name: string): void {
   currentProject = name;
+}
+
+function rememberCsrf(payload: { csrf?: string | null }): void {
+  if (typeof payload.csrf === "string" && payload.csrf) csrfToken = payload.csrf;
 }
 
 function headers(extra?: Record<string, string>): Record<string, string> {
   const base: Record<string, string> = {};
   if (TOKEN) base[SESSION_HEADER] = TOKEN;
   if (currentProject) base[PROJECT_HEADER] = currentProject;
+  if (csrfToken) base[CSRF_HEADER] = csrfToken;
   return { ...base, ...(extra ?? {}) };
 }
 
@@ -1061,7 +1094,11 @@ export const api = {
   getStatus: (detail = false) => getJSON<StatusSummary>(`/api/status${detail ? "?detail=1" : ""}`),
 
   // Current viewer's identity/role (member null in local-token mode = operator).
-  getMe: () => getJSON<MeInfo>("/api/me"),
+  async getMe(): Promise<MeInfo> {
+    const me = await getJSON<MeInfo>("/api/me");
+    rememberCsrf(me);
+    return me;
+  },
 
   getGuiFeatures: () => getJSON<GuiFeatures>("/api/gui-features"),
 
@@ -1343,7 +1380,9 @@ export const api = {
       body: JSON.stringify({ code, name }),
     });
     if (!res.ok) throw new Error(`/api/join: HTTP ${res.status}`);
-    return (await res.json()) as JoinResult;
+    const payload = (await res.json()) as JoinResult;
+    rememberCsrf(payload);
+    return payload;
   },
 
   // Slack integration. The manifest is a file download, so this returns the raw
@@ -1412,6 +1451,30 @@ export const api = {
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`/api/master/chat: HTTP ${res.status}`);
+    return (await res.json()) as MasterChatResponse;
+  },
+
+  async confirmMasterChat(
+    confirmationId: string,
+    idempotencyKey: string,
+    conversationId?: string,
+    requestId?: string,
+  ): Promise<MasterChatResponse> {
+    const body: MasterChatConfirmBody = {
+      confirmation_id: confirmationId,
+      idempotency_key: idempotencyKey,
+      request_id: requestId,
+      origin_surface: "floating_web_chat",
+      origin_page: window.location.pathname,
+    };
+    if (conversationId) body.conversation_id = conversationId;
+    const res = await fetch("/api/master/chat/confirm", {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`/api/master/chat/confirm: HTTP ${res.status}`);
     return (await res.json()) as MasterChatResponse;
   },
 };

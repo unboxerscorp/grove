@@ -295,36 +295,143 @@ def test_handle_notice_generates_user_visible_text_from_llm(tmp_path: Path) -> N
 def test_handle_turn_guides_action_requests_with_llm_without_internal_terms(
     tmp_path: Path,
 ) -> None:
-    llm = FakeLLMClient("아직 제가 직접 만들 수는 없어요. 보드에서 새 프로젝트를 추가해 주세요.")
+    llm = SequenceLLMClient(
+        json.dumps(
+            {
+                "action_type": "create_project",
+                "target": "alpha",
+                "params": {"title": "Alpha cockpit"},
+            }
+        ),
+        "Alpha 프로젝트 생성을 검토함에 올릴지 확인해 주세요. `confirm assistant_x`",
+    )
     broker = AssistantBroker(llm_client=llm)
 
     response = broker.handle_turn(
-        "새 프로젝트 만들어줘",
+        "Alpha 프로젝트 만들어줘",
         _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
     )
 
-    assert response.response_type == "answer"
+    assert response.response_type == "preview"
     assert response.classification.kind == "workflow_setup"
     assert response.answer is not None
     assert response.answer.text == (
-        "아직 제가 직접 만들 수는 없어요. 보드에서 새 프로젝트를 추가해 주세요."
+        "Alpha 프로젝트 생성을 검토함에 올릴지 확인해 주세요. `confirm assistant_x`"
     )
-    assert response.proposal is None
-    assert response.requires_confirmation is False
+    assert response.proposal is not None
+    assert response.requires_confirmation is True
     assert response.operator_gate is None
-    assert len(llm.calls) == 1
-    system_prompt = llm.calls[0]["system_prompt"]
-    assert "directly execute" in system_prompt
+    assert len(llm.calls) == 2
+    system_prompt = llm.calls[1]["system_prompt"]
+    assert "proposed action" in system_prompt
     assert "implementation terms" in system_prompt
     assert "PR1" not in response.answer.text
     assert "PR3" not in response.answer.text
     assert "handoff" not in response.answer.text.lower()
 
 
+def test_handle_turn_action_previews_spec_and_confirm_records_decision(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    llm = SequenceLLMClient(
+        json.dumps(
+            {
+                "action_type": "create_project",
+                "target": "alpha",
+                "params": {"title": "Alpha cockpit"},
+            }
+        ),
+        "Alpha 프로젝트를 만들 준비가 됐어요. 확인하면 MASTER 검토함에 올릴게요.",
+        "Alpha 프로젝트 생성 요청을 MASTER 검토함에 올렸어요.",
+    )
+    broker = AssistantBroker(llm_client=llm)
+    context = _context(store=store, workspace_path=tmp_path)
+
+    response = broker.handle_turn("Alpha 프로젝트 만들어줘", context)
+
+    assert response.response_type == "preview"
+    assert response.requires_confirmation is True
+    assert response.answer is not None
+    assert response.answer.text == (
+        "Alpha 프로젝트를 만들 준비가 됐어요. 확인하면 MASTER 검토함에 올릴게요."
+    )
+    assert response.proposal is not None
+    confirmation_id = response.proposal.proposal_id
+    assert confirmation_id.startswith("assistant_")
+    assert response.proposal.payload["confirmation_id"] == confirmation_id
+    action = cast(dict[str, object], response.proposal.payload["assistant_action"])
+    assert action["action_type"] == "create_project"
+    assert action["target"] == "alpha"
+    assert store.list_decision_proposals(board="dev10") == []
+
+    confirmed = broker.confirm_action(
+        confirmation_id,
+        context,
+        idempotency_key="confirm-alpha-once",
+    )
+
+    assert confirmed.response_type == "answer"
+    assert confirmed.answer is not None
+    assert confirmed.answer.text == "Alpha 프로젝트 생성 요청을 MASTER 검토함에 올렸어요."
+    proposals = store.list_decision_proposals(board="dev10")
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.status == "pending"
+    assert proposal.proposer == "codex"
+    assert proposal.target_assignee is None
+    metadata = proposal.metadata
+    assert metadata["source"] == "assistant"
+    assert metadata["confirmation_id"] == confirmation_id
+    assert metadata["idempotency_key_hash"]
+    assert metadata["master_inbox"] == {"target": "MASTER", "trigger": "manual_review"}
+    assert metadata["assistant_action"] == action
+    assert store.list_tasks(board="dev10") == []
+
+
+def test_handle_turn_action_rejects_hallucinated_node_with_llm_text(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="dev10", title="Wire API", body=None, assignee=None)
+    llm = SequenceLLMClient(
+        json.dumps(
+            {
+                "action_type": "assign_task",
+                "target": task.id,
+                "params": {"assignee": "ghost-node"},
+            }
+        ),
+        "그 노드는 현재 프로젝트에 없어 배정 요청을 올리지 않았어요.",
+    )
+    broker = AssistantBroker(llm_client=llm)
+
+    response = broker.handle_turn(
+        f"{task.id}를 ghost-node에게 배정해줘",
+        _context(store=store, workspace_path=tmp_path),
+    )
+
+    assert response.response_type == "denied"
+    assert response.answer is not None
+    assert response.answer.text == "그 노드는 현재 프로젝트에 없어 배정 요청을 올리지 않았어요."
+    assert response.proposal is None
+    assert response.requires_confirmation is False
+    assert store.list_decision_proposals(board="dev10") == []
+    assert len(llm.calls) == 2
+    assert "decision-json" in llm.calls[1]["user_prompt"]
+
+
 def test_handle_turn_fails_closed_when_internal_terms_survive_rewrite(
     tmp_path: Path,
 ) -> None:
     llm = SequenceLLMClient(
+        json.dumps(
+            {
+                "action_type": "create_project",
+                "target": "alpha",
+                "params": {"title": "Alpha cockpit"},
+            }
+        ),
         "PR1 cannot do action handoff yet.",
         "PR3 routing still cannot do it.",
     )
@@ -336,8 +443,8 @@ def test_handle_turn_fails_closed_when_internal_terms_survive_rewrite(
             _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
         )
 
-    assert len(llm.calls) == 2
-    assert "rewrite-required" in llm.calls[1]["user_prompt"]
+    assert len(llm.calls) == 3
+    assert "rewrite-required" in llm.calls[2]["user_prompt"]
 
 
 def test_build_assistant_facts_includes_top_in_flight_health_and_recent_commits(

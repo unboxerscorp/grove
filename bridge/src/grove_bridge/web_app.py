@@ -496,6 +496,22 @@ class MasterChatPayload(BaseModel):
         return value
 
 
+class MasterChatConfirmPayload(BaseModel):
+    confirmation_id: str = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    conversation_id: str | None = Field(default=None, max_length=200)
+    request_id: str | None = Field(default=None, max_length=200)
+    origin_surface: str = Field(default="floating_web_chat", max_length=50)
+    origin_page: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("origin_surface")
+    @classmethod
+    def _validate_origin_surface(cls, value: str) -> str:
+        if value not in {"floating_web_chat", "api"}:
+            raise ValueError("origin_surface must be floating_web_chat or api")
+        return value
+
+
 class AutoPickupTogglePayload(BaseModel):
     enabled: bool
 
@@ -1390,6 +1406,23 @@ def create_app(
         )
         project = resolve_project(request)
         return _handle_master_chat_request(
+            request,
+            payload,
+            auth=auth,
+            project=project,
+        )
+
+    @app.post("/api/master/chat/confirm", response_model=None)
+    def master_chat_confirm_endpoint(
+        request: Request,
+        payload: MasterChatConfirmPayload,
+    ) -> dict[str, object] | Response:
+        auth = _require_operator_state_change(
+            request,
+            detail="master chat requires operator role",
+        )
+        project = resolve_project(request)
+        return _handle_master_chat_confirm_request(
             request,
             payload,
             auth=auth,
@@ -5807,6 +5840,62 @@ def _handle_master_chat_request(
         raise HTTPException(status_code=400, detail=_safe_public_text(exc)) from exc
     except Exception as exc:
         LOGGER.warning("event=master_chat_error error=%s", _safe_log_text(exc))
+        raise HTTPException(status_code=500, detail="master chat failed") from exc
+    _record_master_audit_events(
+        _store(request),
+        response,
+        auth=auth,
+        project=project,
+    )
+    rendered = _jsonable(response)
+    if not isinstance(rendered, dict):
+        raise HTTPException(status_code=503, detail="master chat returned invalid response")
+    return rendered
+
+
+def _handle_master_chat_confirm_request(
+    request: Request,
+    payload: MasterChatConfirmPayload,
+    *,
+    auth: AuthContext,
+    project: ProjectContext,
+) -> dict[str, object] | Response:
+    context = _assistant_context(
+        MasterChatPayload(
+            message=f"confirm {payload.confirmation_id}",
+            conversation_id=payload.conversation_id,
+            request_id=payload.request_id,
+            origin_surface=payload.origin_surface,
+            origin_page=payload.origin_page,
+        ),
+        auth=auth,
+        project=project,
+        store=_store(request),
+    )
+    try:
+        response = _assistant_broker(request).confirm_action(
+            payload.confirmation_id,
+            context,
+            idempotency_key=payload.idempotency_key,
+        )
+    except AssistantContentBlocked as exc:
+        LOGGER.warning("event=master_chat_confirm_content_blocked error=%s", _safe_log_text(exc))
+        return Response(status_code=204)
+    except AssistantTransportError as exc:
+        LOGGER.warning(
+            "event=master_chat_confirm_transport_unavailable error=%s",
+            _safe_log_text(exc),
+        )
+        raise HTTPException(status_code=503, detail="master chat is unavailable") from exc
+    except AssistantUnavailable as exc:
+        LOGGER.warning("event=master_chat_confirm_content_blocked error=%s", _safe_log_text(exc))
+        return Response(status_code=204)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=_safe_public_text(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="assistant confirmation not found") from exc
+    except Exception as exc:
+        LOGGER.warning("event=master_chat_confirm_error error=%s", _safe_log_text(exc))
         raise HTTPException(status_code=500, detail="master chat failed") from exc
     _record_master_audit_events(
         _store(request),

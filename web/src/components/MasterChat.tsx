@@ -21,7 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useI18n } from "../i18n";
 import type { Lang } from "../i18n";
-import { api, masterReplyFacts, masterReplyText } from "../api";
+import { api, masterConfirmationId, masterReplyFacts, masterReplyText } from "../api";
 import type { MasterChatFacts, MasterChatMessage } from "../api";
 
 // ── types ─────────────────────────────────────────────────────────────────────
@@ -35,6 +35,8 @@ interface ChatMessage {
   ts: number; // epoch ms
   status: ChatStatus;
   facts?: MasterChatFacts;
+  confirmationId?: string;
+  confirmationState?: "pending" | "confirmed";
 }
 
 type Upsert = (m: ChatMessage) => void;
@@ -143,19 +145,37 @@ function MessageBubble({
   lang,
   t,
   onRetry,
+  onConfirm,
+  confirmingId,
 }: {
   msg: ChatMessage;
   lang: Lang;
   t: (k: string) => string;
   onRetry: (m: ChatMessage) => void;
+  onConfirm: (m: ChatMessage) => void;
+  confirmingId: string | null;
 }) {
   const isUser = msg.role === "user";
   const empty = msg.text.length === 0;
+  const canConfirm = !isUser && msg.confirmationId && msg.confirmationState !== "confirmed";
   return (
     <div className={`dr-mchat__row dr-mchat__row--${isUser ? "user" : "master"}`} data-role={msg.role} data-status={msg.status}>
       <div className="dr-mchat__bubble">
         {empty && msg.status === "pending" ? <TypingDots /> : msg.text}
       </div>
+      {canConfirm && (
+        <div className="dr-mchat__actions">
+          <button
+            type="button"
+            className="dr-mchat__confirm"
+            disabled={confirmingId !== null}
+            aria-busy={confirmingId === msg.id}
+            onClick={() => onConfirm(msg)}
+          >
+            {t("mchat.confirm")}
+          </button>
+        </div>
+      )}
       {!isUser && <MasterFacts facts={msg.facts} />}
       <div className={`dr-mchat__meta${msg.status === "error" ? " dr-mchat__meta--error" : ""}`}>
         <span>{isUser ? t("mchat.you") : t("mchat.master")}</span>
@@ -186,6 +206,7 @@ export function MasterChat(props: { openSignal?: number } = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [unread, setUnread] = useState(0);
 
   const mounted = useRef(true);
@@ -294,6 +315,7 @@ export function MasterChat(props: { openSignal?: number } = {}) {
           conversationId.current = res.conversation_id || conversationId.current;
           const replyText = masterReplyText(res);
           if (replyText) {
+            const confirmationId = masterConfirmationId(res);
             upsert({ id: clientId, role: "user", text: trimmed, ts, status: "sent" });
             upsert({
               id: res.request_id ? `m-${res.request_id}` : genId("m"),
@@ -302,6 +324,8 @@ export function MasterChat(props: { openSignal?: number } = {}) {
               ts: Date.now(),
               status: "sent",
               facts: masterReplyFacts(res),
+              confirmationId,
+              confirmationState: confirmationId ? "pending" : undefined,
             });
           } else {
             // The response carried no user-visible LLM text (e.g. a denied/gate
@@ -320,6 +344,42 @@ export function MasterChat(props: { openSignal?: number } = {}) {
         .finally(() => mounted.current && setBusy(false));
     },
     [upsert],
+  );
+
+  const doConfirm = useCallback(
+    (m: ChatMessage) => {
+      const confirmationId = m.confirmationId;
+      if (!confirmationId || m.confirmationState === "confirmed" || confirmingId !== null) return;
+      const requestId = genId("c");
+      const idempotencyKey = `web:${m.id}:${confirmationId}`;
+      setConfirmingId(m.id);
+      api
+        .confirmMasterChat(confirmationId, idempotencyKey, conversationId.current, requestId)
+        .then((res) => {
+          if (!mounted.current) return;
+          conversationId.current = res.conversation_id || conversationId.current;
+          setMessages((prev) =>
+            prev.map((msg) => (msg.id === m.id ? { ...msg, confirmationState: "confirmed" } : msg)),
+          );
+          const replyText = masterReplyText(res);
+          if (replyText) {
+            upsert({
+              id: res.request_id ? `m-${res.request_id}` : genId("m"),
+              role: "master",
+              text: replyText,
+              ts: Date.now(),
+              status: "sent",
+              facts: masterReplyFacts(res),
+            });
+          }
+        })
+        .catch(() => {
+          // No FE-authored failure notice: the assistant backend owns any visible
+          // text. Leave the preview confirmable so the operator can retry.
+        })
+        .finally(() => mounted.current && setConfirmingId(null));
+    },
+    [confirmingId, upsert],
   );
 
   const onSubmit = useCallback(() => {
@@ -377,7 +437,15 @@ export function MasterChat(props: { openSignal?: number } = {}) {
           <div className="dr-mchat__list">
             {empty && <p className="dr-mchat__empty">{t("mchat.empty")}</p>}
             {messages.map((m) => (
-              <MessageBubble key={m.id} msg={m} lang={lang} t={t} onRetry={onRetry} />
+              <MessageBubble
+                key={m.id}
+                msg={m}
+                lang={lang}
+                t={t}
+                onRetry={onRetry}
+                onConfirm={doConfirm}
+                confirmingId={confirmingId}
+              />
             ))}
             {busy && (
               <div className="dr-mchat__row dr-mchat__row--master">

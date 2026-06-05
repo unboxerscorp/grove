@@ -1842,7 +1842,11 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const lower = message.toLowerCase();
       let response_type: "answer" | "preview" | "denied" = "answer";
       let answer: { text: string; metadata?: Record<string, unknown> } | null = null;
-      let proposal: { summary: string } | null = null;
+      let proposal: {
+        proposal_id: string;
+        summary: string;
+        payload: { confirmation_id: string; confirm: { command: string; endpoint: string } };
+      } | null = null;
       let operator_gate: { reason: string } | null = null;
       let requires_confirmation = false;
       let classification = "question";
@@ -1858,7 +1862,21 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       } else if (/\b(add|create|build|make|implement|task|fix)\b/.test(lower)) {
         response_type = "preview";
         classification = "task";
-        proposal = { summary: `proposed: ${message.slice(0, 60)} — review and confirm to proceed. (mock)` };
+        const confirmationId = `assistant_mock_${masterSeq}`;
+        answer = {
+          text: `I'll prepare that handoff for MASTER review. Use the confirmation control to record it in the decision ledger. (mock-llm)`,
+        };
+        proposal = {
+          proposal_id: confirmationId,
+          summary: `proposed: ${message.slice(0, 60)} — review and confirm to proceed. (mock)`,
+          payload: {
+            confirmation_id: confirmationId,
+            confirm: {
+              command: `confirm ${confirmationId}`,
+              endpoint: "/api/master/chat/confirm",
+            },
+          },
+        };
         requires_confirmation = true;
       } else {
         answer = {
@@ -1904,6 +1922,38 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         }),
       );
     }
+  }
+
+  if (p === "/api/master/chat/confirm") {
+    const reject = (status: number, detail: string) =>
+      Promise.resolve(new Response(JSON.stringify({ detail }), { status }));
+    if (!masterChatEnabled) return reject(503, "master chat is not available yet");
+    if (method !== "POST") return reject(405, "method not allowed");
+    if (viewerMode) return reject(403, "master chat requires operator role");
+    const body = (init?.body ? JSON.parse(init.body as string) : {}) as {
+      confirmation_id?: string;
+      conversation_id?: string;
+      request_id?: string;
+    };
+    masterSeq += 1;
+    const conversationId = body.conversation_id || `conv-${masterSeq}`;
+    const requestId = body.request_id || `confirm-${masterSeq}`;
+    return Promise.resolve(
+      json({
+        conversation_id: conversationId,
+        request_id: requestId,
+        response_type: "answer",
+        classification: "command",
+        answer: {
+          text: `Recorded ${body.confirmation_id || "the request"} in MASTER's decision ledger for review. (mock-llm)`,
+        },
+        proposal: null,
+        feedback_route: "general",
+        operator_gate: null,
+        requires_confirmation: false,
+        audit_events: [],
+      }),
+    );
   }
 
   if (p === "/api/execution") {

@@ -46,6 +46,21 @@ class FakeAssistantLLMClient:
         return self.text
 
 
+class SequenceAssistantLLMClient:
+    def __init__(self, *texts: str) -> None:
+        self.texts = list(texts)
+        self.calls: list[dict[str, str]] = []
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append({"system_prompt": system_prompt, "user_prompt": user_prompt})
+        if self.texts:
+            text = self.texts.pop(0)
+            if "{confirmation_id}" in text:
+                text = text.replace("{confirmation_id}", _confirmation_id_from_prompt(user_prompt))
+            return text
+        return ""
+
+
 class UnavailableAssistantLLMClient:
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         _ = (system_prompt, user_prompt)
@@ -82,6 +97,13 @@ def payload_contains_number(value: object, needle: int | float) -> bool:
     if isinstance(value, list):
         return any(payload_contains_number(item, needle) for item in value)
     return False
+
+
+def _confirmation_id_from_prompt(prompt: str) -> str:
+    marker = '"confirmation_id": "'
+    if marker not in prompt:
+        return "assistant_missing"
+    return prompt.split(marker, 1)[1].split('"', 1)[0]
 
 
 def test_index_injects_session_token_and_serves_dist_assets(tmp_path: Path) -> None:
@@ -1917,6 +1939,139 @@ def test_master_chat_guides_feedback_actions_with_llm_text(tmp_path: Path) -> No
     assert "PR1" not in rendered
     assert "PR3" not in rendered
     assert "handoff" not in rendered.lower()
+
+
+def test_master_chat_action_preview_confirm_records_decision_only(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    llm = SequenceAssistantLLMClient(
+        json.dumps(
+            {
+                "action_type": "create_project",
+                "target": "alpha",
+                "params": {"title": "Alpha cockpit"},
+            }
+        ),
+        "Alpha 프로젝트 생성을 MASTER 검토함에 올릴까요? `confirm {confirmation_id}`",
+        "Alpha 프로젝트 생성 요청을 MASTER 검토함에 기록했어요.",
+        "Alpha 프로젝트 생성 요청은 이미 MASTER 검토함에 기록되어 있어요.",
+    )
+    client = make_client(tmp_path, store, assistant_client=llm)
+    headers = auth_headers(client)
+
+    preview = client.post(
+        "/api/master/chat",
+        headers=headers,
+        json={
+            "message": "Alpha 프로젝트 만들어줘",
+            "conversation_id": "conv-pr3",
+            "request_id": "req-pr3",
+        },
+    )
+    preview_payload = preview.json()
+    confirmation_id = preview_payload["proposal"]["proposal_id"]
+    assert store.list_decision_proposals(board="dev10") == []
+    missing_auth = client.post(
+        "/api/master/chat/confirm",
+        json={
+            "confirmation_id": confirmation_id,
+            "idempotency_key": "confirm-alpha-once",
+            "conversation_id": "conv-pr3",
+        },
+    )
+    confirmed = client.post(
+        "/api/master/chat/confirm",
+        headers=headers,
+        json={
+            "confirmation_id": confirmation_id,
+            "idempotency_key": "confirm-alpha-once",
+            "conversation_id": "conv-pr3",
+            "request_id": "req-confirm",
+        },
+    )
+    retry = client.post(
+        "/api/master/chat/confirm",
+        headers=headers,
+        json={
+            "confirmation_id": confirmation_id,
+            "idempotency_key": "confirm-alpha-once",
+            "conversation_id": "conv-pr3",
+            "request_id": "req-confirm-retry",
+        },
+    )
+
+    assert preview.status_code == 200
+    assert preview_payload["response_type"] == "preview"
+    assert preview_payload["requires_confirmation"] is True
+    assert preview_payload["answer"]["text"] == (
+        f"Alpha 프로젝트 생성을 MASTER 검토함에 올릴까요? `confirm {confirmation_id}`"
+    )
+    assert confirmation_id.startswith("assistant_")
+    assert preview_payload["proposal"]["payload"]["assistant_action"]["action_type"] == (
+        "create_project"
+    )
+    assert missing_auth.status_code == 401
+    assert confirmed.status_code == 200
+    confirmed_payload = confirmed.json()
+    assert confirmed_payload["response_type"] == "answer"
+    assert confirmed_payload["answer"]["text"] == (
+        "Alpha 프로젝트 생성 요청을 MASTER 검토함에 기록했어요."
+    )
+    assert confirmed_payload["answer"]["metadata"]["decision"]["status"] == "pending"
+    proposals = store.list_decision_proposals(board="dev10")
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.status == "pending"
+    assert proposal.metadata["confirmation_id"] == confirmation_id
+    assistant_action = cast(dict[str, object], proposal.metadata["assistant_action"])
+    assert assistant_action["action_type"] == "create_project"
+    assert store.list_tasks(board="dev10") == []
+    assert retry.status_code == 200
+    assert retry.json()["answer"]["metadata"]["decision"]["proposal_id"] == proposal.id
+    assert len(store.list_decision_proposals(board="dev10")) == 1
+
+
+def test_master_chat_action_confirm_requires_team_csrf(tmp_path: Path) -> None:
+    write_team_member(tmp_path, secret="operator-secret", role="operator")
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    llm = SequenceAssistantLLMClient(
+        json.dumps(
+            {
+                "action_type": "create_project",
+                "target": "alpha",
+                "params": {"title": "Alpha cockpit"},
+            }
+        ),
+        "Alpha 프로젝트 생성을 MASTER 검토함에 올릴까요? `confirm {confirmation_id}`",
+    )
+    client = make_client(
+        tmp_path,
+        store,
+        auth_mode=AuthMode.TEAM_COOKIE,
+        assistant_client=llm,
+    )
+    login = client.post("/api/login", json={"name": "alice", "secret": "operator-secret"})
+    headers = {CSRF_HEADER: str(login.json()["csrf"])}
+    preview = client.post(
+        "/api/master/chat",
+        headers=headers,
+        json={"message": "Alpha 프로젝트 만들어줘"},
+    )
+    confirmation_id = preview.json()["proposal"]["proposal_id"]
+
+    missing_csrf = client.post(
+        "/api/master/chat/confirm",
+        json={
+            "confirmation_id": confirmation_id,
+            "idempotency_key": "confirm-alpha-once",
+        },
+    )
+
+    assert login.status_code == 200
+    assert preview.status_code == 200
+    assert missing_csrf.status_code == 403
+    assert store.list_decision_proposals(board="dev10") == []
 
 
 def test_master_chat_team_operator_requires_csrf_and_succeeds(tmp_path: Path) -> None:

@@ -149,6 +149,14 @@ class SocketResponseFactory(Protocol):
 class AssistantBrokerProtocol(Protocol):
     def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse: ...
 
+    def confirm_action(
+        self,
+        confirmation_id: str,
+        context: AssistantContext,
+        *,
+        idempotency_key: str,
+    ) -> MasterChatResponse: ...
+
     def handle_notice(
         self,
         message: str,
@@ -1385,6 +1393,14 @@ class SlackConnector:
                 thread_ts=thread_ts,
             )
             return
+        if _is_assistant_confirmation_id(parts[1]):
+            self._handle_assistant_confirm(
+                event,
+                actor=actor,
+                thread_ts=thread_ts,
+                confirmation_id=parts[1],
+            )
+            return
         if self.confirmations is None:
             self._post_assistant_notice(
                 event,
@@ -1420,6 +1436,90 @@ class SlackConnector:
             response_type=_slack_notice_response_type_from_result(result),
             thread_ts=thread_ts,
         )
+
+    def _handle_assistant_confirm(
+        self,
+        event: SlackEvent,
+        *,
+        actor: SlackCommandMember,
+        thread_ts: str,
+        confirmation_id: str,
+    ) -> None:
+        context = self._assistant_context(event, thread_ts=thread_ts)
+        idempotency_key = _slack_assistant_confirm_idempotency_key(
+            event,
+            confirmation_id=confirmation_id,
+        )
+        try:
+            response = self.assistant_broker.confirm_action(
+                confirmation_id,
+                context,
+                idempotency_key=idempotency_key,
+            )
+        except AssistantContentBlocked as exc:
+            LOGGER.warning("Slack assistant confirm hidden: %s", _safe_log_error(exc))
+            self._audit_slack_command(
+                command="assistant_confirm",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="failed",
+                summary="content_blocked",
+            )
+            return
+        except AssistantTransportError as exc:
+            LOGGER.warning("Slack assistant confirm transport failed: %s", _safe_log_error(exc))
+            text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
+            status = "unavailable"
+        except AssistantUnavailable as exc:
+            LOGGER.warning("Slack assistant confirm hidden: %s", _safe_log_error(exc))
+            self._audit_slack_command(
+                command="assistant_confirm",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="failed",
+                summary="unavailable_non_transport",
+            )
+            return
+        except Exception as exc:
+            LOGGER.warning("Slack assistant confirm failed: %s", _safe_log_error(exc))
+            self._audit_slack_command(
+                command="assistant_confirm",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="failed",
+                summary="broker_exception",
+            )
+            return
+        else:
+            try:
+                text = _assistant_response_text(response)
+            except AssistantContentBlocked as exc:
+                LOGGER.warning("Slack assistant confirm hidden: %s", _safe_log_error(exc))
+                self._audit_slack_command(
+                    command="assistant_confirm",
+                    event=event,
+                    actor=_slack_member_actor(event.user, actor),
+                    status="failed",
+                    summary="missing_answer_text",
+                )
+                return
+            status = response.response_type
+        self._audit_slack_command(
+            command="assistant_confirm",
+            event=event,
+            actor=_slack_member_actor(event.user, actor),
+            status=status,
+            summary=text,
+            payload={"confirmation_id": _safe_slack_text(confirmation_id)},
+        )
+        try:
+            self.slack_client.post_message(
+                channel=event.channel,
+                text=text,
+                thread_ts=thread_ts,
+            )
+        except Exception as exc:
+            LOGGER.warning("Slack assistant confirm could not be posted: %s", _safe_log_error(exc))
 
     def _preview_command(
         self,
@@ -2489,6 +2589,21 @@ def _explicit_reserved_command_text(text: str) -> bool:
         return True
     first = normalized.split(maxsplit=1)[0].lower() if normalized.split() else ""
     return first in {"status", "approve", "abort", "killswitch", "confirm", "digest"}
+
+
+def _is_assistant_confirmation_id(value: str) -> bool:
+    return value.startswith("assistant_")
+
+
+def _slack_assistant_confirm_idempotency_key(
+    event: SlackEvent,
+    *,
+    confirmation_id: str,
+) -> str:
+    return (
+        f"slack:{_safe_slack_text(event.team)}:{_safe_slack_text(event.channel)}:"
+        f"{_safe_slack_text(event.ts)}:{_safe_slack_text(confirmation_id)}"
+    )
 
 
 def _slack_assistant_conversation_id(event: SlackEvent, *, thread_ts: str) -> str:

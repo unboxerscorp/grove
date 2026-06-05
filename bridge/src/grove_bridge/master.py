@@ -60,6 +60,7 @@ ACTION_KEYWORDS = (
     "라우팅",
     "위임",
     "맡겨",
+    "배정",
     "create",
     "spawn",
     "add",

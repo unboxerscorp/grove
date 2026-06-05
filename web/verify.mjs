@@ -3170,13 +3170,13 @@ async function main() {
       };
     });
 
-    // preview path: an "add …" message -> proposal summary master bubble.
+    // preview path: an "add …" message -> LLM-authored preview plus a confirm control.
     await mpage.type(".dr-mchat__input", "add a login page");
     await mpage.keyboard.press("Enter");
     await mpage.waitForFunction(
       () =>
         Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble')).some((b) =>
-          /proposed:|review and confirm/.test(b.textContent ?? ""),
+          /handoff for MASTER|decision ledger/.test(b.textContent ?? ""),
         ),
       { timeout: 5000 },
     );
@@ -3186,20 +3186,41 @@ async function main() {
       ).map((b) => b.textContent ?? "");
       return {
         masterBubbles: masters.length,
-        hasProposal: masters.some((t) => /proposed:|review and confirm/.test(t)),
+        hasPreviewText: masters.some((t) => /handoff for MASTER|decision ledger/.test(t)),
+        hasConfirm: !!document.querySelector(".dr-mchat__confirm"),
+      };
+    });
+    await mpage.click(".dr-mchat__confirm");
+    await mpage.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble')).some((b) =>
+          /Recorded assistant_mock_/.test(b.textContent ?? ""),
+        ),
+      { timeout: 5000 },
+    );
+    const mchatConfirm = await mpage.evaluate(() => {
+      const masters = Array.from(
+        document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble'),
+      ).map((b) => b.textContent ?? "");
+      return {
+        masterBubbles: masters.length,
+        confirmed: masters.some((t) => /Recorded assistant_mock_/.test(t)),
+        confirmHidden: !document.querySelector(".dr-mchat__confirm"),
       };
     });
 
     // denied path: a deploy/destructive message -> the LLM-authored answer.text is
     // shown; the non-LLM operator_gate.reason must NOT be exposed to the user.
+    const deniedBeforeCount = mchatConfirm.masterBubbles;
     await mpage.type(".dr-mchat__input", "deploy to prod");
     await mpage.keyboard.press("Enter");
     await mpage.waitForFunction(
-      () =>
-        Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble')).some((b) =>
-          /mock-llm/.test(b.textContent ?? ""),
-        ),
+      (count) =>
+        Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble'))
+          .slice(count)
+          .some((b) => /production\/destructive|can't run it from chat/.test(b.textContent ?? "")),
       { timeout: 5000 },
+      deniedBeforeCount,
     );
     const mchatDenied = await mpage.evaluate(() => {
       const masters = Array.from(
@@ -3214,15 +3235,17 @@ async function main() {
     // transport fallback: the unified backend returns its one-line assistant
     // fallback as a NORMAL 200 answer (answer.text) — rendered like any reply, not
     // a FE-authored notice.
+    const fallbackBeforeCount = await mpage.$$eval('.dr-mchat__row[data-role="master"] .dr-mchat__bubble', (nodes) => nodes.length);
     await mpage.evaluate(() => window.__MOCK__.setMasterTransportBusy(true));
     await mpage.type(".dr-mchat__input", "status while busy");
     await mpage.keyboard.press("Enter");
     await mpage.waitForFunction(
-      () =>
-        Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble')).some((b) =>
-          /잠시 뒤 다시 시도/.test(b.textContent ?? ""),
-        ),
+      (count) =>
+        Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble'))
+          .slice(count)
+          .some((b) => /잠시 뒤 다시 시도/.test(b.textContent ?? "")),
       { timeout: 5000 },
+      fallbackBeforeCount,
     );
     const mchatFallback = await mpage.evaluate(() => ({
       shownAsAnswer: Array.from(
@@ -3299,6 +3322,7 @@ async function main() {
         hasFacts: /reviewers\s+2/.test(mchatAnswer.factText) && /ask-human\s+1/.test(mchatAnswer.factText),
       },
       preview: mchatPreview,
+      confirm: mchatConfirm,
       denied: mchatDenied,
       fallback: mchatFallback,
       hard503: mchat503,
@@ -3316,7 +3340,10 @@ async function main() {
       mchat.answer.userSent &&
       mchat.answer.hasAnswer &&
       mchat.answer.hasFacts &&
-      mchat.preview.hasProposal &&
+      mchat.preview.hasPreviewText &&
+      mchat.preview.hasConfirm &&
+      mchat.confirm.confirmed &&
+      mchat.confirm.confirmHidden &&
       mchat.denied.llmShown &&
       mchat.denied.gateHidden &&
       mchat.fallback.shownAsAnswer &&

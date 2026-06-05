@@ -5562,6 +5562,26 @@ button {
 .dr-mchat__row--master .dr-mchat__bubble {
   background: var(--raise); border: 1px solid var(--line); border-bottom-left-radius: 4px;
 }
+.dr-mchat__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.dr-mchat__confirm {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid rgba(240, 184, 96, 0.45);
+  border-radius: 7px;
+  background: rgba(240, 184, 96, 0.12);
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dr-mchat__confirm:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 .dr-mchat__facts {
   display: flex;
   flex-wrap: wrap;

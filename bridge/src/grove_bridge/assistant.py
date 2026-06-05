@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
@@ -16,6 +17,7 @@ from typing import Literal, Protocol, cast
 
 from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.master import (
+    MasterActionProposal,
     MasterAnswer,
     MasterAuditEvent,
     MasterChatResponse,
@@ -75,6 +77,7 @@ ACTION_HANDOFF_TERMS = (
     "라우팅",
     "위임",
     "맡겨",
+    "배정",
     "배포",
     "실행",
     "create",
@@ -96,6 +99,7 @@ INTERNAL_IMPLEMENTATION_TERM_RE = re.compile(
 )
 
 AssistantSurface = Literal["floating_web_chat", "slack", "api"]
+AssistantActionType = Literal["create_project", "spawn_node", "assign_task", "delegate_task"]
 
 
 class AssistantUnavailable(RuntimeError):
@@ -167,6 +171,28 @@ class AssistantContext:
     store: SQLiteBoardStore
     workspace_path: Path | None = None
     grove_home: Path | None = None
+
+
+@dataclass(frozen=True)
+class AssistantActionSpec:
+    action_type: AssistantActionType
+    target: str
+    params: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class AssistantPendingAction:
+    confirmation_id: str
+    conversation_id: str
+    board: str
+    selected_project: str
+    actor_id: str
+    message: str
+    classification: MasterClassification
+    spec: AssistantActionSpec
+    proposal: MasterActionProposal
+    facts: Mapping[str, object]
+    ledger_by_key: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -330,6 +356,8 @@ class AssistantBroker:
             raise ValueError("max_fact_bytes must be positive")
         self._llm_client = llm_client or create_default_assistant_client()
         self._max_fact_bytes = max_fact_bytes
+        self._pending_actions: dict[str, AssistantPendingAction] = {}
+        self._pending_lock = threading.Lock()
 
     def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse:
         redacted_message = _safe_public_text(message)
@@ -359,28 +387,144 @@ class AssistantBroker:
                 audit_events=(received_event,),
             )
 
-        action_guidance = _is_action_handoff_request(redacted_message, classification)
-        decision: Mapping[str, object] | None = (
-            {
-                "decision": "cannot_execute_yet",
-                "reason": (
-                    "The assistant must not directly execute, create, assign, route, spawn, "
-                    "deploy, or mutate work in this turn."
-                ),
-                "execution": "not_performed",
-            }
-            if action_guidance
-            else None
-        )
+        if _is_action_handoff_request(redacted_message, classification):
+            return self._action_preview_response(
+                context,
+                message=redacted_message,
+                classification=classification,
+                facts=facts,
+                audit_events=(received_event,),
+            )
         return self._llm_response(
             context,
             message=redacted_message,
             classification=classification,
             facts=facts,
-            mode="action_guidance" if action_guidance else "answer",
-            decision=decision,
+            mode="answer",
+            decision=None,
             response_type="answer",
             audit_events=(received_event,),
+        )
+
+    def confirm_action(
+        self,
+        confirmation_id: str,
+        context: AssistantContext,
+        *,
+        idempotency_key: str,
+    ) -> MasterChatResponse:
+        clean_confirmation_id = _safe_public_text(confirmation_id)
+        clean_key = _safe_public_text(idempotency_key)
+        classification = classify_master_message(f"confirm {clean_confirmation_id}")
+        received_event = _audit_event(
+            context,
+            kind="master.turn.received",
+            target_project=context.scope.selected_project,
+            reason=classification.reason,
+            extra={"classification": classification.kind, "confirm": clean_confirmation_id},
+        )
+        facts = build_assistant_facts(context, max_bytes=self._max_fact_bytes)
+        if not clean_key:
+            return self._llm_response(
+                context,
+                message=f"confirm {clean_confirmation_id}",
+                classification=classification,
+                facts=facts,
+                mode="blocked",
+                decision={
+                    "decision": "deny",
+                    "reason": "idempotency_key_required",
+                    "execution": "not_performed",
+                },
+                response_type="denied",
+                audit_events=(received_event,),
+            )
+        with self._pending_lock:
+            pending = self._pending_actions.get(clean_confirmation_id)
+        if pending is None or pending.board != context.scope.board:
+            return self._llm_response(
+                context,
+                message=f"confirm {clean_confirmation_id}",
+                classification=classification,
+                facts=facts,
+                mode="blocked",
+                decision={
+                    "decision": "deny",
+                    "reason": "assistant_confirmation_not_found",
+                    "execution": "not_performed",
+                },
+                response_type="denied",
+                audit_events=(received_event,),
+            )
+        if not context.actor.is_operator:
+            return self._llm_response(
+                context,
+                message=pending.message,
+                classification=pending.classification,
+                facts=facts,
+                mode="blocked",
+                decision={
+                    "decision": "deny",
+                    "reason": "operator_required_for_action_confirm",
+                    "execution": "not_performed",
+                    "confirmation_id": clean_confirmation_id,
+                },
+                response_type="denied",
+                audit_events=(received_event,),
+            )
+        existing_id = pending.ledger_by_key.get(clean_key)
+        if existing_id is not None:
+            proposal = context.store.get_decision_proposal(
+                board=context.scope.board,
+                proposal_id=existing_id,
+            )
+            return self._confirmed_action_response(
+                context,
+                pending=pending,
+                proposal_id=proposal.id,
+                status=proposal.status,
+                audit_events=(received_event,),
+                idempotency_key=clean_key,
+                reused=True,
+            )
+        if pending.ledger_by_key:
+            return self._llm_response(
+                context,
+                message=pending.message,
+                classification=pending.classification,
+                facts=facts,
+                mode="blocked",
+                decision={
+                    "decision": "deny",
+                    "reason": "assistant_confirmation_already_recorded",
+                    "execution": "not_performed",
+                    "confirmation_id": clean_confirmation_id,
+                },
+                response_type="denied",
+                audit_events=(received_event,),
+            )
+        proposal = context.store.create_decision_proposal(
+            board=context.scope.board,
+            proposer="codex",
+            title=_action_decision_title(pending.spec),
+            body=_action_decision_body(pending),
+            target_assignee=_action_target_assignee(pending.spec),
+            reviewer=_action_reviewer(pending.spec),
+            metadata=_action_decision_metadata(
+                pending,
+                context=context,
+                idempotency_key=clean_key,
+            ),
+        )
+        pending.ledger_by_key[clean_key] = proposal.id
+        return self._confirmed_action_response(
+            context,
+            pending=pending,
+            proposal_id=proposal.id,
+            status=proposal.status,
+            audit_events=(received_event,),
+            idempotency_key=clean_key,
+            reused=False,
         )
 
     def handle_notice(
@@ -423,6 +567,161 @@ class AssistantBroker:
             audit_events=(received_event,),
         )
 
+    def _action_preview_response(
+        self,
+        context: AssistantContext,
+        *,
+        message: str,
+        classification: MasterClassification,
+        facts: Mapping[str, object],
+        audit_events: tuple[MasterAuditEvent, ...],
+    ) -> MasterChatResponse:
+        spec = _complete_action_spec(self._llm_client, message=message, facts=facts)
+        validation = _validate_action_spec(spec, context=context)
+        if validation is not None:
+            return self._llm_response(
+                context,
+                message=message,
+                classification=classification,
+                facts=facts,
+                mode="blocked",
+                decision={
+                    "decision": "deny",
+                    "reason": validation,
+                    "execution": "not_performed",
+                    "assistant_action": _action_spec_json(spec),
+                },
+                response_type="denied",
+                audit_events=audit_events,
+            )
+        if not context.actor.is_operator:
+            return self._llm_response(
+                context,
+                message=message,
+                classification=classification,
+                facts=facts,
+                mode="blocked",
+                decision={
+                    "decision": "deny",
+                    "reason": "operator_required_for_action_preview",
+                    "execution": "not_performed",
+                    "assistant_action": _action_spec_json(spec),
+                },
+                response_type="denied",
+                audit_events=audit_events,
+            )
+        confirmation_id = _action_confirmation_id(context, message=message, spec=spec)
+        action_payload = _action_spec_json(spec)
+        proposal = MasterActionProposal(
+            proposal_id=confirmation_id,
+            intent=classification.intent,
+            summary=_action_decision_title(spec),
+            payload={
+                "confirmation_id": confirmation_id,
+                "assistant_action": action_payload,
+                "execution": "preview_only",
+                "confirm": {
+                    "command": f"confirm {confirmation_id}",
+                    "endpoint": "/api/master/chat/confirm",
+                },
+            },
+            target_project=_action_target_project(spec, context=context),
+            requires_confirmation=True,
+            requires_operator=True,
+            audit_reason="assistant_action_preview",
+        )
+        pending = AssistantPendingAction(
+            confirmation_id=confirmation_id,
+            conversation_id=context.conversation_id,
+            board=context.scope.board,
+            selected_project=context.scope.selected_project,
+            actor_id=context.actor.id,
+            message=message,
+            classification=classification,
+            spec=spec,
+            proposal=proposal,
+            facts=facts,
+        )
+        with self._pending_lock:
+            self._pending_actions[confirmation_id] = pending
+        created_event = _audit_event(
+            context,
+            kind="master.proposal.created",
+            target_project=proposal.target_project,
+            reason=proposal.audit_reason,
+            extra={"confirmation_id": confirmation_id, "assistant_action": action_payload},
+        )
+        preview_event = _audit_event(
+            context,
+            kind="master.preview.created",
+            target_project=proposal.target_project,
+            reason=proposal.audit_reason,
+            extra={"confirmation_id": confirmation_id},
+        )
+        return self._llm_response(
+            context,
+            message=message,
+            classification=classification,
+            facts=facts,
+            mode="action_preview",
+            decision={
+                "decision": "preview",
+                "confirmation_id": confirmation_id,
+                "assistant_action": action_payload,
+                "execution": "not_performed",
+                "confirm": {
+                    "command": f"confirm {confirmation_id}",
+                    "endpoint": "/api/master/chat/confirm",
+                },
+            },
+            response_type="preview",
+            audit_events=(*audit_events, created_event, preview_event),
+            requires_confirmation=True,
+            proposal=proposal,
+        )
+
+    def _confirmed_action_response(
+        self,
+        context: AssistantContext,
+        *,
+        pending: AssistantPendingAction,
+        proposal_id: str,
+        status: str,
+        audit_events: tuple[MasterAuditEvent, ...],
+        idempotency_key: str,
+        reused: bool,
+    ) -> MasterChatResponse:
+        accepted_event = _audit_event(
+            context,
+            kind="master.confirm.accepted",
+            target_project=pending.proposal.target_project,
+            reason="assistant_action_confirmed",
+            extra={
+                "confirmation_id": pending.confirmation_id,
+                "proposal_id": proposal_id,
+                "reused": reused,
+            },
+        )
+        return self._llm_response(
+            context,
+            message=pending.message,
+            classification=pending.classification,
+            facts=pending.facts,
+            mode="notice",
+            decision={
+                "decision": "confirmed",
+                "confirmation_id": pending.confirmation_id,
+                "proposal_id": proposal_id,
+                "status": status,
+                "idempotency_key_hash": _hash_text(idempotency_key),
+                "assistant_action": _action_spec_json(pending.spec),
+                "execution": "ledger_recorded_only",
+                "reused": reused,
+            },
+            response_type="answer",
+            audit_events=(*audit_events, accepted_event),
+        )
+
     def _llm_response(
         self,
         context: AssistantContext,
@@ -435,6 +734,7 @@ class AssistantBroker:
         response_type: MasterChatResponseType,
         audit_events: tuple[MasterAuditEvent, ...],
         requires_confirmation: bool = False,
+        proposal: MasterActionProposal | None = None,
     ) -> MasterChatResponse:
         system_prompt = _assistant_system_prompt(mode=mode)
         user_prompt = _assistant_user_prompt(message=message, facts=facts, decision=decision)
@@ -469,6 +769,11 @@ class AssistantBroker:
                 "facts": facts,
                 "llm": _client_metadata(self._llm_client),
                 "mode": mode,
+                **(
+                    {"decision": _assistant_metadata_decision(decision)}
+                    if decision is not None
+                    else {}
+                ),
             },
         )
         generated_event = _audit_event(
@@ -484,7 +789,7 @@ class AssistantBroker:
             response_type=response_type,
             classification=classification,
             answer=answer,
-            proposal=None,
+            proposal=proposal,
             feedback_route=None,
             operator_gate=None,
             requires_confirmation=requires_confirmation,
@@ -861,9 +1166,29 @@ def _assistant_system_prompt(*, mode: str = "answer") -> str:
             "decision JSON says it already completed. Do not mention gates, classifiers, "
             "implementation details, or internal roadmap terms."
         )
+    if mode == "action_preview":
+        return (
+            f"{base} The assistant has prepared a proposed action but has not executed it. "
+            "Write only a natural confirmation prompt for the user. Preserve the exact "
+            "confirmation id and confirm command from the decision JSON. Do not claim the "
+            "action has already happened."
+        )
     if mode == "answer":
         return base
     return f"{base} Write a concise, natural user-facing response."
+
+
+def _assistant_action_spec_system_prompt() -> str:
+    return (
+        "You convert a grove assistant user request into one compact JSON object only. "
+        "Return no prose and no markdown. Schema: "
+        '{"action_type":"create_project|spawn_node|assign_task|delegate_task",'
+        '"target":"string","params":{...}}. '
+        "Use only facts supplied in the facts JSON. For create_project, target is the new "
+        "project name. For spawn_node, target is the new node name and params.project may "
+        "name the project. For assign_task, target is an existing task id and params.assignee "
+        "is the node. For delegate_task, target is the node and params.task_id is the task id."
+    )
 
 
 def _assistant_user_prompt(
@@ -919,6 +1244,235 @@ def _complete_visible_text(
     raise AssistantContentBlocked("assistant returned internal implementation terms after rewrite")
 
 
+def _complete_action_spec(
+    llm_client: AssistantLLMClient,
+    *,
+    message: str,
+    facts: Mapping[str, object],
+) -> AssistantActionSpec:
+    raw = llm_client.complete(
+        system_prompt=_assistant_action_spec_system_prompt(),
+        user_prompt=_assistant_user_prompt(message=message, facts=facts, decision=None),
+    )
+    return _parse_action_spec(raw)
+
+
+def _parse_action_spec(raw: object) -> AssistantActionSpec:
+    text = _safe_public_text(raw)
+    decoded = _decode_json_object(text)
+    raw_action_type = decoded.get("action_type")
+    raw_target = decoded.get("target")
+    raw_params = decoded.get("params", {})
+    if not isinstance(raw_action_type, str) or not isinstance(raw_target, str):
+        raise AssistantContentBlocked("assistant action spec missing required fields")
+    action_type = raw_action_type.strip().lower()
+    if action_type not in {"create_project", "spawn_node", "assign_task", "delegate_task"}:
+        raise AssistantContentBlocked("assistant action spec has unsupported action type")
+    if not isinstance(raw_params, Mapping):
+        raise AssistantContentBlocked("assistant action spec params must be a mapping")
+    target = _safe_public_text(raw_target)
+    if not target:
+        raise AssistantContentBlocked("assistant action spec target is empty")
+    return AssistantActionSpec(
+        action_type=cast(AssistantActionType, action_type),
+        target=target,
+        params=_string_key_mapping(_redact_jsonable(raw_params)),
+    )
+
+
+def _decode_json_object(text: str) -> Mapping[str, object]:
+    candidates = [text]
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S | re.I)
+    if fenced is not None:
+        candidates.insert(0, fenced.group(1))
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            decoded = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, Mapping):
+            return cast(Mapping[str, object], decoded)
+    raise AssistantContentBlocked("assistant action spec was not valid JSON")
+
+
+def _validate_action_spec(spec: AssistantActionSpec, *, context: AssistantContext) -> str | None:
+    visible_projects = set(context.scope.visible_projects) | {
+        context.scope.selected_project,
+        context.scope.board,
+    }
+    node_names = _context_node_names(context)
+    if spec.action_type == "create_project":
+        if spec.target in visible_projects:
+            return "project_already_exists"
+        return None
+    if spec.action_type == "spawn_node":
+        project = _optional_param_text(spec.params, "project") or context.scope.selected_project
+        if project not in visible_projects:
+            return "project_not_visible"
+        if spec.target in node_names:
+            return "node_already_exists"
+        return None
+    if spec.action_type == "assign_task":
+        try:
+            context.store.get_task(board=context.scope.board, task_id=spec.target)
+        except KeyError:
+            return "task_not_found"
+        assignee = _optional_param_text(spec.params, "assignee")
+        if assignee is None:
+            return "assignee_required"
+        if assignee not in node_names:
+            return "node_not_found"
+        reviewer = _optional_param_text(spec.params, "reviewer")
+        if reviewer is not None and reviewer not in node_names:
+            return "reviewer_not_found"
+        return None
+    task_id = _optional_param_text(spec.params, "task_id")
+    if task_id is None:
+        return "task_id_required"
+    try:
+        context.store.get_task(board=context.scope.board, task_id=task_id)
+    except KeyError:
+        return "task_not_found"
+    if spec.target not in node_names:
+        return "node_not_found"
+    return None
+
+
+def _context_node_names(context: AssistantContext) -> set[str]:
+    return {
+        str(node["node"])
+        for node in _registry_node_facts(
+            context.scope.selected_project,
+            grove_home=context.grove_home,
+        )
+        if isinstance(node.get("node"), str)
+    }
+
+
+def _optional_param_text(params: Mapping[str, object], key: str) -> str | None:
+    value = params.get(key)
+    if not isinstance(value, str):
+        return None
+    clean = _safe_public_text(value)
+    return clean or None
+
+
+def _action_confirmation_id(
+    context: AssistantContext,
+    *,
+    message: str,
+    spec: AssistantActionSpec,
+) -> str:
+    payload = {
+        "conversation_id": context.conversation_id,
+        "request_id": context.request_id,
+        "actor": context.actor.id,
+        "board": context.scope.board,
+        "message": message,
+        "spec": _action_spec_json(spec),
+    }
+    return f"assistant_{_payload_hash(payload)[:20]}"
+
+
+def _action_spec_json(spec: AssistantActionSpec) -> dict[str, object]:
+    return {
+        "action_type": spec.action_type,
+        "target": spec.target,
+        "params": _string_key_mapping(_redact_jsonable(spec.params)),
+    }
+
+
+def _action_target_project(spec: AssistantActionSpec, *, context: AssistantContext) -> str | None:
+    if spec.action_type == "create_project":
+        return spec.target
+    project = _optional_param_text(spec.params, "project")
+    return project or context.scope.selected_project
+
+
+def _action_target_assignee(spec: AssistantActionSpec) -> str | None:
+    if spec.action_type == "assign_task":
+        return _optional_param_text(spec.params, "assignee")
+    if spec.action_type == "delegate_task":
+        return spec.target
+    return None
+
+
+def _action_reviewer(spec: AssistantActionSpec) -> str | None:
+    return _optional_param_text(spec.params, "reviewer")
+
+
+def _action_decision_title(spec: AssistantActionSpec) -> str:
+    title = _optional_param_text(spec.params, "title")
+    if title is not None:
+        return title[:500]
+    summary = _optional_param_text(spec.params, "summary")
+    if summary is not None:
+        return summary[:500]
+    return f"{spec.action_type}: {spec.target}"[:500]
+
+
+def _action_decision_body(pending: AssistantPendingAction) -> str:
+    body = _optional_param_text(pending.spec.params, "body")
+    if body is not None:
+        return body
+    return json.dumps(
+        {
+            "user_message": pending.message,
+            "assistant_action": _action_spec_json(pending.spec),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _action_decision_metadata(
+    pending: AssistantPendingAction,
+    *,
+    context: AssistantContext,
+    idempotency_key: str,
+) -> dict[str, object]:
+    return {
+        "source": "assistant",
+        "confirmation_id": pending.confirmation_id,
+        "conversation_id": pending.conversation_id,
+        "request_id": context.request_id,
+        "actor_id": context.actor.id,
+        "origin_surface": context.scope.origin_surface,
+        "assistant_action": _action_spec_json(pending.spec),
+        "idempotency_key_hash": _hash_text(idempotency_key),
+        "master_inbox": {"target": "MASTER", "trigger": "manual_review"},
+        "execution": "ledger_recorded_only",
+    }
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _assistant_metadata_decision(decision: Mapping[str, object]) -> object:
+    redacted = _redact_jsonable(decision)
+    if not isinstance(redacted, dict):
+        return redacted
+    preserved = dict(redacted)
+    for key in ("confirmation_id", "proposal_id"):
+        value = decision.get(key)
+        if isinstance(value, str) and _safe_generated_id(value):
+            preserved[key] = value
+    return preserved
+
+
+def _safe_generated_id(value: str) -> bool:
+    return (
+        (value.startswith("assistant_") or value.startswith("decision_"))
+        and len(value) <= 120
+        and re.fullmatch(r"[A-Za-z0-9_.:-]+", value) is not None
+    )
+
+
 def _contains_internal_implementation_terms(text: str) -> bool:
     return INTERNAL_IMPLEMENTATION_TERM_RE.search(text) is not None
 
@@ -936,8 +1490,7 @@ def _is_action_handoff_request(
     message: str,
     classification: MasterClassification,
 ) -> bool:
-    if classification.response_mode == "preview":
-        return True
+    _ = classification
     normalized = message.lower()
     return any(term in normalized for term in ACTION_HANDOFF_TERMS)
 
@@ -1046,7 +1599,10 @@ def _audit_event(
     kind: Literal[
         "master.turn.received",
         "master.answer.generated",
+        "master.proposal.created",
         "master.proposal.rejected",
+        "master.preview.created",
+        "master.confirm.accepted",
     ],
     target_project: str | None,
     reason: str,
