@@ -40,6 +40,21 @@ def _turn(message: str, *, is_operator: bool = True) -> MasterTurn:
     )
 
 
+USER_VISIBLE_INTERNAL_TERMS = (
+    "read-only",
+    "future web route",
+    "operator-gated",
+    "grove_bridge.master",
+    "supported read-only",
+)
+
+
+def _assert_user_visible_text(text: str) -> None:
+    lowered = text.lower()
+    for term in USER_VISIBLE_INTERNAL_TERMS:
+        assert term not in lowered
+
+
 def test_classifies_capability_question_as_read_only_question() -> None:
     classification = classify_master_message("MASTER로 뭐 가능?")
 
@@ -71,6 +86,32 @@ def test_handle_master_chat_returns_read_only_answer_for_questions() -> None:
     assert response.proposal is None
     assert response.requires_confirmation is False
     assert response.audit_events[0].kind == "master.turn.received"
+    _assert_user_visible_text(response.answer.text)
+
+
+def test_master_fallback_answer_copy_avoids_internal_terms() -> None:
+    capability = handle_master_chat(
+        MasterChatRequest(
+            turn=_turn("MASTER로 뭐 가능?"),
+            route_target=FeedbackRouteTarget.grove_dev_default(),
+        )
+    )
+    node_query = handle_master_chat(
+        MasterChatRequest(
+            turn=_turn("노드 상태는 어때?"),
+            route_target=FeedbackRouteTarget.grove_dev_default(),
+        )
+    )
+    unsupported = handle_master_chat(
+        MasterChatRequest(
+            turn=_turn("그냥 애매한 말"),
+            route_target=FeedbackRouteTarget.grove_dev_default(),
+        )
+    )
+
+    for response in (capability, node_query, unsupported):
+        assert response.answer is not None
+        _assert_user_visible_text(response.answer.text)
 
 
 def test_handle_master_chat_returns_preview_for_actions_without_executing() -> None:
@@ -123,9 +164,11 @@ def test_feedback_message_drafts_grove_dev_route_without_creating_task() -> None
     assert response.feedback_route.title == "보드 검색이 너무 느려서 작업을 찾기 어려워"
     gating = response.feedback_route.metadata["gating"]
     assert isinstance(gating, str)
-    assert "실제 task 생성은 operator confirm 이후" in gating
+    assert "확인 후에만 생성" in gating
+    _assert_user_visible_text(response.feedback_route.body)
     assert response.proposal is not None
     assert response.proposal.intent == "feedback.route"
+    _assert_user_visible_text(response.proposal.audit_reason)
 
 
 def test_draft_feedback_route_builds_title_body_and_assignee_candidates() -> None:

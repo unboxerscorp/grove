@@ -157,7 +157,7 @@ class MasterClassification:
 
 @dataclass(frozen=True)
 class MasterAnswer:
-    """Read-only answer produced for a MASTER request."""
+    """Answer produced for a MASTER request."""
 
     text: str
     citations: tuple[str, ...]
@@ -534,7 +534,7 @@ def draft_feedback_route(
             "source": "master.chat",
             "board_session": route.board,
             "execution": "not_created",
-            "gating": "실제 task 생성은 operator confirm 이후 별도 라우터가 수행",
+            "gating": "아직 항목을 만들지 않았고, 확인 후에만 생성한다",
             "origin_page": turn.context.scope.origin_page or "",
         },
     )
@@ -547,7 +547,7 @@ def validate_operator_gated_proposal(
     gate: MasterOperatorGate,
     audit: MasterAuditSink,
 ) -> OperatorGateDecision:
-    """Interface for future operator-gated proposal validation."""
+    """Interface for proposal validation."""
     decision = gate.evaluate_proposal(actor=actor, proposal=proposal)
     return decision
 
@@ -598,7 +598,9 @@ def _proposal_for_preview(
         target_project=target_project,
         requires_confirmation=True,
         requires_operator=True,
-        audit_reason="preview only; execution requires a later operator-gated confirm route",
+        audit_reason=(
+            "No action has been executed yet; confirmation is required before applying changes."
+        ),
     )
 
 
@@ -627,21 +629,20 @@ def _answer_for_classification(
 ) -> MasterAnswer:
     if classification.intent == "capability.explain":
         text = (
-            "MASTER can answer read-only questions about visible projects, nodes, boards, "
-            "and workflows. Action requests are returned as previews only and require a "
-            "separate operator confirmation before execution."
+            "MASTER can inspect visible projects, nodes, boards, terminals, and workflows. "
+            "For changes, I show the proposed action first and wait for confirmation before "
+            "applying it."
         )
     elif classification.intent in {"project.query", "node.query"}:
         project = turn.context.scope.selected_project or "the selected project"
         text = (
-            f"Read-only {classification.kind} request for {project}. "
-            "The future web route should attach scoped project/org/board facts before "
-            "rendering the final answer."
+            f"I can inspect the current project, org, board, and node context for {project}. "
+            "Tell me the exact project or node detail you want checked."
         )
     else:
         text = (
-            "I could not map this to a supported read-only question or previewable action. "
-            "Destructive or ambiguous requests need a narrower prompt."
+            "I could not map that to a concrete question or action. Please narrow it to the "
+            "project, node, board item, or change you want."
         )
     return MasterAnswer(
         text=text,
@@ -753,7 +754,7 @@ def _feedback_body(
         f"Origin page: {turn.context.scope.origin_page or 'none'}",
         f"Source conversation: {turn.context.conversation_id}",
         f"Target route: {route.project}/{route.board}",
-        "Execution: preview only; board task not created by grove_bridge.master.",
+        "Board item: not created yet; confirmation is required before creating it.",
     ]
     return "\n".join(lines)
 
