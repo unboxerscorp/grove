@@ -6330,7 +6330,7 @@ def _master_chat_fact_summary(facts: Mapping[str, object]) -> str:
     return (
         f"Project {project['selected']} board {project['board']}. "
         f"Reviewers: {reviewers['count']}{reviewer_suffix}. "
-        f"Board tasks: {status_line}. "
+        f"Human items: {status_line}. "
         f"Human queue: ask-human={human['ask_human_count']}, "
         f"needs_human={human['needs_human_count']}; human nodes: {human_suffix}. "
         f"Default node: {default_node['name']} "

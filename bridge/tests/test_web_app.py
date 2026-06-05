@@ -2495,6 +2495,41 @@ def test_master_chat_answer_includes_project_board_org_and_human_facts(
     assert facts["recent_commits"] == []
 
 
+def test_master_chat_fact_summary_describes_board_counts_as_human_items() -> None:
+    facts: dict[str, object] = {
+        "project": {"selected": "dev10", "board": "dev10"},
+        "projects": {"visible": ["dev10"]},
+        "org": {
+            "project_master": {
+                "name": "grove-master",
+                "present": True,
+            }
+        },
+        "board": {
+            "status_counts": {
+                "ready": 2,
+                "running": 1,
+                "blocked": 1,
+                "review": 0,
+                "done": 3,
+                "archived": 0,
+                "ask_human": 1,
+            }
+        },
+        "reviewers": {"count": 1, "nodes": ["reviewer"]},
+        "human": {
+            "assignee_candidates": ["human-reviewer"],
+            "ask_human_count": 1,
+            "needs_human_count": 1,
+        },
+    }
+
+    text = web_app._master_chat_fact_summary(facts)
+
+    assert "Human items: ready=2, running=1, blocked=1" in text
+    assert "Board tasks:" not in text
+
+
 def test_master_chat_rejects_missing_or_bad_payload(tmp_path: Path) -> None:
     client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
     headers = auth_headers(client)

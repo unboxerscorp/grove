@@ -1920,7 +1920,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         requires_confirmation = true;
       } else {
         answer = {
-          text: `received: “${message.slice(0, 60)}” — project-master will follow up. Reviewers: 2. Board tasks: ready=1, running=1, blocked=1, done=1. Human queue: ask-human=1, needs_human=1. (mock)`,
+          text: `received: “${message.slice(0, 60)}” — project-master will follow up. Reviewers: 2. Human items: ready=1, running=1, blocked=1, done=1. Human queue: ask-human=1, needs_human=1. (mock)`,
           metadata: {
             facts: {
               project: { selected: "dev10", board: "dev10" },
