@@ -74,6 +74,12 @@ const SECRET_RES = [
 ];
 
 const results = [];
+const tmuxFixtureSessions = new Set();
+let alphaLeadPane = `${ALPHA}:1.0`;
+let alphaWorkerPane = `${ALPHA}:1.1`;
+let betaLeadPane = `${BETA}:1.0`;
+let betaWorkerPane = `${BETA}:1.1`;
+
 function check(label, ok, detail = "") {
   const pass = Boolean(ok);
   results.push({ label, ok: pass, detail });
@@ -126,6 +132,53 @@ function writeRegistry(session, nodes) {
   const regPath = path.join(dir, "registry.json");
   writeFileSync(regPath, JSON.stringify({ workspace: `/tmp/${session}`, nodes }, null, 2));
   chmodSync(regPath, 0o444);
+}
+function runTmux(args, { allowFail = false } = {}) {
+  const result = spawnSync("tmux", args, { encoding: "utf8" });
+  if (!allowFail && result.status !== 0) {
+    throw new Error(`tmux ${args.join(" ")} failed: ${result.stderr || result.stdout || result.status}`);
+  }
+  return result;
+}
+function createTmuxSessionPanes(session, count) {
+  runTmux(["kill-session", "-t", `${session}:`], { allowFail: true });
+  const paneCommand = `printf '${session} e2e pane ready\\n'; exec zsh -f`;
+  const first = runTmux([
+    "new-session",
+    "-d",
+    "-P",
+    "-F",
+    "#{session_name}:#{window_index}.#{pane_index}",
+    "-s",
+    session,
+    "-n",
+    "e2e",
+    paneCommand,
+  ]).stdout.trim();
+  if (!first) throw new Error(`tmux did not create first pane for ${session}`);
+  tmuxFixtureSessions.add(session);
+  const panes = [first];
+  while (panes.length < count) {
+    const pane = runTmux([
+      "split-window",
+      "-d",
+      "-P",
+      "-F",
+      "#{session_name}:#{window_index}.#{pane_index}",
+      "-t",
+      panes[0],
+      paneCommand,
+    ]).stdout.trim();
+    if (!pane) throw new Error(`tmux did not create pane ${panes.length + 1} for ${session}`);
+    panes.push(pane);
+  }
+  return panes;
+}
+function cleanupTmuxFixtures() {
+  for (const session of Array.from(tmuxFixtureSessions).reverse()) {
+    runTmux(["kill-session", "-t", `${session}:`], { allowFail: true });
+  }
+  tmuxFixtureSessions.clear();
 }
 function writeTeamViewer(session, { name, secret }) {
   writeTeamMember(session, { name, secret, role: "viewer", id: "viewer-1" });
@@ -526,8 +579,13 @@ function scaffold() {
     "<!doctype html><html><head></head><body><div id=app></div></body></html>\n",
   );
   writeFileSync(path.join(distDir, "app.js"), "window.__e2e_app__ = true;\n");
+  [alphaLeadPane, alphaWorkerPane] = createTmuxSessionPanes(ALPHA, 2);
+  [betaLeadPane, betaWorkerPane] = createTmuxSessionPanes(BETA, 2);
   // Read-only registries: two sessions, two nodes each (node_count == 2).
-  for (const name of [ALPHA, BETA]) {
+  for (const { name, leadPane, workerPane } of [
+    { name: ALPHA, leadPane: alphaLeadPane, workerPane: alphaWorkerPane },
+    { name: BETA, leadPane: betaLeadPane, workerPane: betaWorkerPane },
+  ]) {
     const dir = path.join(groveHome, name);
     mkdirSync(dir, { recursive: true });
     const registry = {
@@ -536,7 +594,7 @@ function scaffold() {
         lead: {
           name: "lead",
           agent: "claude",
-          tmux_pane: `${name}:1.0`,
+          tmux_pane: leadPane,
           session_id: "s1",
           status: "running",
           role: "lead",
@@ -546,7 +604,7 @@ function scaffold() {
         worker: {
           name: "worker",
           agent: "codex",
-          tmux_pane: `${name}:1.1`,
+          tmux_pane: workerPane,
           session_id: "s2",
           status: "idle",
           parent: "lead",
@@ -913,6 +971,7 @@ async function teardown() {
   } catch {
     /* ignore */
   }
+  cleanupTmuxFixtures();
 }
 
 async function run() {
@@ -1658,8 +1717,8 @@ async function run() {
   );
 
   // --- ws-ticket issuance: POST body {kind, pane_id} -> project+kind+pane bind ---
-  const WORKER_PANE = `${ALPHA}:1.1`; // worker node pane — exposed/allowed
-  const LEAD_PANE = `${ALPHA}:1.0`; // also exposed; used for the pane-mismatch case
+  const WORKER_PANE = alphaWorkerPane; // worker node pane — exposed/allowed
+  const LEAD_PANE = alphaLeadPane; // also exposed; used for the pane-mismatch case
   const t1 = await req("POST", "/api/ws-ticket", { token, body: { kind: "board" } });
   eq("ws-ticket 200 (board)", t1.status, 200);
   check(
@@ -2035,7 +2094,7 @@ async function run() {
     "odd-node": {
       name: "odd-node",
       agent: summaryAgentSecret,
-      tmux_pane: `${SUMMARY}:1.0`,
+      tmux_pane: createTmuxSessionPanes(SUMMARY, 1)[0],
       session_id: "summary-session",
       status: summaryPrivatePath,
       transcript_path: `${summaryPrivatePath}.jsonl`,
@@ -4063,7 +4122,7 @@ async function run() {
   const connect = await req("GET", connectPath("worker"), { token, project: ALPHA });
   eq("connect worker 200", connect.status, 200);
   eq("connect echoes node name", connect.json && connect.json.node, "worker");
-  eq("connect tmux_target is the worker pane", connect.json && connect.json.tmux_target, `${ALPHA}:1.1`);
+  eq("connect tmux_target is the worker pane", connect.json && connect.json.tmux_target, alphaWorkerPane);
   check(
     "connect exposes attach + select_pane commands",
     Boolean(connect.json) && connect.json.commands && typeof connect.json.commands.attach === "string" && typeof connect.json.commands.select_pane === "string",
