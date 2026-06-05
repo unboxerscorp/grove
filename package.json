@@ -1,7 +1,7 @@
 {
   "name": "grove",
   "version": "0.32.0",
-  "description": "Grow a tree of AI agents (Claude Code + Codex) in your terminal. Declare an org-chart, bring the whole tree up in tmux, and let any node delegate work to its children.",
+  "description": "Run a visible org of AI agent sessions in tmux, with project-aware roles, cwd/pane metadata, and direct cross-node communication.",
   "type": "module",
   "bin": {
     "grove": "./dist/cli.js"
@@ -30,7 +30,8 @@
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check:ts": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "check:skills": "python3 scripts/generate_grove_skills.py --check",
+    "check:ts": "pnpm check:skills && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
     "check:py": "cd bridge && uv run --group dev ruff check . && uv run --group dev ruff format --check . && uv run --group dev mypy src tests && uv run --group dev pytest",
     "check": "pnpm check:ts && pnpm check:py",
     "hooks:install": "lefthook install",

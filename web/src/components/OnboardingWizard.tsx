@@ -11,27 +11,18 @@ import { GroveMark } from "./GroveMark";
 const SEEN_KEY = "grove.onboarded.v3";
 const STEPS = ["welcome", "project", "board", "node", "setup"] as const;
 
-function hasSeen(): boolean {
-  try {
-    return localStorage.getItem(SEEN_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
 function markSeen(): void {
   try {
     localStorage.setItem(SEEN_KEY, "1");
   } catch {
-    /* storage unavailable — wizard simply re-shows next time */
+    /* storage unavailable */
   }
 }
 
 /**
- * First-run onboarding wizard. Shows once (localStorage flag) on first visit /
- * when there are no projects; skippable at any step and never re-shown after it
- * is dismissed or finished. Step 2 reuses the ProjectSwitcher new/load APIs
- * (api.createProject / api.loadProject); import has no backend yet so it is
- * surfaced as guidance. Renders as an overlay above the (already-live) dashboard.
+ * Manual onboarding wizard. It is never shown automatically because this cockpit
+ * must open directly into the live operator surface; the sidebar tutorial button
+ * can still launch it on demand.
  */
 export function OnboardingWizard(props: {
   openKey: number;
@@ -41,8 +32,7 @@ export function OnboardingWizard(props: {
 }) {
   const { openKey, projectCount, onProjectReady, onNavigate } = props;
   const { t } = useI18n();
-  // Show on first visit OR when there are no projects yet (and not yet seen).
-  const [visible, setVisible] = useState(() => !hasSeen());
+  const [visible, setVisible] = useState(false);
   const [step, setStep] = useState(0);
   const panelRef = useRef<HTMLElement | null>(null);
   useFocusTrap(visible, panelRef);

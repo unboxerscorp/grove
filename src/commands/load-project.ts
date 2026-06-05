@@ -187,6 +187,7 @@ export async function loadProject(
       description: node.description,
       group: node.group,
       name: node.name,
+      operatorManaged: true,
       parent: node.parent,
       resume: restored ? node.session_id : undefined,
       role: node.role,

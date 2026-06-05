@@ -61,7 +61,11 @@ export function loadContext(configOpt?: string): Context {
   for (const [name, runtime] of Object.entries(registry.nodes)) {
     if (byName.has(name)) continue;
     const node = nodeFromRuntime(name, runtime, { config, registry });
-    addNodeContext(byName, node, runtime.tmux_pane ?? target(registry.session, node.name));
+    addNodeContext(
+      byName,
+      node,
+      runtime.tmux_pane ?? target(registry.tmuxSession ?? registry.session, node.name),
+    );
   }
   return { configPath, config, nodes, byName, registry };
 }

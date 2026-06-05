@@ -370,6 +370,7 @@ class UsageTrendDay:
 class NodeRecord(TypedDict):
     name: str
     agent: str
+    cwd: str
     tmux_pane: str
     session_id: str
     status: str
@@ -769,7 +770,10 @@ def create_app(
 
     @app.post("/api/logout")
     def logout_endpoint(request: Request, response: Response) -> dict[str, object]:
-        auth = _require_state_change(request)
+        auth = _require_operator_state_change(
+            request,
+            detail="node terminate requires operator role",
+        )
         if auth.sid is not None:
             _team_session_store(request).revoke(auth.sid)
         response.delete_cookie(TEAM_SESSION_COOKIE)
@@ -1470,25 +1474,23 @@ def create_app(
     ) -> dict[str, object]:
         auth = _require_state_change(request)
         _require_project_mutation_access(auth)
-        result = _create_project(payload)
+        result = _create_project(payload, tmux_session=_config(request).registry_session)
         created_name = _project_name_from_result(result, fallback=payload.name)
         created_config = replace(_config(request), registry_session=created_name)
         workspace = _project_workspace_from_result(result)
-        project_master = _ensure_project_master_node(
-            created_config,
-            workspace=workspace,
-        )
+        tmux_session = _project_tmux_session_from_result(result, fallback=created_name)
         result = {
             **result,
             "display_name": _project_display_name(created_name, _load_registry(created_config)),
             "project": created_name,
             "session": created_name,
             "board": created_name,
+            "tmux_session": tmux_session,
             "workspace": workspace or "",
             "node_count": _project_node_count(created_config),
-            "status": _mapping_string(result, "status") or _tmux_session_status(created_name),
+            "status": _mapping_string(result, "status") or _tmux_session_status(tmux_session),
             "default_assignee": _default_assignee(created_config),
-            "project_master": project_master,
+            "project_master": _default_assignee_node_payload(created_config),
         }
         project = resolve_project(request)
         _store(request).add_audit_event(
@@ -2030,7 +2032,10 @@ def create_app(
         node: str,
         payload: NodeTerminatePayload,
     ) -> dict[str, object]:
-        auth = _require_state_change(request)
+        auth = _require_operator_state_change(
+            request,
+            detail="node terminate requires operator role",
+        )
         project = resolve_project(request)
         plan = _node_terminate_plan(node, payload, auth=auth, config=project.config)
         if not payload.confirm:
@@ -2378,7 +2383,7 @@ def create_app(
         kind: str = Query(default="board"),
         pane_id: str | None = Query(default=None),
     ) -> dict[str, object]:
-        _require_operator_state_change(request, detail="websocket ticket requires operator role")
+        _require_auth(request)
         project = resolve_project(request)
         requested_kind, requested_pane = _ws_ticket_request_scope(
             payload,
@@ -2796,7 +2801,7 @@ def _inbox_payload(
             "endpoint": "/api/tasks/{task_id}/answer",
             "method": "POST",
             "body": {"text": "human answer"},
-            "human_gate": "Slack thread replies use the same comment plus unblock flow",
+            "human_decision": "Slack thread replies use the same comment plus unblock flow",
             "audit": "unblock is recorded through board events with the answer actor",
         },
     }
@@ -6211,11 +6216,7 @@ def _master_chat_facts(
         "org": {
             "node_count": len(nodes),
             "roots": org.get("roots", []),
-            "project_master": {
-                "name": PROJECT_MASTER_NODE_NAME,
-                "present": _project_master_exists(project.config),
-                "default_assignee": _default_assignee(project.config) == PROJECT_MASTER_NODE_NAME,
-            },
+            "project_master": _default_assignee_summary(project.config),
         },
         "board": {
             "status_counts": {
@@ -6272,7 +6273,7 @@ def _master_chat_fact_summary(facts: Mapping[str, object]) -> str:
     human = cast(Mapping[str, object], facts["human"])
     org = cast(Mapping[str, object], facts["org"])
     projects = cast(Mapping[str, object], facts["projects"])
-    project_master = cast(Mapping[str, object], org["project_master"])
+    default_node = cast(Mapping[str, object], org["project_master"])
     status_line = ", ".join(
         f"{status}={status_counts.get(status, 0)}" for status in MASTER_BOARD_STATUSES
     )
@@ -6289,8 +6290,8 @@ def _master_chat_fact_summary(facts: Mapping[str, object]) -> str:
         f"Board tasks: {status_line}. "
         f"Human queue: ask-human={human['ask_human_count']}, "
         f"needs_human={human['needs_human_count']}; human nodes: {human_suffix}. "
-        f"Master route: {project_master['name']} "
-        f"{'present' if project_master['present'] else 'missing'}. "
+        f"Default node: {default_node['name']} "
+        f"{'present' if default_node['present'] else 'missing'}. "
         f"Projects: {', '.join(str(name) for name in visible_projects)}."
     )
 
@@ -6966,9 +6967,11 @@ def _context_pack_nodes_for_project(config: WebAppConfig) -> tuple[ContextPackNo
         ContextPackNode(
             name=node["name"],
             agent=node["agent"],
+            cwd=node.get("cwd", ""),
             parent=node["parent"],
             group=node["group"],
             role=node["role"],
+            tmux_pane=node.get("tmux_pane", ""),
         )
         for node in _org_node_records(config)
     )
@@ -7138,13 +7141,15 @@ def _project_payloads(config: WebAppConfig) -> list[dict[str, object]]:
         session_dir = registry_path.parent
         loaded = _read_json_mapping(registry_path, error_detail="invalid grove registry")
         raw_nodes = loaded.get("nodes")
+        tmux_session = _project_tmux_session_from_registry(session_dir.name, loaded)
         projects.append(
             {
                 "name": session_dir.name,
                 "display_name": _project_display_name(session_dir.name, loaded),
                 "workspace": _project_workspace(session_dir, loaded),
                 "node_count": len(raw_nodes) if isinstance(raw_nodes, dict) else 0,
-                "status": _tmux_session_status(session_dir.name),
+                "tmux_session": tmux_session,
+                "status": _tmux_session_status(tmux_session),
             }
         )
     return projects
@@ -7201,10 +7206,15 @@ def _project_lead_payloads(config: WebAppConfig) -> list[dict[str, object]]:
             projects[name] = payload
     if config.registry_session not in projects:
         metadata = _project_metadata(config)
+        tmux_session = _project_tmux_session_from_registry(
+            config.registry_session,
+            _load_registry(config),
+        )
         projects[config.registry_session] = {
             **metadata,
             "node_count": _project_node_count(config),
-            "status": _tmux_session_status(config.registry_session),
+            "tmux_session": tmux_session,
+            "status": _tmux_session_status(tmux_session),
         }
     return [
         _project_lead_payload(config, payload)
@@ -7260,6 +7270,22 @@ def _project_workspace_from_result(result: Mapping[str, object]) -> str | None:
     return None
 
 
+def _project_tmux_session_from_result(result: Mapping[str, object], *, fallback: str) -> str:
+    for key in ("tmuxSession", "tmux_session"):
+        value = _mapping_string(result, key)
+        if value is not None:
+            return value
+    return fallback
+
+
+def _project_tmux_session_from_registry(project: str, registry: Mapping[str, object]) -> str:
+    for key in ("tmuxSession", "tmux_session"):
+        value = _mapping_string(registry, key)
+        if value is not None:
+            return value
+    return project
+
+
 def _project_node_count(config: WebAppConfig) -> int:
     raw_nodes = _load_registry(config).get("nodes")
     return len(raw_nodes) if isinstance(raw_nodes, dict) else 0
@@ -7300,7 +7326,11 @@ def _tmux_session_status(session: str) -> str:
     return "running" if proc.returncode == 0 else "stopped"
 
 
-def _create_project(payload: ProjectCreatePayload) -> dict[str, object]:
+def _create_project(
+    payload: ProjectCreatePayload,
+    *,
+    tmux_session: str | None = None,
+) -> dict[str, object]:
     name = _validated_node_ref(payload.name, field_name="project name")
     template = _optional_text(payload.template, field_name="template", max_length=200)
     clone = _optional_text(payload.clone, field_name="clone", max_length=2000)
@@ -7309,38 +7339,15 @@ def _create_project(payload: ProjectCreatePayload) -> dict[str, object]:
         args.extend(["--template", template])
     if clone is not None:
         args.extend(["--clone", clone])
+    if tmux_session is not None:
+        args.extend(
+            [
+                "--tmux-session",
+                _validated_node_ref(tmux_session, field_name="tmux session"),
+            ]
+        )
     args.append("--json")
     return _run_grove_json(args, failure_detail="grove new-project failed")
-
-
-def _ensure_project_master_node(
-    config: WebAppConfig,
-    *,
-    workspace: str | None = None,
-) -> dict[str, object]:
-    path = _registry_path(config)
-    if path.is_file():
-        registry = _read_json_mapping(path, error_detail="invalid grove registry")
-    else:
-        registry = {"session": config.registry_session, "nodes": {}}
-    if workspace is not None and _mapping_string(registry, "workspace") is None:
-        registry["workspace"] = workspace
-    raw_nodes = registry.get("nodes")
-    if not isinstance(raw_nodes, dict):
-        raw_nodes = {}
-        registry["nodes"] = raw_nodes
-    nodes = cast(dict[str, object], raw_nodes)
-    existing = _nodes_by_name(nodes).get(PROJECT_MASTER_NODE_NAME)
-    if existing is None:
-        nodes[PROJECT_MASTER_NODE_NAME] = {
-            "name": PROJECT_MASTER_NODE_NAME,
-            "agent": "claude",
-            "role": "orchestrator",
-            "status": "external",
-            "description": "Project master/orchestrator.",
-        }
-    _write_registry_atomic(path, registry)
-    return dict(_project_master_node(config))
 
 
 def _load_project(payload: ProjectLoadPayload) -> dict[str, object]:
@@ -7425,6 +7432,7 @@ def _registry_nodes(config: WebAppConfig) -> list[dict[str, object]]:
         {
             "name": node["name"],
             "agent": node["agent"],
+            "cwd": node["cwd"],
             "tmux_pane": node["tmux_pane"],
             "session_id": node["session_id"],
             "status": node["status"],
@@ -7461,6 +7469,7 @@ def _registry_node_records(config: WebAppConfig) -> list[NodeRecord]:
                     role="",
                     parent="",
                     group="",
+                    cwd="",
                     description="",
                     kind="registry",
                     config=config,
@@ -7484,6 +7493,7 @@ def _registry_node_records(config: WebAppConfig) -> list[NodeRecord]:
                 role=_mapping_string(node, "role") or "",
                 parent=_mapping_string(node, "parent") or "",
                 group=_mapping_string(node, "group") or "",
+                cwd=_mapping_string(node, "cwd") or "",
                 description=_mapping_string(node, "description") or "",
                 kind=_node_kind_for_registry(node),
                 config=config,
@@ -7503,6 +7513,7 @@ def _node_record(
     role: str,
     parent: str,
     group: str,
+    cwd: str = "",
     description: str,
     kind: str,
     config: WebAppConfig,
@@ -7518,6 +7529,7 @@ def _node_record(
     payload: NodeRecord = {
         "name": name,
         "agent": agent,
+        "cwd": cwd,
         "tmux_pane": pane,
         "session_id": session_id,
         "status": status,
@@ -7563,8 +7575,12 @@ def _node_unavailable_reason(pane: str, *, kind: str, config: WebAppConfig) -> s
     match = TMUX_PANE_RE.fullmatch(pane)
     if match is None:
         return "tmux_pane invalid"
-    if match.group("session") != config.registry_session:
-        return "tmux_pane outside project session"
+    tmux_session = _project_tmux_session_from_registry(
+        config.registry_session,
+        _load_registry(config),
+    )
+    if match.group("session") != tmux_session:
+        return "tmux_pane outside project tmux session"
     if not _canonical_tmux_pane(pane, config=config):
         return "tmux_pane invalid"
     return ""
@@ -7587,9 +7603,10 @@ def _default_assignee(config: WebAppConfig) -> str:
 def _assignee_candidates(config: WebAppConfig) -> list[dict[str, object]]:
     default = _default_assignee(config)
     by_name: dict[str, dict[str, object]] = {}
-    for node in _registry_node_records(config):
+    registry_nodes = _registry_node_records(config)
+    for node in registry_nodes:
         by_name[node["name"]] = _assignee_candidate_payload(node, default=default)
-    if LEAD_NODE_NAME not in by_name:
+    if LEAD_NODE_NAME not in by_name and not _contains_grove_master(registry_nodes):
         by_name[LEAD_NODE_NAME] = _assignee_candidate_payload(
             _external_lead_node(config),
             default=default,
@@ -7598,6 +7615,24 @@ def _assignee_candidates(config: WebAppConfig) -> list[dict[str, object]]:
         by_name.values(),
         key=lambda item: (not bool(item["default"]), str(item["name"])),
     )
+
+
+def _default_assignee_node_payload(config: WebAppConfig) -> dict[str, object]:
+    default = _default_assignee(config)
+    for node in _registry_nodes(config):
+        if node["name"] == default:
+            return dict(node)
+    return {"name": default, "status": "external"}
+
+
+def _default_assignee_summary(config: WebAppConfig) -> dict[str, object]:
+    default = _default_assignee(config)
+    registry_names = {node["name"] for node in _registry_node_records(config)}
+    return {
+        "name": default,
+        "present": default in registry_names,
+        "default_assignee": True,
+    }
 
 
 def _persistent_assignee_nodes(config: WebAppConfig) -> list[str]:
@@ -7711,9 +7746,15 @@ def _org_node_records(config: WebAppConfig) -> list[NodeRecord]:
         node["name"] == PROJECT_MASTER_NODE_NAME for node in nodes
     ):
         nodes.append(_project_master_node(config))
-    if not any(node["name"] == LEAD_NODE_NAME for node in nodes):
+    if not any(node["name"] == LEAD_NODE_NAME for node in nodes) and not _contains_grove_master(
+        nodes
+    ):
         nodes.append(_external_lead_node(config))
     return sorted(nodes, key=lambda node: node["name"])
+
+
+def _contains_grove_master(nodes: Sequence[Mapping[str, object]]) -> bool:
+    return any(node.get("name") == GROVE_MASTER_NODE_NAME for node in nodes)
 
 
 def _org_graph_records(config: WebAppConfig) -> list[OrgGraphRecord]:
@@ -8049,6 +8090,7 @@ def _org_payload(
                 "parent": parent,
                 "children": sorted(children_by_parent[node_name]),
                 "group": node["group"],
+                "cwd": node["cwd"],
                 "tmux_pane": node["tmux_pane"],
                 "session_id": node["session_id"],
                 "status": node["status"],
@@ -8098,11 +8140,7 @@ def _master_org_payload(config: WebAppConfig) -> dict[str, object]:
         "scope": "cross_project",
         "selected_project": config.registry_session,
         "visible_projects": _visible_project_names_for_config(config),
-        "project_master": {
-            "name": PROJECT_MASTER_NODE_NAME,
-            "present": _project_master_exists(config),
-            "default_assignee": _default_assignee(config) == PROJECT_MASTER_NODE_NAME,
-        },
+        "project_master": _default_assignee_summary(config),
         "delegation": _master_delegation_payload(config),
         "human": {
             "assignee_candidates": human_candidates,
@@ -8197,13 +8235,20 @@ def _valid_input_tmux_pane(pane: str, *, config: WebAppConfig) -> bool:
 
 
 def _canonical_tmux_pane(pane: str, *, config: WebAppConfig) -> bool:
+    _ = config
     parts = _tmux_pane_parts(pane, config=config)
-    return parts is not None and pane == f"{config.registry_session}:{parts[0]}.{parts[1]}"
+    match = TMUX_PANE_RE.fullmatch(pane)
+    return (
+        parts is not None
+        and match is not None
+        and pane == f"{match.group('session')}:{parts[0]}.{parts[1]}"
+    )
 
 
 def _tmux_pane_parts(pane: str, *, config: WebAppConfig) -> tuple[int, int] | None:
+    _ = config
     match = TMUX_PANE_RE.fullmatch(pane)
-    if match is None or match.group("session") != config.registry_session:
+    if match is None:
         return None
     return int(match.group("window")), int(match.group("pane"))
 
@@ -8252,7 +8297,7 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
     description = _optional_text(payload.description, field_name="description", max_length=1000)
     parent = _optional_node_ref(payload.parent, field_name="parent")
     group = _optional_node_ref(payload.group, field_name="group")
-    args = ["grove", "spawn", "--name", name, "--agent", agent]
+    args = ["grove", "spawn", "--operator", "--name", name, "--agent", agent]
     if role is not None:
         args.extend(["--role", role])
     if role_preset is not None:
@@ -8573,36 +8618,20 @@ def _node_terminate_plan(
     subtree = _node_subtree_names(target, nodes_by_name)
 
     caller: str | None = None
-    if payload.operator_override:
-        _require_operator_access(auth, detail="node terminate requires operator role")
-        actor = _actor_payload(auth)
-    else:
-        caller = _optional_node_ref(payload.caller, field_name="caller")
-        if caller is None:
-            raise HTTPException(status_code=400, detail="caller is required")
-        if auth.mode != AuthMode.LOCAL_TOKEN:
-            raise HTTPException(
-                status_code=403,
-                detail="node terminate requires node auth or operator override",
-            )
-        if caller not in nodes_by_name:
-            raise HTTPException(status_code=404, detail="caller not found")
-        if _mapping_string(nodes_by_name[target], "parent") != caller:
-            raise HTTPException(status_code=403, detail="caller does not own target node")
-        actor = _node_actor_payload(caller)
+    actor = _actor_payload(auth)
 
     confirmation_id = _node_terminate_confirmation_id(
         config,
         target=target,
         caller=caller,
-        operator_override=payload.operator_override,
+        operator_override=True,
         subtree=subtree,
     )
     return NodeTerminatePlan(
         target=target,
         caller=caller,
         actor=actor,
-        operator_override=payload.operator_override,
+        operator_override=True,
         subtree=subtree,
         confirmation_id=confirmation_id,
     )
@@ -9046,6 +9075,7 @@ def _task_payload(task: Task) -> dict[str, object]:
         "id": task.id,
         "title": task.title,
         "status": task.status,
+        "needs_human": _task_needs_human(task),
         "body": task.body,
         "updated": task.updated_at,
     }

@@ -24,9 +24,11 @@ export interface SpawnInput {
   parent?: string;
   group?: string;
   session?: string;
+  tmuxSession?: string;
   window?: string;
   cwd?: string;
   resume?: string;
+  operatorManaged?: boolean;
 }
 
 interface SpawnRequest {
@@ -39,6 +41,7 @@ interface SpawnRequest {
   parent?: string;
   group?: string;
   session: string;
+  tmuxSession: string;
   window?: string;
   cwd: string;
   resume?: string;
@@ -52,6 +55,7 @@ export interface SpawnResult {
   rolePresetVersion?: string;
   description?: string;
   session: string;
+  tmuxSession?: string;
   pane: string;
   parent?: string;
   group?: string;
@@ -154,7 +158,8 @@ function parseSpawnRequest(ctx: Context, input: SpawnInput): SpawnRequest {
   const parent = trimmed(input.parent);
   const rolePresetKey = trimmed(input.rolePreset);
   const rolePreset = rolePresetKey ? expandRolePreset(rolePresetKey) : undefined;
-  const session = trimmed(input.session) ?? ctx.config.session;
+  const session = validateGroveName(trimmed(input.session) ?? ctx.config.session, "--session");
+  const tmuxSession = validateGroveName(trimmed(input.tmuxSession) ?? session, "--tmux-session");
   const window = trimmed(input.window);
   return {
     agent,
@@ -167,7 +172,8 @@ function parseSpawnRequest(ctx: Context, input: SpawnInput): SpawnRequest {
     role: trimmed(input.role) ?? rolePreset?.body ?? "",
     rolePreset: rolePreset?.id,
     rolePresetVersion: rolePreset?.version,
-    session: validateGroveName(session, "--session"),
+    session,
+    tmuxSession,
     window: window ? validateGroveName(window, "--window") : undefined,
   };
 }
@@ -200,6 +206,14 @@ function ensureSpawnable(ctx: Context, req: SpawnRequest): void {
   }
 }
 
+function assertOperatorManaged(input: SpawnInput): void {
+  if (!input.operatorManaged) {
+    throw new Error(
+      "spawn changes the org chart; use the dashboard or pass --operator for explicit human instruction",
+    );
+  }
+}
+
 function addParentChild(ctx: Context, parent: string | undefined, child: string): void {
   if (!parent) return;
   const configured = configuredNode(ctx, parent);
@@ -226,16 +240,17 @@ export async function spawnNode(
   input: SpawnInput,
   deps: SpawnDeps = defaultDeps,
 ): Promise<SpawnResult> {
+  assertOperatorManaged(input);
   const session = validateGroveName(trimmed(input.session) ?? baseCtx.config.session, "--session");
   const ctx = sessionContext(baseCtx, session);
   const parsed = parseSpawnRequest(ctx, { ...input, session });
   ensureSpawnable(ctx, parsed);
 
-  return deps.preserveActiveWindow(parsed.session, async () => {
+  return deps.preserveActiveWindow(parsed.tmuxSession, async () => {
     const pane = await deps.createPane({
       cwd: parsed.cwd,
       name: parsed.name,
-      session: parsed.session,
+      session: parsed.tmuxSession,
       window: parsed.window,
     });
     const node: ResolvedNode = {
@@ -296,6 +311,7 @@ export async function spawnNode(
       rolePreset: parsed.rolePreset,
       rolePresetVersion: parsed.rolePresetVersion,
       session: parsed.session,
+      tmuxSession: parsed.tmuxSession !== parsed.session ? parsed.tmuxSession : undefined,
       sessionId: saved.sessionId,
       transcript: saved.transcript,
       transcriptDetected,
@@ -322,10 +338,10 @@ export function renderSpawnJson(result: SpawnResult): string {
 }
 
 export async function cmdSpawn(
-  opts: SpawnInput & { config?: string; json?: boolean },
+  opts: SpawnInput & { config?: string; json?: boolean; operator?: boolean },
   deps: SpawnDeps = defaultDeps,
 ): Promise<void> {
   const ctx = opts.config ? loadContext(opts.config) : configFreeContext(opts);
-  const result = await spawnNode(ctx, opts, deps);
+  const result = await spawnNode(ctx, { ...opts, operatorManaged: Boolean(opts.operator) }, deps);
   process.stdout.write(`${opts.json ? renderSpawnJson(result) : renderSpawnText(result)}\n`);
 }

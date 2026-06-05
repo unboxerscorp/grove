@@ -1,34 +1,48 @@
 import { existsSync, mkdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import { emptyRegistry, loadRegistry, saveRegistry, updateRegistryNode } from "./registry.js";
+import type * as registryTypes from "./registry.js";
+
+async function registryModules(): Promise<typeof registryTypes> {
+  return import("./registry.js");
+}
 
 describe("Registry Load/Save", () => {
   const session = `test-registry-core-${Date.now()}`;
-  const envHome = process.env.HOME;
+  const envGroveHome = process.env.GROVE_HOME;
   let testHome: string;
 
   beforeEach(() => {
     testHome = join(tmpdir(), session);
     mkdirSync(testHome, { recursive: true });
-    process.env.HOME = testHome;
+    process.env.GROVE_HOME = testHome;
+    vi.resetModules();
   });
 
   afterEach(() => {
-    process.env.HOME = envHome;
+    if (envGroveHome === undefined) {
+      delete process.env.GROVE_HOME;
+    } else {
+      process.env.GROVE_HOME = envGroveHome;
+    }
+    vi.resetModules();
     if (existsSync(testHome)) {
       rmSync(testHome, { recursive: true, force: true });
     }
   });
 
-  test("returns null if registry does not exist", () => {
+  test("returns null if registry does not exist", async () => {
+    const { loadRegistry } = await registryModules();
+
     const reg = loadRegistry(session);
     expect(reg).toBeNull();
   });
 
-  test("roundtrip empty registry", () => {
+  test("roundtrip empty registry", async () => {
+    const { emptyRegistry, loadRegistry, saveRegistry } = await registryModules();
+
     const empty = emptyRegistry(session, "/test/cwd");
     saveRegistry(empty);
 
@@ -39,7 +53,10 @@ describe("Registry Load/Save", () => {
     expect(loaded?.nodes).toEqual({});
   });
 
-  test("updateRegistryNode adds nodes and preserves parent-child links and state", () => {
+  test("updateRegistryNode adds nodes and preserves parent-child links and state", async () => {
+    const { emptyRegistry, loadRegistry, saveRegistry, updateRegistryNode } =
+      await registryModules();
+
     const initial = emptyRegistry(session, "/test/cwd");
     saveRegistry(initial);
 

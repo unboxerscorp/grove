@@ -137,7 +137,7 @@ def test_default_transport_uses_node_routed_without_grove_assistant_api_key(
     client = create_default_assistant_client()
 
     assert isinstance(client, NodeRoutedAssistantClient)
-    assert client.node_name == "grove-assistant"
+    assert client.node_name == "grove-master"
 
 
 def test_default_transport_uses_node_routed_when_grove_assistant_api_key_is_present(
@@ -149,7 +149,7 @@ def test_default_transport_uses_node_routed_when_grove_assistant_api_key_is_pres
     client = create_default_assistant_client()
 
     assert isinstance(client, NodeRoutedAssistantClient)
-    assert client.node_name == "grove-assistant"
+    assert client.node_name == "grove-master"
 
 
 def test_default_transport_uses_direct_client_only_for_dev_test_fallback(
@@ -241,11 +241,48 @@ def test_node_routed_transport_invokes_grove_assistant_cli_with_prompt(tmp_path:
         "ask",
         "--timeout",
         "6s",
-        "grove-assistant",
+        "grove-master",
         "system prompt\n\n<facts-json>{}</facts-json>",
     ]
     assert calls[0]["timeout"] == 7.0
     assert calls[0]["cwd"] == tmp_path
+
+
+def test_live_master_routed_chat_does_not_convert_actions_to_preview(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: Sequence[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+        cwd: Path,
+    ) -> FakeCompletedProcess:
+        _ = (capture_output, text, timeout, check, cwd)
+        calls.append(list(args))
+        return FakeCompletedProcess(stdout="MASTER가 직접 처리할게요.\n")
+
+    client = NodeRoutedAssistantClient(
+        cli_path=tmp_path / "dist" / "cli.js",
+        cwd=tmp_path,
+        runner=fake_run,
+    )
+    broker = AssistantBroker(llm_client=client)
+    store = SQLiteBoardStore(tmp_path / "board.db")
+
+    response = broker.handle_turn(
+        "리뷰어 노드 만들어줘",
+        _context(store=store, workspace_path=tmp_path),
+    )
+
+    assert response.response_type == "answer"
+    assert response.answer is not None
+    assert response.answer.text == "MASTER가 직접 처리할게요."
+    assert response.proposal is None
+    assert calls[0][5] == "grove-master"
+    assert len(calls) == 1
 
 
 def test_node_routed_transport_raises_busy_on_timeout_or_rate_limit(tmp_path: Path) -> None:
@@ -303,8 +340,13 @@ def test_handle_turn_blocks_prompt_injection_with_llm_generated_denial(tmp_path:
         "그 요청은 안전하게 도와드릴 수 없어요. 다른 방식으로 질문해 주세요."
     )
     assert len(llm.calls) == 1
+    system_prompt = llm.calls[0]["system_prompt"]
+    assert "deterministic safety gate" not in system_prompt
+    assert "safety gate" not in system_prompt
+    assert "not as a cage" in system_prompt
     prompt = llm.calls[0]["user_prompt"]
     assert "decision-json" in prompt
+    assert "safety gate" not in prompt
     assert "prompt-injection request" in prompt
 
 
@@ -334,6 +376,8 @@ def test_handle_notice_generates_user_visible_text_from_llm(tmp_path: Path) -> N
     assert len(llm.calls) == 1
     system_prompt = llm.calls[0]["system_prompt"]
     user_prompt = llm.calls[0]["user_prompt"]
+    assert "deterministic bridge layer" not in system_prompt
+    assert "not as a cage" in system_prompt
     assert "implementation terms" in system_prompt
     assert "operator role required" in user_prompt
 

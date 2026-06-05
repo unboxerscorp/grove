@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { api, CANONICAL_STATUSES, canonicalStatus } from "../api";
-import { CANONICAL_COLUMNS, COLUMNS, MANUAL_STATUS_COLUMNS, cx, initials, statusColor } from "../constants";
+import { api, canonicalStatus } from "../api";
+import { COLUMNS, HUMAN_CREATE_STATUS_COLUMNS, HUMAN_LIST_COLUMNS, MANUAL_STATUS_COLUMNS, cx, initials, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { AssigneeCandidate, BoardWorkflow, Task } from "../types";
 
@@ -13,23 +13,26 @@ function shortId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 10)}…` : id;
 }
 
+function humanListKey(task: Task, workflow: BoardWorkflow | null): string {
+  const status = canonicalStatus(task.status, workflow);
+  return task.needs_human || status === "ask_human" ? "ask_human" : "todo";
+}
+
 function AddTaskForm(props: { boardId: string; initialStatus?: string; onCreated: () => void; onClose: () => void }) {
   const { boardId, initialStatus, onCreated, onClose } = props;
   const { t } = useI18n();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [assignee, setAssignee] = useState("");
-  const [reviewer, setReviewer] = useState(""); // v1.29 optional reviewer
   const [candidates, setCandidates] = useState<AssigneeCandidate[]>([]);
-  const [reviewerCands, setReviewerCands] = useState<AssigneeCandidate[]>([]);
   const [status, setStatus] = useState<string>(initialStatus ?? COLUMNS[0].key);
   const [priority, setPriority] = useState<string>("normal");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // assignee = a REQUIRED dropdown of the project's nodes + lead/orchestrator,
-  // defaulting to project-master (web_app.py assignee_candidates/default_assignee;
-  // falls back to /api/org nodes if the candidate list is absent). No free input.
+  // assignee = a REQUIRED dropdown of the project's nodes + default node
+  // (web_app.py assignee_candidates/default_assignee; falls back to /api/org
+  // nodes if the candidate list is absent). No free input.
   useEffect(() => {
     let alive = true;
     api
@@ -41,7 +44,6 @@ function AddTaskForm(props: { boardId: string; initialStatus?: string; onCreated
             ? o.assignee_candidates
             : (o.nodes ?? []).map((n) => ({ name: n.name, role: n.role, agent: n.agent, status: n.status }));
         setCandidates(cands);
-        setReviewerCands(o.reviewer_candidates && o.reviewer_candidates.length > 0 ? o.reviewer_candidates : cands);
         const def =
           o.default_assignee && cands.some((c) => c.name === o.default_assignee)
             ? o.default_assignee
@@ -70,7 +72,6 @@ function AddTaskForm(props: { boardId: string; initialStatus?: string; onCreated
         title: titleTrim,
         body: body.trim() || undefined,
         assignee: assignee.trim() || undefined,
-        reviewer: reviewer.trim() || undefined,
         status,
         priority,
       })
@@ -124,28 +125,13 @@ function AddTaskForm(props: { boardId: string; initialStatus?: string; onCreated
           ))}
         </select>
         <select
-          className="dr-select dr-addform__reviewer"
-          name="reviewer"
-          value={reviewer}
-          aria-label={t("add.reviewer")}
-          onChange={(e) => setReviewer(e.target.value)}
-        >
-          <option value="">{t("add.reviewerNone")}</option>
-          {reviewerCands.map((c) => (
-            <option key={c.name} value={c.name}>
-              {c.name}
-              {c.role ? ` · ${c.role}` : ""}
-            </option>
-          ))}
-        </select>
-        <select
           className="dr-select"
           name="status"
           value={status}
           aria-label={t("add.status")}
           onChange={(e) => setStatus(e.target.value)}
         >
-          {MANUAL_STATUS_COLUMNS.map((c) => (
+          {HUMAN_CREATE_STATUS_COLUMNS.map((c) => (
             <option key={c.key} value={c.key}>
               {statusLabel(t, c.key)}
             </option>
@@ -192,8 +178,6 @@ export function BoardView(props: {
   const [isViewer, setIsViewer] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState("");
-  const [assigneeFilter, setAssigneeFilter] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const [adding, setAdding] = useState(false);
   const [addStatus, setAddStatus] = useState<string | undefined>(undefined);
@@ -219,10 +203,7 @@ export function BoardView(props: {
     let alive = true;
     setLoading(true);
     api
-      .listTasks(boardId, {
-        status: statusFilter || undefined,
-        assignee: assigneeFilter || undefined,
-      })
+      .listTasks(boardId)
       .then((tk) => {
         if (!alive) return;
         setTasks(Array.isArray(tk) ? tk : []);
@@ -239,16 +220,7 @@ export function BoardView(props: {
     };
     // projectTick: refetch once the project (and its X-Grove-Project header) is
     // adopted/switched, so "default" resolves against the right project board.
-  }, [boardId, statusFilter, assigneeFilter, liveTick, projectTick, reloadKey, t]);
-
-  // Workflow columns (live or fallback). Done is always present + visible.
-  const wfColumns = useMemo(
-    () =>
-      workflow?.columns && workflow.columns.length > 0
-        ? workflow.columns.map((c) => ({ key: c.key, label: c.label }))
-        : CANONICAL_COLUMNS.map((c) => ({ key: c.key, label: c.label })),
-    [workflow],
-  );
+  }, [boardId, liveTick, projectTick, reloadKey, t]);
 
   // Manual status targets for the on-card dropdown: only NON-virtual workflow
   // columns (a virtual column like ask_human is display-only — the backend rejects
@@ -261,26 +233,17 @@ export function BoardView(props: {
     [workflow],
   );
 
-  // Group tasks by CANONICAL status (raw "claimed"/"executing" → "running" via aliases).
+  // The operator-facing board is now two human lists. Internal task status still
+  // exists for compatibility, but it no longer drives the visible columns.
   const byColumn = useMemo(() => {
     const map: Record<string, Task[]> = {};
-    for (const c of wfColumns) map[c.key] = [];
+    for (const c of HUMAN_LIST_COLUMNS) map[c.key] = [];
     for (const task of tasks) {
-      const key = canonicalStatus(task.status, workflow);
+      const key = humanListKey(task, workflow);
       (map[key] ??= []).push(task);
     }
     return map;
-  }, [tasks, wfColumns, workflow]);
-
-  // Render workflow columns + a fallback column for any unknown canonical key.
-  const columns = useMemo(() => {
-    const known = new Set<string>(wfColumns.map((c) => c.key));
-    const extra = Object.keys(byColumn)
-      .filter((k) => !known.has(k) && (byColumn[k]?.length ?? 0) > 0)
-      .sort()
-      .map((k) => ({ key: k, label: "" }));
-    return [...wfColumns, ...extra];
-  }, [byColumn, wfColumns]);
+  }, [tasks, workflow]);
 
   const transition = (taskId: string, toStatus: string) => {
     setError(null);
@@ -298,28 +261,7 @@ export function BoardView(props: {
           <span className="dr-board__title">{t("board.title")}</span>
           <span className="dr-board__count">{t("board.count", { n: tasks.length })}</span>
         </div>
-        <div className="dr-board__filters">
-          <select
-            className="dr-select"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            aria-label={t("add.status")}
-          >
-            <option value="">{t("board.allStatuses")}</option>
-            {(workflow?.canonical_statuses ?? CANONICAL_STATUSES).map((k) => (
-              <option key={k} value={k}>
-                {statusLabel(t, k)}
-              </option>
-            ))}
-          </select>
-          <input
-            className="dr-input"
-            type="text"
-            placeholder={t("board.assignee")}
-            value={assigneeFilter}
-            spellCheck={false}
-            onChange={(e) => setAssigneeFilter(e.target.value)}
-          />
+        <div className="dr-board__actions">
           <button
             type="button"
             className={cx("dr-addbtn", adding && "is-open")}
@@ -346,9 +288,10 @@ export function BoardView(props: {
       {error && <div className="dr-board__msg is-error">{error}</div>}
 
       <div className="dr-board__cols">
-        {columns.map((col) => {
+        {HUMAN_LIST_COLUMNS.map((col) => {
           const items = byColumn[col.key] ?? [];
-          const canAdd = manualStatuses.includes(col.key) && !["blocked", "done", "archived"].includes(col.key);
+          const label = t(col.labelKey);
+          const canAdd = !isViewer;
           return (
             <div key={col.key} className="dr-col" data-col={col.key}>
               <div
@@ -356,17 +299,17 @@ export function BoardView(props: {
                 style={{ "--accent": statusColor(col.key) } as React.CSSProperties}
               >
                 <div className="dr-col__title">
-                  <span className="dr-col__name">{col.label || statusLabel(t, col.key)}</span>
+                  <span className="dr-col__name">{label}</span>
                   <span className="dr-col__n">{items.length}</span>
                 </div>
                 {canAdd && (
                   <button
                     type="button"
                     className="dr-col__add"
-                    aria-label={t("board.addToStatus", { status: statusLabel(t, col.key) })}
-                    title={t("board.addToStatus", { status: statusLabel(t, col.key) })}
+                    aria-label={t("board.addToList", { list: label })}
+                    title={t("board.addToList", { list: label })}
                     onClick={() => {
-                      setAddStatus(col.key);
+                      setAddStatus(col.createStatus);
                       setAdding(true);
                     }}
                   >
@@ -377,6 +320,7 @@ export function BoardView(props: {
               <div className="dr-col__cards">
                 {items.map((task, i) => {
                   const canon = canonicalStatus(task.status, workflow);
+                  const statusOptions = manualStatuses.includes(canon) ? manualStatuses : [canon, ...manualStatuses];
                   return (
                     <div
                       key={task.id}
@@ -413,7 +357,7 @@ export function BoardView(props: {
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) => transition(task.id, e.target.value)}
                         >
-                          {manualStatuses.map((k) => (
+                          {statusOptions.map((k) => (
                             <option key={k} value={k}>
                               {statusLabel(t, k)}
                             </option>

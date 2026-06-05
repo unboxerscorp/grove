@@ -627,6 +627,51 @@ def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Pa
     assert chat.calls == []
 
 
+def test_human_gate_default_notice_does_not_route_to_master_node(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_notice(self: AssistantBroker, *args: object, **kwargs: object) -> MasterChatResponse:
+        _ = (self, args, kwargs)
+        raise AssertionError("human-gate notice must not ask the live master node")
+
+    monkeypatch.setattr(AssistantBroker, "handle_notice", fail_notice)
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board=board,
+        title="Need human",
+        body="What branch should I use?",
+        assignee="grove-qa",
+    )
+    claimed = store.claim_next(board=board, assignee="grove-qa", node_id="grove-qa", ttl_seconds=60)
+    assert claimed is not None
+    assert store.block(
+        board=board,
+        task_id=task.id,
+        run_id=claimed.run_id,
+        claim_lock=claimed.claim_lock,
+        reason="Need a branch decision",
+        metadata={"question": "Which branch?"},
+        needs_human=True,
+    )
+    slack = FakeSlackClient()
+    chat = FakeChatFacade()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+
+    assert connector.poll_human_gates() == 1
+    assert slack.posts[0][0] == "C123"
+    assert "Human decision needed" in slack.posts[0][1]
+    assert "Which branch?" in slack.posts[0][1]
+    assert chat.calls == []
+
+
 def test_human_gate_content_blocked_does_not_post_rule_text(tmp_path: Path) -> None:
     board = "main"
     store = SQLiteBoardStore(tmp_path / "board.db")
@@ -1169,6 +1214,108 @@ def test_chat_routing_uses_thread_session_and_posts_response(tmp_path: Path) -> 
     assert context.scope.origin_surface == "slack"
     assert context.scope.origin_page == "slack://T1/C123/111.222"
     assert slack.posts == [("C123", "assistant says status", "111.222")]
+
+
+def test_chat_routing_can_forward_addressed_turn_to_node(tmp_path: Path) -> None:
+    slack = FakeSlackClient()
+    chat = FakeChatFacade()
+    assistant = FakeAssistantBroker("assistant should not run")
+    connector = SlackConnector(
+        store=SQLiteBoardStore(tmp_path / "board.db"),
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(
+            default_node="chat-node",
+            channel_nodes={"C123": "channel-node"},
+        ),
+        assistant_broker=assistant,
+        route_chat_to_node=True,
+    )
+
+    handled = connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="<@BOT> summarize status",
+            ts="111.222",
+            thread_ts=None,
+            event_type="app_mention",
+        )
+    )
+
+    assert handled is True
+    assert assistant.calls == []
+    assert chat.calls == [("slack:T1:C123:111.222", "channel-node", "summarize status")]
+    assert slack.posts == [("C123", "grove reply", "111.222")]
+
+
+def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
+    tmp_path: Path,
+) -> None:
+    slack = FakeSlackClient()
+    chat = FakeChatFacade()
+    connector = SlackConnector(
+        store=SQLiteBoardStore(tmp_path / "board.db"),
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-master"),
+        assistant_broker=FakeAssistantBroker("assistant should not run"),
+        route_chat_to_node=True,
+    )
+
+    handled = connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="<@U0B8BMFJXSM> summarize status",
+            ts="111.222",
+            thread_ts=None,
+            event_type="app_mention",
+        )
+    )
+
+    assert handled is True
+    assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "summarize status")]
+    assert slack.posts == [("C123", "grove reply", "111.222")]
+
+
+def test_chat_routing_splits_long_assistant_response_in_thread(tmp_path: Path) -> None:
+    slack = FakeSlackClient()
+    chat = FakeChatFacade()
+    long_text = "hello " * 1100
+    assistant = FakeAssistantBroker(long_text)
+    connector = SlackConnector(
+        store=SQLiteBoardStore(tmp_path / "board.db"),
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-node"),
+        assistant_broker=assistant,
+    )
+
+    handled = connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="<@BOT> summarize everything",
+            ts="111.222",
+            thread_ts=None,
+            event_type="app_mention",
+        )
+    )
+
+    assert handled is True
+    assert len(slack.posts) == 3
+    assert all(
+        channel == "C123" and thread_ts == "111.222" for channel, _, thread_ts in slack.posts
+    )
+    assert all(len(text) <= 3000 for _, text, _ in slack.posts)
+    assert "".join(text for _, text, _ in slack.posts) == long_text
 
 
 def test_chat_routing_ignores_cold_channel_message_without_mention(tmp_path: Path) -> None:
@@ -3348,6 +3495,7 @@ def test_slack_main_wires_command_config_when_enabled(
         assert connector.command_config.node_names == frozenset({"worker"})
         assert connector.command_config.intake_enabled is True
         assert connector.command_config.intake_assignee == "worker"
+        assert connector.route_chat_to_node is True
         return socket
 
     def stop_after_poll(seconds: float) -> None:
@@ -3370,6 +3518,7 @@ def test_slack_main_wires_command_config_when_enabled(
                 "0.1",
                 "--enable-commands",
                 "--enable-intake",
+                "--route-chat-to-node",
                 "--intake-assignee",
                 "worker",
                 "--command-member",
@@ -3391,7 +3540,6 @@ def test_grove_chat_facade_uses_timeout_and_literal_argv(monkeypatch: pytest.Mon
     def fake_run(
         args: list[str],
         *,
-        input: str,
         capture_output: bool,
         text: bool,
         timeout: float,
@@ -3400,7 +3548,6 @@ def test_grove_chat_facade_uses_timeout_and_literal_argv(monkeypatch: pytest.Mon
         calls.append(
             {
                 "args": args,
-                "input": input,
                 "capture_output": capture_output,
                 "text": text,
                 "timeout": timeout,
@@ -3411,19 +3558,24 @@ def test_grove_chat_facade_uses_timeout_and_literal_argv(monkeypatch: pytest.Mon
 
     monkeypatch.setattr("grove_bridge.slack.subprocess.run", fake_run)
 
-    assert GroveServeChatFacade().send(session_id="s1", node="worker", text="hello") == "reply"
+    assert (
+        GroveServeChatFacade(grove_binary="/repo/dist/cli.js").send(
+            session_id="s1",
+            node="worker",
+            text="hello",
+        )
+        == "reply"
+    )
     assert calls == [
         {
             "args": [
-                "grove",
-                "serve",
-                "chat",
-                "--node",
+                "/repo/dist/cli.js",
+                "ask",
                 "worker",
-                "--session-id",
-                "s1",
+                "--timeout",
+                "120s",
+                "hello",
             ],
-            "input": "hello",
             "capture_output": True,
             "text": True,
             "timeout": GROVE_CHAT_TIMEOUT_SECONDS,

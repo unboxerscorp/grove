@@ -1,13 +1,13 @@
 ---
 name: grove-org
-description: Use before asking, assigning, spawning, or routing work to another grove node.
+description: Use before asking, sending, inspecting, or routing work to another grove node.
 ---
 
 # grove-org (alias: grove:org)
 
 ## Inspect first
 
-Before asking, assigning, spawning, or routing work, inspect the current grove organization. Do not ask the user what the current org is if it can be queried.
+Before asking, sending, inspecting, or routing work, inspect the current grove organization. Do not ask the user what the current org is if it can be queried.
 
 ```bash
 grove org --json
@@ -18,16 +18,16 @@ Check:
 
 - current node name, role, group, and parent
 - current node children
-- target node role, group, agent, status, and pane binding
-- whether the target is a leaf maker or an orchestrator
+- target node role, group, agent, status, tmux pane, and cwd
+- whether the target is the practical node to contact
 
 ## Routing rules
 
-If the current node has children, do not take leaf implementation work by default. Coordinate through child nodes and board tasks.
+Hierarchy is ownership and reporting metadata, not a communication restriction. Nodes may address reachable nodes in any project with `project:node` or command `--project`.
 
-If the target node does not exist, use `grove:spawn-node` before assigning durable work.
+Use direct conversation for node-to-node work. Do not force implementation, review, or blocker traffic through board tasks.
 
-If the work needs tracking, review, verification, or implementation, use a board task rather than an untracked chat. Use direct conversation only for short questions or clarification.
+If the target node does not exist, ask the human operator or project lead to request an org change. Do not spawn it yourself unless the human explicitly asks you to create it through the operator-marked path.
 
 ## Org fields
 
@@ -42,9 +42,10 @@ Expected org node fields:
   "children": [],
   "group": "core",
   "tmux_pane": "dev10:1.2",
+  "cwd": "/repo/project",
   "session_id": "session-id",
   "status": "idle"
 }
 ```
 
-Treat missing or stale bindings as a reason to rebind or spawn, not as a reason to guess.
+Treat missing or stale pane/cwd bindings as a reason to rebind or ask for operator repair, not as a reason to guess.

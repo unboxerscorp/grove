@@ -1356,7 +1356,7 @@ def test_rest_creates_task_on_board(tmp_path: Path) -> None:
     assert "Target role: Implementation maker" in task["body"]
     assert "Original message:\nTask details" in task["body"]
     assert "xoxb-secret" not in task["body"]
-    assert "dev10:1.2" not in task["body"]
+    assert "dev10:1.2" in task["body"]
     assert task["assignee"] == "worker"
     assert task["reviewer"] == "lead"
     assert task["status"] == "blocked"
@@ -1544,6 +1544,32 @@ def test_manual_task_status_accepts_ask_human_payload(tmp_path: Path) -> None:
     assert answered.json()["ok"] is True
     assert answered.json()["task"]["status"] == "ready"
     assert client.get("/api/inbox", headers=headers).json()["total"] == 0
+
+
+def test_board_task_payload_flags_blocked_needs_human_items(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="dev10", title="Needs decision", body=None, assignee="worker")
+    claimed = store.claim_next(board="dev10", assignee="worker", node_id="worker", ttl_seconds=60)
+    assert claimed is not None
+    assert claimed.task.id == task.id
+    assert store.block(
+        board="dev10",
+        task_id=task.id,
+        run_id=claimed.run_id,
+        claim_lock=claimed.claim_lock,
+        reason="Need human",
+        metadata={"needs_human": True},
+        needs_human=True,
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    response = client.get("/api/boards/main/tasks", headers=headers)
+
+    assert response.status_code == 200
+    item = response.json()[0]
+    assert item["status"] == "blocked"
+    assert item["needs_human"] is True
 
 
 def test_manual_task_status_idempotent_retry_applies_missing_reviewer(
@@ -5206,6 +5232,7 @@ def test_projects_endpoint_lists_registry_sessions_with_tmux_status(
             "display_name": "grove-dev",
             "workspace": "/repo/dev10",
             "node_count": 2,
+            "tmux_session": "dev10",
             "status": "running",
         },
         {
@@ -5213,6 +5240,7 @@ def test_projects_endpoint_lists_registry_sessions_with_tmux_status(
             "display_name": "stopped",
             "workspace": "/repo/stopped",
             "node_count": 1,
+            "tmux_session": "stopped",
             "status": "stopped",
         },
     ]
@@ -5301,6 +5329,51 @@ def test_org_includes_master_and_cross_project_leads(
     rendered = json.dumps(response.json()) + json.dumps(scoped.json())
     assert "/Users/chopin" not in rendered
     assert "xoxb-" not in rendered
+
+
+def test_org_does_not_synthesize_project_lead_when_grove_master_is_real(
+    tmp_path: Path,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "grove-master": {
+                "name": "grove-master",
+                "agent": "codex",
+                "parent": "",
+                "children": ["web", "slack"],
+                "tmux_pane": "dev10:0.0",
+            },
+            "web": {
+                "name": "web",
+                "agent": "codex",
+                "parent": "grove-master",
+                "tmux_pane": "dev10:1.0",
+            },
+            "slack": {
+                "name": "slack",
+                "agent": "codex",
+                "parent": "grove-master",
+                "tmux_pane": "dev10:2.0",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/org", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    payload = response.json()
+    nodes = {node["name"]: node for node in payload["nodes"]}
+    assert set(nodes) == {"grove-master", "slack", "web"}
+    assert nodes["grove-master"]["children"] == ["slack", "web"]
+    assert "lead@dev10" not in nodes
+    assert [candidate["name"] for candidate in payload["assignee_candidates"]] == [
+        "grove-master",
+        "slack",
+        "web",
+    ]
 
 
 def test_org_nodes_use_grove_master_as_cross_project_root(
@@ -5409,6 +5482,23 @@ def test_create_project_invokes_new_project_with_literal_argv(
                 "check": check,
             }
         )
+        write_registry(
+            tmp_path,
+            "new-dev",
+            {
+                "lead": {
+                    "name": "lead",
+                    "agent": "claude",
+                    "role": "Project lead for new-dev. Coordinate the project board and team.",
+                    "group": "core",
+                    "parent": "",
+                    "tmux_pane": "dev10:3.0",
+                    "cwd": "/repo/new-dev",
+                }
+            },
+            workspace="/repo/new-dev",
+            tmux_session="dev10",
+        )
         return subprocess.CompletedProcess(
             args=args,
             returncode=0,
@@ -5416,6 +5506,7 @@ def test_create_project_invokes_new_project_with_literal_argv(
                 {
                     "name": "new-dev",
                     "dir": "/repo/new-dev",
+                    "tmuxSession": "dev10",
                     "node_count": 0,
                 }
             ),
@@ -5439,37 +5530,35 @@ def test_create_project_invokes_new_project_with_literal_argv(
         "project": "new-dev",
         "session": "new-dev",
         "board": "new-dev",
+        "tmuxSession": "dev10",
+        "tmux_session": "dev10",
         "dir": "/repo/new-dev",
         "workspace": "/repo/new-dev",
         "node_count": 1,
         "status": "running",
         "default_assignee": "lead",
         "project_master": {
-            "name": "project-master",
+            "name": "lead",
             "agent": "claude",
-            "tmux_pane": "",
+            "cwd": "/repo/new-dev",
+            "tmux_pane": "dev10:3.0",
             "session_id": "",
-            "status": "external",
-            "role": "orchestrator",
+            "status": "idle",
+            "role": "Project lead for new-dev. Coordinate the project board and team.",
             "parent": "",
-            "group": "",
-            "description": "Project master/orchestrator.",
-            "kind": "meta",
-            "exposed": False,
-            "terminal_allowed": False,
-            "input_allowed": False,
-            "unavailable_reason": "meta node has no pane",
+            "group": "core",
+            "description": "",
+            "kind": "registry",
+            "exposed": True,
+            "terminal_allowed": True,
+            "input_allowed": True,
+            "unavailable_reason": "",
         },
     }
     registry = read_registry(tmp_path, "new-dev")
     assert registry["workspace"] == "/repo/new-dev"
-    assert cast(dict[str, object], registry["nodes"])["project-master"] == {
-        "name": "project-master",
-        "agent": "claude",
-        "role": "orchestrator",
-        "status": "external",
-        "description": "Project master/orchestrator.",
-    }
+    assert registry["tmuxSession"] == "dev10"
+    assert set(cast(dict[str, object], registry["nodes"])) == {"lead"}
     org = client.get(
         "/api/org",
         headers=auth_headers(client) | {"X-Grove-Project": "new-dev"},
@@ -5483,15 +5572,21 @@ def test_create_project_invokes_new_project_with_literal_argv(
     assert org.json()["default_assignee"] == "lead"
     assert [candidate["name"] for candidate in org.json()["assignee_candidates"]] == [
         "lead",
-        "project-master",
     ]
-    project_task = client.post(
+    ignored_meta_task = client.post(
         "/api/boards/main/tasks",
         headers=auth_headers(client) | {"X-Grove-Project": "new-dev"},
         json={"title": "Master task", "assignee": "project-master"},
     )
+    assert ignored_meta_task.status_code == 200
+    assert "assignee" not in ignored_meta_task.json()
+    project_task = client.post(
+        "/api/boards/main/tasks",
+        headers=auth_headers(client) | {"X-Grove-Project": "new-dev"},
+        json={"title": "Lead task", "assignee": "lead"},
+    )
     assert project_task.status_code == 200
-    assert project_task.json()["assignee"] == "project-master"
+    assert project_task.json()["assignee"] == "lead"
     assert calls == [
         {
             "args": [
@@ -5502,6 +5597,8 @@ def test_create_project_invokes_new_project_with_literal_argv(
                 "python",
                 "--clone",
                 "https://example.test/repo.git",
+                "--tmux-session",
+                "dev10",
                 "--json",
             ],
             "capture_output": True,
@@ -5747,6 +5844,7 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
                 "role": "builder",
                 "parent": "lead",
                 "group": "core",
+                "cwd": "/repo/dev10",
                 "tmux_pane": "dev10:1.1",
                 "status": "running",
             },
@@ -5807,6 +5905,7 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
     assert nodes["lead-pane"]["unavailable_reason"] == ""
     assert nodes["qa"]["parent"] == "lead@dev10"
     assert nodes["worker"]["parent"] == "lead@dev10"
+    assert nodes["worker"]["cwd"] == "/repo/dev10"
     assert nodes["worker"]["status"] == "running"
     assert payload["default_assignee"] == "lead"
     assert [candidate["name"] for candidate in payload["assignee_candidates"]] == [
@@ -5959,9 +6058,9 @@ def test_org_payload_includes_master_and_human_routing_support(
         "selected_project": "dev10",
         "visible_projects": ["dev10", "dev11"],
         "project_master": {
-            "name": "project-master",
+            "name": "worker",
             "present": True,
-            "default_assignee": False,
+            "default_assignee": True,
         },
         "delegation": {
             "default_assignee": "worker",
@@ -6758,6 +6857,7 @@ def test_create_node_invokes_spawn_with_literal_argv(
             "args": [
                 "grove",
                 "spawn",
+                "--operator",
                 "--name",
                 "worker-1",
                 "--agent",
@@ -6848,6 +6948,7 @@ def test_create_node_passes_role_preset_to_spawn_cli(
         [
             "grove",
             "spawn",
+            "--operator",
             "--name",
             "worker-py",
             "--agent",
@@ -6950,6 +7051,7 @@ def test_create_node_uses_project_header_session(
         [
             "grove",
             "spawn",
+            "--operator",
             "--name",
             "new-worker",
             "--agent",
@@ -7000,6 +7102,7 @@ def test_create_node_payload_cwd_overrides_project_workspace(
         [
             "grove",
             "spawn",
+            "--operator",
             "--name",
             "worker-cwd",
             "--agent",
@@ -7068,8 +7171,7 @@ def test_terminate_node_owner_preview_and_confirm_uses_literal_despawn_argv(
             "grove",
             "despawn",
             "child",
-            "--caller",
-            "owner",
+            "--operator-override",
             "--session",
             "dev10",
             "--json",
@@ -7079,9 +7181,9 @@ def test_terminate_node_owner_preview_and_confirm_uses_literal_despawn_argv(
     assert len(audit_events) == 1
     assert audit_events[0].kind == "audit.node.terminate"
     assert audit_events[0].payload["actor"] == {
-        "kind": "node",
-        "id": "owner",
-        "login": "owner",
+        "kind": "local",
+        "id": "lead",
+        "login": "lead",
         "role": "none",
     }
     assert audit_events[0].payload["target"] == {
@@ -7092,7 +7194,7 @@ def test_terminate_node_owner_preview_and_confirm_uses_literal_despawn_argv(
     assert audit_events[0].payload["subtree"] == ["child", "grand"]
 
 
-def test_terminate_node_rejects_non_owner(
+def test_terminate_node_operator_preview_ignores_caller_ownership(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7109,11 +7211,14 @@ def test_terminate_node_rejects_non_owner(
         json={"caller": "other"},
     )
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "caller does not own target node"
+    assert response.status_code == 200
+    assert response.json()["confirmed"] is False
+    assert response.json()["caller"] == ""
+    assert response.json()["operator_override"] is True
+    assert response.json()["subtree"] == ["child", "grand"]
 
 
-def test_terminate_node_rejects_descendant_not_direct_child(
+def test_terminate_node_operator_preview_can_target_descendant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7130,8 +7235,11 @@ def test_terminate_node_rejects_descendant_not_direct_child(
         json={"caller": "owner"},
     )
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "caller does not own target node"
+    assert response.status_code == 200
+    assert response.json()["confirmed"] is False
+    assert response.json()["caller"] == ""
+    assert response.json()["operator_override"] is True
+    assert response.json()["subtree"] == ["grand"]
 
 
 def test_terminate_node_operator_override_succeeds_and_audits(
@@ -7546,7 +7654,12 @@ def test_ws_ticket_binds_project_from_request_header(tmp_path: Path) -> None:
     assert grant.pane_id is None
 
 
-def test_ws_ticket_requires_team_operator(tmp_path: Path) -> None:
+def test_ws_ticket_requires_team_auth_without_csrf_or_operator_role(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"}},
+    )
     write_team_member(tmp_path, name="viewer", secret="viewer-secret", role="viewer")
     write_team_member(
         tmp_path,
@@ -7557,6 +7670,7 @@ def test_ws_ticket_requires_team_operator(tmp_path: Path) -> None:
         append=True,
     )
     store = SQLiteBoardStore(tmp_path / "board.db")
+    anonymous = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
     viewer = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
     operator = make_client(tmp_path, store, auth_mode=AuthMode.TEAM_COOKIE)
     viewer_login = viewer.post("/api/login", json={"name": "viewer", "secret": "viewer-secret"})
@@ -7565,22 +7679,30 @@ def test_ws_ticket_requires_team_operator(tmp_path: Path) -> None:
         json={"name": "operator", "secret": "operator-secret"},
     )
 
+    anonymous_response = anonymous.post("/api/ws-ticket", json={"kind": "board"})
     viewer_response = viewer.post(
         "/api/ws-ticket",
-        headers={CSRF_HEADER: str(viewer_login.json()["csrf"])},
         json={"kind": "board"},
     )
     operator_response = operator.post(
         "/api/ws-ticket",
-        headers={CSRF_HEADER: str(operator_login.json()["csrf"])},
         json={"kind": "board"},
+    )
+    viewer_terminal_response = viewer.post(
+        "/api/ws-ticket",
+        json={"kind": "terminal", "pane_id": "dev10:2.0"},
     )
 
     assert viewer_login.status_code == 200
     assert operator_login.status_code == 200
-    assert viewer_response.status_code == 403
+    assert anonymous_response.status_code == 401
+    assert viewer_response.status_code == 200
     assert operator_response.status_code == 200
+    assert viewer_terminal_response.status_code == 200
+    assert viewer_response.json()["kind"] == "board"
     assert operator_response.json()["kind"] == "board"
+    assert viewer_terminal_response.json()["kind"] == "terminal"
+    assert viewer_terminal_response.json()["pane_id"] == "dev10:2.0"
 
 
 def test_ws_ticket_uses_query_fallback_when_body_is_empty(tmp_path: Path) -> None:
@@ -8243,6 +8365,7 @@ def write_registry(
     *,
     workspace: str | None = None,
     display_name: str | None = None,
+    tmux_session: str | None = None,
 ) -> None:
     registry = {
         "session": session,
@@ -8252,6 +8375,8 @@ def write_registry(
         registry["workspace"] = workspace
     if display_name is not None:
         registry["display_name"] = display_name
+    if tmux_session is not None:
+        registry["tmuxSession"] = tmux_session
     path = tmp_path / ".grove" / session / "registry.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(registry), encoding="utf-8")

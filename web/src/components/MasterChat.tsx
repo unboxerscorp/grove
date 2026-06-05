@@ -1,6 +1,6 @@
 // MasterChat — floating web chat widget (Channel-Talk style, bottom-right).
 //
-// v1.27. Conversational launcher to the project-master orchestrator. Mounted
+// v1.27. Conversational launcher to GROVE MASTER. Mounted
 // once at the app root (see app.tsx). Strings live in i18n.tsx (mchat.*), styles
 // in styles.css (.dr-mchat), and the REST calls live in api.ts.
 //
@@ -114,7 +114,7 @@ function MasterFacts({ facts }: { facts?: MasterChatFacts }) {
   const needsHuman = facts.human?.needs_human_count;
   const projects = facts.projects?.visible ?? [];
   const humans = facts.human?.assignee_candidates ?? [];
-  const masterName = facts.org?.project_master?.name;
+  const defaultNode = facts.org?.project_master?.name ?? facts.delegation?.default_assignee;
   const hasFacts =
     statusItems.length > 0 ||
     typeof reviewers === "number" ||
@@ -122,11 +122,11 @@ function MasterFacts({ facts }: { facts?: MasterChatFacts }) {
     typeof needsHuman === "number" ||
     projects.length > 0 ||
     humans.length > 0 ||
-    !!masterName;
+    !!defaultNode;
   if (!hasFacts) return null;
   return (
     <div className="dr-mchat__facts" data-master-facts="true">
-      {masterName && <span className="dr-mchat__fact">MASTER {masterName}</span>}
+      {defaultNode && <span className="dr-mchat__fact">default {defaultNode}</span>}
       {typeof reviewers === "number" && <span className="dr-mchat__fact">reviewers {reviewers}</span>}
       {statusItems.map(([status, count]) => (
         <span key={status} className="dr-mchat__fact">

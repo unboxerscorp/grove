@@ -1,43 +1,35 @@
 ---
 name: grove-delegate
-description: Use when giving work to another grove node, deciding between conversation and assigned board work.
+description: Use when handing context or requests to another grove node without forcing task-based communication.
 ---
 
 # grove-delegate (alias: grove:delegate)
 
-## Choose ask or assign
+## Direct first
 
-Use `ask` for short, single-turn conversation:
+Use `ask` for a direct question:
 
 ```bash
 grove ask <node> "<question>"
 grove ask <project:node> "<question>"
 ```
 
-Use `send` plus `wait` for an interactive exchange that does not need durable tracking:
+Use `send` plus `wait` for an asynchronous direct exchange:
 
 ```bash
 grove send <node> "<message>"
 grove wait <node>
 ```
 
-The org tree records ownership and reporting structure. It is not a communication boundary;
-nodes may talk across siblings or projects, using `project:node` or `--project` for remote
-project targets.
+The org tree records ownership and reporting structure. It is not a communication boundary. Nodes may talk across siblings or projects using `project:node` or `--project`.
 
-Use a board task for implementation, verification, review, multi-step work, or anything that must survive restarts:
+Do not force node-to-node implementation, review, or blocker traffic through board tasks. Board tasks are for human TODOs, human feedback, and ask-human records.
 
-```text
-create_task(board=<board>, assignee=<node-or-project:node>, ...)
-claim -> complete
-claim -> block
-```
+Do not autonomously create or delete nodes. If the human explicitly asks for an org change, use the operator-marked GUI/API/CLI path and report the result.
 
-Do not create ephemeral subagents. Persistent grove nodes receive board tasks.
+## Message Spec
 
-## Task spec
-
-A delegated task spec should include:
+A useful direct handoff should include:
 
 - goal and expected output
 - scope and files that may be touched
@@ -47,14 +39,8 @@ A delegated task spec should include:
 - reporting format
 - blocking criteria
 
-Assign reviewers as board tasks or spawn a reviewer node when no suitable reviewer exists.
+If a needed node does not exist, ask the human operator or project lead to request an org change.
 
-## Board operations
+## Human Tasks
 
-```http
-POST /api/boards/{board_id}/tasks
-GET /api/boards/{board_id}/tasks?status=ready&assignee=<child>
-POST /api/tasks/{task_id}/comments
-```
-
-Store routing data in task metadata. Complete only after the assignee reports verification evidence.
+Use human-facing tasks only for operator TODOs, feedback, and "human judgment needed" items. A human may reference a task number when instructing master or a project lead.

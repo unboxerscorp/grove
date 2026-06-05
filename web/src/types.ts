@@ -10,6 +10,7 @@ export interface Task {
   id: string;
   title: string;
   status: string; // RAW backend status (e.g. "running") — canonicalize via workflow aliases
+  needs_human?: boolean;
   assignee?: string;
   reviewer?: string; // v1.29 per-task reviewer (web_app.py Task.reviewer)
   tenant?: string;
@@ -87,7 +88,7 @@ export interface OrgNode extends GroveNode {
 }
 
 // One selectable task assignee (web_app.py _assignee_candidate_payload): a
-// project node or the lead/orchestrator. `default` marks the project-master.
+// project node or lead/orchestrator. `default` marks the default node.
 export interface AssigneeCandidate {
   name: string;
   agent?: string;
@@ -218,7 +219,7 @@ export interface Org {
   roots: string[];
   groups?: Record<string, string[]> | string[];
   children?: Record<string, string[]>;
-  // v1.27: candidate assignees + the default (project-master) for task creation.
+  // v1.27: candidate assignees + the default node for task creation.
   default_assignee?: string;
   assignee_candidates?: AssigneeCandidate[];
   master_org?: MasterOrg;

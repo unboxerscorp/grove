@@ -402,7 +402,7 @@ def classify_master_message(message: str) -> MasterClassification:
         response_mode="answer",
         requires_confirmation=False,
         confidence=0.45,
-        reason="no deterministic rule matched",
+        reason="no supported request pattern matched",
         needs_clarification=True,
     )
 
@@ -482,7 +482,7 @@ def handle_natural_language_request(
     gate: MasterOperatorGate,
     audit: MasterAuditSink,
 ) -> MasterTurnResult:
-    """Handle an NL turn through the deterministic preview-first contract."""
+    """Handle an NL turn through the preview-first contract."""
     response = handle_master_chat(
         MasterChatRequest(turn=turn, route_target=FeedbackRouteTarget.grove_dev_default())
     )

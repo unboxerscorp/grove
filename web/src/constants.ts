@@ -25,6 +25,15 @@ export const VIRTUAL_STATUS_KEYS = new Set<string>(["ask_human"]);
 // change (on-card dropdown + task-drawer select) when no live workflow is known.
 export const MANUAL_STATUS_COLUMNS = CANONICAL_COLUMNS.filter((c) => !VIRTUAL_STATUS_KEYS.has(c.key));
 
+export const HUMAN_LIST_COLUMNS = [
+  { key: "todo", labelKey: "board.list.todo", createStatus: "ready" },
+  { key: "ask_human", labelKey: "board.list.human", createStatus: "ask_human" },
+] as const;
+
+export const HUMAN_CREATE_STATUS_COLUMNS = CANONICAL_COLUMNS.filter((c) =>
+  ["ready", "ask_human"].includes(c.key),
+);
+
 // Status -> CSS custom property name for accents (defined in styles.css).
 export const STATUS_COLOR: Record<string, string> = {
   triage: "var(--slate)",

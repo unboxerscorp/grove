@@ -45,6 +45,7 @@ DIGEST_REMINDER_MODE = "digest_reminder"
 INTAKE_CONFIRM_ACTION_ID = "grove_intake_confirm"
 INTAKE_ANSWER_ONLY_ACTION_ID = "grove_intake_answer_only"
 SLACK_EVENT_DEDUPE_MAX = 1000
+SLACK_ASSISTANT_RESPONSE_CHUNK_CHARS = 3000
 SLACK_SCOPES = (
     "app_mentions:read",
     "channels:history",
@@ -64,6 +65,15 @@ SlackCommandRole = Literal["admin", "operator", "viewer"]
 SlackCommandName = Literal["approve", "abort", "killswitch", "task_create"]
 SlackIntentName = Literal["bug", "feedback", "task_request", "question", "command"]
 TASK_INTENTS = frozenset({"bug", "feedback", "task_request"})
+
+
+def _slack_assistant_response_chunks(text: str) -> tuple[str, ...]:
+    if len(text) <= SLACK_ASSISTANT_RESPONSE_CHUNK_CHARS:
+        return (text,)
+    return tuple(
+        text[index : index + SLACK_ASSISTANT_RESPONSE_CHUNK_CHARS]
+        for index in range(0, len(text), SLACK_ASSISTANT_RESPONSE_CHUNK_CHARS)
+    )
 
 
 class SlackClientProtocol(Protocol):
@@ -476,29 +486,38 @@ class SlackSdkClient:
 
 
 class GroveServeChatFacade:
-    def __init__(self, *, grove_binary: str = "grove") -> None:
-        self.grove_binary = grove_binary
+    def __init__(self, *, grove_binary: str | None = None) -> None:
+        self.grove_binary = grove_binary or _default_grove_binary()
 
     def send(self, *, session_id: str, node: str, text: str) -> str:
+        _ = session_id
         proc = subprocess.run(
             [
                 self.grove_binary,
-                "serve",
-                "chat",
-                "--node",
+                "ask",
                 node,
-                "--session-id",
-                session_id,
+                "--timeout",
+                f"{int(GROVE_CHAT_TIMEOUT_SECONDS)}s",
+                text,
             ],
-            input=text,
             capture_output=True,
             text=True,
             timeout=GROVE_CHAT_TIMEOUT_SECONDS,
             check=False,
         )
         if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or f"grove serve exited {proc.returncode}")
+            raise RuntimeError(proc.stderr.strip() or f"grove ask exited {proc.returncode}")
         return proc.stdout.strip()
+
+
+def _default_grove_binary() -> str:
+    configured = os.environ.get("GROVE_BINARY")
+    if configured is not None and configured.strip():
+        return configured.strip()
+    local_cli = _assistant_workspace_path() / "dist" / "cli.js"
+    if local_cli.is_file():
+        return str(local_cli)
+    return "grove"
 
 
 class SlackConfirmationStore:
@@ -598,16 +617,19 @@ class SlackConnector:
         confirmation_store: SlackConfirmationStore | None = None,
         assistant_broker: AssistantBrokerProtocol | None = None,
         bot_user_id: str | None = None,
+        route_chat_to_node: bool = False,
     ) -> None:
         self.store = store
         self.slack_client = slack_client
         self.chat_facade = chat_facade
+        self._uses_default_assistant_broker = assistant_broker is None
         self.assistant_broker = assistant_broker or AssistantBroker()
         self.human_gate = human_gate
         self.chat_route = chat_route
         self.command_config = command_config
         self.digest_config = digest_config
         self.bot_user_id = bot_user_id or None
+        self.route_chat_to_node = route_chat_to_node
         self.confirmations = confirmation_store or (
             SlackConfirmationStore(
                 ttl_seconds=command_config.confirmation_ttl_seconds,
@@ -659,21 +681,28 @@ class SlackConnector:
                 event_type="message",
             )
             try:
-                thread_ts = self._post_assistant_notice(
-                    gate_event,
-                    decision="human_gate",
-                    reason="human_gate_required",
-                    thread_ts=pending_thread_ts,
-                    metadata={
-                        "task_id": task.id,
-                        "title": task.title,
-                        "assignee": task.assignee,
-                        "question": task.metadata.get("question"),
-                        "body": task.body,
-                    },
-                    slack_metadata=_human_gate_metadata(task),
-                    reply_in_thread=False,
-                )
+                if self._uses_default_assistant_broker:
+                    thread_ts = self._post_human_gate_notice(
+                        gate_event,
+                        task=task,
+                        slack_metadata=_human_gate_metadata(task),
+                    )
+                else:
+                    thread_ts = self._post_assistant_notice(
+                        gate_event,
+                        decision="human_gate",
+                        reason="human_gate_required",
+                        thread_ts=pending_thread_ts,
+                        metadata={
+                            "task_id": task.id,
+                            "title": task.title,
+                            "assignee": task.assignee,
+                            "question": task.metadata.get("question"),
+                            "body": task.body,
+                        },
+                        slack_metadata=_human_gate_metadata(task),
+                        reply_in_thread=False,
+                    )
             except Exception as exc:
                 LOGGER.warning("Slack human gate post failed: %s", _safe_log_error(exc))
                 continue
@@ -824,7 +853,7 @@ class SlackConnector:
         if not self._remember_event(event):
             return True
         if is_addressed and not _explicit_reserved_command_text(event.text):
-            return self._handle_assistant_turn(event, thread_ts=thread_ts)
+            return self._handle_chat(event, thread_ts=thread_ts)
         if is_human_reply_thread and self._handle_human_reply(event, thread_ts=thread_ts):
             return True
         if _explicit_reserved_command_text(event.text) and self._handle_command(
@@ -2031,11 +2060,12 @@ class SlackConnector:
         )
         if should_post_response:
             try:
-                self.slack_client.post_message(
-                    channel=event.channel,
-                    text=response_text,
-                    thread_ts=thread_ts,
-                )
+                for response_chunk in _slack_assistant_response_chunks(response_text):
+                    self.slack_client.post_message(
+                        channel=event.channel,
+                        text=response_chunk,
+                        thread_ts=thread_ts,
+                    )
             except Exception as exc:
                 LOGGER.warning(
                     "Slack assistant response could not be posted: %s",
@@ -2151,6 +2181,20 @@ class SlackConnector:
             metadata=slack_metadata,
         )
 
+    def _post_human_gate_notice(
+        self,
+        event: SlackEvent,
+        *,
+        task: Task,
+        slack_metadata: Mapping[str, object],
+    ) -> str:
+        return self.slack_client.post_message(
+            channel=event.channel,
+            text=_human_gate_notice_text(task),
+            thread_ts=None,
+            metadata=slack_metadata,
+        )
+
     def _assistant_board(self) -> str:
         if self.command_config is not None:
             return self.command_config.board
@@ -2159,7 +2203,41 @@ class SlackConnector:
         return self.human_gate.board
 
     def _handle_chat(self, event: SlackEvent, *, thread_ts: str) -> bool:
-        return self._handle_assistant_turn(event, thread_ts=thread_ts)
+        if not self.route_chat_to_node:
+            return self._handle_assistant_turn(event, thread_ts=thread_ts)
+        session_id = _slack_assistant_conversation_id(event, thread_ts=thread_ts)
+        text = _normalize_slack_text(event.text)
+        node = _select_chat_node(event, self.chat_route)
+        lock = self._locks.setdefault(session_id, threading.Lock())
+        try:
+            with lock:
+                response_text = self.chat_facade.send(
+                    session_id=session_id,
+                    node=node,
+                    text=text,
+                )
+        except Exception as exc:
+            LOGGER.warning("Slack node chat failed: %s", _safe_log_error(exc))
+            response_text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
+        self.store.upsert_slack_thread(
+            board=self.human_gate.board,
+            task_id=None,
+            team_id=event.team,
+            channel_id=event.channel,
+            thread_ts=thread_ts,
+            mode="chat",
+            node=node,
+        )
+        try:
+            for response_chunk in _slack_assistant_response_chunks(response_text):
+                self.slack_client.post_message(
+                    channel=event.channel,
+                    text=response_chunk,
+                    thread_ts=thread_ts,
+                )
+        except Exception as exc:
+            LOGGER.warning("Slack node chat response could not be posted: %s", _safe_log_error(exc))
+        return True
 
 
 def slack_manifest() -> dict[str, object]:
@@ -2266,6 +2344,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--digest-live", action="store_true")
     parser.add_argument("--digest-interval", type=int, default=300)
     parser.add_argument("--enable-reminders", action="store_true")
+    parser.add_argument("--route-chat-to-node", action="store_true")
     parser.add_argument("--reminder-after-seconds", type=int, default=3600)
     parser.add_argument("--max-reminders", type=int, default=1)
     parser.add_argument("--intake-assignee")
@@ -2330,6 +2409,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         command_config=command_config,
         digest_config=digest_config,
         bot_user_id=_bot_user_id_from_client(slack_client),
+        route_chat_to_node=args.route_chat_to_node,
     )
     socket_client = _build_socket_client(config=config, connector=connector)
     socket_client.connect()
@@ -2550,6 +2630,20 @@ def _human_gate_metadata(task: Task) -> dict[str, object]:
     }
 
 
+def _human_gate_notice_text(task: Task) -> str:
+    question = _safe_slack_message_text(task.metadata.get("question") or task.body or "")
+    title = _safe_slack_text(task.title)
+    assignee = _safe_slack_text(task.assignee or "unassigned")
+    lines = [
+        f"Human decision needed for task {task.id}: {title}",
+        f"Assignee: {assignee}",
+    ]
+    if question:
+        lines.append(f"Question: {question}")
+    lines.append("Reply in this thread to answer and unblock the task.")
+    return "\n".join(lines)
+
+
 def _message_metadata_matches(
     metadata: Mapping[object, object],
     *,
@@ -2653,7 +2747,7 @@ def _slack_assistant_request_id(event: SlackEvent) -> str:
 
 def _assistant_response_text(response: MasterChatResponse) -> str:
     if response.answer is not None and response.answer.text.strip():
-        return _safe_slack_text(response.answer.text)
+        return _safe_slack_message_text(response.answer.text)
     raise AssistantContentBlocked("assistant response missing answer text")
 
 
@@ -2693,7 +2787,8 @@ def _select_chat_node(event: SlackEvent, route: ChatRouteConfig) -> str:
     channel_node = route.channel_nodes.get(event.channel)
     if channel_node is not None:
         return channel_node
-    for match in NODE_MENTION_RE.finditer(event.text):
+    text = _normalize_slack_text(event.text)
+    for match in NODE_MENTION_RE.finditer(text):
         mentioned = match.group("node")
         return route.mention_nodes.get(mentioned, mentioned)
     return route.default_node
@@ -2964,6 +3059,12 @@ def _safe_slack_text(value: object) -> str:
     without_paths = ABSOLUTE_PATH_RE.sub("[path]", str(value))
     without_secrets = redact_secret_text(without_paths)
     return EMAIL_RE.sub("[pii]", without_secrets)[:500]
+
+
+def _safe_slack_message_text(value: object) -> str:
+    without_paths = ABSOLUTE_PATH_RE.sub("[path]", str(value))
+    without_secrets = redact_secret_text(without_paths)
+    return EMAIL_RE.sub("[pii]", without_secrets)
 
 
 def _required_str(mapping: Mapping[str, object], key: str) -> str:

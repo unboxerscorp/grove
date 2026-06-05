@@ -167,9 +167,8 @@ export function SlackPanel({ projectTick = 0 }: { projectTick?: number }) {
   const hasError = !!status?.last_error;
   const stepIdx = STATUS_ORDER.indexOf(st);
   const guideCommands = [
-    ["bug: <symptom>", t("slack.guide.cmd.bug")],
+    [t("slack.guide.cmd.plain.k"), t("slack.guide.cmd.plain.v")],
     ["feedback: <note>", t("slack.guide.cmd.feedback")],
-    ["task: <request>", t("slack.guide.cmd.task")],
     ["confirm <id>", t("slack.guide.cmd.confirm")],
     ["@node <question>", t("slack.guide.cmd.chat")],
   ] as const;

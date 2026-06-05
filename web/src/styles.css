@@ -2942,7 +2942,7 @@ button {
   color: var(--faint);
 }
 
-.dr-board__filters {
+.dr-board__actions {
   display: flex;
   gap: 8px;
 }

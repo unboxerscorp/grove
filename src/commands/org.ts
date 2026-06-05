@@ -7,6 +7,7 @@ import {
   type Registry,
   sharedMasterRuntime,
 } from "../registry.js";
+import { target } from "../tmux.js";
 import { MASTER_REGISTRY_SESSION } from "../util/paths.js";
 
 export interface OrgNode {
@@ -17,6 +18,10 @@ export interface OrgNode {
   parent?: string;
   children: string[];
   group?: string;
+  cwd: string;
+  tmux_pane: string;
+  session_id: string;
+  status: string;
 }
 
 export interface OrgJson {
@@ -39,22 +44,33 @@ function runtimeNames(ctx: Context): string[] {
   ];
 }
 
-function orgNode(name: string, runtime: NodeRuntime, configured?: ResolvedNode): OrgNode {
+function orgNode(
+  name: string,
+  runtime: NodeRuntime,
+  configured: ResolvedNode | undefined,
+  session: string,
+): OrgNode {
   return {
     agent: runtime.agent ?? configured?.agent,
     children: [...(runtime.children ?? configured?.children ?? [])],
+    cwd: runtime.cwd ?? configured?.cwd ?? "",
     description: runtime.description ?? configured?.description,
     group: runtime.group ?? configured?.group,
     name,
     parent: runtime.parent ?? configured?.parent,
     role: runtime.role ?? configured?.role,
+    session_id: runtime.sessionId ?? "",
+    status: runtime.status ?? (runtime.pending ? "running" : ""),
+    tmux_pane: runtime.tmux_pane ?? (configured?.tmux ? target(session, configured.tmux) : ""),
   };
 }
 
-function masterOrgNode(masterRegistry: Registry | null): OrgNode {
+function masterOrgNode(masterRegistry: Registry | null, session: string): OrgNode {
   return orgNode(
     GROVE_MASTER_NODE_NAME,
     masterRegistry?.nodes[GROVE_MASTER_NODE_NAME] ?? sharedMasterRuntime(),
+    undefined,
+    session,
   );
 }
 
@@ -99,10 +115,10 @@ export function buildOrg(
 ): OrgJson {
   const configured = configuredByName(ctx);
   const nodes = runtimeNames(ctx).map((name) =>
-    orgNode(name, ctx.registry.nodes[name]!, configured.get(name)),
+    orgNode(name, ctx.registry.nodes[name]!, configured.get(name), ctx.config.session),
   );
   if (!nodes.some((node) => node.name === GROVE_MASTER_NODE_NAME)) {
-    nodes.unshift(masterOrgNode(masterRegistry));
+    nodes.unshift(masterOrgNode(masterRegistry, ctx.config.session));
   }
   applyMasterHierarchy(nodes);
   deriveChildren(nodes);
@@ -129,6 +145,16 @@ function descriptionLine(description: string | undefined, depth: number): string
   return label ? `${"  ".repeat(depth + 1)}description: ${label}` : null;
 }
 
+function metadataLines(node: OrgNode, depth: number): string[] {
+  const indent = "  ".repeat(depth + 1);
+  const lines: string[] = [];
+  if (node.tmux_pane) lines.push(`${indent}pane: ${node.tmux_pane}`);
+  if (node.cwd) lines.push(`${indent}cwd: ${node.cwd}`);
+  if (node.session_id) lines.push(`${indent}session_id: ${node.session_id}`);
+  if (node.status) lines.push(`${indent}status: ${node.status}`);
+  return lines;
+}
+
 export function renderOrgText(org: OrgJson): string {
   const byName = new Map(org.nodes.map((node) => [node.name, node]));
   const lines = [org.session];
@@ -138,6 +164,7 @@ export function renderOrgText(org: OrgJson): string {
     if (!node || seen.has(name)) return;
     seen.add(name);
     lines.push(`${"  ".repeat(depth)}${node.name} [${node.agent}]${roleSuffix(node.role)}`);
+    lines.push(...metadataLines(node, depth));
     const description = descriptionLine(node.description, depth);
     if (description) lines.push(description);
     for (const child of node.children) render(child, depth + 1);

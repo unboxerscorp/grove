@@ -1,31 +1,30 @@
 ---
 name: grove-orchestrator-rules
-description: Use when the current grove node has children or is coordinating work rather than doing leaf implementation.
+description: Use when the current grove node is coordinating work across visible peers.
 ---
 
 # grove-orchestrator-rules (alias: grove:orchestrator-rules)
 
 ## Rule
 
-If the current grove node has children, it is an orchestrator by default. It should not do leaf implementation.
+The org hierarchy describes ownership and responsibility, not a hard execution firewall. A coordinating node should usually route, clarify, verify, and integrate, but it may do direct work when that is the practical route or when the human asks.
 
 Allowed orchestrator work:
 
 - decompose work
-- create and assign board tasks
-- unblock or block tasks
+- send direct messages to the right nodes
+- inspect tmux panes and node cwd before routing
 - request verification
-- spawn missing roles
 - collect results and make integration decisions
 - fan out and fan in group discussions
+- create a human-facing TODO or ask-human item when human judgment is needed
 
-Exceptions:
+Org changes:
 
-- the user explicitly orders the current node to implement
-- there is an urgent repair and no child can take it
-- the current node has no children
+- Do not autonomously spawn, terminate, or rearrange nodes from a node session.
+- Ask the human operator or project lead when a new role or org change is needed; if the human explicitly asks you to perform it, use the operator-marked GUI/API/CLI path.
 
-TDD belongs to childless maker nodes. An orchestrator asks a maker to do TDD via a board task.
+TDD belongs wherever it is useful. Coordinate directly with the relevant node.
 
 ## Commands and APIs
 
@@ -34,14 +33,13 @@ grove org --json
 grove status
 ```
 
-Board operations:
+Human task operations:
 
 ```text
-create_task(board, assignee, title, body, metadata)
+create_task(board, title, body, metadata)
 add_comment(task, author, body)
-block(task, reason)
-unblock(task, actor, comment)
-list_tasks(board, status, assignee)
+ask_human(task, reason)
+done(task, comment)
 ```
 
-Use task metadata for workspace path, branch, session, and routing details. Do not encode workspace ownership only in the prompt text.
+Use tasks only for human-facing TODO, feedback, and ask-human records. Use direct node communication for node-to-node work.

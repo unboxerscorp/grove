@@ -81,11 +81,6 @@ function groupTarget(input: DespawnInput): string | undefined {
   return group ? validateGroveName(group, "--group") : undefined;
 }
 
-function callerName(input: DespawnInput): string | undefined {
-  const caller = trimmed(input.caller);
-  return caller ? validateGroveName(caller, "--caller") : undefined;
-}
-
 function targetNodes(ctx: Context, input: DespawnInput): string[] {
   const node = singleTarget(input);
   const group = groupTarget(input);
@@ -111,18 +106,11 @@ function targetNodes(ctx: Context, input: DespawnInput): string[] {
 
 function assertTerminationAllowed(ctx: Context, input: DespawnInput, names: string[]): void {
   if (input.operatorOverride) return;
-  const caller = callerName(input);
-  if (!caller) throw new Error("despawn requires --caller <node> or --operator-override");
-  if (!ctx.registry.nodes[caller]) throw new Error(`caller not found in registry: ${caller}`);
-
-  for (const name of names) {
-    if (name === caller) throw new Error(`${caller} cannot despawn itself`);
-    const runtime: NodeRuntime | undefined = ctx.registry.nodes[name];
-    if (!runtime) throw new Error(`node not found in registry: ${name}`);
-    if (runtime.parent !== caller) {
-      throw new Error(`${caller} cannot despawn ${name}: node is not a direct child`);
-    }
-  }
+  void ctx;
+  void names;
+  throw new Error(
+    "despawn changes the org chart; pass --operator-override for explicit human instruction",
+  );
 }
 
 function removeParentLinks(runtime: NodeRuntime, removed: Set<string>): NodeRuntime {

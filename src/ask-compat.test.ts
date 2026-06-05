@@ -9,6 +9,7 @@ import type { Context, NodeCtx } from "./context.js";
 import { appendTurnEvent } from "./events.js";
 import { ask } from "./ops.js";
 import { sendLiteral } from "./tmux.js";
+import { sessionDir } from "./util/paths.js";
 
 vi.mock("./tmux.js", () => ({
   sendEnter: vi.fn(async () => undefined),
@@ -16,10 +17,15 @@ vi.mock("./tmux.js", () => ({
 }));
 
 let tempDirs: string[] = [];
+let registrySessions: string[] = [];
+let contextCounter = 0;
 
 afterEach(() => {
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs = [];
+  for (const session of registrySessions)
+    rmSync(sessionDir(session), { recursive: true, force: true });
+  registrySessions = [];
 });
 
 function tempDir(): string {
@@ -29,6 +35,8 @@ function tempDir(): string {
 }
 
 function makeNodeCtx(currentTranscript: string): { ctx: Context; nc: NodeCtx } {
+  const session = `askcompat-${process.pid}-${Date.now()}-${contextCounter++}`;
+  registrySessions.push(session);
   const adapter = {
     name: "codex",
     label: "Codex",
@@ -62,7 +70,7 @@ function makeNodeCtx(currentTranscript: string): { ctx: Context; nc: NodeCtx } {
   const ctx: Context = {
     configPath: "/tmp/grove.yaml",
     config: {
-      session: "grove-test",
+      session,
       cwd: "/tmp/grove-test",
       defaults: { agent: "codex" },
       nodes: {
@@ -75,7 +83,7 @@ function makeNodeCtx(currentTranscript: string): { ctx: Context; nc: NodeCtx } {
     nodes: [nc.node],
     byName: new Map([["worker", nc]]),
     registry: {
-      session: "grove-test",
+      session,
       cwd: "/tmp/grove-test",
       updatedAt: "2026-06-03T00:00:00.000Z",
       nodes: {

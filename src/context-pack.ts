@@ -8,9 +8,11 @@ const MAX_NODE_LINES = 40;
 export interface ContextPackNode {
   name: string;
   agent?: string;
+  cwd?: string;
   parent?: string;
   group?: string;
   role?: string;
+  tmuxPane?: string;
 }
 
 export interface GroveContextPackInput {
@@ -22,7 +24,6 @@ export interface GroveContextPackInput {
   projectLead?: string;
   targetNode?: string;
   targetRole?: string;
-  taskProtocol?: string;
 }
 
 function clean(value: string | undefined, fallback = "(unknown)"): string {
@@ -36,7 +37,6 @@ function firstLine(value: string | undefined): string {
 
 export function redactGroveContextText(value: string): string {
   return value
-    .replace(/\b[A-Za-z0-9_-]+:\d+\.\d+\b/g, "[tmux-pane]")
     .replace(/\bxox[a-z]?-[^\s,)]+/gi, "[redacted]")
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "[redacted]")
     .replace(
@@ -68,6 +68,8 @@ function nodeLine(node: ContextPackNode): string {
   const parent = clean(node.parent, "root");
   const parts = [clean(node.agent, "unknown")];
   if (node.group?.trim()) parts.push(`group=${clean(node.group)}`);
+  if (node.tmuxPane?.trim()) parts.push(`pane=${clean(node.tmuxPane)}`);
+  if (node.cwd?.trim()) parts.push(`cwd=${clean(node.cwd)}`);
   const role = firstLine(node.role);
   if (role) parts.push(`role=${role}`);
   return `- ${parent} -> ${clean(node.name)} (${parts.join("; ")})`;
@@ -77,10 +79,12 @@ export function contextPackNodesFromRegistry(registry: Registry): ContextPackNod
   return Object.entries(registry.nodes)
     .map(([key, node]) => ({
       agent: node.agent,
+      cwd: node.cwd,
       group: node.group,
       name: node.name || key,
       parent: node.parent,
       role: node.role,
+      tmuxPane: node.tmux_pane,
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
 }
@@ -91,10 +95,12 @@ export function contextPackNodesFromContext(ctx: Context): ContextPackNode[] {
     const runtime = ctx.registry.nodes[node.name];
     byName.set(node.name, {
       agent: node.agent,
+      cwd: runtime?.cwd ?? node.cwd,
       group: runtime?.group ?? node.group,
       name: node.name,
       parent: runtime?.parent ?? node.parent,
       role: runtime?.role ?? node.role,
+      tmuxPane: runtime?.tmux_pane,
     });
   }
   for (const node of contextPackNodesFromRegistry(ctx.registry)) {
@@ -110,10 +116,7 @@ export function buildGroveContextPack(input: GroveContextPackInput): string {
   const targetRole = firstLine(input.targetRole);
   const communicationProtocol =
     input.communicationProtocol ??
-    "Nodes may communicate across the org; durable implementation and review work should be tracked through grove board tasks.";
-  const taskProtocol =
-    input.taskProtocol ??
-    "Use board-task-centered handoffs. Final answers should include Summary, Files, Verification, and Risks.";
+    "Nodes may communicate directly across projects and hierarchy. Board tasks are for human TODO, feedback, and ask-human records, not a required node-to-node protocol.";
   const orgLines = nodes.length
     ? nodes.map(nodeLine)
     : ["- (visible org summary unavailable in this dispatch context)"];
@@ -125,7 +128,6 @@ export function buildGroveContextPack(input: GroveContextPackInput): string {
     targetNode ? `Target node: ${targetNode}` : "Target node: (none)",
     targetRole ? `Target role: ${targetRole}` : "Target role: (not recorded)",
     `Communication protocol: ${communicationProtocol}`,
-    `Task protocol: ${taskProtocol}`,
     "Visible org summary:",
     ...orgLines,
   ];

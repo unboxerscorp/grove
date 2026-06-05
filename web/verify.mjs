@@ -24,7 +24,139 @@ function findChrome() {
     .find((p) => existsSync(p));
 }
 
+async function coreMain() {
+  if (!existsSync(path.join(root, "dist", "app.js"))) {
+    throw new Error("dist/app.js missing — run `npm run build` first");
+  }
+  const executablePath = findChrome();
+  if (!executablePath) throw new Error("no Chrome/Chromium found; set CHROME_PATH");
+
+  const browser = await puppeteer.launch({
+    executablePath,
+    headless: true,
+    args: ["--no-sandbox", "--disable-gpu"],
+  });
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1320, height: 860, deviceScaleFactor: 2 });
+
+    const errors = [];
+    page.on("pageerror", (e) => errors.push("pageerror: " + String(e)));
+    page.on("console", (m) => {
+      if (m.type() !== "error") return;
+      const t = m.text();
+      if (/Failed to load resource|net::|fonts\.googleapis/.test(t)) return;
+      errors.push("console: " + t);
+    });
+
+    await page.goto("file://" + htmlPath, { waitUntil: "load" });
+    await page.waitForSelector(".devroom .dr-brand", { timeout: 8000 });
+    await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
+    await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+    await page.waitForFunction(() => !document.querySelector(".onb-wizard"), { timeout: 2000 });
+
+    const sidebar = await page.evaluate(() => {
+      const inSidebar = (selector) => !!document.querySelector(`.dr-sidebar ${selector}`);
+      const groups = Array.from(document.querySelectorAll(".dr-sidebar .dr-navgroup")).map((g) =>
+        g.getAttribute("data-group"),
+      );
+      const visibleViews = ["board", "team", "terminal", "integrations", "connect", "auth"];
+      const hiddenViews = ["exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
+      return {
+        groups,
+        visibleViewsOk: visibleViews.every((v) => inSidebar(`.dr-tab[data-view="${v}"]`)),
+        hiddenViewsAbsent: hiddenViews.every((v) => !inSidebar(`.dr-tab[data-view="${v}"]`)),
+        drawersOk: inSidebar(".dr-audit-btn") && inSidebar(".dr-inbox-btn") && !inSidebar(".dr-chain-btn"),
+      };
+    });
+
+    await page.click('.dr-sidebar .dr-tab[data-view="terminal"]');
+    await page.waitForSelector(".dr-term .xterm", { timeout: 8000 });
+    await page.waitForFunction(() => /#\d+/.test(document.querySelector(".dr-term .xterm-rows")?.textContent ?? ""), {
+      timeout: 8000,
+    });
+    await page.waitForSelector(".dr-led.is-live", { timeout: 8000 });
+    const terminal = await page.evaluate(() => ({
+      name: (document.querySelector(".dr-term__name")?.textContent ?? "").trim(),
+      pane: (document.querySelector(".dr-term__pane")?.textContent ?? "").trim(),
+      chars: (document.querySelector(".dr-term .xterm-rows")?.textContent ?? "").trim().length,
+      ticketKind: window.__MOCK__?.terminalTicketKind ?? "",
+      wsUrl: window.__MOCK__?.terminalWsUrl ?? "",
+    }));
+
+    await page.$eval('.dr-sidebar .dr-tab[data-view="integrations"]', (el) => el.click());
+    await page.waitForSelector(".slack-guide", { timeout: 8000 });
+    const slackGuide = await page.evaluate(() => {
+      const text = document.querySelector(".slack")?.textContent ?? "";
+      return {
+        hasFreeChat: /자유 대화|free-form|GROVE MASTER/.test(text),
+        hasFeedback: /feedback|피드백/.test(text),
+        noOldTaskPreview: !/bug: <|task: <|task preview|board task|role checks|gates/i.test(text),
+      };
+    });
+
+    await page.$eval('.dr-sidebar .dr-tab[data-view="board"]', (el) => el.click());
+    await page.waitForSelector(".dr-board", { timeout: 8000 });
+    const board = await page.evaluate(() => ({
+      title: (document.querySelector(".dr-board__title")?.textContent ?? "").trim(),
+      lists: Array.from(document.querySelectorAll(".dr-col__title")).map((el) => (el.textContent ?? "").trim()),
+      noStatusFilters: document.querySelectorAll(".dr-board__filters, .dr-filter").length === 0,
+    }));
+
+    const ok =
+      JSON.stringify(sidebar.groups) === JSON.stringify(["work", "comms", "audit", "setup"]) &&
+      sidebar.visibleViewsOk &&
+      sidebar.hiddenViewsAbsent &&
+      sidebar.drawersOk &&
+      terminal.name.length > 0 &&
+      /terminal/.test(terminal.ticketKind) &&
+      /ws\/terminal/.test(terminal.wsUrl) &&
+      terminal.chars > 0 &&
+      slackGuide.hasFreeChat &&
+      slackGuide.hasFeedback &&
+      slackGuide.noOldTaskPreview &&
+      /사람용|Human/i.test(board.title) &&
+      board.lists.length === 2 &&
+      board.noStatusFilters &&
+      errors.length === 0;
+
+    await page.screenshot({ path: path.join(root, "mock", "verify-screenshot.png"), fullPage: true });
+    if (!ok) {
+      throw new Error(
+        JSON.stringify(
+          {
+            sidebar,
+            terminal,
+            slackGuide,
+            board,
+            errors,
+          },
+          null,
+          2,
+        ),
+      );
+    }
+    console.log(
+      "VERIFY OK",
+      JSON.stringify({
+        mode: "core",
+        sidebarGroups: sidebar.groups,
+        terminal: { name: terminal.name, pane: terminal.pane, chars: terminal.chars },
+        lists: board.lists,
+      }),
+    );
+  } finally {
+    await browser.close();
+  }
+}
+
 async function main() {
+  const legacyFull = process.env.GROVE_VERIFY_FULL === "1" && process.env.GROVE_VERIFY_LEGACY_FULL === "1";
+  if (!legacyFull) {
+    await coreMain();
+    return;
+  }
+
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
   }
@@ -56,11 +188,11 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
 
-    // V9-W2/V29 onboarding wizard: shows on first visit, steps welcome -> project
-    // (reused create/load forms) -> board -> team -> setup, skippable, and remembered via
-    // localStorage so a reload does NOT re-show it. Runs first (it overlays the
-    // dashboard); the trailing reload leaves the app in the normal returning-user
-    // state the rest of the suite expects.
+    // Onboarding is manual-only: it must not cover the live cockpit on first
+    // paint, but the sidebar tutorial button should still launch the wizard.
+    const wizInitiallyAbsent = await page.evaluate(() => !document.querySelector(".onb-wizard"));
+    const sidebarTutorial = await page.evaluate(() => !!document.querySelector(".dr-tutorial-btn"));
+    await page.click(".dr-tutorial-btn");
     await page.waitForSelector(".onb-wizard", { timeout: 8000 });
     const wizStep0 = await page.evaluate(() => ({
       visible: !!document.querySelector(".onb-wizard"),
@@ -102,7 +234,6 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
     const wizAfterReload = await page.evaluate(() => !!document.querySelector(".onb-wizard"));
-    const sidebarTutorial = await page.evaluate(() => !!document.querySelector(".dr-tutorial-btn"));
     await page.click(".dr-tutorial-btn");
     await page.waitForSelector(".onb-wizard", { timeout: 5000 });
     const sidebarTutorialOpen = await page.evaluate(
@@ -111,6 +242,8 @@ async function main() {
     await page.click(".onb-skip");
     await page.waitForFunction(() => !document.querySelector(".onb-wizard"), { timeout: 5000 });
     const wizardOk =
+      wizInitiallyAbsent &&
+      sidebarTutorial &&
       wizStep0.visible &&
       wizStep0.step === "0" &&
       wizStep0.dots === 5 &&
@@ -127,7 +260,6 @@ async function main() {
       wizLast.activeDot === 4 &&
       wizFlag === "1" &&
       wizAfterReload === false &&
-      sidebarTutorial &&
       sidebarTutorialOpen;
 
     // V2-W4 node status heatmap (from GET /api/status) + server health dot

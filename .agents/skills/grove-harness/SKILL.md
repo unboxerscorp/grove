@@ -1,29 +1,29 @@
 ---
 name: grove-harness
-description: Use when a request involves grove delegation, node creation, groups, org structure, board tasks, or routing work.
+description: Use when a request involves grove org structure, direct node communication, human-facing tasks, groups, or routing work.
 ---
 
 # grove-harness (alias: grove:harness)
 
 ## Start here
 
-Use this skill first for any grove delegation, node creation, group, org, board task, or routing action. After loading it, select the additional grove skill that matches the action:
+Use this skill first for any grove org lookup, direct node communication, group, human-facing task, or routing action. After loading it, select the additional grove skill that matches the action:
 
-- `grove:org` before asking, assigning, spawning, or routing.
-- `grove:delegate` when work is handed to another node.
-- `grove:spawn-node` when a persistent node is needed.
+- `grove:org` before asking, sending, or routing.
+- `grove:delegate` when context or work is handed directly to another node.
+- `grove:spawn-node` only to understand the human-operator node creation flow.
 - `grove:form-group` when peers need to compare or converge.
-- `grove:orchestrator-rules` when the current node has children or is coordinating work.
+- `grove:orchestrator-rules` when the current node is coordinating work.
 
 ## Decide mode
 
-Before direct implementation, determine whether the current node has children.
+Before acting, determine where you sit in the org.
 
 1. Query the org if the answer is not already known.
-2. If the current node has children, use delegation mode: split, assign, unblock, request verification, and fan in results.
-3. If the current node has no children, it may act as a maker and use leaf implementation practices such as TDD.
+2. Note the target node's role, tmux pane, and cwd.
+3. Communicate directly with the right node, or act directly if that is the practical route.
 
-Do not create an ephemeral subagent for grove work. Create a board task assigned to a persistent node instead. If a plan needs parallel execution, distribute it as board tasks.
+Do not autonomously create or delete nodes. Organization changes require explicit human instruction and the operator-marked GUI/API/CLI path. If a plan needs roles that do not exist, ask the human operator or project lead.
 
 ## Commands and APIs
 
@@ -32,25 +32,25 @@ grove org --json
 grove status
 ```
 
-Board API:
+Human task API:
 
 ```http
 GET /api/org
 GET /api/boards
-GET /api/boards/{board_id}/tasks?status=ready&assignee=<node>
 POST /api/boards/{board_id}/tasks
 POST /api/tasks/{task_id}/comments
 ```
 
-Task lifecycle names used by the board store:
+Task lifecycle names are for human-facing TODO, feedback, and ask-human records:
 
 ```text
-create_task -> claim -> complete
-create_task -> claim -> block -> unblock -> claim
+ready -> running -> done
+ready -> ask_human
+running -> blocked -> running
 ```
 
-Workspace assignment belongs in task metadata. Do not rely on hidden local state for workspace routing.
+Workspace routing belongs in the project and node cwd. Do not rely on hidden local state.
 
 ## Surface parity
 
-The generated targets `skills/`, `.codex-plugin/`, and `.agents/skills/` carry the same grove protocol. For `agy`/`antigravity` nodes, use the `.agents/skills` surface and apply the same harness, org, delegate, and orchestrator rules as `codex` and `claude` nodes.
+The generated targets `skills/`, `.codex-plugin/`, and `.agents/skills/` carry the same grove protocol. For `agy`/`antigravity` nodes, use the `.agents/skills` surface and apply the same org-awareness and direct-communication model as `codex` and `claude` nodes.

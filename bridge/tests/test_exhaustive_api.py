@@ -115,9 +115,9 @@ def test_exhaustive_api_tier1_harness(tmp_path: Path, monkeypatch: pytest.Monkey
     for c, h in [(v_c, v_h), (o_c, o_h), (a_c, a_h)]:
         assert c.get("/api/inbox", headers=h).status_code == 200
 
-    # 7. Terminal ticket / send auth
+    # 7. Websocket tickets are authenticated read-stream setup, not mutations.
     res_v = v_c.post("/api/ws-ticket", headers=v_h)
-    assert res_v.status_code == 403
+    assert res_v.status_code == 200
     res_o = o_c.post("/api/ws-ticket", headers=o_h)
     assert res_o.status_code == 200
 

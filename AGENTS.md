@@ -5,21 +5,23 @@ This repo is growing into a cockpit product with multiple makers working at once
 ## Startup Order
 
 1. Read `AGENTS.md`.
-2. Run `grove org --json` and pin a short self-context block before acting: current node name, project/session, parent, children, role, assigned board task, and target workspace.
+2. Run `grove org --json` and pin a short self-context block before acting: current node name, project/session, parent, children, role, tmux pane, and working directory.
 3. Read `docs/agents/shared-context.md`.
-4. Read `docs/agents/workstream-registry.md` and keep code edits inside the assigned stream unless the task explicitly crosses streams.
+4. Read `docs/agents/workstream-registry.md` to understand ownership labels and likely experts. Streams are coordination metadata, not a hard permission boundary.
 5. Read `docs/engineering/coding-rules.md`.
 6. For handoffs, use `docs/agents/handoff-template.md`; for cross-stream coordination, use `docs/agents/coordination.md`.
 
 ## Working Agreement
 
-- The lead/orchestrator owns prioritization and integration decisions.
-- Makers keep code edits scoped to their stream and avoid unrelated refactors.
-- Reviewers and QA are read-only for code changes unless explicitly reassigned, but they may communicate, inspect, and report through board tasks.
-- Nodes may communicate across the visible org regardless of hierarchy. Durable implementation, review, verification, and blocker traffic should be captured in board tasks and comments.
-- Nodes may spawn child nodes for owned work and terminate only their own children, using the grove skill and board protocol.
-- Before any delegation, node creation, group formation, org inspection, board task action, or work routing, agents must invoke the matching grove skill first, starting with `grove:harness`.
-- `agy`/`antigravity` nodes follow the same grove skills and board delegation protocol as `codex` and `claude`; `.agents/AGENTS.md` carries runtime-specific parity notes.
+- The human operator owns the organization chart: project creation, node creation, parent/group changes, and node termination. A node may perform these actions only when the human explicitly instructs it to do so.
+- The lead/orchestrator owns prioritization and integration decisions inside the organization the human has configured.
+- Any node may inspect, communicate, and work across projects and streams when the human request or practical task requires it. Prefer the local owner style and avoid unrelated refactors.
+- Reviewer and QA roles describe default focus, not capability limits. They may still communicate directly, run checks, and make changes when explicitly asked or when it is the practical route.
+- Nodes may communicate across the visible org regardless of hierarchy or project. Use direct node messaging, tmux capture, or tmux input as appropriate.
+- Board tasks are human-facing TODO, feedback, and ask-human records. Do not use board tasks as the required node-to-node communication protocol.
+- Nodes must not autonomously spawn, terminate, or rearrange nodes. When the human explicitly asks for an org change, use the operator-marked GUI/API/CLI path and report what changed.
+- Before routing work or contacting another node, inspect the org so the target role, tmux pane, and cwd are known.
+- `agy`/`antigravity` nodes follow the same org-awareness and direct-communication model as `codex` and `claude`; `.agents/AGENTS.md` carries runtime-specific parity notes.
 - Do not modify operational fleet configs such as `fleet.yaml`, `grove.yaml`, or `cockpit.grove.yaml` unless the lead asks directly.
 - Preserve current P1/P2 behavior for event logs, watch, fan-in, and wait unless the task is explicitly about those behaviors.
 - Every handoff must state changed files, verification commands, and remaining risks.

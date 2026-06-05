@@ -179,6 +179,7 @@ describe("spawnNode", () => {
           agent: "claude",
           json: true,
           name: "probe",
+          operator: true,
           role: "x",
           session: "spawn-no-config",
         },
@@ -215,6 +216,7 @@ describe("spawnNode", () => {
       {
         agent: "codex",
         name: "probe",
+        operatorManaged: true,
       },
       state.deps,
     );
@@ -234,6 +236,7 @@ describe("spawnNode", () => {
       {
         agent: "codex",
         name: "workspace-maker",
+        operatorManaged: true,
       },
       state.deps,
     );
@@ -256,6 +259,7 @@ describe("spawnNode", () => {
         agent: "codex",
         cwd: "/other/workspace",
         name: "explicit-maker",
+        operatorManaged: true,
         rolePreset: "maker-py",
       },
       state.deps,
@@ -279,6 +283,7 @@ describe("spawnNode", () => {
       {
         agent: "codex",
         name: "py-maker",
+        operatorManaged: true,
         parent: "lead",
         rolePreset: "maker-py",
       },
@@ -288,7 +293,8 @@ describe("spawnNode", () => {
     expect(state.launched[0]?.node.role).toContain(
       "너는 Python/backend maker이며 GROVE 조직/업무방식을 따른다",
     );
-    expect(state.launched[0]?.node.role).toContain("보드 task 중심");
+    expect(state.launched[0]?.node.role).toContain("노드 간 소통은 계층과 무관하게 직접 한다");
+    expect(state.launched[0]?.node.role).toContain("사람이 명시 지시한 경우");
     const runtime = ctx.registry.nodes["py-maker"];
     expect(runtime?.role).toContain("너는 Python/backend maker이며");
     expect(runtime?.rolePreset).toBe("maker-py");
@@ -307,6 +313,7 @@ describe("spawnNode", () => {
       {
         agent: "codex",
         name: "custom-maker",
+        operatorManaged: true,
         role: "Custom role text",
         rolePreset: "maker-py",
       },
@@ -332,6 +339,7 @@ describe("spawnNode", () => {
         {
           agent: "codex",
           name: "bad-preset",
+          operatorManaged: true,
           rolePreset: "unknown",
         },
         state.deps,
@@ -353,6 +361,7 @@ describe("spawnNode", () => {
         description: "Owns implementation tasks",
         group: "core",
         name: "maker",
+        operatorManaged: true,
         parent: "lead",
         role: "Builder",
       },
@@ -408,6 +417,56 @@ describe("spawnNode", () => {
     expect(state.saves).toBe(1);
   });
 
+  test("can write to a project registry while launching in a shared tmux session", async () => {
+    const reg = registry();
+    reg.session = "alpha";
+    const ctx = makeContext(reg);
+    ctx.config.session = "alpha";
+    const state = deps({ bindTranscript: true });
+
+    const result = await spawnNode(
+      ctx,
+      {
+        agent: "codex",
+        name: "maker",
+        operatorManaged: true,
+        parent: "lead",
+        role: "Builder",
+        session: "alpha",
+        tmuxSession: "dev10",
+        window: "alpha",
+      },
+      state.deps,
+    );
+
+    expect(state.paneRequests).toEqual([
+      {
+        cwd: "/repo",
+        name: "maker",
+        session: "dev10",
+        window: "alpha",
+      },
+    ]);
+    expect(state.guardSessions).toEqual(["dev10"]);
+    expect(ctx.registry.session).toBe("alpha");
+    expect(ctx.registry.nodes.maker).toEqual(
+      expect.objectContaining({
+        cwd: "/repo",
+        name: "maker",
+        parent: "lead",
+        tmux_pane: "dev10:2.0",
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        name: "maker",
+        pane: "dev10:2.0",
+        session: "alpha",
+        tmuxSession: "dev10",
+      }),
+    );
+  });
+
   test("splits a requested window and reports a rebind hint when transcript detection is late", async () => {
     const ctx = makeContext(registry());
     const state = deps();
@@ -417,6 +476,7 @@ describe("spawnNode", () => {
       {
         agent: "antigravity",
         name: "viewer",
+        operatorManaged: true,
         role: "Viewer",
         window: "lead",
       },

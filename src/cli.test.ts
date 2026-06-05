@@ -7,17 +7,29 @@ import { describe, expect, test } from "vitest";
 const here = dirname(fileURLToPath(import.meta.url));
 
 describe("CLI help text", () => {
+  test("root command version matches package version", () => {
+    const source = readFileSync(join(here, "cli.ts"), "utf8");
+    const packageJson = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")) as {
+      version: string;
+    };
+
+    expect(source).toContain(`.version("${packageJson.version}")`);
+    expect(source).not.toContain('.version("0.1.0")');
+  });
+
   test("--any documents first terminal event among listed nodes", () => {
     const source = readFileSync(join(here, "cli.ts"), "utf8");
 
     expect(source).toContain("first terminal event among listed nodes");
   });
 
-  test("delegate command creates assigned board tasks", () => {
+  test("delegate command creates human-facing tasks", () => {
     const source = readFileSync(join(here, "cli.ts"), "utf8");
 
     expect(source).toContain("delegate <node> <title...>");
-    expect(source).toContain("create a ready board task assigned to a grove node");
+    expect(source).toContain(
+      "create a human-facing TODO/feedback task associated with a grove node",
+    );
   });
 
   test("project import/export commands are registered", () => {

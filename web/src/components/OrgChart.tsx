@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { actorId, api, targetNode } from "../api";
-import type { AuditEvent } from "../api";
-import { AGENTS, agentGlyph, COLUMNS, cx, statusColor } from "../constants";
+import { api } from "../api";
+import { AGENTS, agentGlyph, cx, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
-import type { Delegations, MasterMeta, MasterOrg, NodeHealth, OrgNode, ProjectLead } from "../types";
+import type { MasterMeta, MasterOrg, NodeHealth, OrgNode, ProjectLead } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
 import { ROLE_PRESETS, rolePresetBody } from "../rolePresets";
 import { GroveMark } from "./GroveMark";
@@ -23,8 +22,6 @@ const GROUP_R = 156; // proximity radius (px, center-to-center) for grouping
 const TWEEN_MS = 360;
 
 const GROUP_PALETTE = ["var(--teal)", "var(--amber)", "var(--blue)", "var(--coral)", "#c9a6ff", "#5fd0e0"];
-const PRIORITIES = ["low", "normal", "high"] as const;
-
 type XY = { x: number; y: number };
 type Positions = Record<string, XY>;
 
@@ -100,42 +97,6 @@ function edgePath(a: XY, b: XY): string {
   const ey = b.y;
   const my = (sy + ey) / 2;
   return `M ${sx} ${sy} C ${sx} ${my}, ${ex} ${my}, ${ex} ${ey}`;
-}
-
-const centerOf = (p: XY): XY => ({ x: p.x + NODE_W / 2, y: p.y + NODE_H / 2 });
-
-/** The point on a node box's border along the ray from `from` toward its centre. */
-function borderPoint(from: XY, box: XY): XY {
-  const c = centerOf(box);
-  const dx = c.x - from.x;
-  const dy = c.y - from.y;
-  if (dx === 0 && dy === 0) return c;
-  const hw = NODE_W / 2;
-  const hh = NODE_H / 2;
-  const scale = Math.min(
-    Math.abs(dx) > 1e-6 ? hw / Math.abs(dx) : Infinity,
-    Math.abs(dy) > 1e-6 ? hh / Math.abs(dy) : Infinity,
-  );
-  return { x: c.x - dx * scale, y: c.y - dy * scale };
-}
-
-/**
- * Delegation arc: actor box → target box, trimmed to both borders so the
- * arrowhead lands on the target edge, bowed perpendicular so it reads as an
- * overlay distinct from the vertical parent S-curves.
- */
-function delegPath(a: XY, b: XY): string {
-  const ca = centerOf(a);
-  const cb = centerOf(b);
-  const start = borderPoint(cb, a);
-  const end = borderPoint(ca, b);
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const bow = 26;
-  const mx = (start.x + end.x) / 2 + (-dy / len) * bow;
-  const my = (start.y + end.y) / 2 + (dx / len) * bow;
-  return `M ${start.x} ${start.y} Q ${mx} ${my}, ${end.x} ${end.y}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -333,107 +294,19 @@ function NodeForm(props: {
 }
 
 // ---------------------------------------------------------------------------
-// Delegate form (hover-action popover): web equivalent of `grove delegate` —
-// hand a node a task (title + optional body) -> POST a board task assigned to it
-// with status "ready". Errors surface as a safe message, never the raw cause.
-// ---------------------------------------------------------------------------
-function DelegateForm(props: {
-  node: string;
-  boardId: string | null;
-  onDone: () => void;
-  onClose: () => void;
-}) {
-  const { node, boardId, onDone, onClose } = props;
-  const { t } = useI18n();
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const ti = title.trim();
-    if (!ti) {
-      setError(t("delegate.titleRequired"));
-      return;
-    }
-    if (!boardId) {
-      setError(t("node.noBoard"));
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    api
-      .delegate(boardId, node, { title: ti, body: body.trim() || undefined })
-      .then(() => {
-        setBusy(false);
-        onDone();
-        onClose();
-      })
-      .catch(() => {
-        setBusy(false);
-        setError(t("delegate.error")); // safe message; raw cause withheld
-      });
-  };
-
-  return (
-    <form className="node-form delegate-form" onSubmit={submit}>
-      <div className="node-form__head">
-        {t("delegate.heading")} · {node}
-      </div>
-      <input
-        className="dr-input"
-        name="delegateTitle"
-        type="text"
-        placeholder={t("delegate.title")}
-        value={title}
-        autoFocus
-        spellCheck={false}
-        onChange={(e) => setTitle(e.target.value)}
-      />
-      <textarea
-        className="dr-input delegate-form__body"
-        name="delegateBody"
-        rows={3}
-        placeholder={t("delegate.body")}
-        value={body}
-        spellCheck={false}
-        onChange={(e) => setBody(e.target.value)}
-      />
-      {error && <div className="node-form__err">{error}</div>}
-      <div className="node-form__actions">
-        <button type="button" className="dr-btn dr-btn--ghost" onClick={onClose}>
-          {t("node.cancel")}
-        </button>
-        <button type="submit" className="dr-btn dr-btn--primary delegate-form__submit" disabled={busy}>
-          {busy ? t("delegate.submitting") : t("delegate.submit")}
-        </button>
-      </div>
-    </form>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Node info + task-assign drawer
+// Node info drawer
 // ---------------------------------------------------------------------------
 function NodeDrawer(props: {
   node: OrgNode;
-  boardId: string | null;
   onClose: () => void;
   onTerminal: (node: OrgNode) => void;
   onTerminate: (node: OrgNode) => void;
   terminating?: boolean;
 }) {
-  const { node, boardId, onClose, onTerminal, onTerminate, terminating } = props;
+  const { node, onClose, onTerminal, onTerminate, terminating } = props;
   const { t } = useI18n();
   const panelRef = useRef<HTMLElement | null>(null);
   useFocusTrap(true, panelRef);
-  const [title, setTitle] = useState("");
-  const [status, setStatus] = useState<string>(COLUMNS[0].key);
-  const [priority, setPriority] = useState<string>("normal");
-  const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -442,30 +315,6 @@ function NodeDrawer(props: {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-
-  const assign = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!boardId) {
-      setError(t("node.noBoard"));
-      return;
-    }
-    const ti = title.trim();
-    if (!ti) return;
-    setBusy(true);
-    setError(null);
-    setDone(false);
-    api
-      .createTask(boardId, { title: ti, assignee: node.name, status, priority })
-      .then(() => {
-        setBusy(false);
-        setDone(true);
-        setTitle("");
-      })
-      .catch(() => {
-        setBusy(false);
-        setError(t("node.assignError"));
-      });
-  };
 
   const fact = (k: string, v?: string | number | null) =>
     v !== undefined && v !== "" && v !== null ? (
@@ -525,42 +374,6 @@ function NodeDrawer(props: {
             {terminating ? t("node.terminating") : t("node.terminate")}
           </button>
 
-          <form className="dr-drawer__section node-drawer__assign-sec" onSubmit={assign}>
-            <h3 className="dr-drawer__h">{t("node.assign")}</h3>
-            <input
-              className="dr-input"
-              name="assignTitle"
-              type="text"
-              placeholder={t("node.assignTitle")}
-              value={title}
-              spellCheck={false}
-              onChange={(e) => {
-                setTitle(e.target.value);
-                setDone(false);
-              }}
-            />
-            <div className="node-drawer__assign-row">
-              <select className="dr-select" value={status} aria-label={t("add.status")} onChange={(e) => setStatus(e.target.value)}>
-                {COLUMNS.map((c) => (
-                  <option key={c.key} value={c.key}>
-                    {statusLabel(t, c.key)}
-                  </option>
-                ))}
-              </select>
-              <select className="dr-select" value={priority} aria-label={t("add.priority")} onChange={(e) => setPriority(e.target.value)}>
-                {PRIORITIES.map((p) => (
-                  <option key={p} value={p}>
-                    {t(`priority.${p}`)}
-                  </option>
-                ))}
-              </select>
-              <button type="submit" className="dr-btn dr-btn--primary node-drawer__assign" disabled={busy || !title.trim()}>
-                {t("node.assignSubmit")}
-              </button>
-            </div>
-            {done && <div className="node-drawer__ok">✓ {t("node.assigned")}</div>}
-            {error && <div className="node-form__err">{error}</div>}
-          </form>
         </div>
       </aside>
     </div>
@@ -591,16 +404,17 @@ function MasterOrgStrip(props: {
   const selected = masterOrg.selected_project;
   const otherProjects = masterOrg.visible_projects.filter((project) => project !== selected);
   const humanCount = masterOrg.human.assignee_candidates.length;
+  const defaultNode = masterOrg.project_master.name || masterOrg.delegation.default_assignee;
   return (
     <div className="master-org" data-master-org="true">
       <button type="button" className="master-org__root" onClick={onOpenMasterChat}>
         <span className="master-org__mark">M</span>
         <span className="master-org__title">{masterOrg.name}</span>
-        <span className="master-org__meta">{masterOrg.project_master.name}</span>
+        <span className="master-org__meta">{selected}</span>
       </button>
       <div className="master-org__facts">
-        <span className="master-org__fact">default {masterOrg.delegation.default_assignee}</span>
-        <span className="master-org__fact">watch {masterOrg.delegation.watch_ticket_kind}</span>
+        <span className="master-org__fact">default {defaultNode}</span>
+        <span className="master-org__fact">projects {masterOrg.visible_projects.length}</span>
         {humanCount > 0 && <span className="master-org__fact">human {humanCount}</span>}
       </div>
       {otherProjects.length > 0 && (
@@ -623,15 +437,13 @@ function MasterOrgStrip(props: {
 }
 
 export function OrgChart(props: {
-  boardId: string | null;
   liveTick: number;
   projectTick: number;
   onOpenTerminal: (pane: string) => void;
-  onDelegated?: () => void;
   onOpenMasterChat?: () => void;
   onSwitchProject?: (project: string) => void;
 }) {
-  const { boardId, liveTick, projectTick, onOpenTerminal, onDelegated, onOpenMasterChat, onSwitchProject } = props;
+  const { liveTick, projectTick, onOpenTerminal, onOpenMasterChat, onSwitchProject } = props;
   const { t } = useI18n();
 
   const [nodes, setNodes] = useState<OrgNode[]>([]);
@@ -640,14 +452,9 @@ export function OrgChart(props: {
   const [rootList, setRootList] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const [delegEvents, setDelegEvents] = useState<AuditEvent[]>([]);
-  const [showDeleg, setShowDeleg] = useState(false); // overlay off by default
-  const [taskCounts, setTaskCounts] = useState<Record<string, number>>({});
-  // v1.29 cross-project org + delegation snapshot.
+  // v1.29 cross-project org.
   const [master, setMaster] = useState<MasterMeta | null>(null);
   const [projectLeads, setProjectLeads] = useState<ProjectLead[]>([]);
-  const [orgDeleg, setOrgDeleg] = useState<Delegations | null>(null);
-  const [delegMode, setDelegMode] = useState<"current" | "history">("current");
   const [nodeHealth, setNodeHealth] = useState<Record<string, NodeHealth>>({}); // PR1 watchdog
 
   const [cur, setCur] = useState<Positions>({});
@@ -655,7 +462,6 @@ export function OrgChart(props: {
   const [hover, setHover] = useState<string | null>(null);
   const [adding, setAdding] = useState(false); // toolbar global add
   const [addChild, setAddChild] = useState<string | null>(null); // hover-"+" parent
-  const [delegateNode, setDelegateNode] = useState<string | null>(null); // delegate popover
   const [pending, setPending] = useState<{ name: string; parent?: string } | null>(null);
   const [drawerNode, setDrawerNode] = useState<OrgNode | null>(null);
   const [terminating, setTerminating] = useState<string | null>(null);
@@ -685,7 +491,6 @@ export function OrgChart(props: {
         setMasterOrg(o.master_org ?? null);
         setMaster(o.master ?? null);
         setProjectLeads(o.project_leads ?? []);
-        setOrgDeleg(o.delegations ?? null);
         setError(null);
       })
       .catch((e: unknown) => {
@@ -695,23 +500,6 @@ export function OrgChart(props: {
       alive = false;
     };
   }, [liveTick, reloadKey, t]);
-
-  // Delegation source: recent audit events, re-scoped per project (projectTick).
-  // Read-only; on failure or empty audit we simply render no delegation edges.
-  useEffect(() => {
-    let alive = true;
-    api
-      .getAudit({ limit: 50 })
-      .then((page) => {
-        if (alive) setDelegEvents(Array.isArray(page.items) ? page.items : []);
-      })
-      .catch(() => {
-        if (alive) setDelegEvents([]);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [liveTick, projectTick, reloadKey]);
 
   // PR1 watchdog: per-node health (display-only). Absent-tolerant via the api
   // helper — a missing endpoint resolves to {} so nodes show neutral "unknown".
@@ -729,31 +517,6 @@ export function OrgChart(props: {
       clearInterval(id);
     };
   }, [projectTick, reloadKey]);
-
-  useEffect(() => {
-    if (!boardId) {
-      setTaskCounts({});
-      return;
-    }
-    let alive = true;
-    api
-      .listTasks(boardId)
-      .then((tasks) => {
-        if (!alive) return;
-        const counts: Record<string, number> = {};
-        for (const task of tasks) {
-          if (!task.assignee || ["done", "archived"].includes(task.status)) continue;
-          counts[task.assignee] = (counts[task.assignee] ?? 0) + 1;
-        }
-        setTaskCounts(counts);
-      })
-      .catch(() => {
-        if (alive) setTaskCounts({});
-      });
-    return () => {
-      alive = false;
-    };
-  }, [boardId, liveTick, projectTick, reloadKey]);
 
   const byName = useMemo(() => {
     const m: Record<string, OrgNode> = {};
@@ -976,57 +739,6 @@ export function OrgChart(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [structSig]);
 
-  // Delegation edges: assign/delegate audit events → actor → target.node.
-  // Both endpoints must be live org nodes; duplicates are merged with a count
-  // and the most-recent timestamp so frequency/recency can be surfaced.
-  const delegations = useMemo(() => {
-    const m = new Map<string, { from: string; to: string; count: number; lastTs: string | number }>();
-    for (const ev of delegEvents) {
-      if (ev.action !== "assign" && ev.action !== "delegate") continue;
-      const from = actorId(ev.actor);
-      const to = targetNode(ev.target);
-      if (!from || !to || from === to || !byName[from] || !byName[to]) continue;
-      const key = `${from}>${to}`;
-      const prev = m.get(key);
-      if (prev) {
-        prev.count += 1;
-        if (ev.ts > prev.lastTs) prev.lastTs = ev.ts;
-      } else {
-        m.set(key, { from, to, count: 1, lastTs: ev.ts });
-      }
-    }
-    return Array.from(m.values());
-  }, [delegEvents, byName]);
-
-  // v1.29: the rendered edges depend on the mode. "current" = live snapshot of
-  // open-task ownership (org.delegations.current); "history" = the cumulative
-  // audit trail (the legacy overlay). They are distinct, never conflated.
-  const delegEdges = useMemo(() => {
-    if (delegMode === "current") {
-      return (orgDeleg?.current ?? [])
-        .filter((e) => byName[e.from] && byName[e.to] && e.from !== e.to)
-        .map((e) => ({ from: e.from, to: e.to, count: e.count ?? (e.task_ids?.length ?? 1), lastTs: e.latest_assigned_at ?? 0 }));
-    }
-    return delegations;
-  }, [delegMode, orgDeleg, delegations, byName]);
-  const delegModeLabel =
-    delegMode === "current"
-      ? (orgDeleg?.mode_labels?.current ?? t("org.delegCurrentLabel"))
-      : (orgDeleg?.mode_labels?.history ?? t("org.delegHistoryLabel"));
-
-  // Autonomy (inferred): nodes that self-claimed work appear as the actor of an
-  // `autopickup` audit event. No backend per-node autonomy flag is exposed yet,
-  // so this is a read-only inference from recent audit (V11-W2).
-  const autonomousNodes = useMemo(() => {
-    const set = new Set<string>();
-    for (const ev of delegEvents) {
-      if (ev.action !== "autopickup") continue;
-      const id = actorId(ev.actor);
-      if (id && byName[id]) set.add(id);
-    }
-    return set;
-  }, [delegEvents, byName]);
-
   const stopPD = (e: React.PointerEvent) => e.stopPropagation();
 
   // What will happen if the user drops right now — drives the floating badge
@@ -1093,54 +805,11 @@ export function OrgChart(props: {
           <span className="org__sub">{t("org.subtitle", { n: nodes.length, g: groups.length })}</span>
         </div>
         <div className="org__tools">
-          <button
-            type="button"
-            className={cx("org-deleg-toggle", showDeleg && "is-on")}
-            aria-pressed={showDeleg}
-            onClick={() => setShowDeleg((v) => !v)}
-          >
-            <span className="org-deleg-toggle__line" aria-hidden="true" />
-            {t("org.delegEdges")}
-            {showDeleg && delegEdges.length > 0 && (
-              <span className="org-deleg-toggle__n">{delegEdges.length}</span>
-            )}
-          </button>
           <button type="button" className={cx("org-addbtn", adding && "is-open")} onClick={() => setAdding((v) => !v)}>
             {t("org.addNode")}
           </button>
         </div>
       </div>
-
-      {showDeleg && (
-        <div className="org-deleg-legend" role="note">
-          {/* current vs history are distinct modes — labels never imply the audit
-              trail is the live current assignment. */}
-          <div className="org-deleg-mode" role="group" aria-label={t("org.delegMode")}>
-            <button
-              type="button"
-              data-mode="current"
-              className={cx("org-deleg-mode__btn", delegMode === "current" && "is-on")}
-              aria-pressed={delegMode === "current"}
-              onClick={() => setDelegMode("current")}
-            >
-              {t("org.delegCurrent")}
-            </button>
-            <button
-              type="button"
-              data-mode="history"
-              className={cx("org-deleg-mode__btn", delegMode === "history" && "is-on")}
-              aria-pressed={delegMode === "history"}
-              onClick={() => setDelegMode("history")}
-            >
-              {t("org.delegHistory")}
-            </button>
-          </div>
-          <span className="org-deleg-legend__swatch" aria-hidden="true" />
-          <span className="org-deleg-legend__label" data-mode={delegMode}>
-            {delegModeLabel} · {t("org.delegCount", { n: delegMode === "current" ? delegEdges.length : (orgDeleg?.history?.length ?? delegEdges.length) })}
-          </span>
-        </div>
-      )}
 
       {adding && (
         <NodeForm
@@ -1177,19 +846,6 @@ export function OrgChart(props: {
       <div className={cx("org-canvas", drag && "is-dragging")} ref={canvasRef}>
         <div className="org-stage" style={{ width: layout.width, height: layout.height }}>
           <svg className={cx("org-edges", drag && "is-dragging")} width={layout.width} height={layout.height}>
-            <defs>
-              <marker
-                id="org-deleg-arrow"
-                viewBox="0 0 10 10"
-                refX="8.5"
-                refY="5"
-                markerWidth="7"
-                markerHeight="7"
-                orient="auto-start-reverse"
-              >
-                <path className="org-deleg-arrowhead" d="M 0 0 L 10 5 L 0 10 z" />
-              </marker>
-            </defs>
             {edges.map(([par, ch]) => {
               const a = posFor(par);
               const b = posFor(ch);
@@ -1226,28 +882,6 @@ export function OrgChart(props: {
               );
             })}
 
-            {showDeleg && (
-              <g className="org-deleg-layer" data-mode={delegMode}>
-                {delegEdges.map((dl) => {
-                  const a = posFor(dl.from);
-                  const b = posFor(dl.to);
-                  const d = delegPath(a, b);
-                  return (
-                    <path
-                      key={`${dl.from}>${dl.to}`}
-                      className={cx("org-deleg-edge", delegMode === "current" && "is-current")}
-                      data-deleg={`${dl.from}>${dl.to}`}
-                      data-count={dl.count}
-                      d={d}
-                      markerEnd="url(#org-deleg-arrow)"
-                      style={{ strokeWidth: 1.4 + Math.min(dl.count, 4) * 0.45 }}
-                    >
-                      <title>{t("org.delegEdge", { from: dl.from, to: dl.to, n: dl.count })}</title>
-                    </path>
-                  );
-                })}
-              </g>
-            )}
           </svg>
 
           {nodes.map((node) => {
@@ -1280,16 +914,6 @@ export function OrgChart(props: {
                   <span className={cx("org-node__dot", statusClass(node.status))} />
                   <span className="org-node__name">{node.name}</span>
                   <NodeHealthBadge health={nodeHealth[node.name] ?? node.health} compact />
-                  {(taskCounts[node.name] ?? 0) > 0 && (
-                    <span className="org-node__taskbadge" title={t("org.taskCount", { n: taskCounts[node.name] ?? 0 })}>
-                      {taskCounts[node.name]}
-                    </span>
-                  )}
-                  {autonomousNodes.has(node.name) && (
-                    <span className="org-node__auto" data-auto={node.name} title={t("autonomy.inferredHint")}>
-                      ⚡ {t("autonomy.auto")}
-                    </span>
-                  )}
                   <span className="org-node__agent">{agentGlyph(node.agent)}</span>
                 </div>
                 {node.role && <div className="org-node__role">{node.role}</div>}
@@ -1318,14 +942,6 @@ export function OrgChart(props: {
                     onClick={() => setDrawerNode(node)}
                   >
                     {t("org.info")}
-                  </button>
-                  <button
-                    type="button"
-                    className="org-act org-act--delegate"
-                    onPointerDown={stopPD}
-                    onClick={() => setDelegateNode(node.name)}
-                  >
-                    {t("delegate.action")}
                   </button>
                   {node.parent && (
                     <button
@@ -1389,25 +1005,6 @@ export function OrgChart(props: {
             </div>
           )}
 
-          {delegateNode && (
-            <div
-              className="org-popover org-popover--delegate"
-              style={{
-                transform: `translate(${posFor(delegateNode).x}px, ${posFor(delegateNode).y + NODE_H + 18}px)`,
-              }}
-            >
-              <DelegateForm
-                node={delegateNode}
-                boardId={boardId}
-                onDone={() => {
-                  setReloadKey((k) => k + 1); // refresh org + delegation overlay
-                  onDelegated?.(); // bump liveTick -> board + audit refresh
-                }}
-                onClose={() => setDelegateNode(null)}
-              />
-            </div>
-          )}
-
           {drag && dragInfo && (
             <div
               className={cx("org-dragbadge", `is-${dragInfo.mode}`)}
@@ -1422,7 +1019,6 @@ export function OrgChart(props: {
       {drawerNode && (
         <NodeDrawer
           node={byName[drawerNode.name] ?? drawerNode}
-          boardId={boardId}
           onClose={() => setDrawerNode(null)}
           onTerminal={(node) => {
             setDrawerNode(null);

@@ -62,12 +62,10 @@ function scrubJoinFromUrl(): void {
   }
 }
 
-// Left-sidebar navigation (V24-W1): the old top tab strip became too crowded, so
-// every panel/drawer now lives in a grouped, collapsible left sidebar. Items keep
-// their legacy hook classes (`dr-tab[data-view]` for view panels; dr-audit-btn /
-// dr-chain-btn / dr-inbox-btn for the drawers) so existing wiring is unchanged —
-// only their position moved. Groups: Work, Ops, Comms, Cross-room, Audit, Cost,
-// Setup.
+// Left-sidebar navigation. v2 keeps the operator surface focused on the live
+// cockpit: human lists, org, terminal, Slack/master chat, SSH/share, audit, setup.
+// Older analytics/execution/cross-room panels remain routable for compatibility,
+// but they no longer crowd the default UI.
 type NavItem =
   | { kind: "view"; view: View; labelKey: string; icon: string }
   | { kind: "drawer"; drawer: "audit" | "chain" | "inbox"; labelKey: string; icon: string };
@@ -82,45 +80,18 @@ const NAV_GROUPS: { id: string; labelKey: string; items: NavItem[] }[] = [
     ],
   },
   {
-    id: "ops",
-    labelKey: "nav.group.ops",
-    items: [
-      { kind: "view", view: "exec", labelKey: "tab.exec", icon: "▶" },
-      { kind: "view", view: "ledger", labelKey: "tab.ledger", icon: "▦" },
-      { kind: "view", view: "trend", labelKey: "tab.trend", icon: "↗" },
-      { kind: "view", view: "insights", labelKey: "tab.insights", icon: "◍" },
-    ],
-  },
-  {
     id: "comms",
     labelKey: "nav.group.comms",
     items: [
       { kind: "view", view: "integrations", labelKey: "tab.integrations", icon: "#" },
       { kind: "view", view: "connect", labelKey: "tab.connect", icon: "⚯" },
-      { kind: "view", view: "routing", labelKey: "tab.routing", icon: "⤳" },
       { kind: "drawer", drawer: "inbox", labelKey: "inbox.open", icon: "⚑" },
-    ],
-  },
-  {
-    id: "crossroom",
-    labelKey: "nav.group.crossroom",
-    items: [
-      { kind: "view", view: "agg", labelKey: "tab.agg", icon: "⊞" },
-      { kind: "view", view: "handoff", labelKey: "tab.handoff", icon: "⇄" },
     ],
   },
   {
     id: "audit",
     labelKey: "nav.group.audit",
-    items: [
-      { kind: "drawer", drawer: "audit", labelKey: "audit.open", icon: "⌗" },
-      { kind: "drawer", drawer: "chain", labelKey: "chain.open", icon: "⛓" },
-    ],
-  },
-  {
-    id: "cost",
-    labelKey: "nav.group.cost",
-    items: [{ kind: "view", view: "cost", labelKey: "tab.cost", icon: "$" }],
+    items: [{ kind: "drawer", drawer: "audit", labelKey: "audit.open", icon: "⌗" }],
   },
   {
     id: "setup",
@@ -408,7 +379,17 @@ export function App() {
     () => nodes.find((n) => n.tmux_pane === selectedPane) ?? null,
     [nodes, selectedPane],
   );
+  const firstTerminalPane = useMemo(
+    () => nodes.find((n) => n.terminal_allowed !== false && n.tmux_pane)?.tmux_pane ?? null,
+    [nodes],
+  );
   const liveCount = nodes.filter((n) => n.status === "running").length;
+
+  useEffect(() => {
+    if (view !== "terminal") return;
+    if (selected && selected.terminal_allowed !== false) return;
+    if (firstTerminalPane && firstTerminalPane !== selectedPane) setSelectedPane(firstTerminalPane);
+  }, [firstTerminalPane, selected, selectedPane, view]);
 
   const pickNode = (pane: string) => {
     setSelectedPane(pane);
@@ -568,11 +549,9 @@ export function App() {
             <div className="dr-stage__empty">{t("stage.noBoards")}</div>
           ) : view === "team" ? (
             <OrgChart
-              boardId={boardId}
               liveTick={liveTick}
               projectTick={projectTick}
               onOpenTerminal={pickNode}
-              onDelegated={() => setLiveTick((x) => x + 1)}
               onOpenMasterChat={openMasterChat}
               onSwitchProject={switchProject}
             />
@@ -617,8 +596,7 @@ export function App() {
 
       <TaskDrawer
         taskId={openTaskId}
-        boardId={boardId}
-        onDelegated={() => setLiveTick((x) => x + 1)}
+        onChanged={() => setLiveTick((x) => x + 1)}
         onClose={() => setOpenTaskId(null)}
       />
       <AuditDrawer open={auditOpen} projectTick={projectTick} onClose={() => setAuditOpen(false)} />
@@ -642,7 +620,7 @@ export function App() {
         }}
         onNavigate={(v) => setView(v)}
       />
-      {/* Floating operator-only chat to the project-master (bottom-right). */}
+      {/* Floating chat to GROVE MASTER (bottom-right). */}
       <MasterChat openSignal={masterChatOpenSignal} />
     </div>
   );

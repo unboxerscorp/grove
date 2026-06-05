@@ -177,10 +177,13 @@ describe("org rendering", () => {
         "dev10",
         "grove-master [codex] GROVE MASTER — governs all projects; project leads are children",
         "  lead [claude] Lead",
+        "    cwd: /tmp/grove",
         "    description: Coordinates the team",
         "    maker [codex] Builder",
+        "      cwd: /tmp/grove",
         "      description: Builds TypeScript changes",
         "    viewer [antigravity] Viewer",
+        "      cwd: /tmp/grove",
         "",
         "groups",
         "master: grove-master",
@@ -219,32 +222,102 @@ describe("org rendering", () => {
         {
           agent: "codex",
           children: ["lead"],
+          cwd: "",
           group: "master",
           name: "grove-master",
           parent: "",
           role: "GROVE MASTER — governs all projects; project leads are children",
+          session_id: "",
+          status: "",
+          tmux_pane: "",
         },
         {
           agent: "claude",
           children: ["maker"],
+          cwd: "/tmp/grove",
           description: "Coordinates the team",
           group: "core",
           name: "lead",
           parent: "grove-master",
           role: "Lead",
+          session_id: "",
+          status: "",
+          tmux_pane: "",
         },
         {
           agent: "codex",
           children: [],
+          cwd: "/tmp/grove",
           description: "Builds TypeScript changes",
           group: "core",
           name: "maker",
           parent: "lead",
           role: "Builder",
+          session_id: "",
+          status: "",
+          tmux_pane: "",
         },
       ],
       roots: ["grove-master"],
       session: "dev10",
     });
   });
+
+  test("exposes runtime cwd, tmux pane, status, and session id", () => {
+    const ctx = makeContext({
+      lead: {
+        agent: "claude",
+        children: ["maker"],
+        cwd: "/repo/dev10",
+        group: "core",
+        name: "lead",
+        role: "Lead",
+        sessionId: "lead-session",
+        status: "active",
+        tmux_pane: "dev10:1.0",
+      },
+      maker: {
+        agent: "codex",
+        children: [],
+        cwd: "/repo/dev10/packages/app",
+        group: "core",
+        name: "maker",
+        parent: "lead",
+        role: "Builder",
+        sessionId: "maker-session",
+        status: "running",
+        tmux_pane: "dev10:1.1",
+      },
+    });
+
+    const org = buildOrg(ctx, null);
+    const parsed = JSON.parse(renderOrgJson(org)) as { nodes: OrgJsonNode[] };
+    const nodes = new Map(parsed.nodes.map((node) => [node.name, node]));
+    const text = renderOrgText(org);
+
+    expect(nodes.get("lead")).toEqual(
+      expect.objectContaining({
+        cwd: "/repo/dev10",
+        session_id: "lead-session",
+        status: "active",
+        tmux_pane: "dev10:1.0",
+      }),
+    );
+    expect(nodes.get("maker")).toEqual(
+      expect.objectContaining({
+        cwd: "/repo/dev10/packages/app",
+        session_id: "maker-session",
+        status: "running",
+        tmux_pane: "dev10:1.1",
+      }),
+    );
+    expect(text).toContain("pane: dev10:1.0");
+    expect(text).toContain("cwd: /repo/dev10");
+    expect(text).toContain("pane: dev10:1.1");
+    expect(text).toContain("cwd: /repo/dev10/packages/app");
+  });
 });
+
+type OrgJsonNode = {
+  name: string;
+};

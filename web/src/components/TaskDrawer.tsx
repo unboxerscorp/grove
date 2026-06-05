@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { actorLabel, api, canonicalStatus } from "../api";
-import type { AuditEvent, HandoffPackage, PlanCandidate, PlanResult } from "../api";
-import { cx, fmtAgo, initials, MANUAL_STATUS_COLUMNS, statusColor } from "../constants";
+import type { AuditEvent } from "../api";
+import { cx, initials, MANUAL_STATUS_COLUMNS, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
 import type { AssigneeCandidate, Comment, Run, Task } from "../types";
@@ -189,281 +189,12 @@ function ExecutionTimeline({ taskId, t }: { taskId: string; t: TFn }) {
   );
 }
 
-function fmtScore(v: number | null | undefined): string {
-  return typeof v === "number" ? v.toFixed(2) : "—";
-}
-
-/**
- * Hand a task off to another room: generate a SIGNED handoff package (read-only —
- * the receiver decides whether to accept). The copyable JSON carries the
- * signature (needed for the receiver to verify); the human preview shows only
- * key_id + allowlist fields, never the signing key. Default-OFF → 404 notice.
- */
-function HandoffExport({ taskId, t }: { taskId: string; t: TFn }) {
-  const [pkg, setPkg] = useState<HandoffPackage | null>(null);
-  const [state, setState] = useState<"idle" | "loading" | "disabled" | "error">("idle");
-  const [copied, setCopied] = useState(false);
-
-  const doExport = () => {
-    setState("loading");
-    api
-      .exportHandoff(taskId)
-      .then((p) => {
-        setPkg(p);
-        setState("idle");
-      })
-      .catch((e: unknown) => {
-        const m = e instanceof Error ? e.message : "";
-        setState(/\b404\b/.test(m) ? "disabled" : "error");
-      });
-  };
-
-  const json = pkg ? JSON.stringify(pkg, null, 2) : "";
-  const copy = () => {
-    void navigator.clipboard?.writeText(json).catch(() => {});
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
-  };
-
-  return (
-    <section className="dr-drawer__section handoff-export">
-      <h3 className="dr-drawer__h">{t("handoff.exportTitle")}</h3>
-      {!pkg && (
-        <button type="button" className="dr-btn dr-btn--ghost handoff-export__btn" disabled={state === "loading"} onClick={doExport}>
-          {state === "loading" ? t("handoff.exporting") : t("handoff.export")}
-        </button>
-      )}
-      {state === "disabled" && <div className="handoff-msg is-warn">{t("handoff.disabled")}</div>}
-      {state === "error" && <div className="handoff-msg is-error">{t("handoff.exportError")}</div>}
-      {pkg && (
-        <div className="handoff-pkg" data-handoff="export">
-          <div className="handoff-pkg__meta">
-            <span className="handoff-pkg__id">{pkg.payload.handoff_id}</span>
-            <span className="handoff-pkg__key">{t("handoff.key")}: {pkg.key_id}</span>
-            {typeof pkg.payload.expires_at === "number" && (
-              <span className="handoff-pkg__exp">{t("handoff.expires")} {fmtAgo(pkg.payload.expires_at)}</span>
-            )}
-          </div>
-          <div className="handoff-pkg__task">{pkg.payload.task?.title}</div>
-          <textarea className="dr-input handoff-export__json" name="handoffJson" readOnly rows={4} value={json} spellCheck={false} />
-          <button type="button" className="dr-btn dr-btn--primary handoff-export__copy" onClick={copy}>
-            {copied ? t("handoff.copied") : t("handoff.copy")}
-          </button>
-          <p className="handoff-export__note">{t("handoff.exportNote")}</p>
-        </div>
-      )}
-    </section>
-  );
-}
-
-/**
- * Read-only planner recommendations: ranked candidate nodes for a task+role.
- * The endpoint never claims/assigns — this surfaces the ranking for MANUAL
- * assignment only, mirroring `read_only:true` in the backend response.
- */
-function PlannerPanel(props: {
-  taskId: string;
-  boardId: string | null;
-  defaultRole: string;
-  taskTitle: string;
-  taskBody?: string;
-  onDelegated?: () => void;
-  t: TFn;
-}) {
-  const { taskId, boardId, defaultRole, taskTitle, taskBody, onDelegated, t } = props;
-  const [role, setRole] = useState(defaultRole);
-  const [plan, setPlan] = useState<PlanResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Delegation is an EXPLICIT, two-step user action (button -> confirm) layered
-  // over the read-only recommendation; nothing is delegated automatically.
-  const [confirmNode, setConfirmNode] = useState<string | null>(null);
-  const [busyNode, setBusyNode] = useState<string | null>(null);
-  const [doneNode, setDoneNode] = useState<string | null>(null);
-  const [delegErr, setDelegErr] = useState<string | null>(null);
-
-  const recommend = () => {
-    const r = role.trim();
-    if (!r || loading) return;
-    setLoading(true);
-    setError(null);
-    setDoneNode(null);
-    setConfirmNode(null);
-    setDelegErr(null);
-    api
-      .getPlan({ role: r, task_id: taskId })
-      .then((p) => setPlan(p))
-      .catch(() => {
-        // Fixed message only — never surface e.message: the raw cause can carry
-        // the request path + the role input (potential secret/path) into the UI.
-        setPlan(null);
-        setError(t("plan.error"));
-      })
-      .finally(() => setLoading(false));
-  };
-
-  const confirmDelegate = (node: string) => {
-    if (busyNode || !boardId) {
-      if (!boardId) setDelegErr(t("plan.delegateError"));
-      return;
-    }
-    setBusyNode(node);
-    setDelegErr(null);
-    api
-      .delegate(boardId, node, { title: taskTitle, body: taskBody })
-      .then(() => {
-        setBusyNode(null);
-        setConfirmNode(null);
-        setDoneNode(node);
-        onDelegated?.(); // bump liveTick -> board + audit refresh
-      })
-      .catch(() => {
-        // Fixed message only (v1.11 pattern) — no raw cause / path / secret.
-        setBusyNode(null);
-        setConfirmNode(null);
-        setDelegErr(t("plan.delegateError"));
-      });
-  };
-
-  const candidates = plan?.candidates ?? [];
-
-  return (
-    <section className="dr-drawer__section plan-panel">
-      <h3 className="dr-drawer__h">{t("plan.title")}</h3>
-      <div className="plan-controls">
-        <input
-          className="dr-input plan-role"
-          name="planRole"
-          type="text"
-          placeholder={t("plan.rolePh")}
-          value={role}
-          spellCheck={false}
-          onChange={(e) => setRole(e.target.value)}
-        />
-        <button
-          type="button"
-          className="dr-btn dr-btn--primary plan-run"
-          disabled={loading || !role.trim()}
-          onClick={recommend}
-        >
-          {loading ? t("plan.running") : t("plan.recommend")}
-        </button>
-      </div>
-
-      {error && <div className="plan-msg is-error">{error}</div>}
-
-      {plan && (
-        <>
-          {/* read_only:true is the DEFAULT: ranking only. Delegation is opt-in
-              per candidate via an explicit button + confirm. */}
-          <div className="plan-readonly" role="note">
-            🛈 {t("plan.readonly")}
-          </div>
-          {delegErr && <div className="plan-msg is-error">{delegErr}</div>}
-          {candidates.length === 0 && <div className="plan-msg">{t("plan.empty")}</div>}
-          <ol className="plan-list">
-            {candidates.map((c) => {
-              const state =
-                doneNode === c.node
-                  ? "done"
-                  : busyNode === c.node
-                    ? "busy"
-                    : confirmNode === c.node
-                      ? "confirm"
-                      : "idle";
-              return (
-                <PlanRow
-                  key={c.node}
-                  c={c}
-                  t={t}
-                  delegState={state}
-                  canDelegate={!!boardId}
-                  onAsk={() => {
-                    setDelegErr(null);
-                    setConfirmNode(c.node);
-                  }}
-                  onConfirm={() => confirmDelegate(c.node)}
-                  onCancel={() => setConfirmNode(null)}
-                />
-              );
-            })}
-          </ol>
-        </>
-      )}
-    </section>
-  );
-}
-
-function PlanRow(props: {
-  c: PlanCandidate;
-  t: TFn;
-  delegState: "idle" | "confirm" | "busy" | "done";
-  canDelegate: boolean;
-  onAsk: () => void;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  const { c, t, delegState, canDelegate, onAsk, onConfirm, onCancel } = props;
-  const score = c.score;
-  const breakdown = c.score_breakdown ?? {};
-  // Top score factors (read-only reasons), each with its confidence.
-  const factors = Object.entries(breakdown).slice(0, 4);
-  return (
-    <li className="plan-cand" data-node={c.node}>
-      <div className="plan-cand__head">
-        <span className="plan-cand__rank">#{typeof c.rank?.value === "number" ? c.rank.value : "?"}</span>
-        <span className="plan-cand__node">{c.node}</span>
-        {c.role && <span className="plan-cand__role">{c.role}</span>}
-        <span className="plan-cand__score">
-          {fmtScore(score?.value)}
-          {score?.confidence && <span className={cx("plan-conf", `is-${score.confidence}`)}>{t(`cost.conf.${score.confidence}`)}</span>}
-        </span>
-      </div>
-      <div className="plan-cand__factors">
-        {factors.map(([key, m]) => (
-          <span key={key} className="plan-factor" title={`${m.source} · ${m.confidence}`}>
-            <span className="plan-factor__k">{t(`plan.factor.${key}`)}</span>
-            <span className="plan-factor__v">{fmtScore(m.value)}</span>
-            <span className={cx("plan-conf", `is-${m.confidence}`)}>{t(`cost.conf.${m.confidence}`)}</span>
-          </span>
-        ))}
-      </div>
-      <div className="plan-cand__deleg">
-        {delegState === "done" ? (
-          <span className="plan-deleg__ok">✓ {t("plan.delegated", { node: c.node })}</span>
-        ) : delegState === "confirm" ? (
-          <span className="plan-deleg__confirm">
-            <span className="plan-deleg__q">{t("plan.delegateConfirm", { node: c.node })}</span>
-            <button type="button" className="dr-btn dr-btn--primary plan-deleg__yes" onClick={onConfirm}>
-              {t("plan.delegateYes")}
-            </button>
-            <button type="button" className="dr-btn dr-btn--ghost plan-deleg__no" onClick={onCancel}>
-              {t("node.cancel")}
-            </button>
-          </span>
-        ) : (
-          <button
-            type="button"
-            className="dr-btn dr-btn--ghost plan-deleg__btn"
-            disabled={delegState === "busy" || !canDelegate}
-            onClick={onAsk}
-          >
-            {delegState === "busy" ? t("plan.delegating") : t("plan.delegate")}
-          </button>
-        )}
-      </div>
-    </li>
-  );
-}
-
 export function TaskDrawer(props: {
   taskId: string | null;
-  boardId: string | null;
   onClose: () => void;
-  onDelegated?: () => void;
+  onChanged?: () => void;
 }) {
-  const { taskId, boardId, onClose, onDelegated } = props;
+  const { taskId, onClose, onChanged } = props;
   const { t } = useI18n();
   const panelRef = useRef<HTMLElement | null>(null);
   useFocusTrap(!!taskId, panelRef);
@@ -572,7 +303,7 @@ export function TaskDrawer(props: {
               task={task}
               onUpdated={(u) => {
                 setTask(u);
-                onDelegated?.(); // refresh the board (card moves) + audit
+                onChanged?.();
               }}
               t={t}
             />
@@ -611,18 +342,6 @@ export function TaskDrawer(props: {
             </section>
 
             <ExecutionTimeline taskId={task.id} t={t} />
-
-            <HandoffExport taskId={task.id} t={t} />
-
-            <PlannerPanel
-              taskId={task.id}
-              boardId={boardId}
-              defaultRole={task.assignee ?? ""}
-              taskTitle={task.title}
-              taskBody={task.body}
-              onDelegated={onDelegated}
-              t={t}
-            />
           </div>
         )}
       </aside>

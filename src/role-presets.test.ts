@@ -10,7 +10,8 @@ describe("role presets", () => {
       const expanded = expandRolePreset(id);
       expect(expanded.body).toContain("너는 ");
       expect(expanded.body).toContain("이며 GROVE 조직/업무방식을 따른다");
-      expect(expanded.body).toContain("보드 task 중심");
+      expect(expanded.body).toContain("노드 간 소통은 계층과 무관하게 직접 한다");
+      expect(expanded.body).toContain("사람이 명시 지시한 경우");
     }
   });
 });

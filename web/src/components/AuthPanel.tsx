@@ -12,15 +12,13 @@ const GUI_FEATURES: { key: GuiFeatureKey; labelKey: string; noteKey: string }[] 
   { key: "node-input", labelKey: "setup.feature.nodeInput", noteKey: "setup.feature.nodeInput.note" },
   { key: "digest", labelKey: "setup.feature.digest", noteKey: "setup.feature.digest.note" },
   { key: "summary", labelKey: "setup.feature.summary", noteKey: "setup.feature.summary.note" },
-  { key: "handoff", labelKey: "setup.feature.handoff", noteKey: "setup.feature.handoff.note" },
   { key: "usage-trend", labelKey: "setup.feature.usageTrend", noteKey: "setup.feature.usageTrend.note" },
   { key: "retro-analytics", labelKey: "setup.feature.retro", noteKey: "setup.feature.retro.note" },
 ];
 
-// P1: features whose ENABLE direction is consequential (opens a real capability —
-// web→node input, Slack intake, cross-room handoff). Enabling these requires a
-// 2-step confirm (arm → confirm/cancel); DISABLING stays a single immediate POST.
-const RISK_FEATURES = new Set<GuiFeatureKey>(["node-input", "intake", "handoff"]);
+// Features whose ENABLE direction is consequential. Enabling requires a 2-step
+// confirm (arm -> confirm/cancel); disabling stays a single immediate POST.
+const RISK_FEATURES = new Set<GuiFeatureKey>(["node-input", "intake"]);
 
 function AuthMark() {
   return (

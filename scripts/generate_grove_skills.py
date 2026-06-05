@@ -36,16 +36,16 @@ This directory mirrors grove skills for agent runtimes that read `.agents/skills
 
 1. Read the project-root `AGENTS.md`.
 2. Load the relevant skill from `.agents/skills/*/SKILL.md` before acting.
-3. Start with `grove:harness` for delegation, node creation, group work, org lookup, board actions, or routing.
+3. Start with `grove:harness` for org lookup, direct node communication, group work, human-facing task actions, or routing.
 
 ## Runtime parity
 
-- The six grove skills in this tree must stay byte-for-byte aligned with `skills-src/` and `skills/`.
-- `agy` nodes use grove's `antigravity` agent type and follow the same board delegation protocol as `codex` and `claude`.
+- Grove skills in this tree must stay byte-for-byte aligned with `skills-src/` and `skills/`.
+- `agy` nodes use grove's `antigravity` agent type and follow the same org-awareness and direct-communication model as `codex` and `claude`.
 - Interactive grove nodes run in a visible pane; headless mode is only for explicit one-shot checks.
 - grove may launch the interactive CLI with `--dangerously-skip-permissions`; that flag does not change repo, board, skill, or handoff rules.
 - Interactive submit is paste, Enter, Enter. Live parity verification stays with the lead.
-- Nodes with children coordinate and delegate instead of doing leaf implementation directly.
+- Nodes do not autonomously create, terminate, or rearrange other nodes. Organization changes require explicit human instruction and the operator-marked GUI/API/CLI path.
 """
 
 
@@ -96,8 +96,6 @@ def load_sources(source_root: Path) -> list[SkillSource]:
                 body=body,
             )
         )
-    if len(sources) != 6:
-        raise SystemExit(f"expected 6 skills, found {len(sources)}")
     return sources
 
 
@@ -125,6 +123,14 @@ def parse_frontmatter(body: str, path: Path) -> dict[str, str]:
 
 
 def write_targets(root: Path, sources: list[SkillSource]) -> None:
+    expected_names = {source.name for source in sources}
+    for target_root in (PLUGIN_SKILLS_DIR, AGENT_SKILLS_DIR):
+        target_dir = root / target_root
+        if not target_dir.is_dir():
+            continue
+        for path in target_dir.iterdir():
+            if path.is_dir() and path.name not in expected_names:
+                shutil.rmtree(path)
     for source in sources:
         copy_skill(source, root / PLUGIN_SKILLS_DIR / source.name / SKILL_FILE)
         copy_skill(source, root / AGENT_SKILLS_DIR / source.name / SKILL_FILE)
@@ -150,6 +156,7 @@ def write_text(path: Path, value: str) -> None:
 
 def check_targets(root: Path, sources: list[SkillSource]) -> int:
     failures: list[str] = []
+    expected_names = {source.name for source in sources}
     for source in sources:
         for target_root in (PLUGIN_SKILLS_DIR, AGENT_SKILLS_DIR):
             target = root / target_root / source.name / SKILL_FILE
@@ -158,6 +165,17 @@ def check_targets(root: Path, sources: list[SkillSource]) -> int:
                 continue
             if target.read_text(encoding="utf-8") != source.body:
                 failures.append(f"stale target: {target}")
+    for target_root in (PLUGIN_SKILLS_DIR, AGENT_SKILLS_DIR):
+        target_dir = root / target_root
+        if not target_dir.is_dir():
+            continue
+        actual_names = {
+            path.name
+            for path in target_dir.iterdir()
+            if path.is_dir() and (path / SKILL_FILE).is_file()
+        }
+        for extra in sorted(actual_names - expected_names):
+            failures.append(f"extra target: {target_dir / extra / SKILL_FILE}")
     for relative_path, manifest in MANIFESTS.items():
         target = root / relative_path
         if not target.is_file():

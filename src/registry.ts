@@ -29,6 +29,8 @@ export interface NodeRuntime {
   transcript?: string;
   /** full tmux pane target for explicit pane-bound nodes, e.g. "dev10:1.2" */
   tmux_pane?: string;
+  /** Runtime health/status label written by service or adoption flows. */
+  status?: string;
   /** Baseline for the in-flight turn, recorded at submit time so a later
    *  `wait` scans from before the response (fixes the send→wait race).
    *  Set by send/ask, cleared on completion. */
@@ -44,6 +46,8 @@ export interface NodeRuntime {
 
 export interface Registry {
   session: string;
+  /** tmux session that hosts this project's panes; defaults to `session`. */
+  tmuxSession?: string;
   cwd: string;
   nodes: Record<string, NodeRuntime>;
   updatedAt: string;

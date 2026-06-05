@@ -1,13 +1,15 @@
 ---
 name: grove-spawn-node
-description: Use when the grove needs a new persistent node, role, child, or specialist pane.
+description: Use only to understand or request human-operator node creation.
 ---
 
 # grove-spawn-node (alias: grove:spawn-node)
 
-## Before spawning
+## Rule
 
-Inspect the org and avoid duplicate names:
+Nodes do not autonomously create, terminate, or rearrange other nodes. Organization changes require explicit human instruction through the GUI/API or an operator-marked command.
+
+If you think a new persistent node, role, child, or specialist pane is needed, inspect the org and ask the human operator or project lead. If the human explicitly asks you to create it, use the operator-marked command.
 
 ```bash
 grove org --json
@@ -22,21 +24,18 @@ Decide:
 - parent: the coordinating node
 - group: optional fan-out or team label
 - cwd or workspace metadata for assigned tasks
-- window or pane placement if the operator requested it
+- window or pane placement if the human operator requested it
 
-Reviewer work should use a persistent reviewer node. Spawn one if no suitable reviewer exists.
+Reviewer work should use an existing persistent reviewer node. If no suitable reviewer exists, request one from the human operator.
 
-## Spawn
+## Human Operator Command
 
 ```bash
 grove spawn --name <name> --agent <agent> --role <role> --parent <parent> --group <group> --json
+grove spawn --operator --name <name> --agent <agent> --role <role> --parent <parent> --group <group> --json
 ```
 
-Use the viewer session when working from the dev-room backend:
-
-```bash
-grove spawn --name <name> --agent <agent> --role <role> --parent <parent> --group <group> --session <session> --json
-```
+The dashboard node creation flow supplies the project cwd. Project nodes should start in the project's configured working directory.
 
 ## Confirm binding
 
@@ -48,11 +47,11 @@ grove session
 grove rebind <name>
 ```
 
-Do not assign durable work until the node is visible in org output or rebind has repaired the binding.
+Do not route work to the node until it is visible in org output and has a pane and cwd binding.
 
 ## Agy and antigravity notes
 
 - Use `--agent antigravity` for nodes backed by the `agy` CLI.
-- Durable grove work should run in a visible interactive pane. Headless mode is for explicit one-shot checks only.
+- Grove work should run in a visible interactive pane. Headless mode is for explicit one-shot checks only.
 - The interactive launch may include `--dangerously-skip-permissions` under local operator control. The flag only changes CLI permission prompts; it does not relax `AGENTS.md`, skill, board, or handoff rules.
 - The interactive submit sequence is paste, Enter, Enter. The lead owns live parity verification.

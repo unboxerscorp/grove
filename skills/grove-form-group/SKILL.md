@@ -9,9 +9,9 @@ description: Use when several peer grove nodes should discuss, compare, review, 
 
 A group is a fan-out label for discussion, comparison, review, or convergence. Use it when several peer nodes should inspect the same context from different angles.
 
-Choose a moderator. The moderator coordinates prompts, waits for replies, gathers results, and writes the decision or next board tasks.
+Choose a moderator. The moderator coordinates direct prompts, waits for replies, gathers results, and writes the decision for the requester.
 
-## Form the group
+## Use Existing Nodes
 
 Inspect existing groups first:
 
@@ -19,11 +19,7 @@ Inspect existing groups first:
 grove org --json
 ```
 
-Spawn missing peers with the same group:
-
-```bash
-grove spawn --name <name> --agent <agent> --role <role> --parent <moderator> --group <group> --json
-```
+Do not autonomously spawn missing peers. If the org is missing a role, ask the human operator or project lead; if the human explicitly asks you to create it, use the operator-marked GUI/API/CLI path.
 
 ## Fan out
 
@@ -35,7 +31,7 @@ grove send <node-b> "<context and viewpoint B>"
 grove send <node-c> "<context and viewpoint C>"
 ```
 
-For durable implementation, verification, or review, create board tasks instead of relying on discussion messages.
+For implementation, verification, or review, keep the peer discussion direct unless a human-facing TODO, feedback item, or ask-human record is needed.
 
 ## Fan in
 
@@ -46,5 +42,5 @@ grove gather --group <group> --json
 The moderator must turn group output into one of:
 
 - a decision with evidence
-- follow-up board tasks
-- a block comment with the missing input
+- direct follow-up messages to the relevant nodes
+- a human-facing TODO or ask-human item when human judgment is needed

@@ -13,14 +13,15 @@ MAX_NODE_LINES = 40
 class ContextPackNode:
     name: str
     agent: str = ""
+    cwd: str = ""
     parent: str = ""
     group: str = ""
     role: str = ""
+    tmux_pane: str = ""
 
 
 def redact_grove_context_text(value: str) -> str:
-    redacted = re.sub(r"\b[A-Za-z0-9_-]+:\d+\.\d+\b", "[tmux-pane]", value)
-    redacted = re.sub(r"\bxox[a-z]?-[^\s,)]+", "[redacted]", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(r"\bxox[a-z]?-[^\s,)]+", "[redacted]", value, flags=re.IGNORECASE)
     redacted = re.sub(r"\bsk-[A-Za-z0-9_-]{12,}\b", "[redacted]", redacted)
     return re.sub(
         r"\b(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,)]+",
@@ -70,6 +71,10 @@ def _node_line(node: ContextPackNode) -> str:
     parts = [_clean(node.agent, "unknown")]
     if node.group.strip():
         parts.append(f"group={_clean(node.group)}")
+    if node.tmux_pane.strip():
+        parts.append(f"pane={_clean(node.tmux_pane)}")
+    if node.cwd.strip():
+        parts.append(f"cwd={_clean(node.cwd)}")
     role = _first_line(node.role)
     if role:
         parts.append(f"role={role}")
@@ -86,7 +91,6 @@ def build_grove_context_pack(
     project_lead: str | None = None,
     target_node: str | None = None,
     target_role: str | None = None,
-    task_protocol: str | None = None,
 ) -> str:
     visible_nodes = tuple(nodes[:MAX_NODE_LINES])
     lead = _project_lead(visible_nodes, project_lead)
@@ -94,13 +98,8 @@ def build_grove_context_pack(
     role = _first_line(target_role)
     communication = (
         communication_protocol
-        or "Nodes may communicate across the org; durable implementation and review work "
-        "should be tracked through grove board tasks."
-    )
-    task = (
-        task_protocol
-        or "Use board-task-centered handoffs. Final answers should include Summary, Files, "
-        "Verification, and Risks."
+        or "Nodes may communicate directly across projects and hierarchy. Board tasks are for "
+        "human TODO, feedback, and ask-human records, not a required node-to-node protocol."
     )
     org_lines = (
         [_node_line(node) for node in visible_nodes]
@@ -115,7 +114,6 @@ def build_grove_context_pack(
         f"Target node: {target}",
         f"Target role: {role or '(not recorded)'}",
         f"Communication protocol: {communication}",
-        f"Task protocol: {task}",
         "Visible org summary:",
         *org_lines,
     ]
@@ -133,7 +131,6 @@ def prepend_grove_context_pack(
     project_lead: str | None = None,
     target_node: str | None = None,
     target_role: str | None = None,
-    task_protocol: str | None = None,
 ) -> str:
     body = message if message is not None and message.strip() else "(no body)"
     if body.lstrip().startswith(GROVE_CONTEXT_PACK_HEADER):
@@ -147,7 +144,6 @@ def prepend_grove_context_pack(
         project_lead=project_lead,
         target_node=target_node,
         target_role=target_role,
-        task_protocol=task_protocol,
     )
     return f"{pack}\n\nOriginal message:\n{body}"
 
@@ -164,9 +160,11 @@ def context_pack_nodes_from_registry(
             ContextPackNode(
                 name=raw_name if isinstance(raw_name, str) and raw_name.strip() else fallback_name,
                 agent=str(raw_node.get("agent") or ""),
+                cwd=str(raw_node.get("cwd") or ""),
                 parent=str(raw_node.get("parent") or ""),
                 group=str(raw_node.get("group") or ""),
                 role=str(raw_node.get("role") or ""),
+                tmux_pane=str(raw_node.get("tmux_pane") or ""),
             )
         )
     return tuple(sorted(nodes, key=lambda node: node.name))

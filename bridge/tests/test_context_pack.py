@@ -16,15 +16,19 @@ def test_build_grove_context_pack_redacts_and_bounds_visible_context() -> None:
             ContextPackNode(
                 name="lead",
                 agent="codex",
+                cwd="/repo/dev10",
                 parent="grove-master",
                 role="Project lead token=xoxb-secret dev10:1.2",
+                tmux_pane="dev10:1.2",
             ),
             ContextPackNode(
                 name="worker",
                 agent="codex",
+                cwd="/repo/dev10",
                 parent="lead",
                 group="product",
                 role="Implementation maker",
+                tmux_pane="dev10:1.3",
             ),
         ),
         project="dev10",
@@ -40,8 +44,11 @@ def test_build_grove_context_pack_redacts_and_bounds_visible_context() -> None:
     assert "Target node: worker" in pack
     assert "Target role: Implementation maker" in pack
     assert "lead -> worker" in pack
+    assert "pane=dev10:1.3" in pack
+    assert "cwd=/repo/dev10" in pack
+    assert "Board tasks are for human TODO" in pack
     assert "xoxb-secret" not in pack
-    assert "dev10:1.2" not in pack
+    assert "dev10:1.2" in pack
     assert len(pack.encode("utf-8")) <= 1_200
 
 

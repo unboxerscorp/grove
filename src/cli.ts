@@ -43,8 +43,8 @@ const program = new Command();
 
 program
   .name("grove")
-  .description("Grow a tree of AI agents (Claude Code + Codex) in your terminal.")
-  .version("0.1.0")
+  .description("Run a visible org of AI agent sessions in tmux.")
+  .version("0.32.0")
   .option("-c, --config <file>", "path to grove.yaml");
 
 // Merge the root --config into each subcommand's options.
@@ -81,10 +81,11 @@ program
 
 program
   .command("new-project <name>")
-  .description("create a detached tmux project session and spawn its initial grove nodes")
+  .description("create a project registry and spawn its initial grove nodes")
   .option("--template <name>", "template name from ~/.grove/templates/<name>.yaml")
   .option("--dir <path>", "workspace directory (default: ~/grove-projects/<name>)")
   .option("--clone <owner/repo>", "clone a GitHub repo into the workspace when gh is authenticated")
+  .option("--tmux-session <session>", "existing tmux session that should host project panes")
   .option("--json", "print the project summary as JSON")
   .action(run((name: string, opts: Record<string, unknown>) => cmdNewProject(name, opts)));
 
@@ -115,7 +116,7 @@ program
 
 program
   .command("spawn")
-  .description("create a detached tmux pane and launch a new grove node")
+  .description("operator action: create a detached tmux pane and launch a new grove node")
   .requiredOption("--name <name>", "new node name")
   .requiredOption("--agent <agent>", "agent adapter: codex, claude, or antigravity")
   .option("--role <role>", "role / initial prompt for the new node")
@@ -123,9 +124,11 @@ program
   .option("--description <text>", "short human-readable note for the new node")
   .option("--parent <node>", "parent node name")
   .option("--group <group>", "team group")
-  .option("--session <session>", "target tmux/grove session")
+  .option("--session <session>", "target grove project/registry session")
+  .option("--tmux-session <session>", "tmux session that should host the new pane")
   .option("--window <window>", "split this existing window instead of creating a new window")
   .option("--cwd <dir>", "working directory for the new node")
+  .option("--operator", "confirm explicit human instruction for this org mutation")
   .option("-c, --config <file>", "path to grove.yaml")
   .option("--json", "print the spawn result as JSON")
   .action(run((opts: Record<string, unknown>) => cmdSpawn(withConfig(opts))));
@@ -136,8 +139,11 @@ program
   .option("--session <session>", "target tmux/grove session")
   .option("--group <group>", "despawn every node in a group (requires --yes)")
   .option("--all", "despawn every node in the session registry (requires --yes)")
-  .option("--caller <node>", "node requesting termination; must parent every normal target")
-  .option("--operator-override", "explicit operator override for ownership enforcement")
+  .option(
+    "--caller <node>",
+    "legacy caller metadata; org mutation still requires --operator-override",
+  )
+  .option("--operator-override", "confirm explicit human instruction for this org mutation")
   .option("-y, --yes", "confirm bulk despawn")
   .option("-c, --config <file>", "path to grove.yaml")
   .option("--json", "print the despawn result as JSON")
@@ -149,7 +155,7 @@ program
 
 program
   .command("delegate <node> <title...>")
-  .description("create a ready board task assigned to a grove node")
+  .description("create a human-facing TODO/feedback task associated with a grove node")
   .option("--body <text>", "task body")
   .option("--board <board>", "target board slug", "default")
   .option("--session <session>", "target grove session/project")
@@ -164,7 +170,7 @@ program
 
 const taskCommand = program
   .command("task")
-  .description("transition a grove board task through the hybrid task flow");
+  .description("transition a human-facing grove TODO/feedback/ask-human task");
 
 function taskTransitionCommand(action: TaskAction, description: string): void {
   taskCommand
@@ -187,15 +193,15 @@ function taskTransitionCommand(action: TaskAction, description: string): void {
     );
 }
 
-taskTransitionCommand("start", "mark a board task as running");
-taskTransitionCommand("done", "mark a board task as done");
-taskTransitionCommand("review", "mark a board task as ready for review");
-taskTransitionCommand("block", "mark a board task as blocked");
-taskTransitionCommand("ask-human", "mark a board task as waiting for human input");
+taskTransitionCommand("start", "mark a human-facing task as running");
+taskTransitionCommand("done", "mark a human-facing task as done");
+taskTransitionCommand("review", "mark a human-facing task as ready for review");
+taskTransitionCommand("block", "mark a human-facing task as blocked");
+taskTransitionCommand("ask-human", "mark a human-facing task as waiting for human input");
 
 program
   .command("send <node> <message...>")
-  .description("give a node a task (non-blocking)")
+  .description("send a direct message to a node (non-blocking)")
   .option("--project <project>", "target grove project/session for the addressed node")
   .option("-c, --config <file>", "path to grove.yaml")
   .action(
@@ -219,7 +225,7 @@ program
 
 program
   .command("ask <node> <message...>")
-  .description("send a task and wait for the result (send + wait)")
+  .description("send a direct message and wait for the result (send + wait)")
   .option("--project <project>", "target grove project/session for the addressed node")
   .option("-c, --config <file>", "path to grove.yaml")
   .option("-t, --timeout <dur>", "max wait, e.g. 30s 20m 1h", "30m")

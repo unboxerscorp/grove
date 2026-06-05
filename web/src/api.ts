@@ -778,6 +778,8 @@ export interface Project {
   display_name?: string;
   project?: string;
   session?: string;
+  tmuxSession?: string;
+  tmux_session?: string;
   board?: string;
   workspace: string;
   node_count: number;
@@ -820,8 +822,8 @@ export interface JoinResult {
   expires_at?: number;
 }
 
-// Master chat (v1.27). Operator-only conversational channel to the project-master
-// orchestrator, implemented by grove-py at /api/master/chat. POST is live; the
+// Master chat (v1.27). Conversational channel to GROVE MASTER, implemented by
+// grove-py at /api/master/chat. POST is live; the
 // history GET may stay unimplemented (POST-only route) and 405 — callers treat
 // 404/405/501/503 as a graceful "not yet available" and surface other codes as
 // real errors. Replies are keyed by `id` and upserted in place (pending -> sent).
@@ -859,7 +861,7 @@ export interface MasterChatConfirmBody {
 }
 
 // Raw MasterChatResponse from grove-py. Surfaced as-is; masterReplyText() picks
-// only assistant-authored answer.text and the FE threads conversation_id forward.
+// only master-authored answer.text and the FE threads conversation_id forward.
 export type MasterChatResponseType = "answer" | "preview" | "denied";
 
 export interface MasterChatFacts {
@@ -1496,7 +1498,7 @@ export const api = {
   // treats that as "no history" and judges availability on send instead.
   getMasterChatHistory: () => getJSON<MasterChatHistory>("/api/master/chat"),
 
-  // POST a message to the project-master. request_id = clientId (optimistic id);
+  // POST a message to GROVE MASTER. request_id = clientId (optimistic id);
   // conversation_id threads the session (assigned by the backend, reused on the
   // next send). Returns the raw MasterChatResponse — see masterReplyText().
   async sendMasterChat(text: string, clientId: string, conversationId?: string): Promise<MasterChatResponse> {

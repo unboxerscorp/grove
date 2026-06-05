@@ -12,15 +12,18 @@ import {
 import type { SpawnInput, SpawnResult } from "./spawn.js";
 
 function spawnResult(input: SpawnInput): SpawnResult {
+  const paneSession = input.tmuxSession ?? input.session ?? "alpha";
+  const paneWindow = input.window ?? input.name ?? "node";
   return {
     agent: input.agent === "claude" || input.agent === "antigravity" ? input.agent : "codex",
     cwd: input.cwd ?? "",
     group: input.group,
     name: input.name ?? "node",
-    pane: `${input.session ?? "alpha"}:${input.name ?? "node"}.0`,
+    pane: `${paneSession}:${paneWindow}.0`,
     parent: input.parent,
     role: input.role ?? "",
     session: input.session ?? "alpha",
+    tmuxSession: input.tmuxSession,
     transcriptDetected: false,
   };
 }
@@ -166,11 +169,62 @@ describe("createNewProject", () => {
     });
   });
 
+  test("can keep the project registry while hosting panes in an existing shared tmux session", async () => {
+    const state = deps({ sessionExists: true });
+
+    const result = await createNewProject("alpha", { tmuxSession: "dev10" }, state.deps);
+
+    expect(state.newSessions).toEqual([]);
+    expect(state.spawnInputs).toEqual([
+      expect.objectContaining({
+        cwd: "/home/tester/grove-projects/alpha",
+        name: "lead",
+        session: "alpha",
+        tmuxSession: "dev10",
+        window: "alpha",
+      }),
+    ]);
+    expect(result).toEqual(
+      expect.objectContaining({
+        board: { slug: "alpha" },
+        dashboardCommand: "grove-web --session alpha",
+        dir: "/home/tester/grove-projects/alpha",
+        session: "alpha",
+        tmuxSession: "dev10",
+      }),
+    );
+    const savedRegistry = JSON.parse(state.writes[0]!.text) as {
+      session: string;
+      tmuxSession?: string;
+      nodes: Record<string, Record<string, unknown>>;
+    };
+    expect(savedRegistry.session).toBe("alpha");
+    expect(savedRegistry.tmuxSession).toBe("dev10");
+    expect(savedRegistry.nodes["lead"]).toEqual(
+      expect.objectContaining({
+        cwd: "/home/tester/grove-projects/alpha",
+        name: "lead",
+        parent: "",
+        tmux_pane: "dev10:alpha.0",
+      }),
+    );
+  });
+
   test("errors when the project tmux session already exists", async () => {
     const state = deps({ sessionExists: true });
 
     await expect(createNewProject("alpha", {}, state.deps)).rejects.toThrow(
       "tmux session already exists: alpha",
+    );
+    expect(state.mkdirs).toEqual([]);
+    expect(state.spawnInputs).toEqual([]);
+  });
+
+  test("errors when a requested shared tmux session does not exist", async () => {
+    const state = deps({ sessionExists: false });
+
+    await expect(createNewProject("alpha", { tmuxSession: "dev10" }, state.deps)).rejects.toThrow(
+      "tmux session not found: dev10",
     );
     expect(state.mkdirs).toEqual([]);
     expect(state.spawnInputs).toEqual([]);

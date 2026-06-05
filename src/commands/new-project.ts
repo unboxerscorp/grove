@@ -28,6 +28,7 @@ export interface NewProjectOptions {
   template?: string;
   dir?: string;
   clone?: string;
+  tmuxSession?: string;
   json?: boolean;
 }
 
@@ -48,6 +49,7 @@ export interface CloneResult {
 
 export interface NewProjectResult {
   session: string;
+  tmuxSession?: string;
   dir: string;
   board: { slug: string };
   template?: string;
@@ -234,7 +236,9 @@ async function maybeClone(
   return { repo, status: "cloned" };
 }
 
-function contextForProject(session: string, dir: string): Context {
+function contextForProject(session: string, dir: string, tmuxSession?: string): Context {
+  const registry = emptyRegistry(session, dir);
+  if (tmuxSession && tmuxSession !== session) registry.tmuxSession = tmuxSession;
   return {
     byName: new Map(),
     config: {
@@ -245,7 +249,7 @@ function contextForProject(session: string, dir: string): Context {
     },
     configPath: "",
     nodes: [],
-    registry: emptyRegistry(session, dir),
+    registry,
   };
 }
 
@@ -310,18 +314,27 @@ export async function createNewProject(
   deps: NewProjectDeps = defaultDeps,
 ): Promise<NewProjectResult> {
   const name = validateGroveName(required(rawName, "project name"), "project name");
-  if (await deps.hasSession(name)) throw new Error(`tmux session already exists: ${name}`);
+  const tmuxSession = opts.tmuxSession?.trim()
+    ? validateGroveName(opts.tmuxSession.trim(), "--tmux-session")
+    : name;
+  const sharedTmuxSession = tmuxSession !== name;
+  if (sharedTmuxSession) {
+    if (!(await deps.hasSession(tmuxSession)))
+      throw new Error(`tmux session not found: ${tmuxSession}`);
+  } else if (await deps.hasSession(name)) {
+    throw new Error(`tmux session already exists: ${name}`);
+  }
 
   const dir = workspaceDir(name, opts, deps);
   await deps.ensureDir(dir);
   const clone = await maybeClone(opts.clone?.trim() || undefined, dir, deps);
-  await deps.newSession(name, { cwd: dir, windowName: "main" });
+  if (!sharedTmuxSession) await deps.newSession(name, { cwd: dir, windowName: "main" });
 
   const templateNodes = await loadTemplate(opts.template?.trim() || undefined, deps);
   const specs = orderNodes(
     templateNodes.length > 0 ? ensureProjectLead(name, templateNodes) : defaultNodes(name),
   );
-  const ctx = contextForProject(name, dir);
+  const ctx = contextForProject(name, dir, sharedTmuxSession ? tmuxSession : undefined);
   const nodes: SpawnResult[] = [];
   for (const spec of specs) {
     nodes.push(
@@ -331,9 +344,12 @@ export async function createNewProject(
         description: spec.description,
         group: spec.group,
         name: spec.name,
+        operatorManaged: true,
         parent: spec.parent,
         role: spec.role,
         session: name,
+        tmuxSession: sharedTmuxSession ? tmuxSession : undefined,
+        window: sharedTmuxSession ? name : undefined,
       }),
     );
   }
@@ -352,9 +368,14 @@ export async function createNewProject(
     clone,
     dashboardCommand,
     dir,
-    nextSteps: [dashboardCommand, `cd ${dir}`],
+    nextSteps: [
+      dashboardCommand,
+      `cd ${dir}`,
+      ...(sharedTmuxSession ? [`tmux attach -t ${tmuxSession}`] : []),
+    ],
     nodes,
     session: name,
+    tmuxSession: sharedTmuxSession ? tmuxSession : undefined,
     template: opts.template?.trim() || undefined,
   };
 }
@@ -366,6 +387,7 @@ export function renderNewProjectJson(result: NewProjectResult): string {
 export function renderNewProjectText(result: NewProjectResult): string {
   const lines = [
     `session: ${result.session}`,
+    ...(result.tmuxSession ? [`tmux session: ${result.tmuxSession}`] : []),
     `board: ${result.board.slug}`,
     `dir: ${result.dir}`,
     `dashboard: ${result.dashboardCommand}`,

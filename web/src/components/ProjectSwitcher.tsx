@@ -118,7 +118,7 @@ function NewProjectModal(props: { onCreated: (name: string) => void; onClose: ()
           </div>
           <div className="proj-result__bucket is-fresh">
             <span className="proj-result__k">{t("proj.new.master")}</span>
-            <span className="proj-result__items">{created.project_master?.name ?? created.default_assignee ?? "project-master"}</span>
+            <span className="proj-result__items">{created.project_master?.name ?? created.default_assignee ?? "lead"}</span>
           </div>
           {created.dashboardCommand && (
             <div className="proj-result__bucket is-stale">
