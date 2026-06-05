@@ -41,6 +41,18 @@ function assertNoLegacyProjectMasterMock() {
   }
 }
 
+function assertNoLegacyProjectMasterE2eFixtures() {
+  const fixtures = [
+    readFileSync(path.join(root, "e2e", "tier1", "fixtures.mjs"), "utf8"),
+    readFileSync(path.join(root, "e2e", "live.mjs"), "utf8"),
+  ]
+    .join("\n")
+    .replace(/^\s*delete nodes\["project-master"\];\n?/gm, "");
+  if (/project-master/i.test(fixtures)) {
+    throw new Error("web e2e fixtures must not create legacy project-master defaults");
+  }
+}
+
 function findChrome() {
   return [
     process.env.CHROME_PATH,
@@ -58,6 +70,7 @@ async function coreMain() {
   assertNoInboxUnblockCopy();
   assertNoDelegateTaskCopy();
   assertNoLegacyProjectMasterMock();
+  assertNoLegacyProjectMasterE2eFixtures();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
   }

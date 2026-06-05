@@ -141,6 +141,7 @@ function ensureIsolatedProjectFixture() {
   const registry = existing && typeof existing === "object" && !Array.isArray(existing) ? existing : {};
   const rawNodes = registry.nodes && typeof registry.nodes === "object" && !Array.isArray(registry.nodes) ? registry.nodes : {};
   const nodes = { ...rawNodes };
+  delete nodes["project-master"];
   nodes.lead = {
     ...(typeof nodes.lead === "object" && nodes.lead ? nodes.lead : {}),
     name: "lead",
@@ -150,23 +151,13 @@ function ensureIsolatedProjectFixture() {
     kind: "meta",
     description: "Isolated live-e2e lead.",
   };
-  nodes["project-master"] = {
-    ...(typeof nodes["project-master"] === "object" && nodes["project-master"] ? nodes["project-master"] : {}),
-    name: "project-master",
-    agent: "claude",
-    role: "orchestrator",
-    status: "external",
-    parent: "lead",
-    kind: "meta",
-    description: "Isolated live-e2e project master.",
-  };
   nodes[TEST_TERMINAL_NODE] = {
     ...(typeof nodes[TEST_TERMINAL_NODE] === "object" && nodes[TEST_TERMINAL_NODE] ? nodes[TEST_TERMINAL_NODE] : {}),
     name: TEST_TERMINAL_NODE,
     agent: "codex",
     role: "worker",
     status: "idle",
-    parent: "project-master",
+    parent: "lead",
     tmux_pane: tmuxFixture.pane,
     description: "Disposable terminal pane for isolated live-e2e node input.",
   };
@@ -359,7 +350,7 @@ async function fillField(page, selector, value) {
 async function chooseAssignee(page) {
   const assignee = await page.$$eval(".dr-addform__assignee option", (options) => {
     const values = options.map((option) => option.value).filter(Boolean);
-    return values.find((value) => value === "project-master") ?? values[0] ?? "";
+    return values.find((value) => value === "lead") ?? values[0] ?? "";
   });
   assertCheck("add task form has an assignee candidate", Boolean(assignee));
   await page.select(".dr-addform__assignee", assignee);

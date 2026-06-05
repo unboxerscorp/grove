@@ -119,8 +119,7 @@ function writeRegistry(groveHome, session) {
     cwd: workspace,
     nodes: {
       lead: { name: "lead", agent: "claude", role: "orchestrator", status: "external", kind: "meta", tmux_pane: `${session}:1.0`, session_id: "s-lead" },
-      "project-master": { name: "project-master", agent: "claude", role: "orchestrator", status: "external", parent: "lead", kind: "meta", tmux_pane: `${session}:1.1`, session_id: "s-pm" },
-      worker: { name: "worker", agent: "codex", role: "maker", status: "idle", parent: "lead", tmux_pane: `${session}:1.2`, session_id: "s-worker" },
+      worker: { name: "worker", agent: "codex", role: "maker", status: "idle", parent: "lead", tmux_pane: `${session}:1.1`, session_id: "s-worker" },
     },
     ui_e2e_fixture: true,
   };
