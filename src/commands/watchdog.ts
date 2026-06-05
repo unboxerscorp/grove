@@ -147,7 +147,6 @@ const STATE_LOCK_WAIT_MS = 5_000;
 const STATE_LOCK_RETRY_MS = 25;
 const CAPTURE_LINES = 240;
 const WATCHDOG_STATE_FILE = "watchdog-state.json";
-const RATE_LIMIT_RE = /temporarily limiting requests/i;
 const USAGE_LIMIT_RE = /session limit[\s\S]{0,160}?resets?(?:\s+at)?\s+(\d{1,2}):(\d{2})/i;
 const LOGIN_REQUIRED_RE =
   /\b(?:login required|not logged in|please log in|please sign in|authentication required|authentication expired|auth expired|token expired|credentials expired)\b/i;
@@ -159,6 +158,15 @@ const ANTIGRAVITY_IDLE_RE = /\?\s*for\s+shortcuts|\bgemini\b|esc\s+to\s+cancel/i
 const SINGLE_PANE_TARGET_RE = /^(?:%\d+|[^:\s]+:[^:\s]+\.(?:%\d+|\d+))$/;
 const SHELL_COMMANDS = new Set(["zsh", "-zsh", "bash", "-bash", "sh", "fish", "tmux"]);
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-?]*[ -/]*[@-~]`, "g");
+const CLASSIFY_RECENT_LINES = 50;
+const RATE_LIMIT_CONTEXT_LINES = 12;
+const IDLE_MARKER_SEARCH_LINES = 10;
+const CLAUDE_RATE_LIMIT_RE =
+  /(?:claude|anthropic|api|error|\(?limit\)?)[\s\S]{0,120}\b(?:rate limited|temporarily limiting requests?)\b|\b(?:rate limited|temporarily limiting requests?)\b[\s\S]{0,120}(?:claude|anthropic|api|error|\(?limit\)?)/i;
+const CODEX_RATE_LIMIT_RE =
+  /\btemporarily limiting requests\b|\b(?:429|too many requests)\b[\s\S]{0,120}\b(?:rate limited|rate limit exceeded|limiting requests)\b|\b(?:openai|codex|api)\b[\s\S]{0,120}\b(?:rate limited|rate limit exceeded|temporarily limiting requests)\b/i;
+const ANTIGRAVITY_RATE_LIMIT_RE =
+  /\b(?:gemini|google|api)\b[\s\S]{0,120}\b(?:rate limited|rate limit exceeded|resource exhausted|quota exceeded|429)\b|\b(?:resource exhausted|quota exceeded|429)\b[\s\S]{0,120}\b(?:gemini|google|api|rate limit)\b/i;
 
 async function defaultTranscriptMtimeMs(path: string): Promise<number | null> {
   try {
@@ -233,11 +241,81 @@ function usageLimit(text: string, now: Date): LimitMatch | null {
   };
 }
 
-function classifyText(text: string, now: Date): LimitMatch | null {
-  if (LOGIN_REQUIRED_RE.test(text)) return { reason: "login-required" };
-  const usage = usageLimit(text, now);
+function recentText(text: string, lines = CLASSIFY_RECENT_LINES): string {
+  return text
+    .split(/\r?\n/)
+    .slice(-lines)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function paneLines(text: string): string[] {
+  return text
+    .replace(ANSI_ESCAPE_RE, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function isPromptLine(line: string, agent: string): boolean {
+  const content = paneLineContent(line);
+  if (/^(?:[❯›>]\s*){1,3}$/.test(content)) return true;
+  if ((agent === "codex" || agent === "claude") && /^[❯›]\s+\S/.test(content)) return true;
+  return false;
+}
+
+function isIdleMarkerLine(line: string, agent: string): boolean {
+  const content = paneLineContent(line);
+  if (isPromptLine(content, agent)) return true;
+  if (agent === "codex") return CODEX_IDLE_RE.test(content);
+  if (agent === "claude") return CLAUDE_IDLE_RE.test(content);
+  if (agent === "antigravity") return ANTIGRAVITY_IDLE_RE.test(content);
+  return CODEX_IDLE_RE.test(content) || CLAUDE_IDLE_RE.test(content);
+}
+
+function activePaneOutputText(paneText: string, agent: string): string {
+  const lines = paneLines(paneText);
+  const searchStart = Math.max(0, lines.length - IDLE_MARKER_SEARCH_LINES);
+  let markerIndex = -1;
+  for (let index = lines.length - 1; index >= searchStart; index -= 1) {
+    if (isPromptLine(lines[index]!, agent)) {
+      markerIndex = index;
+      break;
+    }
+  }
+  if (markerIndex < 0) {
+    for (let index = lines.length - 1; index >= searchStart; index -= 1) {
+      if (isIdleMarkerLine(lines[index]!, agent)) {
+        markerIndex = index;
+        break;
+      }
+    }
+  }
+  if (markerIndex >= 0) {
+    return lines.slice(Math.max(0, markerIndex - RATE_LIMIT_CONTEXT_LINES), markerIndex).join("\n");
+  }
+  return lines.slice(-CLASSIFY_RECENT_LINES).join("\n");
+}
+
+function rateLimit(paneText: string, agent: string): boolean {
+  const activeOutput = activePaneOutputText(paneText, agent);
+  if (agent === "claude") return CLAUDE_RATE_LIMIT_RE.test(activeOutput);
+  if (agent === "codex") return CODEX_RATE_LIMIT_RE.test(activeOutput);
+  if (agent === "antigravity") return ANTIGRAVITY_RATE_LIMIT_RE.test(activeOutput);
+  return (
+    CLAUDE_RATE_LIMIT_RE.test(activeOutput) ||
+    CODEX_RATE_LIMIT_RE.test(activeOutput) ||
+    ANTIGRAVITY_RATE_LIMIT_RE.test(activeOutput)
+  );
+}
+
+function classifyText(text: string, paneText: string, now: Date, agent: string): LimitMatch | null {
+  const recent = recentText(text);
+  if (LOGIN_REQUIRED_RE.test(recent)) return { reason: "login-required" };
+  const usage = usageLimit(recent, now);
   if (usage) return usage;
-  if (RATE_LIMIT_RE.test(text)) return { reason: "rate-limit" };
+  if (rateLimit(paneText, agent)) return { reason: "rate-limit" };
   return null;
 }
 
@@ -696,7 +774,7 @@ async function nodeState(
     recovery: previous.recovery,
   });
 
-  const limit = classifyText(combinedText, now);
+  const limit = classifyText(combinedText, paneText, now, nc.node.agent);
   const idlePrompt = hasIdlePrompt(paneText, nc.node.agent);
   const activeIndicator = hasActiveIndicator(paneText);
   const idleMs = Math.max(0, nowMs - lastActivityMs);

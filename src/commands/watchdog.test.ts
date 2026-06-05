@@ -150,6 +150,98 @@ describe("watchdog node health", () => {
     expect(nodes.get("login")?.health).toBe("login_required");
   });
 
+  test("detects Claude API rate-limit UI without classifying discussion text", async () => {
+    const now = new Date(2026, 0, 1, 10, 0, 0);
+    const runtime: MockRuntime = {
+      paneText: {
+        "dev10:0.0": "Claude API (limit) · Rate limited",
+        "dev10:1.0":
+          "리뷰: rate-limit 회피 전략을 문서화하고 node_health status에 rate_limited를 넣지 말 것",
+        "dev10:2.0": "const status = 'rate_limited'; // node_health fixture",
+      },
+      transcriptBytes: {
+        "/repo/diag-code.jsonl": 10,
+        "/repo/diag-text.jsonl": 10,
+        "/repo/real.jsonl": 10,
+      },
+    };
+    const ctx = context(["real", "diag-text", "diag-code"], runtime);
+    const real = ctx.byName.get("real")!;
+    real.node.agent = "claude";
+    ctx.registry.nodes.real!.agent = "claude";
+    const diagText = ctx.byName.get("diag-text")!;
+    diagText.node.agent = "claude";
+    ctx.registry.nodes["diag-text"]!.agent = "claude";
+
+    const snapshot = await collectWatchdogSnapshot(
+      ctx,
+      new Map(),
+      { hungAfterMs: 60_000 },
+      deps(ctx, runtime, () => now),
+    );
+    const nodes = healthByNode(snapshot);
+
+    expect(nodes.get("real")?.health).toBe("rate_limited");
+    expect(nodes.get("diag-text")).toMatchObject({ health: "healthy", reason: "active" });
+    expect(nodes.get("diag-code")).toMatchObject({ health: "healthy", reason: "active" });
+  });
+
+  test("classifies rate limits from the latest output block before an idle prompt", async () => {
+    const now = new Date(2026, 0, 1, 10, 0, 0);
+    const runtime: MockRuntime = {
+      paneText: {
+        "dev10:0.0": "⏺ API Error: Server is temporarily limiting requests\n\n❯ ",
+      },
+      transcriptBytes: { "/repo/real.jsonl": 10 },
+    };
+    const ctx = context(["real"], runtime);
+    const real = ctx.byName.get("real")!;
+    real.node.agent = "claude";
+    ctx.registry.nodes.real!.agent = "claude";
+
+    const snapshot = await collectWatchdogSnapshot(
+      ctx,
+      new Map(),
+      { hungAfterMs: 60_000 },
+      deps(ctx, runtime, () => now),
+    );
+
+    expect(healthByNode(snapshot).get("real")?.health).toBe("rate_limited");
+  });
+
+  test("ignores stale rate-limit text in scrollback when the current codex prompt is idle", async () => {
+    const now = new Date(2026, 0, 1, 10, 0, 0);
+    const runtime: MockRuntime = {
+      paneText: {
+        "dev10:0.0": [
+          "⏺ API Error: Server is temporarily limiting requests",
+          "old review output mentioning rate_limit",
+          ...Array.from({ length: 16 }, (_, index) => `scrollback line ${index}`),
+          "",
+          "› Improve documentation",
+          "  gpt-5.5 xhigh · /repo",
+        ].join("\n"),
+      },
+      transcriptBytes: { "/repo/worker.jsonl": 10 },
+      transcriptText: {
+        "/repo/worker.jsonl": "Prior task discussed API Error: Server is temporarily limiting",
+      },
+    };
+    const ctx = context(["worker"], runtime);
+
+    const snapshot = await collectWatchdogSnapshot(
+      ctx,
+      new Map(),
+      { hungAfterMs: 60_000 },
+      deps(ctx, runtime, () => now),
+    );
+
+    expect(healthByNode(snapshot).get("worker")).toMatchObject({
+      health: "healthy",
+      reason: "idle",
+    });
+  });
+
   test("plans dry-run staggered recovery for limits without performing actions", async () => {
     const now = new Date(2026, 0, 1, 10, 0, 0);
     const performed = vi.fn<WatchdogDeps["performRecoveryAction"]>(async () => undefined);
