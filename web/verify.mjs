@@ -30,6 +30,16 @@ function assertNoDelegateTaskCopy() {
   }
 }
 
+function assertNoLegacyProjectMasterMock() {
+  const source = readFileSync(path.join(root, "mock", "harness.ts"), "utf8");
+  const bundle = existsSync(path.join(root, "mock", "harness.js"))
+    ? readFileSync(path.join(root, "mock", "harness.js"), "utf8")
+    : "";
+  if (/project-master/i.test(`${source}\n${bundle}`)) {
+    throw new Error("web mock must not expose legacy project-master defaults");
+  }
+}
+
 function findChrome() {
   return [
     process.env.CHROME_PATH,
@@ -46,6 +56,7 @@ function findChrome() {
 async function coreMain() {
   assertNoInboxUnblockCopy();
   assertNoDelegateTaskCopy();
+  assertNoLegacyProjectMasterMock();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
   }
@@ -1866,7 +1877,9 @@ async function main() {
         required: el?.required === true,
         value: el?.value ?? "",
         options: el ? el.querySelectorAll("option").length : 0,
-        hasMaster: el ? Array.from(el.querySelectorAll("option")).some((o) => o.value === "project-master") : false,
+        hasProjectMaster: el
+          ? Array.from(el.querySelectorAll("option")).some((o) => o.value === "project-master")
+          : true,
         noFreeInput: !document.querySelector('.dr-addform input[name="assignee"]'),
       };
     });
@@ -1881,7 +1894,7 @@ async function main() {
       assignee.required &&
       assignee.value === "root" &&
       assignee.options >= 2 &&
-      assignee.hasMaster &&
+      assignee.hasProjectMaster === false &&
       assignee.noFreeInput &&
       // root/master pane: streams, connects, and accepts operator send like any
       // other live node.
@@ -3112,7 +3125,7 @@ async function main() {
       newCfg.name === "demo-proj" &&
       createResult.buckets >= 3 &&
       createResult.board === "demo-proj" &&
-      createResult.master === "project-master" &&
+      createResult.master === "lead" &&
       createResult.dashboard.includes("demo-proj") &&
       projAfterNew === "demo-proj" &&
       loadResult.buckets >= 3 &&
@@ -3433,6 +3446,11 @@ async function main() {
         userSent: !!document.querySelector('.dr-mchat__row[data-role="user"][data-status="sent"]'),
         masterText: masters[masters.length - 1] ?? "",
         factText: (document.querySelector(".dr-mchat__facts")?.textContent ?? "").trim(),
+        noProjectMaster: !/project-master/i.test(
+          [masters[masters.length - 1] ?? "", document.querySelector(".dr-mchat__facts")?.textContent ?? ""].join(
+            " ",
+          ),
+        ),
       };
     });
 
@@ -3633,6 +3651,7 @@ async function main() {
         userSent: mchatAnswer.userSent,
         hasAnswer: /follow up/.test(mchatAnswer.masterText),
         hasFacts: /reviewers\s+2/.test(mchatAnswer.factText) && /ask-human\s+1/.test(mchatAnswer.factText),
+        noProjectMaster: mchatAnswer.noProjectMaster,
       },
       preview: mchatPreview,
       confirm: mchatConfirm,
@@ -3653,6 +3672,7 @@ async function main() {
       mchat.answer.userSent &&
       mchat.answer.hasAnswer &&
       mchat.answer.hasFacts &&
+      mchat.answer.noProjectMaster &&
       mchat.preview.hasPreviewText &&
       mchat.preview.hasConfirm &&
       mchat.confirm.confirmed &&

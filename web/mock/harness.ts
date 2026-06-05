@@ -220,8 +220,8 @@ function isDescendant(ancestor: string, candidate: string): boolean {
   return false;
 }
 
-// v1.33 assignee candidates (mirror web_app.py _assignee_candidates): visible
-// persistent nodes are the default; project-master remains only as metadata.
+// Assignee candidates mirror web_app.py _assignee_candidates: visible persistent
+// nodes are the default, with a synthetic lead only when no master node exists.
 const ASSIGNEE_CANDIDATES = [
   ...ORG_NODES.map((n) => ({
     name: n.name,
@@ -237,7 +237,6 @@ const ASSIGNEE_CANDIDATES = [
         }
       : {}),
   })),
-  { name: "project-master", agent: "claude", role: "orchestrator", status: "external", default: false },
   { name: "lead", agent: "claude", role: "none", status: "external", default: false },
 ];
 
@@ -249,7 +248,7 @@ function buildMasterOrg(selected: string) {
     scope: "cross_project",
     selected_project: selected,
     visible_projects: visible,
-    project_master: { name: "project-master", present: true, default_assignee: false },
+    project_master: { name: "root", present: true, default_assignee: true },
     delegation: {
       default_assignee: "root",
       create_task_endpoint: "/api/boards/{board_id}/tasks",
@@ -1931,12 +1930,12 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         requires_confirmation = true;
       } else {
         answer = {
-          text: `received: “${message.slice(0, 60)}” — project-master will follow up. Reviewers: 2. Human items: ready=1, running=1, blocked=1, done=1. Human queue: ask-human=1, needs_human=1. (mock)`,
+          text: `received: “${message.slice(0, 60)}” — root will follow up. Reviewers: 2. Human items: ready=1, running=1, blocked=1, done=1. Human queue: ask-human=1, needs_human=1. (mock)`,
           metadata: {
             facts: {
               project: { selected: "dev10", board: "dev10" },
               projects: { visible: PROJECTS.map((p) => p.name).sort() },
-              org: { node_count: ORG_NODES.length, project_master: { name: "project-master", present: true, default_assignee: false } },
+              org: { node_count: ORG_NODES.length, project_master: { name: "root", present: true, default_assignee: true } },
               board: { status_counts: { ready: 1, running: 1, blocked: 1, done: 1, archived: 0 } },
               reviewers: { count: 2, nodes: ["human-reviewer", "researcher"] },
               human: {
@@ -2378,8 +2377,8 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         name: String(body.name ?? "untitled"),
         board: String(body.name ?? "untitled"),
         dashboardCommand: `grove-web --session ${String(body.name ?? "untitled")}`,
-        default_assignee: "root",
-        project_master: { name: "project-master", status: "external" },
+        default_assignee: "lead",
+        project_master: { name: "lead", status: "idle" },
         workspace: body.clone ? `~/dev/${body.name}` : `~/dev/${body.name}`,
         node_count: 1,
         status: "running",
