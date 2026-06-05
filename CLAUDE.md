@@ -19,7 +19,7 @@ Claude nodes in grove are visible, persistent org members. Treat this file as th
 ## Work Protocol
 
 - Communicate directly with other visible nodes using grove send/ask, tmux capture, or tmux input as appropriate.
-- Board tasks are human-facing TODO, feedback, and ask-human records. Do not force node-to-node work through tasks or comments.
+- Human-facing list items are TODO, feedback, and ask-human records. Do not force node-to-node work through list items or comments.
 - Prompts sent through grove should include the grove context pack: caller identity, project, lead, visible org summary, target role, tmux pane, and cwd.
 - Final handoffs should include Summary, Files, Verification, and Risks in the node response or the human-facing task when one exists.
 - Do not edit operational fleet configs or generated `dist` output unless the task explicitly says so.
