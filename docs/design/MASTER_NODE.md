@@ -37,8 +37,9 @@ changing the broker contract, chat UI, audit model, or routing semantics.
 MASTER has two duties:
 
 1. **Workspace governance for `~/dev`**
-   - answer capability, project, node, board, and workflow questions;
-   - draft project, node, workflow, and task setup proposals;
+   - answer capability, project, node, human-facing list, and workflow
+     questions;
+   - draft project, node, workflow, and human-facing item setup proposals;
    - never execute shell commands or mutate grove state directly;
    - hand state changes back to grove as typed proposals that require broker
      validation and operator confirmation.
@@ -47,8 +48,8 @@ MASTER has two duties:
    - receive product bugs, feedback, feature requests, and confusion reports
      about grove itself;
    - normalize them into feedback-route proposals;
-   - route accepted feedback to the `grove-dev-team` board lane selected by
-     the product governance configuration;
+   - route accepted feedback to the configured `grove-dev-team` human-facing
+     list selected by the product governance configuration;
    - preserve source context, actor, project, page, and redacted transcript
      metadata for follow-up.
 
@@ -95,7 +96,7 @@ Phase-1 interfaces recognize these request classes:
 - `capability_question`: what MASTER/grove can do;
 - `project_question`: project inventory, status, or lifecycle questions;
 - `node_question`: node count, role, group, health, or assignment questions;
-- `workflow_setup`: proposed project/node/task/workflow setup;
+- `workflow_setup`: proposed project/node/human-facing item/workflow setup;
 - `feedback_route`: grove product bug, feedback, feature request, or confusion
   report;
 - `unsupported`: destructive, unscoped, unsafe, or ambiguous requests.
@@ -107,12 +108,12 @@ work.
 ## Feedback Routing
 
 Feedback routing is a mutation even when the user simply says "this is broken."
-The broker must produce a preview before creating any task.
+The broker must produce a preview before creating any human-facing item.
 
 Default normalized route:
 
 - target project: `grove-dev-team`;
-- target board/lane: configured dev-team feedback board;
+- target list: configured dev-team human-facing list;
 - default label: `grove-feedback`;
 - category labels: `bug`, `feedback`, `feature-request`, `question`, or
   `unsafe`;
@@ -131,8 +132,8 @@ Feedback payloads should include:
 - redacted transcript excerpt;
 - proposed routing target.
 
-Secret-looking content must be redacted before the preview and before any task
-body is created.
+Secret-looking content must be redacted before the preview and before any
+human-facing item body is created.
 
 ## Authority Model
 
@@ -175,7 +176,7 @@ Audit records should identify:
 - source surface;
 - conversation id;
 - request class;
-- target project/board/node when applicable;
+- target project/list/node when applicable;
 - proposal id and pending id;
 - payload hash;
 - redaction status;
@@ -197,15 +198,16 @@ It should model:
 - operator-gated policy checks;
 - adapter and broker protocols.
 
-The module must not register FastAPI routes, call `web_app.py`, write board
-tasks, spawn nodes, or execute project setup. Those actions belong to later
-router and executor layers after the phase-1 contract is reviewed.
+The module must not register FastAPI routes, call `web_app.py`, write
+human-facing list items, spawn nodes, or execute project setup. Those actions
+belong to later router and executor layers after the phase-1 contract is
+reviewed.
 
 ## Non-Goals
 
 - arbitrary command execution;
 - destructive operations such as delete/despawn/reset;
-- hidden task creation without preview;
+- hidden item creation without preview;
 - direct edits to `web_app.py` or `app.tsx` in this phase;
 - making MASTER a privileged service account;
 - storing raw prompt transcripts or secrets.
