@@ -27,6 +27,7 @@ type Positions = Record<string, XY>;
 
 function statusClass(status: string): string {
   switch (status) {
+    case "active":
     case "running":
       return "is-running";
     case "error":

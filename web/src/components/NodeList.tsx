@@ -2,11 +2,13 @@ import { useMemo, useState } from "react";
 
 import { agentGlyph, cx } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
+import { liveNodeCount } from "../nodeLive";
 import type { GroveNode } from "../types";
 import { NodeHealthBadge } from "./NodeHealthBadge";
 
 function statusClass(status: string): string {
   switch (status) {
+    case "active":
     case "running":
       return "is-running";
     case "error":
@@ -64,7 +66,7 @@ export function NodeList(props: {
     );
   }, [ordered, query]);
 
-  const liveCount = nodes.filter((n) => n.status === "running").length;
+  const liveCount = liveNodeCount(nodes);
 
   return (
     <aside className="dr-rail">

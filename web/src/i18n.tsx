@@ -41,6 +41,7 @@ const KO: Dict = {
   "nodes.none": "온라인 노드 없음",
   "nodes.notViewable": "터미널을 열 수 없는 노드입니다 (pane 없음).",
 
+  "status.active": "활성",
   "status.running": "실행 중",
   "status.idle": "대기",
   "status.error": "오류",
@@ -790,6 +791,7 @@ const EN: Dict = {
   "nodes.none": "no nodes online",
   "nodes.notViewable": "This node has no terminal to open (no pane).",
 
+  "status.active": "active",
   "status.running": "running",
   "status.idle": "idle",
   "status.error": "error",

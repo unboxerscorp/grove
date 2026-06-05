@@ -31,6 +31,7 @@ import { MasterChat } from "./components/MasterChat";
 import { GroveMark } from "./components/GroveMark";
 import { cx } from "./constants";
 import { useI18n } from "./i18n";
+import { liveNodeCount } from "./nodeLive";
 import type { GroveNode } from "./types";
 
 type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "ledger" | "insights" | "trend" | "agg" | "handoff" | "connect" | "routing" | "auth";
@@ -394,7 +395,7 @@ export function App() {
     [nodes, selectedPane],
   );
   const defaultTerminalPane = useMemo(() => preferredTerminalPane(nodes), [nodes]);
-  const liveCount = nodes.filter((n) => n.status === "running").length;
+  const liveCount = liveNodeCount(nodes);
 
   useEffect(() => {
     if (view !== "terminal") return;

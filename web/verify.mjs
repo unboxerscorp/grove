@@ -87,6 +87,8 @@ async function coreMain() {
         visibleViewsOk: visibleViews.every((v) => inSidebar(`.dr-tab[data-view="${v}"]`)),
         hiddenViewsAbsent: hiddenViews.every((v) => !inSidebar(`.dr-tab[data-view="${v}"]`)),
         drawersOk: inSidebar(".dr-audit-btn") && inSidebar(".dr-inbox-btn") && !inSidebar(".dr-chain-btn"),
+        liveStat: (document.querySelector(".dr-stat__n")?.textContent ?? "").trim(),
+        liveMeta: (document.querySelector(".dr-rail__meta")?.textContent ?? "").replace(/\s+/g, " ").trim(),
       };
     });
 
@@ -149,6 +151,8 @@ async function coreMain() {
       sidebar.visibleViewsOk &&
       sidebar.hiddenViewsAbsent &&
       sidebar.drawersOk &&
+      sidebar.liveStat === "4" &&
+      /4\/6/.test(sidebar.liveMeta) &&
       teamLoading.nodes === 0 &&
       !teamLoading.emptyCopy &&
       teamFinal.nodes >= 1 &&

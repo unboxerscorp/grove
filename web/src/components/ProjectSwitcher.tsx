@@ -10,6 +10,7 @@ const TEMPLATES = ["blank", "web", "research", "ops"];
 
 function statusClass(status: string): string {
   switch (status) {
+    case "active":
     case "running":
       return "is-running";
     case "error":
