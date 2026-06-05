@@ -213,7 +213,7 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
     const term = new Terminal({
       convertEol: true, // capture frames use \n; convert to CRLF (no staircase)
       cursorBlink: false,
-      disableStdin: true, // read-only viewer
+      disableStdin: true, // input is sent through the explicit send form below
       fontFamily: FONT,
       fontSize: 13,
       lineHeight: 1.3,

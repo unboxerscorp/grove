@@ -34,7 +34,7 @@ const TASKS: Record<string, MockTask[]> = {
     },
     { id: "G-2", title: "Board event-tail over WebSocket", status: "review", assignee: "backend", reviewer: "researcher" },
     { id: "G-4", title: "Single-use ws-ticket auth", status: "ready", assignee: "backend" },
-    { id: "G-7", title: "Pane resize policy (read-only beta)", status: "blocked", assignee: "frontend" },
+    { id: "G-7", title: "Pane resize policy (mirror beta)", status: "blocked", assignee: "frontend" },
     { id: "G-3", title: "Node registry + tmux pane exposure", status: "done", assignee: "backend" },
   ],
   infra: [
@@ -143,10 +143,9 @@ const LEAD_NODE: OrgNodeMock = {
   status: "external",
 };
 
-// v1.28+ access flags — mirror web_app.py NodeRecord + _pane_allowed: any valid
-// pane is terminal/connect visible; the LEAD pane (window.pane == 0.0) is
-// terminal_allowed but NOT input_allowed (no web send);
-// a node with no/invalid pane (meta) is neither.
+// v2 access flags — mirror web_app.py NodeRecord + _pane_allowed: any valid pane
+// is terminal/connect visible and input-capable; auth/origin/node-input/rate
+// limits guard sends, not hierarchy.
 function nodeAccessFlags(pane: string): {
   exposed: boolean;
   terminal_allowed: boolean;
@@ -157,11 +156,10 @@ function nodeAccessFlags(pane: string): {
   if (!match) {
     return { exposed: false, terminal_allowed: false, input_allowed: false, unavailable_reason: pane ? "tmux_pane invalid" : "no live pane" };
   }
-  const isLead = Number(match[1]) === 0 && Number(match[2]) === 0;
   return {
     exposed: true,
-    terminal_allowed: true, // any real pane is viewable (incl. the lead pane)
-    input_allowed: !isLead, // lead pane (0.0) rejects input/send
+    terminal_allowed: true,
+    input_allowed: true,
     unavailable_reason: "",
   };
 }
@@ -2430,7 +2428,8 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const projNodes = proj === SOLO_PROJECT ? SOLO_NODES : ORG_NODES;
     const rec = projNodes.find((n) => n.name === node);
     if (!rec) return reject(404, "node not found");
-    // Mirror _pane_allowed: the lead pane (0.0) is not input-allowed -> 404.
+    // Mirror _pane_allowed: any valid live pane is input-capable; auth/origin,
+    // node-input feature state, and rate limits are the send guardrails.
     if (!nodeAccessFlags(rec.tmux_pane).input_allowed) return reject(404, "node not found");
     if (diag.nodeSendRateLimited) return reject(429, "node input rate limit exceeded");
     const body = (init?.body ? JSON.parse(init.body as string) : {}) as { text?: string };
@@ -2799,7 +2798,7 @@ class MockWS {
   }
 
   send(_data: string) {
-    /* read-only viewer */
+    /* server-pushed mirror; browser input goes through /api/nodes/{node}/send */
   }
 
   close() {

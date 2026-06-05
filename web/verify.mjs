@@ -82,6 +82,9 @@ async function coreMain() {
       chars: (document.querySelector(".dr-term .xterm-rows")?.textContent ?? "").trim().length,
       ticketKind: window.__MOCK__?.terminalTicketKind ?? "",
       wsUrl: window.__MOCK__?.terminalWsUrl ?? "",
+      sendBox: document.querySelectorAll(".dr-term__send-input").length,
+      viewOnly: document.querySelectorAll('.dr-term__send-viewer[data-viewonly="1"]').length,
+      modeLabel: (document.querySelector(".dr-term__ro")?.textContent ?? "").trim(),
     }));
 
     await page.$eval('.dr-sidebar .dr-tab[data-view="integrations"]', (el) => el.click());
@@ -112,6 +115,9 @@ async function coreMain() {
       /terminal/.test(terminal.ticketKind) &&
       /ws\/terminal/.test(terminal.wsUrl) &&
       terminal.chars > 0 &&
+      terminal.sendBox === 1 &&
+      terminal.viewOnly === 0 &&
+      !/(read-only|읽기 전용)/i.test(terminal.modeLabel) &&
       slackGuide.hasFreeChat &&
       slackGuide.hasFeedback &&
       slackGuide.noOldTaskPreview &&
@@ -1638,15 +1644,16 @@ async function main() {
     // assignee is a required node dropdown (default real node), operator-only web→node
     // send box (viewer locked), copyable SSH/connect command per node. The
     // terminal is attached to node "root" from the n5 test above.
-    // V28+ access flags: "root" is the LEAD pane (grove:0.0) — terminal_allowed
-    // and connectable, but NOT input_allowed: it streams and exposes a local
-    // attach path while the backend /send REJECTS the 0.0 pane (404).
+    // v2 org model: the root/master pane is terminal-visible and input-capable;
+    // the remaining guardrails are auth/origin/node-input/rate-limit, not pane
+    // hierarchy.
     await page.waitForSelector(".dr-term__tools", { timeout: 8000 });
     const leadTerm = await page.evaluate(() => ({
       toolsPresent: !!document.querySelector(".dr-term__tools"),
-      viewOnly: !!document.querySelector('.dr-term__send-viewer[data-viewonly="1"]'),
-      noSendBox: document.querySelectorAll(".dr-term__send-input").length === 0,
+      noViewOnly: document.querySelectorAll('.dr-term__send-viewer[data-viewonly="1"]').length === 0,
+      sendBox: document.querySelectorAll(".dr-term__send-input").length === 1,
       connectBtn: document.querySelectorAll(".dr-term__connect-btn").length === 1,
+      modeLabel: (document.querySelector(".dr-term__ro")?.textContent ?? "").trim(),
       streaming: (document.querySelector(".dr-term .xterm-rows")?.textContent ?? "").trim().length > 0,
     }));
     await page.$eval(".dr-term__connect-btn", (el) => el.click());
@@ -1656,14 +1663,12 @@ async function main() {
       label: (document.querySelector(".dr-term__connect-label")?.textContent ?? "").trim(),
       fetched: window.__MOCK__?.nodeConnectFetched ?? "",
     }));
-    // proves no false positive: sending to the lead pane (0.0) is rejected (404).
-    const send00 = await page.evaluate(async () => {
-      const res = await fetch("/api/nodes/root/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Grove-Project": "dev10" },
-        body: JSON.stringify({ text: "blocked" }),
-      });
-      return res.status;
+    await page.type(".dr-term__send-input", "echo root");
+    await page.$eval(".dr-term__send-btn", (el) => el.click());
+    await page.waitForFunction(() => window.__MOCK__?.nodeSent?.node === "root", { timeout: 6000 });
+    const rootNodeSent = await page.evaluate(() => window.__MOCK__?.nodeSent ?? null);
+    await page.waitForFunction(() => (document.querySelector(".dr-term__send-input")?.value ?? "") === "", {
+      timeout: 8000,
     });
     const pickRail = (name) =>
       page.evaluate((n) => {
@@ -1761,17 +1766,19 @@ async function main() {
       assignee.options >= 2 &&
       assignee.hasMaster &&
       assignee.noFreeInput &&
-      // lead pane (root, 0.0): streams/connects, but has no send box;
-      // and the backend rejects /send to 0.0 (no false positive).
+      // root/master pane: streams, connects, and accepts operator send like any
+      // other live node.
       leadTerm.toolsPresent &&
-      leadTerm.viewOnly &&
-      leadTerm.noSendBox &&
+      leadTerm.noViewOnly &&
+      leadTerm.sendBox &&
       leadTerm.connectBtn &&
+      !/(read-only|읽기 전용)/i.test(leadTerm.modeLabel) &&
       leadTerm.streaming &&
       /tmux attach/.test(leadConnect.cmd) &&
       /Local tmux attach/.test(leadConnect.label) &&
       leadConnect.fetched === "root" &&
-      send00 === 404 &&
+      rootNodeSent?.node === "root" &&
+      rootNodeSent?.text === "echo root" &&
       // SSH/connect command (copyable) on a worker node.
       /tmux attach/.test(sshCmd.cmd) &&
       sshCmd.copyBtn &&
@@ -3780,7 +3787,17 @@ async function main() {
       n4SparkOff,
       n5Ok,
       projModelOk,
-      projModel: { noBoardSelect, assignee, leadTerm, send00, sshCmd, sendBoxOperator, nodeSent, nodeInputDisabled, sendViewer },
+      projModel: {
+        noBoardSelect,
+        assignee,
+        leadTerm,
+        rootNodeSent,
+        sshCmd,
+        sendBoxOperator,
+        nodeSent,
+        nodeInputDisabled,
+        sendViewer,
+      },
       n5Reconnecting,
       n5Relive,
       n5TermReconnected,
