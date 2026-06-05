@@ -150,7 +150,20 @@ export async function paneTarget(addr: string): Promise<string> {
 }
 
 export async function paneExists(addr: string): Promise<boolean> {
-  return tmuxOk(["display-message", "-t", addr, "-p", PANE_INDEX_TARGET_FORMAT]);
+  try {
+    const panes = await tmux(["list-panes", "-a", "-F", PANE_INDEX_TARGET_FORMAT]);
+    return paneListIncludesTarget(panes, addr);
+  } catch {
+    return false;
+  }
+}
+
+export function paneListIncludesTarget(panes: string, addr: string): boolean {
+  const exact = addr.trim();
+  return panes
+    .split("\n")
+    .map((line) => line.trim())
+    .includes(exact);
 }
 
 async function paneIndexTarget(session: string, paneId: string): Promise<string> {

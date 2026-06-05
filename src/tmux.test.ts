@@ -15,6 +15,7 @@ import {
   isSinglePaneTarget,
   killPane,
   newWindowArgs,
+  paneListIncludesTarget,
   preserveActiveWindow,
   sendEnter,
   sendLiteral,
@@ -232,6 +233,22 @@ function runFakeTmux(args: string[]): string {
     return listWindowNames(sessionByName(argAfter(args, "-t") ?? ""));
   }
 
+  if (command === "list-panes") {
+    const format = argAfter(args, "-F");
+    if (!args.includes("-a") || format !== PANE_INDEX_TARGET_FORMAT) {
+      throw fail("unsupported list-panes invocation");
+    }
+    const lines: string[] = [];
+    for (const session of sessions.values()) {
+      for (const window of session.windows) {
+        for (const pane of window.panes) {
+          lines.push(formatTmux(format, session, window, pane).trim());
+        }
+      }
+    }
+    return `${lines.join("\n")}\n`;
+  }
+
   if (command === "kill-session") {
     sessions.delete(cleanSessionTarget(argAfter(args, "-t") ?? ""));
     return "";
@@ -341,6 +358,14 @@ describe("tmux detached pane commands", () => {
       "-c",
       "/repo",
     ]);
+  });
+
+  test("matches pane existence by exact list-panes output", () => {
+    const panes = "dev10:0.0\ndev10:1.0\n";
+
+    expect(paneListIncludesTarget(panes, "dev10:1.0")).toBe(true);
+    expect(paneListIncludesTarget(panes, "dev10:2.0")).toBe(false);
+    expect(paneListIncludesTarget(panes, "dev10:1")).toBe(false);
   });
 
   test("leaves the active window unchanged while spawning and launching into a new pane", async () => {

@@ -8394,6 +8394,65 @@ def test_tmux_capture_uses_literal_argv_without_shell(monkeypatch: pytest.Monkey
     ]
 
 
+def test_tmux_pane_exists_uses_exact_list_panes_without_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(
+            {
+                "args": args,
+                "capture_output": capture_output,
+                "timeout": timeout,
+                "check": check,
+            }
+        )
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=b"dev10:0.0\ndev10:1.0\n",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+
+    assert web_app._tmux_pane_exists("dev10:1.0") is True
+    assert web_app._tmux_pane_exists("dev10:2.0") is False
+    assert calls == [
+        {
+            "args": [
+                "tmux",
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}:#{window_index}.#{pane_index}",
+            ],
+            "capture_output": True,
+            "timeout": web_app.TMUX_TIMEOUT_SECONDS,
+            "check": False,
+        },
+        {
+            "args": [
+                "tmux",
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}:#{window_index}.#{pane_index}",
+            ],
+            "capture_output": True,
+            "timeout": web_app.TMUX_TIMEOUT_SECONDS,
+            "check": False,
+        },
+    ]
+
+
 def test_board_ws_tails_store_events(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     client = make_client(tmp_path, store)

@@ -8138,14 +8138,16 @@ def _tmux_pane_parts(pane: str, *, config: WebAppConfig) -> tuple[int, int] | No
 def _tmux_pane_exists(pane: str) -> bool:
     try:
         result = subprocess.run(
-            ["tmux", "display-message", "-t", pane, "-p", "#{pane_id}"],
+            ["tmux", "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index}"],
             capture_output=True,
             timeout=TMUX_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+    return pane in result.stdout.decode("utf-8", errors="replace").splitlines()
 
 
 def _tmux_capture(pane: str) -> bytes:
