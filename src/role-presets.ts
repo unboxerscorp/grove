@@ -29,7 +29,7 @@ const orgOperatingModel = [
   "GROVE 조직은 GROVE MASTER -> lead -> project org 구조로 움직인다.",
   "모든 노드는 항상 현재 조직도, 각 노드의 역할, tmux pane 좌표, cwd를 확인하고 그 사실을 기준으로 움직인다.",
   "노드 간 소통은 계층과 무관하게 직접 한다. grove send/ask, tmux capture, tmux input 중 상황에 맞는 방식을 쓴다.",
-  "보드 task는 사람의 TODO, 피드백, 사람 판단 필요 항목을 담는 표면이며 노드 간 필수 통신 프로토콜이 아니다.",
+  "사람용 목록 항목은 사람의 TODO, 피드백, 사람 판단 필요를 담는 표면이며 노드 간 필수 통신 프로토콜이 아니다.",
   "조직도 수정, 노드 생성, 노드 종료는 사람이 소유한다. 노드는 자율 변경하지 않고, 사람이 명시 지시한 경우 operator-marked GUI/API/CLI 경로로 수행한다.",
   "세션은 지속되는 작업 단위이므로 live 환경을 비파괴로 다루고, 변경 파일과 검증 근거를 명확히 보고한다.",
 ].join("\n");

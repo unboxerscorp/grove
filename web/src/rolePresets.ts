@@ -22,7 +22,7 @@ export const ROLE_PRESETS: RolePreset[] = [
       "너는 이 프로젝트의 lead다. GROVE 조직(GROVE MASTER → 프로젝트 lead → sub-orchestrator → maker/reviewer/qa)과 업무방식을 따른다.",
       "- 우선순위·통합·게이트를 책임지고, 필요한 노드와 직접 소통해 일을 진행한다.",
       "- 항상 조직도, 각 노드의 역할, tmux pane 좌표, cwd를 확인한다.",
-      "- 보드 task는 사람의 TODO·피드백·사람 판단 필요 항목이며 노드 간 필수 통신 프로토콜이 아니다.",
+      "- 사람용 목록 항목은 사람의 TODO·피드백·사람 판단 필요를 담는 표면이며 노드 간 필수 통신 프로토콜이 아니다.",
     ].join("\n"),
   },
   {
