@@ -181,6 +181,53 @@ class FakeAssistantBroker:
         )
 
 
+class LLMNoticeAssistantBroker(FakeAssistantBroker):
+    def __init__(self, text: str = "assistant reply") -> None:
+        super().__init__(text=text)
+
+    def handle_notice(
+        self,
+        message: str,
+        context: AssistantContext,
+        *,
+        decision: str,
+        reason: str,
+        response_type: MasterChatResponseType = "answer",
+        requires_confirmation: bool = False,
+        metadata: Mapping[str, object] | None = None,
+    ) -> MasterChatResponse:
+        self.notice_calls.append(
+            {
+                "message": message,
+                "decision": decision,
+                "reason": reason,
+                "response_type": response_type,
+                "requires_confirmation": requires_confirmation,
+                "metadata": dict(metadata or {}),
+            }
+        )
+        confirm = (
+            _extract_confirm_from_reason(reason)
+            if requires_confirmation or decision == "preview"
+            else None
+        )
+        if confirm is not None:
+            text = f"LLM preview ready. Confirm with `confirm {confirm}`."
+        elif decision == "deny":
+            text = "LLM explained why the request was not completed."
+        elif decision == "answer_only":
+            text = "LLM kept this as an answer without creating a task."
+        elif decision == "human_gate":
+            text = "LLM requested the needed human decision."
+        elif decision == "digest_reminder":
+            text = "LLM digest reminder"
+        elif decision == "completed":
+            text = "LLM completed the Slack request."
+        else:
+            text = f"LLM handled {decision}."
+        return self._response(message, context, text=text, response_type=response_type)
+
+
 class AssistantBrokerLike(Protocol):
     def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse: ...
 
@@ -434,7 +481,7 @@ def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Pa
     )
     slack = FakeSlackClient()
     chat = FakeChatFacade()
-    assistant = FakeAssistantBroker(notice_text="LLM recorded the reply and unblocked the task.")
+    assistant = LLMNoticeAssistantBroker()
     connector = SlackConnector(
         store=store,
         slack_client=slack,
@@ -445,9 +492,15 @@ def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Pa
     )
 
     assert connector.poll_human_gates() == 1
-    assert slack.posts[0][0] == "C123"
-    assert "Need human" in slack.posts[0][1]
-    assert "Which branch?" in slack.posts[0][1]
+    assert slack.posts[0] == ("C123", "LLM requested the needed human decision.", None)
+    assert assistant.notice_calls[0]["decision"] == "human_gate"
+    assert assistant.notice_calls[0]["metadata"] == {
+        "task_id": task.id,
+        "title": "Need human",
+        "assignee": "grove-qa",
+        "question": "Which branch?",
+        "body": "What branch should I use?",
+    }
     assert store.list_notify_subs(board=board, task_id=task.id)[0].thread_id == "ts-1"
     assert store.list_slack_threads(task_id=task.id)[0].mode == "human_gate"
 
@@ -469,7 +522,7 @@ def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Pa
     comments = store.list_comments(board=board, task_id=task.id)
     assert comments[-1].author == "slack:U1"
     assert comments[-1].body == "ANSWER: Use branch feature/live."
-    assert slack.posts[-1] == ("C123", "LLM recorded the reply and unblocked the task.", "ts-1")
+    assert slack.posts[-1] == ("C123", "LLM completed the Slack request.", "ts-1")
     assert assistant.notice_calls[-1]["decision"] == "completed"
     assert connector.handle_event(
         SlackEvent(
@@ -484,6 +537,44 @@ def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Pa
     )
     assert len(store.list_comments(board=board, task_id=task.id)) == len(comments)
     assert chat.calls == []
+
+
+def test_human_gate_content_blocked_does_not_post_rule_text(tmp_path: Path) -> None:
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(
+        board=board,
+        title="Need human",
+        body="What branch should I use?",
+        assignee="grove-qa",
+    )
+    claimed = store.claim_next(board=board, assignee="grove-qa", node_id="grove-qa", ttl_seconds=60)
+    assert claimed is not None
+    assert store.block(
+        board=board,
+        task_id=task.id,
+        run_id=claimed.run_id,
+        claim_lock=claimed.claim_lock,
+        reason="Need a branch decision",
+        metadata={"question": "Which branch?"},
+        needs_human=True,
+    )
+    slack = FakeSlackClient()
+    assistant = ContentBlockedAssistantBroker()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+        assistant_broker=assistant,
+    )
+
+    assert connector.poll_human_gates() == 0
+
+    assert assistant.notice_calls
+    assert slack.posts == []
+    assert store.list_slack_threads(task_id=task.id) == []
 
 
 def test_human_gate_stale_pending_before_post_retries(
@@ -1304,7 +1395,7 @@ def command_connector(
             intake_assignee=intake_assignee,
         ),
         digest_config=digest_config,
-        assistant_broker=assistant_broker or FakeAssistantBroker(),
+        assistant_broker=assistant_broker or LLMNoticeAssistantBroker(),
     )
 
 
@@ -1334,6 +1425,13 @@ def confirmation_id(text: str) -> str:
     marker = "confirm "
     assert marker in text
     return text.split(marker, 1)[1].split("`", 1)[0].split()[0]
+
+
+def _extract_confirm_from_reason(text: str) -> str | None:
+    marker = "confirm "
+    if marker not in text:
+        return None
+    return text.split(marker, 1)[1].split("`", 1)[0].split()[0].strip(".,;:")
 
 
 def test_slack_confirmation_consume_for_owner_is_atomic_under_concurrency() -> None:
@@ -1370,10 +1468,7 @@ def test_slack_confirmation_consume_for_owner_is_atomic_under_concurrency() -> N
     for thread in threads:
         thread.join()
 
-    assert sorted(results) == [
-        (False, "confirmation id is unknown or already used"),
-        (True, None),
-    ]
+    assert sorted(results) == [(False, "confirmation_unknown_or_used"), (True, None)]
 
 
 def test_slack_command_role_gate_and_unmapped_identity(tmp_path: Path) -> None:
@@ -1400,7 +1495,7 @@ def test_slack_unmapped_identity_can_read_status_and_chat(tmp_path: Path) -> Non
     store = SQLiteBoardStore(tmp_path / "board.db")
     store.create_task(board="main", title="Ready item", body=None, assignee=None)
     slack = FakeSlackClient()
-    assistant = FakeAssistantBroker("안녕하세요. grove 비서입니다.")
+    assistant = LLMNoticeAssistantBroker("안녕하세요. grove 비서입니다.")
     connector = command_connector(
         store,
         slack,
@@ -1411,7 +1506,9 @@ def test_slack_unmapped_identity_can_read_status_and_chat(tmp_path: Path) -> Non
     assert connector.handle_event(slack_event("UNKNOWN", "status"))
     assert connector.handle_event(slack_event("UNKNOWN", "안녕", ts="444.556"))
 
-    assert "Status: board=main ready=1" in slack.posts[0][1]
+    assert slack.posts[0][1] == "LLM handled status."
+    assert assistant.notice_calls[0]["decision"] == "status"
+    assert "status board=main ready=1" in str(assistant.notice_calls[0]["reason"])
     assert slack.posts[1][1] == "안녕하세요. grove 비서입니다."
     assert "not mapped" not in "\n".join(post[1] for post in slack.posts)
     assert [call[0] for call in assistant.calls] == ["안녕"]
@@ -1423,7 +1520,8 @@ def test_slack_command_preview_confirm_approve_and_replay_denied(tmp_path: Path)
     store.set_execution_global(board="main", enabled=True)
     store.set_node_execution_enabled(board="main", node="worker", enabled=True)
     slack = FakeSlackClient()
-    connector = command_connector(store, slack)
+    assistant = LLMNoticeAssistantBroker()
+    connector = command_connector(store, slack, assistant_broker=assistant)
 
     assert connector.handle_event(slack_event("UOP", f"<@BOT> approve {task.id}"))
     confirm = confirmation_id(slack.posts[-1][1])
@@ -1433,8 +1531,10 @@ def test_slack_command_preview_confirm_approve_and_replay_denied(tmp_path: Path)
 
     state = store.task_execution_state(board="main", task_id=task.id)
     assert state["state"] == "approved"
-    assert slack.posts[-2][1] == f"Approved task `{task.id}`."
-    assert "already used" in slack.posts[-1][1]
+    assert slack.posts[-2][1] == "LLM completed the Slack request."
+    assert slack.posts[-1][1] == "LLM explained why the request was not completed."
+    assert f"approved task id={task.id}" in str(assistant.notice_calls[-2]["reason"])
+    assert "confirmation_unknown_or_used" in str(assistant.notice_calls[-1]["reason"])
     assert "xoxb-" not in "\n".join(post[1] for post in slack.posts)
     assert "/Users" not in "\n".join(post[1] for post in slack.posts)
     slack_audits = [
@@ -1451,18 +1551,21 @@ def test_slack_command_non_owner_cannot_consume_confirmation(tmp_path: Path) -> 
     store.set_execution_global(board="main", enabled=True)
     store.set_node_execution_enabled(board="main", node="worker", enabled=True)
     slack = FakeSlackClient()
-    connector = command_connector(store, slack)
+    assistant = LLMNoticeAssistantBroker()
+    connector = command_connector(store, slack, assistant_broker=assistant)
 
     assert connector.handle_event(slack_event("UOP", f"approve {task.id}"))
     confirm = confirmation_id(slack.posts[-1][1])
     assert connector.handle_event(slack_event("UAD", f"confirm {confirm}", ts="444.557"))
-    assert "only the member" in slack.posts[-1][1].lower()
+    assert slack.posts[-1][1] == "LLM explained why the request was not completed."
+    assert "confirmation_owner_mismatch" in str(assistant.notice_calls[-1]["reason"])
     assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approval-pending"
 
     assert connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.558"))
 
     assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approved"
-    assert slack.posts[-1][1] == f"Approved task `{task.id}`."
+    assert slack.posts[-1][1] == "LLM completed the Slack request."
+    assert f"approved task id={task.id}" in str(assistant.notice_calls[-1]["reason"])
 
 
 def test_slack_command_expired_confirmation_and_cross_project_denied(tmp_path: Path) -> None:
@@ -1470,25 +1573,35 @@ def test_slack_command_expired_confirmation_and_cross_project_denied(tmp_path: P
     task = execution_task(store, board="other")
     clock = MutableClock()
     slack = FakeSlackClient()
-    connector = command_connector(store, slack, board="main", clock=clock)
+    assistant = LLMNoticeAssistantBroker()
+    connector = command_connector(
+        store,
+        slack,
+        board="main",
+        clock=clock,
+        assistant_broker=assistant,
+    )
 
     assert connector.handle_event(slack_event("UOP", f"abort {task.id}"))
     expired = confirmation_id(slack.posts[-1][1])
     clock.advance(10)
     assert connector.handle_event(slack_event("UOP", f"confirm {expired}", ts="444.559"))
-    assert "expired" in slack.posts[-1][1]
+    assert slack.posts[-1][1] == "LLM explained why the request was not completed."
+    assert "expired" in str(assistant.notice_calls[-1]["reason"])
 
     assert connector.handle_event(slack_event("UOP", f"approve {task.id}", ts="444.560"))
     confirm = confirmation_id(slack.posts[-1][1])
     assert connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.561"))
-    assert "scope" in slack.posts[-1][1]
+    assert slack.posts[-1][1] == "LLM explained why the request was not completed."
+    assert "scope" in str(assistant.notice_calls[-1]["reason"])
     assert store.task_execution_state(board="other", task_id=task.id)["state"] == "approval-pending"
 
 
 def test_slack_command_killswitch_requires_confirm_and_can_clear(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
-    connector = command_connector(store, slack)
+    assistant = LLMNoticeAssistantBroker()
+    connector = command_connector(store, slack, assistant_broker=assistant)
 
     assert connector.handle_event(slack_event("UAD", "killswitch on"))
     on_confirm = confirmation_id(slack.posts[-1][1])
@@ -1501,7 +1614,8 @@ def test_slack_command_killswitch_requires_confirm_and_can_clear(tmp_path: Path)
     assert store.execution_global_state(board="main")["kill_switch"] is True
     assert connector.handle_event(slack_event("UAD", f"confirm {off_confirm}", ts="444.564"))
     assert store.execution_global_state(board="main")["kill_switch"] is False
-    assert "disabled" in slack.posts[-1][1]
+    assert slack.posts[-1][1] == "LLM completed the Slack request."
+    assert "disabled" in str(assistant.notice_calls[-1]["reason"])
     audits = [
         audit
         for audit in store.list_audit_events(board="main", action="killswitch")
@@ -1513,11 +1627,13 @@ def test_slack_command_killswitch_requires_confirm_and_can_clear(tmp_path: Path)
 def test_slack_command_node_killswitch_rejects_unknown_node(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
-    connector = command_connector(store, slack)
+    assistant = LLMNoticeAssistantBroker()
+    connector = command_connector(store, slack, assistant_broker=assistant)
 
     assert connector.handle_event(slack_event("UAD", "killswitch node typo on"))
 
-    assert "node is not in this project" in slack.posts[-1][1]
+    assert slack.posts[-1][1] == "LLM explained why the request was not completed."
+    assert "node outside project" in str(assistant.notice_calls[-1]["reason"])
     assert "confirm " not in slack.posts[-1][1]
     assert store.node_execution_state(board="main", node="typo")["kill_switch"] is False
     denied = [
@@ -1525,20 +1641,22 @@ def test_slack_command_node_killswitch_rejects_unknown_node(tmp_path: Path) -> N
         for audit in store.list_audit_events(board="main", action="killswitch")
         if audit.payload["status"] == "denied"
     ]
-    assert denied[-1].payload["summary"] == "Denied: node is not in this project."
+    assert denied[-1].payload["summary"] == "deny: node outside project"
 
 
 def test_slack_command_approve_reuses_execution_gate(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = execution_task(store)
     slack = FakeSlackClient()
-    connector = command_connector(store, slack)
+    assistant = LLMNoticeAssistantBroker()
+    connector = command_connector(store, slack, assistant_broker=assistant)
 
     assert connector.handle_event(slack_event("UOP", f"approve {task.id}"))
     confirm = confirmation_id(slack.posts[-1][1])
     assert connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.565"))
 
-    assert "gate is blocked" in slack.posts[-1][1]
+    assert slack.posts[-1][1] == "LLM explained why the request was not completed."
+    assert "gate is blocked" in str(assistant.notice_calls[-1]["reason"])
     assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approval-pending"
 
 
@@ -1553,7 +1671,7 @@ def test_slack_intake_default_off_does_not_create_task(tmp_path: Path) -> None:
     assert slack.posts[-1][1] == "LLM says intake is unavailable."
     assert assistant.calls == []
     assert assistant.notice_calls[-1]["decision"] == "deny"
-    assert "intake is not enabled" in str(assistant.notice_calls[-1]["reason"])
+    assert "slack intake disabled" in str(assistant.notice_calls[-1]["reason"])
     assert "confirm " not in slack.posts[-1][1]
     assert store.list_tasks(board="main") == []
 
@@ -1577,15 +1695,10 @@ def test_slack_intake_preview_confirm_creates_redacted_task(tmp_path: Path) -> N
     preview = slack.posts[-1][1]
     confirm = confirmation_id(preview)
     preview_blocks = slack.blocks[-1][1]
-    assert preview_blocks is not None
-    actions = next(block for block in preview_blocks if block.get("type") == "actions")
-    elements = cast(list[Mapping[str, object]], actions["elements"])
-    assert [element["action_id"] for element in elements] == [
-        slack_module.INTAKE_CONFIRM_ACTION_ID,
-        slack_module.INTAKE_ANSWER_ONLY_ACTION_ID,
-    ]
-    assert all("confirm" in element for element in elements)
-    assert "Preview: create bug task" in preview
+    assert preview_blocks is None
+    assert preview.startswith("LLM preview ready.")
+    notice_broker = cast(LLMNoticeAssistantBroker, connector.assistant_broker)
+    assert "preview: create bug task" in str(notice_broker.notice_calls[-1]["reason"])
     assert "xoxb-" not in preview
     assert "/Users" not in preview
     assert "alice@example.com" not in preview
@@ -1606,7 +1719,7 @@ def test_slack_intake_preview_confirm_creates_redacted_task(tmp_path: Path) -> N
     assert "xoxb-" not in combined
     assert "/Users" not in combined
     assert "alice@example.com" not in combined
-    assert "already used" in slack.posts[-1][1]
+    assert "confirmation_unknown_or_used" in str(notice_broker.notice_calls[-1]["reason"])
     audits = store.list_audit_events(board="main", action="slack_intake_create")
     assert len(audits) == 1
     audit_actor = cast(Mapping[str, object], audits[0].payload["actor"])
@@ -1625,14 +1738,14 @@ def test_slack_intake_gui_flag_is_runtime_source_of_truth(tmp_path: Path) -> Non
     assert fallback_connector.handle_event(slack_event("UOP", "/grove bug checkout crashes"))
     fallback_preview = fallback_slack.posts[-1][1]
     fallback_confirm = confirmation_id(fallback_preview)
-    assert "Preview: create bug task" in fallback_preview
+    assert fallback_preview.startswith("LLM preview ready.")
 
     assert fallback_connector.handle_event(
         slack_event("UOP", f"confirm {fallback_confirm}", ts="444.566")
     )
 
     assert len(fallback_store.list_tasks(board="main")) == 1
-    assert "Created task" in fallback_slack.posts[-1][1]
+    assert fallback_slack.posts[-1][1] == "LLM completed the Slack request."
 
     cli_on_store = SQLiteBoardStore(tmp_path / "cli-on.db")
     cli_on_slack = FakeSlackClient()
@@ -1644,7 +1757,7 @@ def test_slack_intake_gui_flag_is_runtime_source_of_truth(tmp_path: Path) -> Non
     )
 
     assert cli_on_connector.handle_event(slack_event("UOP", "/grove bug checkout crashes"))
-    assert "intake is not enabled" in cli_on_slack.posts[-1][1]
+    assert cli_on_slack.posts[-1][1] == "LLM explained why the request was not completed."
     assert "confirm " not in cli_on_slack.posts[-1][1]
     assert cli_on_store.list_tasks(board="main") == []
 
@@ -1660,12 +1773,12 @@ def test_slack_intake_gui_flag_is_runtime_source_of_truth(tmp_path: Path) -> Non
     assert gui_on_connector.handle_event(slack_event("UOP", "/grove bug checkout crashes"))
     preview = gui_on_slack.posts[-1][1]
     confirm = confirmation_id(preview)
-    assert "Preview: create bug task" in preview
+    assert preview.startswith("LLM preview ready.")
 
     assert gui_on_connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.566"))
 
     assert len(gui_on_store.list_tasks(board="main")) == 1
-    assert "Created task" in gui_on_slack.posts[-1][1]
+    assert gui_on_slack.posts[-1][1] == "LLM completed the Slack request."
 
 
 def test_slack_intake_dedupes_event_before_preview_and_task_creation(tmp_path: Path) -> None:
@@ -1685,8 +1798,8 @@ def test_slack_intake_dedupes_event_before_preview_and_task_creation(tmp_path: P
     )
 
     assert len(slack.posts) == 2
-    assert "Preview: create bug task" in slack.posts[0][1]
-    assert "Created task" in slack.posts[1][1]
+    assert slack.posts[0][1].startswith("LLM preview ready.")
+    assert slack.posts[1][1] == "LLM completed the Slack request."
     assert len(store.list_tasks(board="main")) == 1
 
 
@@ -1743,7 +1856,9 @@ def test_slack_intake_block_button_confirm_uses_same_one_shot_gate(tmp_path: Pat
     tasks = store.list_tasks(board="main")
     assert len(tasks) == 1
     assert tasks[0].title == "add board export"
-    assert "already used" in slack.posts[-1][1]
+    assert slack.posts[-1][1] == "LLM explained why the request was not completed."
+    notice_broker = cast(LLMNoticeAssistantBroker, connector.assistant_broker)
+    assert "confirmation_unknown_or_used" in str(notice_broker.notice_calls[-1]["reason"])
 
 
 def test_slack_intake_block_answer_only_button_consumes_without_task(tmp_path: Path) -> None:
@@ -1766,8 +1881,10 @@ def test_slack_intake_block_answer_only_button_consumes_without_task(tmp_path: P
     assert connector.handle_event(slack_event("UOP", f"confirm {confirm}", ts="444.566"))
 
     assert store.list_tasks(board="main") == []
-    assert "No task was created" in slack.posts[-2][1]
-    assert "already used" in slack.posts[-1][1]
+    assert slack.posts[-2][1] == "LLM kept this as an answer without creating a task."
+    assert slack.posts[-1][1] == "LLM explained why the request was not completed."
+    notice_broker = cast(LLMNoticeAssistantBroker, connector.assistant_broker)
+    assert "confirmation_unknown_or_used" in str(notice_broker.notice_calls[-1]["reason"])
 
 
 def test_slack_intake_role_gate_and_prompt_injection_no_task(tmp_path: Path) -> None:
@@ -1984,8 +2101,8 @@ def test_slack_intake_task_creation_does_not_publish_live_board_post(tmp_path: P
 
     assert len(store.list_tasks(board="main")) == 1
     assert len(slack.posts) == 2
-    assert "Preview: create bug task" in slack.posts[0][1]
-    assert "Created task" in slack.posts[1][1]
+    assert slack.posts[0][1].startswith("LLM preview ready.")
+    assert slack.posts[1][1] == "LLM completed the Slack request."
     assert slack.updates == []
     assert store.list_slack_threads() == []
 

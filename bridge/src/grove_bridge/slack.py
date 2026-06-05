@@ -43,8 +43,6 @@ HUMAN_GATE_METADATA_EVENT_TYPE = "grove_human_gate"
 DIGEST_REMINDER_MODE = "digest_reminder"
 INTAKE_CONFIRM_ACTION_ID = "grove_intake_confirm"
 INTAKE_ANSWER_ONLY_ACTION_ID = "grove_intake_answer_only"
-THREAD_CONTEXT_TTL_SECONDS = 600
-THREAD_CONTEXT_MAX = 200
 SLACK_EVENT_DEDUPE_MAX = 1000
 SLACK_SCOPES = (
     "app_mentions:read",
@@ -61,11 +59,9 @@ ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 TMUX_TARGET_RE = re.compile(r"^(?P<session>[A-Za-z0-9_-]+):(?P<window>\d+)\.(?P<pane>\d+)$")
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 COMMAND_CONFIRM_TTL_SECONDS = 300
-INTAKE_CONFIDENCE_THRESHOLD = 0.8
 SlackCommandRole = Literal["admin", "operator", "viewer"]
 SlackCommandName = Literal["approve", "abort", "killswitch", "task_create"]
 SlackIntentName = Literal["bug", "feedback", "task_request", "question", "command"]
-SlackQueryName = Literal["summary", "blocked", "running", "nodes", "usage", "ambiguous"]
 TASK_INTENTS = frozenset({"bug", "feedback", "task_request"})
 
 
@@ -148,10 +144,6 @@ class SocketClientFactory(Protocol):
 
 class SocketResponseFactory(Protocol):
     def __call__(self, *, envelope_id: str) -> object: ...
-
-
-class SlackIntentClassifier(Protocol):
-    def classify(self, text: str) -> SlackIntentClassification: ...
 
 
 class AssistantBrokerProtocol(Protocol):
@@ -285,109 +277,6 @@ class SlackIntakeProposal:
 class SlackBlockMessage:
     text: str
     blocks: tuple[Mapping[str, object], ...]
-
-
-@dataclass(frozen=True)
-class SlackReadOnlyQuery:
-    name: SlackQueryName
-    reason: str
-
-
-@dataclass(frozen=True)
-class SlackThreadContext:
-    query: SlackReadOnlyQuery
-    updated_at: float
-
-
-class BoundedSlackIntentClassifier:
-    """Small deterministic classifier; it proposes, never mutates."""
-
-    def classify(self, text: str) -> SlackIntentClassification:
-        normalized = _normalize_slack_text(text)
-        lowered = normalized.lower()
-        if not normalized:
-            return SlackIntentClassification(
-                intent="question",
-                confidence=0.0,
-                title="",
-                summary="",
-                reason="empty",
-            )
-        if _looks_like_control_command(lowered):
-            return SlackIntentClassification(
-                intent="command",
-                confidence=1.0,
-                title=normalized,
-                summary=normalized,
-                reason="control_command",
-            )
-        if _contains_prompt_injection(lowered):
-            return SlackIntentClassification(
-                intent="question",
-                confidence=0.2,
-                title=normalized,
-                summary=normalized,
-                reason="unsafe_or_ambiguous",
-            )
-        if _contains_any(
-            lowered, ("bug", "crash", "broken", "fails", "failure", "error", "버그", "오류", "고장")
-        ):
-            return SlackIntentClassification(
-                intent="bug",
-                confidence=0.92,
-                title=_strip_intake_prefix(normalized),
-                summary=normalized,
-                labels=("bug",),
-                reason="bug_terms",
-            )
-        if _contains_any(lowered, ("feedback", "suggest", "suggestion", "피드백", "제안", "개선")):
-            return SlackIntentClassification(
-                intent="feedback",
-                confidence=0.9,
-                title=_strip_intake_prefix(normalized),
-                summary=normalized,
-                labels=("feedback",),
-                reason="feedback_terms",
-            )
-        if _contains_any(
-            lowered,
-            (
-                "task",
-                "todo",
-                "please implement",
-                "implement",
-                "add ",
-                "create ",
-                "작업",
-                "만들",
-                "해줘",
-            ),
-        ):
-            return SlackIntentClassification(
-                intent="task_request",
-                confidence=0.86,
-                title=_strip_intake_prefix(normalized),
-                summary=normalized,
-                labels=("task-request",),
-                reason="task_terms",
-            )
-        if "?" in normalized or _contains_any(
-            lowered, ("how", "what", "why", "질문", "어떻게", "무엇")
-        ):
-            return SlackIntentClassification(
-                intent="question",
-                confidence=0.8,
-                title=normalized,
-                summary=normalized,
-                reason="question_terms",
-            )
-        return SlackIntentClassification(
-            intent="question",
-            confidence=0.35,
-            title=normalized,
-            summary=normalized,
-            reason="low_confidence",
-        )
 
 
 @dataclass(frozen=True)
@@ -648,9 +537,9 @@ class SlackConfirmationStore:
             pending = self._pending.pop(confirmation_id, None)
             self._cleanup(now=now)
             if pending is None:
-                return None, "confirmation id is unknown or already used"
+                return None, "confirmation_unknown_or_used"
             if pending.expires_at <= now:
-                return None, "confirmation id expired"
+                return None, "confirmation_expired"
             return pending, None
 
     def consume_for_owner(
@@ -664,14 +553,14 @@ class SlackConfirmationStore:
             pending = self._pending.get(confirmation_id)
             if pending is None:
                 self._cleanup(now=now)
-                return None, "confirmation id is unknown or already used"
+                return None, "confirmation_unknown_or_used"
             if pending.expires_at <= now:
                 self._pending.pop(confirmation_id, None)
                 self._cleanup(now=now)
-                return None, "confirmation id expired"
+                return None, "confirmation_expired"
             if pending.actor.member_id != member_id:
                 self._cleanup(now=now)
-                return None, "confirmation owner mismatch"
+                return None, "confirmation_owner_mismatch"
             self._pending.pop(confirmation_id, None)
             self._cleanup(now=now)
             return pending, None
@@ -698,7 +587,6 @@ class SlackConnector:
         command_config: SlackCommandConfig | None = None,
         digest_config: SlackDigestConfig | None = None,
         confirmation_store: SlackConfirmationStore | None = None,
-        intent_classifier: SlackIntentClassifier | None = None,
         assistant_broker: AssistantBrokerProtocol | None = None,
         bot_user_id: str | None = None,
     ) -> None:
@@ -711,7 +599,6 @@ class SlackConnector:
         self.command_config = command_config
         self.digest_config = digest_config
         self.bot_user_id = bot_user_id or None
-        self.intent_classifier = intent_classifier or BoundedSlackIntentClassifier()
         self.confirmations = confirmation_store or (
             SlackConfirmationStore(
                 ttl_seconds=command_config.confirmation_ttl_seconds,
@@ -721,7 +608,6 @@ class SlackConnector:
             else None
         )
         self._locks: dict[str, threading.Lock] = {}
-        self._thread_contexts: dict[str, SlackThreadContext] = {}
         self._seen_event_keys: set[str] = set()
         self._seen_event_order: deque[str] = deque()
 
@@ -744,7 +630,6 @@ class SlackConnector:
                 pending=pending,
             ):
                 continue
-            text = _human_gate_text(task)
             pending_thread_ts = _pending_thread_key(task)
             self.store.upsert_slack_thread(
                 board=self.human_gate.board,
@@ -755,14 +640,36 @@ class SlackConnector:
                 mode=HUMAN_GATE_PENDING_MODE,
                 node=task.assignee,
             )
+            gate_event = SlackEvent(
+                team="",
+                channel=channel,
+                user="slack-human-gate",
+                text=f"human gate requested for task {task.id}",
+                ts=pending_thread_ts,
+                thread_ts=None,
+                event_type="message",
+            )
             try:
-                thread_ts = self.slack_client.post_message(
-                    channel=channel,
-                    text=text,
-                    metadata=_human_gate_metadata(task),
+                thread_ts = self._post_assistant_notice(
+                    gate_event,
+                    decision="human_gate",
+                    reason="human_gate_required",
+                    thread_ts=pending_thread_ts,
+                    metadata={
+                        "task_id": task.id,
+                        "title": task.title,
+                        "assignee": task.assignee,
+                        "question": task.metadata.get("question"),
+                        "body": task.body,
+                    },
+                    slack_metadata=_human_gate_metadata(task),
+                    reply_in_thread=False,
                 )
             except Exception as exc:
                 LOGGER.warning("Slack human gate post failed: %s", _safe_log_error(exc))
+                continue
+            if not thread_ts:
+                self._delete_pending_human_gate(task=task, channel=channel)
                 continue
             self._record_human_gate_thread(task=task, channel=channel, thread_ts=thread_ts)
             self._delete_pending_human_gate(task=task, channel=channel)
@@ -911,7 +818,7 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="deny",
-                reason="Slack control commands are not enabled for this project.",
+                reason="slack control commands disabled",
                 response_type="denied",
                 thread_ts=thread_ts,
             )
@@ -937,7 +844,7 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="deny",
-                reason="No pending confirmations are available.",
+                reason="pending_confirmations_unavailable",
                 response_type="denied",
                 thread_ts=thread_ts,
             )
@@ -973,7 +880,7 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="answer_only",
-                reason="No task was created; answer-only was selected.",
+                reason="answer_only: no task created",
                 thread_ts=thread_ts,
             )
             return True
@@ -1157,84 +1064,6 @@ class SlackConnector:
             payload={str(key): _safe_slack_text(value) for key, value in (payload or {}).items()},
         )
 
-    def _handle_read_only_query(self, event: SlackEvent, *, thread_ts: str) -> bool:
-        config = self.command_config
-        if config is None or not config.intake_enabled:
-            return False
-        actor = config.members.get(event.user)
-        context_key = _thread_context_key(event, thread_ts=thread_ts)
-        context = self._thread_context(context_key)
-        query = _parse_read_only_query(event.text, context=context)
-        if query is None:
-            return False
-        actor_payload = (
-            _slack_member_actor(event.user, actor)
-            if actor is not None
-            else _slack_actor(event.user, role="read-only")
-        )
-        actor_role = actor.role if actor is not None else "none"
-        if query.name == "usage" and actor_role not in {"admin", "operator"}:
-            self._audit_slack_command(
-                command="nl_status",
-                event=event,
-                actor=actor_payload,
-                status="denied",
-                summary="usage query requires operator role",
-                payload={"query": query.name, "reason": query.reason},
-            )
-            self._post_assistant_notice(
-                event,
-                decision="deny",
-                reason="Usage and ledger details require operator role.",
-                response_type="denied",
-                thread_ts=thread_ts,
-            )
-            self._remember_thread_context(context_key, query)
-            return True
-        message = _build_read_only_query_message(
-            query=query,
-            board=config.board,
-            tasks=self.store.list_tasks(board=config.board, limit=100),
-            runs=self.store.list_runs_for_board(board=config.board),
-            node_names=config.node_names,
-        )
-        self._audit_slack_command(
-            command="nl_status",
-            event=event,
-            actor=actor_payload,
-            status="ok",
-            summary=f"answered {query.name} query",
-            payload={"query": query.name, "reason": query.reason},
-        )
-        self._post_assistant_notice(
-            event,
-            decision="status",
-            reason=message.text,
-            thread_ts=thread_ts,
-        )
-        self._remember_thread_context(context_key, query)
-        return True
-
-    def _thread_context(self, context_key: str) -> SlackThreadContext | None:
-        context = self._thread_contexts.get(context_key)
-        now = time.time()
-        if context is None:
-            return None
-        if context.updated_at + THREAD_CONTEXT_TTL_SECONDS < now:
-            self._thread_contexts.pop(context_key, None)
-            return None
-        return context
-
-    def _remember_thread_context(self, context_key: str, query: SlackReadOnlyQuery) -> None:
-        self._thread_contexts[context_key] = SlackThreadContext(query=query, updated_at=time.time())
-        if len(self._thread_contexts) <= THREAD_CONTEXT_MAX:
-            return
-        oldest_key = min(
-            self._thread_contexts,
-            key=lambda key: self._thread_contexts[key].updated_at,
-        )
-        self._thread_contexts.pop(oldest_key, None)
-
     def _handle_command(self, event: SlackEvent, *, thread_ts: str) -> bool:
         command_text = _normalize_slack_command_text(event.text)
         parts = command_text.split()
@@ -1258,7 +1087,7 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="deny",
-                reason="Slack control commands are not enabled for this project.",
+                reason="slack control commands disabled",
                 response_type="denied",
                 thread_ts=thread_ts,
             )
@@ -1386,7 +1215,7 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="deny",
-                reason="Slack digest is not configured for this connector.",
+                reason="digest not configured",
                 response_type="denied",
                 thread_ts=thread_ts,
             )
@@ -1396,18 +1225,18 @@ class SlackConnector:
             response = _digest_config_status_text(self.digest_config)
         elif action == "enable":
             self.digest_config = replace(self.digest_config, enabled=True)
-            response = "Slack digest enabled."
+            response = "completed: digest enabled"
         elif action == "disable":
             self.digest_config = replace(self.digest_config, enabled=False)
-            response = "Slack digest disabled."
+            response = "completed: digest disabled"
         elif action in {"dry-run-on", "dryrun-on"}:
             self.digest_config = replace(self.digest_config, dry_run=True)
-            response = "Slack digest dry-run enabled."
+            response = "completed: digest dry-run enabled"
         elif action in {"dry-run-off", "dryrun-off", "live-on"}:
             self.digest_config = replace(self.digest_config, dry_run=False)
-            response = "Slack digest dry-run disabled."
+            response = "completed: digest dry-run disabled"
         else:
-            response = "Usage: digest [status|enable|disable|dry-run-on|dry-run-off]."
+            response = "deny: digest usage [status|enable|disable|dry-run-on|dry-run-off]"
         self._audit_slack_command(
             command="digest",
             event=event,
@@ -1442,7 +1271,7 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="deny",
-                reason="Slack intake is not enabled for this project.",
+                reason="slack intake disabled",
                 response_type="denied",
                 thread_ts=thread_ts,
             )
@@ -1483,7 +1312,7 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="deny",
-                reason="Slack intake is not enabled for this project.",
+                reason="slack intake disabled",
                 response_type="denied",
                 thread_ts=thread_ts,
             )
@@ -1492,93 +1321,9 @@ class SlackConnector:
             event,
             decision="preview",
             reason=preview.text,
-            blocks=preview.blocks,
             thread_ts=thread_ts,
             requires_confirmation=True,
         )
-
-    def _handle_intake(self, event: SlackEvent, *, thread_ts: str) -> bool:
-        config = self.command_config
-        if config is None or not self._intake_enabled(config):
-            return False
-        classification = self.intent_classifier.classify(event.text)
-        if classification.intent == "command":
-            return False
-        if (
-            classification.intent not in TASK_INTENTS
-            or classification.confidence < INTAKE_CONFIDENCE_THRESHOLD
-        ):
-            self._audit_slack_command(
-                command="intake",
-                event=event,
-                actor=_slack_actor(event.user, role="read-only"),
-                status="ok",
-                summary="read-only answer path",
-                payload={
-                    "intent": classification.intent,
-                    "confidence": _rounded_confidence(classification.confidence),
-                    "reason": _safe_slack_text(classification.reason),
-                },
-            )
-            return self._handle_assistant_turn(event, thread_ts=thread_ts)
-        actor = config.members.get(event.user)
-        if actor is None:
-            self._audit_slack_command(
-                command="intake",
-                event=event,
-                actor=_slack_actor(event.user, role="none"),
-                status="denied",
-                summary="unmapped slack identity",
-                payload={"intent": classification.intent},
-            )
-            self._post_assistant_notice(
-                event,
-                decision="deny",
-                reason="unmapped slack identity",
-                response_type="denied",
-                thread_ts=thread_ts,
-            )
-            return True
-        if actor.role not in {"admin", "operator"}:
-            self._audit_slack_command(
-                command="intake",
-                event=event,
-                actor=_slack_member_actor(event.user, actor),
-                status="denied",
-                summary="insufficient role",
-                payload={"intent": classification.intent},
-            )
-            self._post_assistant_notice(
-                event,
-                decision="deny",
-                reason="insufficient role: operator or admin role is required to create tasks",
-                response_type="denied",
-                thread_ts=thread_ts,
-            )
-            return True
-        preview = self._preview_intake_task(
-            event=event,
-            actor=actor,
-            classification=classification,
-        )
-        if preview is None:
-            self._post_assistant_notice(
-                event,
-                decision="deny",
-                reason="Slack intake is not enabled for this project.",
-                response_type="denied",
-                thread_ts=thread_ts,
-            )
-            return True
-        self._post_assistant_notice(
-            event,
-            decision="preview",
-            reason=preview.text,
-            blocks=preview.blocks,
-            thread_ts=thread_ts,
-            requires_confirmation=True,
-        )
-        return True
 
     def _preview_intake_task(
         self,
@@ -1613,19 +1358,14 @@ class SlackConnector:
             },
         )
         text = (
-            "Preview: create "
-            f"{_safe_slack_text(proposal.intent)} task "
-            f"`{_safe_slack_text(proposal.title)}`.\n"
-            f"Confirm with `confirm {pending.confirmation_id}` within "
-            f"{self.command_config.confirmation_ttl_seconds}s."
+            f"preview: create {_safe_slack_text(proposal.intent)} task "
+            f"title={_safe_slack_text(proposal.title)}; "
+            f"confirm {pending.confirmation_id}; "
+            f"ttl_seconds={self.command_config.confirmation_ttl_seconds}"
         )
         return SlackBlockMessage(
             text=text,
-            blocks=_build_intake_preview_blocks(
-                proposal=proposal,
-                confirmation_id=pending.confirmation_id,
-                ttl_seconds=self.command_config.confirmation_ttl_seconds,
-            ),
+            blocks=(),
         )
 
     def _handle_command_confirm(
@@ -1640,7 +1380,7 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="usage",
-                reason="Usage: confirm <confirmation-id>",
+                reason="deny: confirm usage confirm <confirmation-id>",
                 response_type="denied",
                 thread_ts=thread_ts,
             )
@@ -1649,7 +1389,7 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="deny",
-                reason="No pending confirmations are available.",
+                reason="pending_confirmations_unavailable",
                 response_type="denied",
                 thread_ts=thread_ts,
             )
@@ -1663,11 +1403,7 @@ class SlackConnector:
                 status="denied",
                 summary=error or "confirmation failed",
             )
-            response = (
-                "Only the member who created the preview can confirm it."
-                if error == "confirmation owner mismatch"
-                else f"{_safe_slack_text(error or 'confirmation failed')}."
-            )
+            response = _safe_slack_text(error or "confirmation failed")
             self._post_assistant_notice(
                 event,
                 decision="deny",
@@ -1695,9 +1431,11 @@ class SlackConnector:
     ) -> str:
         parsed = _parse_mutating_command(command, args)
         if parsed is None:
-            return "Invalid command. Use: approve <task>, abort <task>, killswitch <on|off>."
+            return (
+                "deny: invalid command; expected approve <task>, abort <task>, killswitch <on|off>"
+            )
         if self.command_config is None or self.confirmations is None:
-            return "Slack control commands are not enabled for this project."
+            return "deny: slack control commands disabled"
         node_denial = self._node_killswitch_denial(parsed[0], parsed[1])
         if node_denial is not None:
             self._audit_slack_command(
@@ -1723,14 +1461,14 @@ class SlackConnector:
             payload={"confirmation_id": pending.confirmation_id},
         )
         return (
-            f"Preview: {_pending_command_summary(pending)}.\n"
-            f"Confirm with `confirm {pending.confirmation_id}` within "
-            f"{self.command_config.confirmation_ttl_seconds}s."
+            f"preview: {_pending_command_summary(pending)}; "
+            f"confirm {pending.confirmation_id}; "
+            f"ttl_seconds={self.command_config.confirmation_ttl_seconds}"
         )
 
     def _execute_pending_command(self, pending: SlackPendingCommand) -> str:
         if self.command_config is None:
-            return "Denied: Slack control commands are not enabled."
+            return "deny: slack control commands disabled"
         actor = _slack_member_actor(pending.event.user, pending.actor)
         try:
             if pending.command == "approve":
@@ -1748,7 +1486,7 @@ class SlackConnector:
                 status="denied",
                 summary="task or board not found",
             )
-            return "Denied: task is not in this project scope."
+            return "deny: task outside project scope"
 
     def _execute_task_create(
         self,
@@ -1758,7 +1496,7 @@ class SlackConnector:
     ) -> str:
         config = self.command_config
         if config is None or not self._intake_enabled(config):
-            return "Denied: Slack intake is not enabled."
+            return "deny: slack intake disabled"
         if pending.actor.role not in {"admin", "operator"}:
             self._audit_slack_command(
                 command="intake",
@@ -1767,7 +1505,7 @@ class SlackConnector:
                 status="denied",
                 summary="insufficient role",
             )
-            return "Denied: operator or admin role is required to create tasks."
+            return "deny: operator or admin role required to create tasks"
         proposal = _decode_intake_proposal(pending.args)
         if proposal is None:
             self._audit_slack_command(
@@ -1777,7 +1515,7 @@ class SlackConnector:
                 status="denied",
                 summary="invalid intake proposal",
             )
-            return "Denied: intake proposal is invalid."
+            return "deny: invalid intake proposal"
         assignee = proposal.assignee
         if assignee is not None and not self._command_node_exists(assignee):
             assignee = None
@@ -1825,7 +1563,10 @@ class SlackConnector:
             task_id=task.id,
             payload={"intent": proposal.intent},
         )
-        return f"Created task `{_safe_slack_text(task.id)}`: {_safe_slack_text(task.title)}."
+        return (
+            f"completed: created task id={_safe_slack_text(task.id)} "
+            f"title={_safe_slack_text(task.title)}"
+        )
 
     def _intake_enabled(self, config: SlackCommandConfig) -> bool:
         try:
@@ -1848,11 +1589,11 @@ class SlackConnector:
         assert self.command_config is not None
         task_id = pending.args[0]
         if not _valid_task_ref(task_id):
-            return "Denied: invalid task id."
+            return "deny: invalid task id"
         task = self.store.get_task(board=self.command_config.board, task_id=task_id)
         node = _execution_node_for_task(task)
         if node is None:
-            return "Denied: task has no execution node."
+            return "deny: task has no execution node"
         gate = self.store.execution_gate_state(
             board=self.command_config.board,
             node=node,
@@ -1868,13 +1609,13 @@ class SlackConnector:
                 task_id=task.id,
                 run_id=task.current_run_id,
             )
-            return "Denied: execution gate is blocked."
+            return "deny: execution gate is blocked"
         if not self.store.approve_execution(
             board=self.command_config.board,
             task_id=task.id,
             actor=actor,
         ):
-            return "Denied: task is not awaiting approval."
+            return "deny: task is not awaiting approval"
         self._audit_slack_command(
             command="approve",
             event=pending.event,
@@ -1884,7 +1625,7 @@ class SlackConnector:
             task_id=task.id,
             run_id=task.current_run_id,
         )
-        return f"Approved task `{_safe_slack_text(task.id)}`."
+        return f"completed: approved task id={_safe_slack_text(task.id)}"
 
     def _execute_abort(
         self,
@@ -1895,7 +1636,7 @@ class SlackConnector:
         assert self.command_config is not None
         task_id = pending.args[0]
         if not _valid_task_ref(task_id):
-            return "Denied: invalid task id."
+            return "deny: invalid task id"
         task = self.store.get_task(board=self.command_config.board, task_id=task_id)
         reason = "slack command abort"
         if not self.store.abort_execution(
@@ -1904,7 +1645,7 @@ class SlackConnector:
             actor=actor,
             reason=reason,
         ):
-            return "Denied: task execution is already terminal."
+            return "deny: task execution is already terminal"
         self._audit_slack_command(
             command="abort",
             event=pending.event,
@@ -1914,7 +1655,7 @@ class SlackConnector:
             task_id=task.id,
             run_id=task.current_run_id,
         )
-        return f"Aborted task `{_safe_slack_text(task.id)}`."
+        return f"completed: aborted task id={_safe_slack_text(task.id)}"
 
     def _execute_killswitch(
         self,
@@ -1934,7 +1675,7 @@ class SlackConnector:
                     status="denied",
                     summary="node is not in this project",
                 )
-                return "Denied: node is not in this project."
+                return "deny: node outside project"
             self.store.set_execution_kill_switch(
                 board=self.command_config.board,
                 level="node",
@@ -1968,7 +1709,7 @@ class SlackConnector:
             target=target_payload,
             payload={"enabled": enabled, "scope": scope},
         )
-        return _safe_slack_text(summary.capitalize()) + "."
+        return f"completed: {summary}"
 
     def _node_killswitch_denial(
         self,
@@ -1982,7 +1723,7 @@ class SlackConnector:
         except ValueError:
             return None
         if scope == "node" and (target is None or not self._command_node_exists(target)):
-            return "Denied: node is not in this project."
+            return "deny: node outside project"
         return None
 
     def _command_node_exists(self, node: str) -> bool:
@@ -1994,8 +1735,7 @@ class SlackConnector:
         blocked = len(self.store.list_tasks(board=board, status="blocked"))
         gate = self.store.execution_global_state(board=board)
         return _safe_slack_text(
-            "Status: "
-            f"board={board} ready={ready} running={running} blocked={blocked} "
+            f"status board={board} ready={ready} running={running} blocked={blocked} "
             f"execution={'on' if gate['enabled'] else 'off'} "
             f"kill_switch={'on' if gate['kill_switch'] else 'off'} "
             f"board_execution={'on' if gate['board_enabled'] else 'off'} "
@@ -2058,7 +1798,7 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="completed",
-                reason="Recorded the Slack reply and unblocked the task.",
+                reason="human_reply_recorded_task_unblocked",
                 thread_ts=thread_ts,
             )
         return True
@@ -2074,14 +1814,14 @@ class SlackConnector:
                 response = self.assistant_broker.handle_turn(text, context)
         except AssistantContentBlocked as exc:
             LOGGER.warning("Slack assistant response hidden: %s", _safe_log_error(exc))
-            response_text = "assistant response blocked"
+            response_text = ""
             should_post_response = False
             self._audit_slack_command(
                 command="assistant",
                 event=event,
                 actor=self._assistant_actor_payload(event),
                 status="failed",
-                summary=response_text,
+                summary="content_blocked",
             )
         except AssistantTransportError as exc:
             LOGGER.warning("Slack assistant transport failed: %s", _safe_log_error(exc))
@@ -2095,39 +1835,39 @@ class SlackConnector:
             )
         except AssistantUnavailable as exc:
             LOGGER.warning("Slack assistant response hidden: %s", _safe_log_error(exc))
-            response_text = "assistant response unavailable without transport signal"
+            response_text = ""
             should_post_response = False
             self._audit_slack_command(
                 command="assistant",
                 event=event,
                 actor=self._assistant_actor_payload(event),
                 status="failed",
-                summary=response_text,
+                summary="unavailable_non_transport",
             )
         except Exception as exc:
             LOGGER.warning("Slack assistant broker failed: %s", _safe_log_error(exc))
-            response_text = "assistant response failed"
+            response_text = ""
             should_post_response = False
             self._audit_slack_command(
                 command="assistant",
                 event=event,
                 actor=self._assistant_actor_payload(event),
                 status="failed",
-                summary=response_text,
+                summary="broker_exception",
             )
         else:
             try:
                 response_text = _assistant_response_text(response)
             except AssistantContentBlocked as exc:
                 LOGGER.warning("Slack assistant response hidden: %s", _safe_log_error(exc))
-                response_text = "assistant response missing answer text"
+                response_text = ""
                 should_post_response = False
                 self._audit_slack_command(
                     command="assistant",
                     event=event,
                     actor=self._assistant_actor_payload(event),
                     status="failed",
-                    summary=response_text,
+                    summary="missing_answer_text",
                     payload={
                         "conversation_id": _safe_slack_text(response.conversation_id),
                         "request_id": _safe_slack_text(response.request_id),
@@ -2255,7 +1995,8 @@ class SlackConnector:
         response_type: MasterChatResponseType = "answer",
         requires_confirmation: bool = False,
         metadata: Mapping[str, object] | None = None,
-        blocks: Sequence[Mapping[str, object]] | None = None,
+        slack_metadata: Mapping[str, object] | None = None,
+        reply_in_thread: bool = True,
     ) -> str:
         try:
             text = self._assistant_notice_text(
@@ -2273,8 +2014,8 @@ class SlackConnector:
         return self.slack_client.post_message(
             channel=event.channel,
             text=text,
-            thread_ts=thread_ts,
-            blocks=blocks,
+            thread_ts=thread_ts if reply_in_thread else None,
+            metadata=slack_metadata,
         )
 
     def _assistant_board(self) -> str:
@@ -2720,18 +2461,6 @@ def _safe_log_error(exc: Exception) -> str:
     return redact_secret_text(clean)[:300] or exc.__class__.__name__
 
 
-def _human_gate_text(task: Task) -> str:
-    question = task.metadata.get("question")
-    question_text = question if isinstance(question, str) and question.strip() else task.body or ""
-    return (
-        f"*{task.title}*\n"
-        f"Task: `{task.id}`\n"
-        f"Blocked node: `{task.assignee or 'unassigned'}`\n\n"
-        f"{question_text}\n\n"
-        "Reply in this thread to unblock the task."
-    )
-
-
 def _normalize_slack_text(text: str) -> str:
     return " ".join(part for part in text.split() if not part.startswith("<@"))
 
@@ -2783,7 +2512,8 @@ def _assistant_response_text(response: MasterChatResponse) -> str:
 def _slack_notice_decision_from_result(result: str) -> str:
     lowered = result.lower()
     if (
-        lowered.startswith("denied")
+        lowered.startswith("deny:")
+        or lowered.startswith("denied")
         or lowered.startswith("invalid")
         or lowered.startswith("usage:")
     ):
@@ -2799,7 +2529,10 @@ def _slack_notice_response_type_from_result(result: str) -> MasterChatResponseTy
 
 def _slack_notice_reason_from_result(result: str) -> str:
     safe = _safe_slack_text(result).strip()
-    if safe.lower().startswith("denied:"):
+    lowered = safe.lower()
+    if lowered.startswith("deny:") or lowered.startswith("denied:"):
+        return safe.split(":", 1)[1].strip()
+    if lowered.startswith("completed:") or lowered.startswith("preview:"):
         return safe.split(":", 1)[1].strip()
     return safe
 
@@ -2816,316 +2549,6 @@ def _select_chat_node(event: SlackEvent, route: ChatRouteConfig) -> str:
         mentioned = match.group("node")
         return route.mention_nodes.get(mentioned, mentioned)
     return route.default_node
-
-
-def _thread_context_key(event: SlackEvent, *, thread_ts: str) -> str:
-    team = _safe_slack_text(event.team)
-    channel = _safe_slack_text(event.channel)
-    thread = _safe_slack_text(thread_ts)
-    return f"{team}:{channel}:{thread}"
-
-
-def _parse_read_only_query(
-    text: str,
-    *,
-    context: SlackThreadContext | None,
-) -> SlackReadOnlyQuery | None:
-    normalized = _normalize_slack_text(text)
-    lowered = normalized.lower()
-    if not normalized:
-        return None
-    if _contains_prompt_injection(lowered):
-        return SlackReadOnlyQuery(name="ambiguous", reason="unsafe_or_ambiguous")
-    if _looks_like_task_mutation(lowered):
-        return None
-    if _contains_any(lowered, ("blocked", "stuck", "waiting", "ask-human", "막힘", "블록")):
-        return SlackReadOnlyQuery(name="blocked", reason="blocked_terms")
-    if _contains_any(lowered, ("running", "in progress", "executing", "active", "실행", "진행")):
-        return SlackReadOnlyQuery(name="running", reason="running_terms")
-    if _contains_any(
-        lowered,
-        ("usage", "ledger", "quota", "cost", "token", "tokens", "비용", "사용량"),
-    ):
-        return SlackReadOnlyQuery(name="usage", reason="usage_terms")
-    if _contains_any(lowered, ("node", "nodes", "worker", "agent", "노드", "에이전트")):
-        return SlackReadOnlyQuery(name="nodes", reason="node_terms")
-    if _contains_any(
-        lowered,
-        ("status", "summary", "board", "queue", "overview", "상태", "요약", "보드", "큐"),
-    ):
-        return SlackReadOnlyQuery(name="summary", reason="summary_terms")
-    if context is not None and _is_thread_followup(lowered):
-        return SlackReadOnlyQuery(
-            name=context.query.name, reason=f"thread_context:{context.query.name}"
-        )
-    if "?" in normalized or _contains_any(lowered, ("what", "how", "어때", "뭐", "무엇")):
-        return SlackReadOnlyQuery(name="ambiguous", reason="ambiguous_question")
-    return None
-
-
-def _looks_like_task_mutation(lowered_text: str) -> bool:
-    return _contains_any(
-        lowered_text,
-        (
-            "create task",
-            "make a task",
-            "add task",
-            "file a bug",
-            "turn this into",
-            "task:",
-            "bug:",
-            "feedback:",
-            "만들어",
-            "등록",
-            "태스크",
-        ),
-    )
-
-
-def _is_thread_followup(lowered_text: str) -> bool:
-    stripped = lowered_text.strip(" .?!")
-    return stripped in {
-        "details",
-        "more",
-        "show more",
-        "again",
-        "what about this",
-        "and this",
-        "계속",
-        "자세히",
-        "더",
-    }
-
-
-def _build_read_only_query_message(
-    *,
-    query: SlackReadOnlyQuery,
-    board: str,
-    tasks: Sequence[Task],
-    runs: Sequence[object],
-    node_names: frozenset[str],
-) -> SlackBlockMessage:
-    if query.name == "blocked":
-        return _tasks_query_message(
-            title=f"Blocked tasks on {board}",
-            tasks=[task for task in tasks if task.status == "blocked"],
-            empty="No blocked tasks.",
-        )
-    if query.name == "running":
-        return _tasks_query_message(
-            title=f"Running tasks on {board}",
-            tasks=[task for task in tasks if task.status == "running"],
-            empty="No running tasks.",
-        )
-    if query.name == "nodes":
-        return _nodes_query_message(board=board, tasks=tasks, node_names=node_names)
-    if query.name == "usage":
-        return _usage_query_message(board=board, runs=runs)
-    if query.name == "ambiguous":
-        return _ambiguous_query_message()
-    return _summary_query_message(board=board, tasks=tasks)
-
-
-def _summary_query_message(*, board: str, tasks: Sequence[Task]) -> SlackBlockMessage:
-    counts = _task_status_counts(tasks)
-    text = (
-        f"Board {board}: ready={counts['ready']} running={counts['running']} "
-        f"blocked={counts['blocked']} done={counts['done']} total={len(tasks)}"
-    )
-    blocks = (
-        {"type": "header", "text": {"type": "plain_text", "text": f"Board {board}"}},
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"*Ready*: {counts['ready']}  *Running*: {counts['running']}  "
-                    f"*Blocked*: {counts['blocked']}  *Done*: {counts['done']}  "
-                    f"*Other*: {counts['other']}\nTotal: {len(tasks)}"
-                ),
-            },
-        },
-    )
-    return SlackBlockMessage(text=text, blocks=blocks)
-
-
-def _tasks_query_message(*, title: str, tasks: Sequence[Task], empty: str) -> SlackBlockMessage:
-    task_lines = [
-        f"- `{_safe_slack_text(task.id)}` {_safe_slack_text(task.title)}"
-        + (f" — {_safe_slack_text(task.assignee)}" if task.assignee else "")
-        for task in tasks[:10]
-    ]
-    if len(tasks) > 10:
-        task_lines.append(f"...and {len(tasks) - 10} more.")
-    body = "\n".join(task_lines) if task_lines else empty
-    text = f"{title}\n{body}"
-    blocks = (
-        {"type": "header", "text": {"type": "plain_text", "text": title[:150]}},
-        *_mrkdwn_section_blocks(body),
-    )
-    return SlackBlockMessage(text=text, blocks=blocks)
-
-
-def _nodes_query_message(
-    *,
-    board: str,
-    tasks: Sequence[Task],
-    node_names: frozenset[str],
-) -> SlackBlockMessage:
-    running_by_node = {
-        task.assignee for task in tasks if task.status == "running" and task.assignee
-    }
-    nodes = sorted(node_names)
-    lines = [
-        f"- `{_safe_slack_text(node)}`: {'running' if node in running_by_node else 'idle'}"
-        for node in nodes[:20]
-    ]
-    if not lines:
-        lines = ["No exposed nodes are configured for Slack commands."]
-    text = f"Node status on {board}\n" + "\n".join(lines)
-    return SlackBlockMessage(
-        text=text,
-        blocks=(
-            {"type": "header", "text": {"type": "plain_text", "text": f"Nodes on {board}"[:150]}},
-            *_mrkdwn_section_blocks("\n".join(lines)),
-        ),
-    )
-
-
-def _usage_query_message(*, board: str, runs: Sequence[object]) -> SlackBlockMessage:
-    totals = _usage_totals_from_runs(runs)
-    text = (
-        f"Usage on {board}: runs={len(runs)} total_tokens={totals['total_tokens']} "
-        f"cost_usd={totals['cost_usd']}"
-    )
-    body = (
-        f"*Runs*: {len(runs)}\n"
-        f"*Total tokens*: {totals['total_tokens']}\n"
-        f"*Cost USD*: {totals['cost_usd']}\n"
-        "_Read-only best effort from explicit run metadata only._"
-    )
-    return SlackBlockMessage(
-        text=text,
-        blocks=(
-            {"type": "header", "text": {"type": "plain_text", "text": f"Usage on {board}"[:150]}},
-            *_mrkdwn_section_blocks(body),
-        ),
-    )
-
-
-def _read_only_denied_message(reason: str) -> SlackBlockMessage:
-    safe = _safe_slack_text(reason)
-    return SlackBlockMessage(
-        text=safe,
-        blocks=({"type": "section", "text": {"type": "mrkdwn", "text": f"*Denied*: {safe}"}},),
-    )
-
-
-def _ambiguous_query_message() -> SlackBlockMessage:
-    text = (
-        "Which read-only status did you mean? I can answer board summary, blocked tasks, "
-        "running tasks, usage, or node status; no task was created."
-    )
-    return SlackBlockMessage(
-        text=text,
-        blocks=(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "*Which read-only status did you mean?*\n"
-                        "Try: `board summary`, `blocked tasks`, `running tasks`, "
-                        "`usage`, or `node status`."
-                    ),
-                },
-            },
-        ),
-    )
-
-
-def _task_status_counts(tasks: Sequence[Task]) -> dict[str, int]:
-    counts = {"ready": 0, "running": 0, "blocked": 0, "done": 0, "other": 0}
-    for task in tasks:
-        if task.status in counts:
-            counts[task.status] += 1
-        else:
-            counts["other"] += 1
-    return counts
-
-
-def _usage_totals_from_runs(runs: Sequence[object]) -> dict[str, object]:
-    total_tokens = 0
-    has_tokens = False
-    cost_usd = 0.0
-    has_cost = False
-    for run in runs:
-        metadata = getattr(run, "metadata", None)
-        if not isinstance(metadata, Mapping):
-            continue
-        usage = _usage_mapping(metadata)
-        tokens = _int_from_mapping(usage, "total_tokens")
-        if tokens is not None:
-            total_tokens += tokens
-            has_tokens = True
-        cost = _float_from_mapping(usage, "cost_usd")
-        if cost is not None:
-            cost_usd += cost
-            has_cost = True
-    return {
-        "total_tokens": total_tokens if has_tokens else "unknown",
-        "cost_usd": round(cost_usd, 6) if has_cost else "unknown",
-    }
-
-
-def _usage_mapping(metadata: Mapping[str, object]) -> Mapping[str, object]:
-    for key in ("usage", "token_usage", "tokenUsage", "metrics"):
-        value = metadata.get(key)
-        if isinstance(value, Mapping):
-            return value
-    return metadata
-
-
-def _int_from_mapping(mapping: Mapping[str, object], key: str) -> int | None:
-    value = mapping.get(key)
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    return None
-
-
-def _float_from_mapping(mapping: Mapping[str, object], key: str) -> float | None:
-    value = mapping.get(key)
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int | float):
-        return float(value)
-    return None
-
-
-def _looks_like_control_command(lowered_text: str) -> bool:
-    first = lowered_text.split(maxsplit=1)[0] if lowered_text.split() else ""
-    return first in {"status", "approve", "abort", "killswitch", "confirm"}
-
-
-def _contains_prompt_injection(lowered_text: str) -> bool:
-    suspicious = (
-        "ignore previous",
-        "ignore all previous",
-        "bypass",
-        "without confirmation",
-        "no confirmation",
-        "silently create",
-        "force create",
-        "무시하고",
-        "확인 없이",
-    )
-    return _contains_any(lowered_text, suspicious)
-
-
-def _contains_any(text: str, needles: Sequence[str]) -> bool:
-    return any(needle in text for needle in needles)
 
 
 def _strip_intake_prefix(text: str) -> str:
@@ -3190,54 +2613,6 @@ def _build_intake_task_proposal(
     )
 
 
-def _build_intake_preview_blocks(
-    *,
-    proposal: SlackIntakeProposal,
-    confirmation_id: str,
-    ttl_seconds: int,
-) -> tuple[Mapping[str, object], ...]:
-    _ = (proposal, ttl_seconds)
-    return (
-        {
-            "type": "actions",
-            "block_id": "grove_intake_actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "task로 등록"},
-                    "style": "primary",
-                    "action_id": INTAKE_CONFIRM_ACTION_ID,
-                    "value": confirmation_id,
-                    "confirm": {
-                        "title": {"type": "plain_text", "text": "task 등록"},
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": "이 preview를 현재 grove board task로 등록할까요?",
-                        },
-                        "confirm": {"type": "plain_text", "text": "등록"},
-                        "deny": {"type": "plain_text", "text": "취소"},
-                    },
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "답만"},
-                    "action_id": INTAKE_ANSWER_ONLY_ACTION_ID,
-                    "value": confirmation_id,
-                    "confirm": {
-                        "title": {"type": "plain_text", "text": "task 생성 안 함"},
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": "이 preview를 폐기하고 답변만 하도록 처리할까요?",
-                        },
-                        "confirm": {"type": "plain_text", "text": "답만"},
-                        "deny": {"type": "plain_text", "text": "취소"},
-                    },
-                },
-            ],
-        },
-    )
-
-
 def _digest_reminder_notice_reason(*, task: Task, step: int, max_reminders: int) -> str:
     kind = "ask-human" if _needs_human(task) else "blocked"
     return _safe_slack_text(
@@ -3268,34 +2643,9 @@ def _task_slack_thread_ts(
 
 def _digest_config_status_text(config: SlackDigestConfig) -> str:
     return _safe_slack_text(
-        "Slack digest: "
-        f"enabled={config.enabled} dry_run={config.dry_run} "
+        f"digest status enabled={config.enabled} dry_run={config.dry_run} "
         f"reminders={config.reminder_enabled} interval={config.interval_seconds}s"
     )
-
-
-def _mrkdwn_section_blocks(text: str) -> tuple[Mapping[str, object], ...]:
-    remaining = text.strip()
-    blocks: list[Mapping[str, object]] = []
-    while remaining and len(blocks) < 4:
-        if len(remaining) <= 3000:
-            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": remaining}})
-            return tuple(blocks)
-        split = remaining.rfind("\n\n", 0, 3000)
-        if split <= 0:
-            split = remaining.rfind("\n", 0, 3000)
-        if split <= 0:
-            split = 3000
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": remaining[:split]}})
-        remaining = remaining[split:].lstrip()
-    if remaining:
-        blocks.append(
-            {
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": "Content was collapsed for Slack limits."}],
-            }
-        )
-    return tuple(blocks)
 
 
 def _decode_intake_proposal(args: tuple[str, ...]) -> SlackIntakeProposal | None:
@@ -3346,7 +2696,7 @@ def _decode_intake_proposal(args: tuple[str, ...]) -> SlackIntakeProposal | None
 def _safe_intake_title(value: str) -> str:
     title = _safe_slack_text(value).strip()
     if not title:
-        return "Slack intake"
+        return "slack-intake"
     return title[:120]
 
 

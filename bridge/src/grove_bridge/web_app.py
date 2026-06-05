@@ -33,10 +33,12 @@ from pydantic import BaseModel, Field, field_validator
 from grove_bridge.assistant import (
     AssistantActor,
     AssistantBroker,
+    AssistantContentBlocked,
     AssistantContext,
     AssistantLLMClient,
     AssistantScope,
     AssistantSurface,
+    AssistantTransportError,
     AssistantUnavailable,
 )
 from grove_bridge.auth import Account, DashboardRole
@@ -1377,11 +1379,11 @@ def create_app(
             raise HTTPException(status_code=400, detail=_safe_public_text(str(exc))) from exc
         return _decision_dispatch_payload(_store(request), result, project=project)
 
-    @app.post("/api/master/chat")
+    @app.post("/api/master/chat", response_model=None)
     def master_chat_endpoint(
         request: Request,
         payload: MasterChatPayload,
-    ) -> dict[str, object]:
+    ) -> dict[str, object] | Response:
         auth = _require_operator_state_change(
             request,
             detail="master chat requires operator role",
@@ -5783,7 +5785,7 @@ def _handle_master_chat_request(
     *,
     auth: AuthContext,
     project: ProjectContext,
-) -> dict[str, object]:
+) -> dict[str, object] | Response:
     context = _assistant_context(
         payload,
         auth=auth,
@@ -5792,14 +5794,20 @@ def _handle_master_chat_request(
     )
     try:
         response = _assistant_broker(request).handle_turn(payload.message, context)
-    except AssistantUnavailable as exc:
-        LOGGER.warning("event=master_chat_unavailable error=%s", _safe_log_text(exc))
+    except AssistantContentBlocked as exc:
+        LOGGER.warning("event=master_chat_content_blocked error=%s", _safe_log_text(exc))
+        return Response(status_code=204)
+    except AssistantTransportError as exc:
+        LOGGER.warning("event=master_chat_transport_unavailable error=%s", _safe_log_text(exc))
         raise HTTPException(status_code=503, detail="master chat is unavailable") from exc
+    except AssistantUnavailable as exc:
+        LOGGER.warning("event=master_chat_content_blocked error=%s", _safe_log_text(exc))
+        return Response(status_code=204)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=_safe_public_text(exc)) from exc
     except Exception as exc:
         LOGGER.warning("event=master_chat_error error=%s", _safe_log_text(exc))
-        raise HTTPException(status_code=503, detail="master chat is unavailable") from exc
+        raise HTTPException(status_code=500, detail="master chat failed") from exc
     _record_master_audit_events(
         _store(request),
         response,
