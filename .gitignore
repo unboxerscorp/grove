@@ -11,6 +11,8 @@ coverage/
 cache/
 .coverage
 bridge/.coverage
+/web/e2e/artifacts/
+/.claude/
 /cockpit.grove.yaml
 /fleet.yaml
 /grove.yaml

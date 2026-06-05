@@ -7558,6 +7558,41 @@ def test_slack_manifest_and_config_endpoints(tmp_path: Path) -> None:
     assert enabled_status.json()["intake"] == {"enabled": True}
 
 
+def test_slack_status_reports_fresh_runtime_socket_heartbeat(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    headers = auth_headers(client)
+    saved = client.post(
+        "/api/slack/config",
+        headers=headers,
+        json={
+            "app_token": "xapp-123456",
+            "bot_token": "xoxb-abcdef",
+            "default_channel": "C123",
+            "default_node": "grove-master",
+        },
+    )
+    runtime_path = tmp_path / ".grove" / "dev10" / "slack-runtime.json"
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "socket_connected": True,
+                "updated_at": int(time.time()),
+                "last_event_at": 12345,
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    status_response = client.get("/api/slack/config/status", headers=headers)
+
+    assert saved.status_code == 200
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "socket_connected"
+    assert status_response.json()["last_event_at"] == 12345
+    assert status_response.json()["tokens"]["default_node"] == "grove-master"
+
+
 def test_slack_threads_endpoint_lists_task_threads(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = store.create_task(board="main", title="Blocked", body=None, assignee="grove-qa")

@@ -3278,6 +3278,7 @@ def test_slack_main_connects_polls_and_closes_socket(
 ) -> None:
     config_path = tmp_path / "slack.json"
     board_db_path = tmp_path / "board.db"
+    runtime_status_path = tmp_path / "slack-runtime.json"
     SlackConfigStore(config_path).save(
         SlackConfig(
             app_token="xapp-main",
@@ -3306,6 +3307,7 @@ def test_slack_main_connects_polls_and_closes_socket(
             _ = response
 
     socket = FakeSocket()
+    runtime_statuses: list[dict[str, object]] = []
 
     def fake_slack_sdk_client(*, bot_token: str) -> FakeSlackClient:
         assert bot_token == "xoxb-main"
@@ -3326,6 +3328,7 @@ def test_slack_main_connects_polls_and_closes_socket(
 
     def stop_after_poll(seconds: float) -> None:
         assert seconds == 0.1
+        runtime_statuses.append(json.loads(runtime_status_path.read_text(encoding="utf-8")))
         raise KeyboardInterrupt
 
     monkeypatch.setattr(slack_module, "SlackSdkClient", fake_slack_sdk_client)
@@ -3340,6 +3343,8 @@ def test_slack_main_connects_polls_and_closes_socket(
                 str(config_path),
                 "--board-db-path",
                 str(board_db_path),
+                "--runtime-status-path",
+                str(runtime_status_path),
                 "--poll-interval",
                 "0.1",
             ]
@@ -3347,6 +3352,8 @@ def test_slack_main_connects_polls_and_closes_socket(
 
     assert socket.connected is True
     assert socket.closed is True
+    assert runtime_statuses[0]["socket_connected"] is True
+    assert json.loads(runtime_status_path.read_text(encoding="utf-8"))["socket_connected"] is False
 
 
 def test_slack_main_reconnects_disconnected_socket(

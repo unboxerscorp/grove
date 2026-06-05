@@ -36,6 +36,8 @@ from grove_bridge.store import SlackThread, SQLiteBoardStore, Task
 
 LOGGER = logging.getLogger(__name__)
 SLACK_CONFIG_PATH = Path("~/.grove/slack.json").expanduser()
+SLACK_RUNTIME_STATUS_FILENAME = "slack-runtime.json"
+SLACK_RUNTIME_STATUS_TTL_SECONDS = 30
 GROVE_CHAT_TIMEOUT_SECONDS = 120.0
 HUMAN_GATE_PENDING_TTL_SECONDS = 60
 HUMAN_GATE_MODE = "human_gate"
@@ -2264,8 +2266,68 @@ def config_status(
     config_path: Path = SLACK_CONFIG_PATH,
     *,
     intake_enabled: bool = False,
+    runtime_status_path: Path | None = None,
 ) -> dict[str, object]:
-    return FakeStatusProbe(config_path=config_path, intake_enabled=intake_enabled).status()
+    runtime_status = _fresh_slack_runtime_status(runtime_status_path)
+    return FakeStatusProbe(
+        config_path=config_path,
+        socket_connected=bool(runtime_status.get("socket_connected")),
+        last_event_at=cast(int | None, runtime_status.get("last_event_at")),
+        last_error=cast(str | None, runtime_status.get("last_error")),
+        intake_enabled=intake_enabled,
+    ).status()
+
+
+def slack_runtime_status_path(grove_home: Path, session: str) -> Path:
+    return grove_home.expanduser() / session / SLACK_RUNTIME_STATUS_FILENAME
+
+
+def _fresh_slack_runtime_status(path: Path | None) -> dict[str, object]:
+    if path is None:
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(loaded, Mapping):
+        return {}
+    updated_at = loaded.get("updated_at")
+    if not isinstance(updated_at, (int, float)) or isinstance(updated_at, bool):
+        return {}
+    if time.time() - float(updated_at) > SLACK_RUNTIME_STATUS_TTL_SECONDS:
+        return {}
+    runtime: dict[str, object] = {}
+    if loaded.get("socket_connected") is True:
+        runtime["socket_connected"] = True
+    last_event_at = loaded.get("last_event_at")
+    if isinstance(last_event_at, int) and not isinstance(last_event_at, bool):
+        runtime["last_event_at"] = last_event_at
+    last_error = loaded.get("last_error")
+    if isinstance(last_error, str) and last_error:
+        runtime["last_error"] = redact_secret_text(last_error)
+    return runtime
+
+
+def _write_slack_runtime_status(
+    path: Path,
+    *,
+    socket_connected: bool,
+    last_event_at: int | None = None,
+    last_error: str | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "socket_connected": socket_connected,
+        "updated_at": int(time.time()),
+        "pid": os.getpid(),
+    }
+    if last_event_at is not None:
+        payload["last_event_at"] = last_event_at
+    if last_error:
+        payload["last_error"] = redact_secret_text(last_error)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(f"{json.dumps(payload, sort_keys=True)}\n", encoding="utf-8")
+    temp_path.replace(path)
 
 
 def mask_token(value: str) -> str:
@@ -2361,6 +2423,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=Path(os.environ.get("GROVE_HOME", "~/.grove")).expanduser(),
     )
     parser.add_argument("--session", default=os.environ.get("GROVE_VIEWER_SESSION", "dev10"))
+    parser.add_argument("--runtime-status-path", type=Path)
     args = parser.parse_args(argv)
 
     config = SlackConfigStore(args.config_path).load()
@@ -2412,15 +2475,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         route_chat_to_node=args.route_chat_to_node,
     )
     socket_client = _build_socket_client(config=config, connector=connector)
+    runtime_status_path = args.runtime_status_path or slack_runtime_status_path(
+        args.grove_home,
+        args.session,
+    )
     socket_client.connect()
     try:
         while True:
+            last_error: str | None = None
             if not _socket_is_connected(socket_client):
                 LOGGER.warning("Slack socket disconnected; reconnecting")
                 try:
                     socket_client.connect()
                 except Exception as exc:
-                    LOGGER.warning("Slack socket reconnect failed: %s", _safe_log_error(exc))
+                    last_error = _safe_log_error(exc)
+                    LOGGER.warning("Slack socket reconnect failed: %s", last_error)
+            _write_slack_runtime_status(
+                runtime_status_path,
+                socket_connected=_socket_is_connected(socket_client),
+                last_error=last_error,
+            )
             connector.poll_human_gates()
             try:
                 connector.poll_digest()
@@ -2428,6 +2502,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 LOGGER.warning("Slack digest poll failed: %s", _safe_log_error(exc))
             time.sleep(args.poll_interval)
     finally:
+        _write_slack_runtime_status(runtime_status_path, socket_connected=False)
         socket_client.close()
 
 

@@ -54,6 +54,7 @@ from grove_bridge.slack import (
     SlackConfigStore,
     config_status,
     slack_manifest,
+    slack_runtime_status_path,
 )
 from grove_bridge.store import (
     DECISION_QUORUM,
@@ -2332,6 +2333,10 @@ def create_app(
                 _store(request),
                 project=project,
                 feature="intake",
+            ),
+            runtime_status_path=slack_runtime_status_path(
+                project.config.grove_home,
+                project.config.registry_session,
             ),
         )
 
