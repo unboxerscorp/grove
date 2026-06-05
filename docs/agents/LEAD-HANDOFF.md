@@ -6,15 +6,15 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
-- 2026-06-06 02:20 KST 기준 최신 live 운영:
+- 2026-06-06 02:30 KST 기준 최신 live 운영:
   - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
   - 단일 tmux 세션 `dev10`만 사용한다. panes: `dev10:0.0 grove-master`, `dev10:1.0 web`, `dev10:2.0 slack`, `dev10:3.0 advisor`.
   - web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`로 실행한다. 명령은 `0.0.0.0:8765`, `--unsafe-bind`, `--enable-node-input`, `--enable-intake`, `--allow-host 100.100.90.87,192.168.1.186`를 포함한다.
-  - 원격 접속 URL은 tailnet `http://100.100.90.87:8765`, LAN `http://192.168.1.186:8765`이다. remote terminal은 tailnet URL에서 실제 Chrome smoke로 `.dr-conn is-live`와 xterm 렌더를 확인했다. `~/.grove/dev10/web.json`도 `allowed_hosts`와 `remote_urls`를 노출한다.
+  - 원격 접속 URL은 tailnet `http://100.100.90.87:8765`, LAN `http://192.168.1.186:8765`이다. remote terminal은 tailnet URL에서 실제 Chrome smoke로 `.dr-conn is-live`, xterm 렌더, 기본 선택 `grove-master`/`dev10:0.0`을 확인했다. `~/.grove/dev10/web.json`도 `allowed_hosts`와 `remote_urls`를 노출한다.
   - Slack은 `dev10:2.0`에서 `/Users/chopin/.grove/dev10/run-slack-loop.sh`로 실행한다. `/api/slack/config/status`는 `socket_connected`, `~/.grove/dev10/slack-runtime.json` heartbeat가 갱신된다.
   - advisor는 `dev10:3.0`의 Claude 노드이며 약 5분마다 `grove-master`를 점검한다. 사용자가 명시 중단하기 전까지 루프를 멈추지 않는다.
   - `/api/projects`는 `dev10` 하나만 반환해야 한다. `/api/org`의 `default_assignee`와 `master_org.project_master.name`은 `grove-master`여야 하며 advisor가 default가 되면 회귀다.
-  - 최신 main HEAD는 `5dec69d fix: expose remote web companion urls`이다.
+  - 최신 main HEAD는 `7100279 fix: prefer master terminal by default`이다.
   - 최신 검증: `pnpm check` green, remote terminal ticket 200, Slack `socket_connected`, heartbeat fresh, tailnet browser terminal smoke green.
 - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
 - 앞으로 기본 운영은 `dev10` tmux 하나를 쓴다. 현재 서비스 창은 `dev10:1.0 web`, `dev10:2.0 slack`이다.
@@ -45,6 +45,7 @@
 최근 완료된 안정화:
 
 - `5dec69d fix: expose remote web companion urls`: `~/.grove/dev10/web.json`에 `allowed_hosts`와 `remote_urls`를 기록해 remote/headless 접속 정보를 노드가 직접 확인할 수 있게 했다.
+- `7100279 fix: prefer master terminal by default`: terminal view 첫 진입 시 raw node 배열 순서가 아니라 `grove-master`/lead/root 우선순위로 기본 pane을 선택한다.
 - `407c84e docs: refresh live dev10 handoff`: live dev10 운영 상태를 문서화했다.
 - `c5a037a fix: keep grove master as default assignee`: advisor가 생겨도 `/api/org` default assignee는 `grove-master`로 유지한다.
 - `3e9e739 fix: report live slack socket heartbeat`: Slack socket heartbeat를 runtime 파일로 기록하고 `/api/slack/config/status`에 반영한다.
