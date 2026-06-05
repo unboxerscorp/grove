@@ -753,7 +753,6 @@ const KO: Dict = {
   "mchat.master": "마스터",
   "mchat.error": "전송 실패",
   "mchat.retry": "다시 시도",
-  "mchat.unavailable": "마스터 채팅 백엔드는 준비 중입니다 — 곧 사용할 수 있어요.",
 };
 
 const EN: Dict = {
@@ -1499,7 +1498,6 @@ const EN: Dict = {
   "mchat.master": "Master",
   "mchat.error": "Send failed",
   "mchat.retry": "Retry",
-  "mchat.unavailable": "Master chat backend is being set up — available soon.",
 };
 
 const STRINGS: Record<Lang, Dict> = { ko: KO, en: EN };

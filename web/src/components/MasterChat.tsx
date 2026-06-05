@@ -7,10 +7,11 @@
 // operator-only: viewers (team read-only members) never see the launcher — the
 // component renders null for them, mirroring grove's operator-gated controls.
 //
-// Backend (POST /api/master/chat) is still being built in grove-master / grove-py.
-// api.ts throws `… HTTP 404/501/503` while it's unavailable; we map those to a
-// graceful "not yet available" notice and surface any other failure as a
-// retryable error bubble. Messages follow the persisted live-update contract
+// Backend (POST /api/master/chat) is served by grove-py. A transport failure that
+// still has an assistant fallback comes back as a normal answer (answer.text =
+// ASSISTANT_TRANSPORT_FALLBACK_TEXT) and renders like any reply; a hard failure
+// (503/204) just marks the message retryable — the FE never authors its own
+// "backend unavailable" notice. Messages follow the persisted live-update contract
 // (per ~/dev/notion-slack-sync-server): each is keyed by `id` and upserted in
 // place, with a pending -> sent lifecycle. A reply may arrive as a `pending`
 // placeholder and resolve later — a future GET poll / SSE would drive those
@@ -66,19 +67,11 @@ function normalize(dto: MasterChatMessage): ChatMessage {
   };
 }
 
-// HTTP statuses that mean master chat (or its history GET) isn't available →
-// render a graceful notice instead of a scary error. 405 = GET history is a
-// POST-only route. Parsed from api.ts's `… HTTP <code>`.
-const UNAVAILABLE = new Set([404, 405, 501, 503]);
-function statusOf(e: unknown): number | null {
-  const m = e instanceof Error ? e.message : "";
-  const hit = m.match(/HTTP (\d{3})/);
-  return hit ? Number(hit[1]) : null;
-}
-function isUnavailable(e: unknown): boolean {
-  const s = statusOf(e);
-  return s !== null && UNAVAILABLE.has(s);
-}
+// Transport failure is NOT surfaced as a FE-authored "backend unavailable" notice
+// (that would be non-LLM dev text). The unified backend returns its own one-line
+// assistant fallback (ASSISTANT_TRANSPORT_FALLBACK_TEXT) as a normal answer — the
+// FE just renders answer.text. A hard failure with no LLM text (503/204) shows
+// nothing extra beyond the message's retryable error affordance.
 
 // ── presentational pieces ──────────────────────────────────────────────────────
 function ChatIcon() {
@@ -194,7 +187,6 @@ export function MasterChat(props: { openSignal?: number } = {}) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [unread, setUnread] = useState(0);
-  const [unavailable, setUnavailable] = useState(false);
 
   const mounted = useRef(true);
   const listEnd = useRef<HTMLDivElement | null>(null);
@@ -261,7 +253,6 @@ export function MasterChat(props: { openSignal?: number } = {}) {
       .getMasterChatHistory()
       .then((h) => {
         if (!mounted.current) return;
-        setUnavailable(false);
         if (h.messages.length) setMessages((prev) => (prev.length ? prev : h.messages.map(normalize)));
       })
       .catch(() => {
@@ -300,7 +291,6 @@ export function MasterChat(props: { openSignal?: number } = {}) {
         .sendMasterChat(trimmed, clientId, conversationId.current)
         .then((res) => {
           if (!mounted.current) return;
-          setUnavailable(false);
           conversationId.current = res.conversation_id || conversationId.current;
           const replyText = masterReplyText(res);
           if (replyText) {
@@ -321,10 +311,11 @@ export function MasterChat(props: { openSignal?: number } = {}) {
             upsert({ id: clientId, role: "user", text: trimmed, ts, status: "error" });
           }
         })
-        .catch((e) => {
+        .catch(() => {
           if (!mounted.current) return;
+          // Transport failed (503/204/network): mark the exchange retryable. No
+          // FE-authored "unavailable" notice — the backend owns any fallback text.
           upsert({ id: clientId, role: "user", text: trimmed, ts, status: "error" });
-          if (isUnavailable(e)) setUnavailable(true);
         })
         .finally(() => mounted.current && setBusy(false));
     },
@@ -384,8 +375,7 @@ export function MasterChat(props: { openSignal?: number } = {}) {
           </header>
 
           <div className="dr-mchat__list">
-            {unavailable && <p className="dr-mchat__notice">{t("mchat.unavailable")}</p>}
-            {empty && !unavailable && <p className="dr-mchat__empty">{t("mchat.empty")}</p>}
+            {empty && <p className="dr-mchat__empty">{t("mchat.empty")}</p>}
             {messages.map((m) => (
               <MessageBubble key={m.id} msg={m} lang={lang} t={t} onRetry={onRetry} />
             ))}

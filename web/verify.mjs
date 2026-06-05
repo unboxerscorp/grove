@@ -3211,6 +3211,51 @@ async function main() {
       };
     });
 
+    // transport fallback: the unified backend returns its one-line assistant
+    // fallback as a NORMAL 200 answer (answer.text) — rendered like any reply, not
+    // a FE-authored notice.
+    await mpage.evaluate(() => window.__MOCK__.setMasterTransportBusy(true));
+    await mpage.type(".dr-mchat__input", "status while busy");
+    await mpage.keyboard.press("Enter");
+    await mpage.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble')).some((b) =>
+          /잠시 뒤 다시 시도/.test(b.textContent ?? ""),
+        ),
+      { timeout: 5000 },
+    );
+    const mchatFallback = await mpage.evaluate(() => ({
+      shownAsAnswer: Array.from(
+        document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble'),
+      ).some((b) => /잠시 뒤 다시 시도/.test(b.textContent ?? "")),
+      noNotice: !document.querySelector(".dr-mchat__notice"),
+    }));
+    await mpage.evaluate(() => window.__MOCK__.setMasterTransportBusy(false));
+
+    // hard transport death (503 {detail}): NO FE "준비 중"/"unavailable" notice; the
+    // message just becomes retryable (the only allowed transport affordance).
+    await mpage.evaluate(() => window.__MOCK__.setMasterChatEnabled(false));
+    await mpage.type(".dr-mchat__input", "ping after death");
+    await mpage.keyboard.press("Enter");
+    await mpage.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('.dr-mchat__row[data-role="user"]')).some(
+          (r) => r.getAttribute("data-status") === "error",
+        ),
+      { timeout: 5000 },
+    );
+    const mchat503 = await mpage.evaluate(() => {
+      const panelText = document.querySelector(".dr-mchat__panel")?.textContent ?? "";
+      return {
+        noNotice: !document.querySelector(".dr-mchat__notice"),
+        noDevText: !/준비 중|being set up|available soon/.test(panelText),
+        userError: Array.from(document.querySelectorAll('.dr-mchat__row[data-role="user"]')).some(
+          (r) => r.getAttribute("data-status") === "error",
+        ),
+      };
+    });
+    await mpage.evaluate(() => window.__MOCK__.setMasterChatEnabled(true));
+
     // v1.29 cross-project org (task_c2fda5b7): the GROVE MASTER root in the org
     // chart opens the floating chat via the safe custom event, and a non-current
     // project-lead chip switches the active project (onSwitchProject -> switchProject).
@@ -3255,6 +3300,8 @@ async function main() {
       },
       preview: mchatPreview,
       denied: mchatDenied,
+      fallback: mchatFallback,
+      hard503: mchat503,
       masterRootOpensChat,
       leadSwitch: { target: pleadTarget, from: projBeforePlead, to: projAfterPlead, switched: leadSwitchesProject },
       viewerHidden: mchatViewerHidden,
@@ -3272,6 +3319,11 @@ async function main() {
       mchat.preview.hasProposal &&
       mchat.denied.llmShown &&
       mchat.denied.gateHidden &&
+      mchat.fallback.shownAsAnswer &&
+      mchat.fallback.noNotice &&
+      mchat.hard503.noNotice &&
+      mchat.hard503.noDevText &&
+      mchat.hard503.userError &&
       mchat.masterRootOpensChat &&
       mchat.leadSwitch.switched &&
       mchat.viewerHidden &&

@@ -558,11 +558,20 @@ diag.setViewer = (on: boolean): void => {
 // MasterChatResponse (response_type answer|preview|denied + answer/proposal/
 // operator_gate); the history GET is unimplemented (POST-only route) -> 405, which
 // the FE treats as "no history". default ON so the floating widget is demoable;
-// diag.setMasterChatEnabled(false) -> 503 reproduces the graceful unavailable
-// notice; viewer POST -> 403 (operator-only).
+// diag.setMasterChatEnabled(false) -> 503 {detail} (hard transport death, no LLM
+// text); viewer POST -> 403 (operator-only).
 let masterChatEnabled = true;
 diag.setMasterChatEnabled = (on: boolean): void => {
   masterChatEnabled = on;
+};
+
+// The unified backend's transport fallback (assistant.py ASSISTANT_TRANSPORT_FALLBACK_TEXT):
+// a NORMAL 200 answer whose answer.text carries the one-line assistant fallback —
+// NOT a 503. diag.setMasterTransportBusy(true) reproduces it for verify.
+const MOCK_TRANSPORT_FALLBACK_TEXT = "지금은 답변을 만들 수 없어요. 잠시 뒤 다시 시도해 주세요.";
+let masterTransportBusy = false;
+diag.setMasterTransportBusy = (on: boolean): void => {
+  masterTransportBusy = on;
 };
 let masterSeq = 0;
 
@@ -1809,6 +1818,25 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const requestId = body.request_id || `req-${masterSeq}`;
       diag.masterChatSent = ((diag.masterChatSent as number) ?? 0) + 1;
       diag.masterChatOrigin = body.origin_surface ?? "";
+      // Transport fallback (unified backend): a NORMAL 200 answer carrying the
+      // one-line assistant fallback in answer.text — the FE renders it like any
+      // reply (no FE-authored "unavailable" notice).
+      if (masterTransportBusy) {
+        return Promise.resolve(
+          json({
+            conversation_id: conversationId,
+            request_id: requestId,
+            response_type: "answer",
+            classification: "question",
+            answer: { text: MOCK_TRANSPORT_FALLBACK_TEXT, metadata: { mode: "transport_fallback" } },
+            proposal: null,
+            feedback_route: "general",
+            operator_gate: null,
+            requires_confirmation: false,
+            audit_events: [],
+          }),
+        );
+      }
       // Deterministic classification: deploy/destructive -> denied (operator gate);
       // add/create/build -> preview (proposal + requires_confirmation); else answer.
       const lower = message.toLowerCase();
