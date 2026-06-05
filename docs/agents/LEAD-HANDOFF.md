@@ -6,17 +6,17 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
-- 2026-06-06 02:53 KST 기준 최신 live 운영:
+- 2026-06-06 04:09 KST 기준 최신 live 운영:
   - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
   - 단일 tmux 세션 `dev10`만 사용한다. panes: `dev10:0.0 grove-master`, `dev10:1.0 web`, `dev10:2.0 slack`, `dev10:3.0 advisor`.
   - web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`로 실행한다. 명령은 `0.0.0.0:8765`, `--unsafe-bind`, `--enable-node-input`, `--enable-intake`, `--allow-host 100.100.90.87,192.168.1.186`를 포함한다.
   - 원격 접속 URL은 tailnet `http://100.100.90.87:8765`, LAN `http://192.168.1.186:8765`이다. remote terminal은 tailnet URL에서 실제 Chrome smoke로 `.dr-conn is-live`, xterm 렌더, 기본 선택 `grove-master`/`dev10:0.0`을 확인했다. `~/.grove/dev10/web.json`도 `allowed_hosts`와 `remote_urls`를 노출한다.
-  - Slack은 `dev10:2.0`에서 `/Users/chopin/.grove/dev10/run-slack-loop.sh`로 실행한다. `/api/slack/config/status`는 `socket_connected`, `~/.grove/dev10/slack-runtime.json` heartbeat가 갱신된다. 2026-06-06 03:51 KST 기준 Slack pane을 `dev10:2.0`에 복구했고 runtime pid는 `79225`이다.
+  - Slack은 `dev10:2.0`에서 `/Users/chopin/.grove/dev10/run-slack-loop.sh`로 실행한다. `/api/slack/config/status`는 `socket_connected`, `~/.grove/dev10/slack-runtime.json` heartbeat가 갱신된다. 2026-06-06 04:08 KST 기준 Slack pane은 `dev10:2.0`, runtime pid는 `84491`, heartbeat fresh이다.
   - advisor는 `dev10:3.0`의 Claude 노드이며 약 5분마다 `grove-master`를 점검한다. 사용자가 명시 중단하기 전까지 루프를 멈추지 않는다.
   - `/api/projects`는 `dev10` 하나만 반환해야 한다. `/api/boards`는 프로젝트 헤더가 없어도 현재 active project board만 반환해야 하며, 과거 `p2-test` 같은 stale board가 섞이면 회귀다. `/api/org`의 `default_assignee`와 `master_org.project_master.name`은 `grove-master`여야 하며 advisor가 default가 되면 회귀다.
   - `~/.grove/boards/board.db`의 stale `p2-test` board/task 찌꺼기는 삭제했다. 삭제 전 백업은 `~/.grove/boards/board.db.bak.pre-p2-cleanup-1780682270`이다. 이후 DB 전체 `tasks=0`, live `/api/boards/default/tasks=[]`, `/api/inbox.total=0`을 확인했다.
-  - 최신 product-code 커밋은 `277964c fix: keep Slack human decision copy item-focused`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
-  - 최신 검증: `pnpm check` green, `web npm run build && npm run verify` green, remote terminal ticket/WS frame 200, Slack `socket_connected`, heartbeat fresh, tailnet browser terminal smoke green.
+  - 최신 product-code 커밋은 `a5305b6 fix: match tmux pane liveness exactly`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
+  - 최신 검증: `pnpm check` green(TS/Vitest 54 files 286 tests, bridge pytest 443 passed), `pnpm build`로 live `dist/cli.js` 반영, live web 재배포 health 200, `/api/org`와 `grove org --json` 모두 nodes 4개 active/running 및 pane live, Slack `socket_connected`, heartbeat fresh.
 - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
 - 앞으로 기본 운영은 `dev10` tmux 하나를 쓴다. 현재 서비스 창은 `dev10:1.0 web`, `dev10:2.0 slack`이다.
 - 프로젝트 ID와 host tmux 세션은 분리됐다. web 프로젝트 생성은 `grove new-project --tmux-session dev10`로 새 프로젝트 registry를 만들고 pane은 `dev10`에 둔다.
@@ -26,7 +26,7 @@
 - 2026-06-05 23:06 KST 기준 모든 board의 `task_count=0`, `/api/boards/default/tasks == []`이다. 웹 보드는 "피드백 및 할 일" / "사람 판단 필요" 두 목록만 기본 노출한다.
 - 노드 간 통신은 직접 대화, tmux capture/send, CLI ask/send 등 각 노드 판단에 맡긴다.
 - 조직도 변경은 사람 소유다. GUI/API/CLI에서 명시 operator 경로(`--operator`, `--operator-override`)로만 수행한다.
-- 모든 노드는 조직도, 역할, tmux pane, cwd를 볼 수 있어야 한다. `grove org --json`과 `/api/org`가 이 필드를 노출한다.
+- 모든 노드는 조직도, 역할, tmux pane, cwd를 볼 수 있어야 한다. `grove org --json`과 `/api/org`가 이 필드를 노출한다. tmux pane liveness는 `list-panes`의 canonical `session:window.pane` 목록과 완전 일치로 검증한다. missing pane은 CLI에서 `pane_exists:false/status:pane-missing`, web API에서 `status:dead/unavailable_reason:"tmux pane missing"`으로 보여야 한다.
 - 2026-06-05 23:12 KST 기준 `/opt/homebrew/bin/grove -> /Users/chopin/dev/grove/dist/cli.js` symlink를 생성했다. 새 셸에서 `grove org --json`이 바로 동작한다.
 - web 기본 sidebar는 `목록`, `Team`, `터미널`, `Slack integration`, `Connect`, `Inbox`, `Audit`, `Setup`만 노출한다. 구형 execution/cost/ledger/aggregation/handoff/routing/chain 표면은 기본 UI에서 제거됐다.
 - 터미널 탭은 선택 pane이 없으면 첫 viewable pane에 자동 연결한다. 2026-06-05 23:19 KST 장애 원인=첫 방문 onboarding overlay가 실제 클릭을 가로막음. 수정=onboarding은 수동 튜토리얼 버튼으로만 열림. live 검증: 실제 Chrome 클릭으로 `터미널` 탭 진입, `/api/ws-ticket` terminal ticket 200, `/ws/terminal` frame 수신, xterm text 렌더 확인.
@@ -41,10 +41,13 @@
 - watchdog/executor OFF 유지(멀티리뷰+사용자 승인 전 실가동 금지).
 - 과거 handoff에는 lead가 통합만 맡는 운영 제한이 있었다. 현재 사용자는 필요하면 master가 직접 작업해도 된다고 정정했다.
 
-## 1. 현재 product-code = 277964c (트리 클린)
+## 1. 현재 product-code = a5305b6 (트리 클린)
 
 최근 완료된 안정화:
 
+- `a5305b6 fix: match tmux pane liveness exactly`: tmux target fuzzy matching 때문에 `dev10:2.0`이 없어도 `display-message`가 `dev10:1.0`을 반환하던 오인을 제거했다. CLI/bridge 모두 `tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}"` 결과와 완전 일치로 pane 존재를 판단한다. `pnpm check` green, live CLI build 및 web 재배포 완료.
+- `bd9d6f7 fix: detect missing tmux panes in org views`: registry node가 active여도 실제 tmux pane이 사라지면 `grove org`와 `/api/org`/`/api/nodes`에서 missing 상태로 노출한다. advisor가 제기한 "node-count로 pane 소실 감지 불가" 리스크를 닫기 위한 1차 fix였고, 이후 `a5305b6`에서 fuzzy matching까지 교정했다.
+- `0f0ae07 fix: describe Slack intake as human-facing item`: Slack intake preview/confirm/denial/audit copy를 `task`가 아니라 사람용 item 생성으로 정렬했다. live Slack은 pid `84491`로 재시작되어 해당 코드가 반영됐다.
 - `277964c fix: keep Slack human decision copy item-focused`: Slack 사람 판단 필요 안내에서 `task unblock` copy와 completed notice reason의 `task_unblocked` 표현을 제거하고, 사람 판단 항목에 답변을 남기는 copy로 정리했다. `tests/test_slack.py`에 회귀 가드를 추가했고 `pnpm check` green. live Slack은 코드 반영을 위해 재시작했고 `dev10:2.0` pane 복구, pid `79225`, `socket_connected`, heartbeat fresh를 확인했다.
 - `6a23595 fix: keep inbox answer copy item-focused`: Decision inbox 답변 UI와 `/api/inbox.answer` metadata에서 `unblock task/board events` 중심 copy를 제거하고, 사람 판단 항목에 답변을 남기는 모델로 정리했다. web verify와 bridge pytest에 회귀 가드를 추가했고, live web 재배포 후 health 200, Slack heartbeat, dev10-only project/board, terminal WS frame 수신을 확인했다.
 - `23fca58 fix: describe delegate as human-facing item`: `grove delegate` CLI/help/error/warning/test copy를 node-to-node delegated task가 아니라 사람용 TODO/feedback item 생성으로 정렬했다. `pnpm check` green.
