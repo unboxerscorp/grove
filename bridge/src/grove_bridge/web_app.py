@@ -6062,11 +6062,14 @@ def _node_routed_target_available(config: WebAppConfig, client: AssistantLLMClie
     target = client.node_name.strip()
     if not target:
         return False
-    configs = [config]
-    if config.registry_session != ".master":
-        configs.append(replace(config, registry_session=".master"))
-    for candidate_config in configs:
-        for node in _registry_node_records(candidate_config):
+    candidate_sessions = [config.registry_session, *_project_registry_names(config), ".master"]
+    for session in dict.fromkeys(candidate_sessions):
+        candidate_config = replace(config, registry_session=session)
+        try:
+            nodes = _registry_node_records(candidate_config)
+        except HTTPException:
+            continue
+        for node in nodes:
             if node["name"] == target and node["terminal_allowed"]:
                 return True
     return False

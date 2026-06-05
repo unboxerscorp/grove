@@ -2651,6 +2651,71 @@ def test_master_chat_node_routed_allows_live_registry_target(tmp_path: Path) -> 
     assert len(calls) == 1
 
 
+def test_master_chat_node_routed_allows_master_from_visible_project(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "grove-master": {
+                "name": "grove-master",
+                "agent": "codex",
+                "tmux_pane": "dev10:0.0",
+                "status": "active",
+            }
+        },
+    )
+    write_registry(
+        tmp_path,
+        "p2-test",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "claude",
+                "status": "external",
+                "kind": "meta",
+            }
+        },
+    )
+
+    def runner(
+        args: Sequence[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+        cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        _ = (capture_output, text, timeout, check, cwd)
+        command = list(args)
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="MASTER answer from visible dev10 node",
+            stderr="",
+        )
+
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        assistant_client=NodeRoutedAssistantClient(cli_path=tmp_path / "cli.js", runner=runner),
+    )
+
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client) | {"X-Grove-Project": "p2-test"},
+        json={"message": "What is your capability?"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["answer"]["text"] == "MASTER answer from visible dev10 node"
+    assert len(calls) == 1
+
+
 def test_master_chat_busy_assistant_node_returns_retry_answer(tmp_path: Path) -> None:
     client = make_client(
         tmp_path,
