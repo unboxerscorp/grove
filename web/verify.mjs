@@ -95,6 +95,7 @@ async function coreMain() {
         hasFreeChat: /자유 대화|free-form|GROVE MASTER/.test(text),
         hasFeedback: /feedback|피드백/.test(text),
         noOldTaskPreview: !/bug: <|task: <|task preview|board task|role checks|gates/i.test(text),
+        noReadOnlyCopy: !/(read-only|읽기 전용)/i.test(text),
       };
     });
 
@@ -121,6 +122,7 @@ async function coreMain() {
       slackGuide.hasFreeChat &&
       slackGuide.hasFeedback &&
       slackGuide.noOldTaskPreview &&
+      slackGuide.noReadOnlyCopy &&
       /사람용|Human/i.test(board.title) &&
       board.lists.length === 2 &&
       board.noStatusFilters &&
