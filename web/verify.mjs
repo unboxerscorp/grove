@@ -108,7 +108,7 @@ async function coreMain() {
       sidebar.visibleViewsOk &&
       sidebar.hiddenViewsAbsent &&
       sidebar.drawersOk &&
-      terminal.name.length > 0 &&
+      terminal.name === "root" &&
       /terminal/.test(terminal.ticketKind) &&
       /ws\/terminal/.test(terminal.wsUrl) &&
       terminal.chars > 0 &&

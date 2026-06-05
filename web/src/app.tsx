@@ -61,6 +61,25 @@ function scrubJoinFromUrl(): void {
   }
 }
 
+function terminalCandidate(node: GroveNode): boolean {
+  return node.terminal_allowed !== false && Boolean(node.tmux_pane);
+}
+
+function terminalPriority(node: GroveNode): number {
+  if (node.name === "grove-master") return 0;
+  if (node.name === "lead") return 1;
+  if (node.name.startsWith("lead@")) return 2;
+  if (!node.parent) return 3;
+  if (node.name === "root") return 4;
+  return 5;
+}
+
+function preferredTerminalPane(nodes: GroveNode[]): string | null {
+  const candidates = nodes.filter(terminalCandidate);
+  candidates.sort((a, b) => terminalPriority(a) - terminalPriority(b));
+  return candidates[0]?.tmux_pane ?? null;
+}
+
 // Left-sidebar navigation. v2 keeps the operator surface focused on the live
 // cockpit: human lists, org, terminal, Slack/master chat, SSH/share, audit, setup.
 // Older analytics/execution/cross-room panels remain routable for compatibility,
@@ -374,17 +393,14 @@ export function App() {
     () => nodes.find((n) => n.tmux_pane === selectedPane) ?? null,
     [nodes, selectedPane],
   );
-  const firstTerminalPane = useMemo(
-    () => nodes.find((n) => n.terminal_allowed !== false && n.tmux_pane)?.tmux_pane ?? null,
-    [nodes],
-  );
+  const defaultTerminalPane = useMemo(() => preferredTerminalPane(nodes), [nodes]);
   const liveCount = nodes.filter((n) => n.status === "running").length;
 
   useEffect(() => {
     if (view !== "terminal") return;
     if (selected && selected.terminal_allowed !== false) return;
-    if (firstTerminalPane && firstTerminalPane !== selectedPane) setSelectedPane(firstTerminalPane);
-  }, [firstTerminalPane, selected, selectedPane, view]);
+    if (defaultTerminalPane && defaultTerminalPane !== selectedPane) setSelectedPane(defaultTerminalPane);
+  }, [defaultTerminalPane, selected, selectedPane, view]);
 
   const pickNode = (pane: string) => {
     setSelectedPane(pane);
