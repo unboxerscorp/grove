@@ -78,13 +78,14 @@ class ContentBlockedAssistantLLMClient:
         self.texts = [
             "PR1 cannot do action handoff yet.",
             "PR3 routing still cannot do it.",
+            "요청을 확인 카드로 만들 수 없어요. 내용을 조금 더 구체적으로 알려주세요.",
         ]
 
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         _ = (system_prompt, user_prompt)
         if self.texts:
             return self.texts.pop(0)
-        return "classifier routing handoff"
+        return "요청을 확인 카드로 만들 수 없어요. 내용을 조금 더 구체적으로 알려주세요."
 
 
 def payload_contains_number(value: object, needle: int | float) -> bool:
@@ -1159,10 +1160,13 @@ def test_project_header_scopes_status_org_nodes_boards_and_tasks(tmp_path: Path)
     assert status.status_code == 200
     assert status.json()["project"] == "dev11"
     assert org.json()["session"] == "dev11"
-    assert [node["name"] for node in org.json()["nodes"]] == ["lead", "worker"]
-    assert org.json()["nodes"][0]["status"] == "external"
+    org_nodes = {node["name"]: node for node in org.json()["nodes"]}
+    assert org.json()["roots"] == ["grove-master"]
+    assert set(org_nodes) == {"grove-master", "lead@dev10", "lead@dev11", "worker"}
+    assert org_nodes["lead@dev11"]["status"] == "external"
+    assert org_nodes["lead@dev11"]["children"] == ["worker"]
+    assert org_nodes["worker"]["parent"] == "lead@dev11"
     assert [node["name"] for node in nodes.json()] == ["lead", "worker"]
-    assert {node["name"] for node in nodes.json()} == {node["name"] for node in org.json()["nodes"]}
     assert boards.json() == [{"id": "dev11", "name": "dev11", "task_count": 1}]
     assert [task["id"] for task in tasks.json()] == [dev11_task.id]
     assert dev10_task.id not in str(tasks.json())
@@ -2032,6 +2036,81 @@ def test_master_chat_action_preview_confirm_records_decision_only(
     assert len(store.list_decision_proposals(board="dev10")) == 1
 
 
+def test_master_chat_action_spec_failure_falls_back_to_preview_not_empty_204(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        assistant_client=SequenceAssistantLLMClient(
+            "I will make a node, not JSON.",
+            "리뷰어 노드를 만들까요? `confirm {confirmation_id}`",
+        ),
+    )
+
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={
+            "message": "리뷰어 노드 만들어줘",
+            "conversation_id": "conv-node",
+            "request_id": "req-node",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    confirmation_id = payload["proposal"]["proposal_id"]
+    assert payload["response_type"] == "preview"
+    assert payload["requires_confirmation"] is True
+    assert payload["answer"]["text"] == f"리뷰어 노드를 만들까요? `confirm {confirmation_id}`"
+    action = payload["proposal"]["payload"]["assistant_action"]
+    assert action["action_type"] == "spawn_node"
+    assert action["target"] == "reviewer"
+    assert action["params"]["group"] == "review"
+
+
+def test_master_chat_reviewer_node_request_returns_preview_payload(
+    tmp_path: Path,
+) -> None:
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        assistant_client=SequenceAssistantLLMClient(
+            json.dumps(
+                {
+                    "action_type": "spawn_node",
+                    "target": "reviewer",
+                    "params": {"project": "dev10", "role": "reviewer", "group": "review"},
+                }
+            ),
+            "리뷰어 노드를 만들까요? `confirm {confirmation_id}`",
+        ),
+    )
+
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={
+            "message": "리뷰어 노드 만들어줘",
+            "conversation_id": "conv-reviewer",
+            "request_id": "req-reviewer",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    confirmation_id = payload["proposal"]["proposal_id"]
+    assert payload["response_type"] == "preview"
+    assert payload["requires_confirmation"] is True
+    assert payload["answer"]["text"] == f"리뷰어 노드를 만들까요? `confirm {confirmation_id}`"
+    assert payload["proposal"]["payload"]["confirmation_id"] == confirmation_id
+    action = payload["proposal"]["payload"]["assistant_action"]
+    assert action["action_type"] == "spawn_node"
+    assert action["target"] == "reviewer"
+    assert action["params"]["group"] == "review"
+
+
 def test_master_chat_action_confirm_requires_team_csrf(tmp_path: Path) -> None:
     write_team_member(tmp_path, secret="operator-secret", role="operator")
     store = SQLiteBoardStore(tmp_path / "board.db")
@@ -2341,8 +2420,12 @@ def test_master_chat_content_blocked_does_not_return_unavailable_fallback(
         json={"message": "새 프로젝트 만들어줘"},
     )
 
-    assert response.status_code == 204
-    assert response.text == ""
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response_type"] == "preview"
+    assert payload["answer"]["text"]
+    assert payload["proposal"] is not None
+    assert payload["requires_confirmation"] is True
 
 
 def test_inbox_returns_blocked_and_ask_human_items_with_cursor_and_redaction(
@@ -5124,6 +5207,87 @@ def test_org_includes_master_and_cross_project_leads(
     assert "xoxb-" not in rendered
 
 
+def test_org_nodes_use_grove_master_as_cross_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "grove-master": {
+                "name": "grove-master",
+                "agent": "codex",
+                "role": "GROVE MASTER",
+                "group": "master",
+            },
+            "lead": {
+                "name": "lead",
+                "agent": "claude",
+                "role": "lead@dev10",
+                "tmux_pane": "dev10:0.0",
+            },
+            "worker": {
+                "name": "worker",
+                "agent": "codex",
+                "parent": "lead",
+                "tmux_pane": "dev10:1.1",
+            },
+        },
+        workspace="/repo/dev10",
+    )
+    write_registry(
+        tmp_path,
+        "base-voca",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "claude",
+                "role": "lead@base-voca",
+                "tmux_pane": "base-voca:0.0",
+            },
+            "maker": {
+                "name": "maker",
+                "agent": "codex",
+                "parent": "lead",
+                "tmux_pane": "base-voca:1.1",
+            },
+        },
+        workspace="/repo/base-voca",
+    )
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/org", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    payload = response.json()
+    nodes = {node["name"]: node for node in payload["nodes"]}
+    assert payload["roots"] == ["grove-master"]
+    assert nodes["grove-master"]["children"] == ["lead@base-voca", "lead@dev10"]
+    assert nodes["lead@dev10"]["parent"] == "grove-master"
+    assert nodes["lead@dev10"]["children"] == ["worker"]
+    assert nodes["worker"]["parent"] == "lead@dev10"
+    assert nodes["lead@base-voca"]["parent"] == "grove-master"
+    assert nodes["lead@base-voca"]["children"] == ["maker@base-voca"]
+    assert nodes["maker@base-voca"]["parent"] == "lead@base-voca"
+    assert nodes["lead@base-voca"]["project"] == "base-voca"
+    assert nodes["lead@base-voca"]["click_action"] == {
+        "type": "switch_project",
+        "project": "base-voca",
+    }
+
+
 def test_create_project_invokes_new_project_with_literal_argv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5391,7 +5555,11 @@ def test_nodes_expose_all_registry_nodes_with_precise_availability(
     assert org_response.status_code == 200
     nodes = {node["name"]: node for node in nodes_response.json()}
     org_nodes = {node["name"]: node for node in org_response.json()["nodes"]}
-    assert set(nodes) == set(org_nodes) == {"alpha", "beta", "lead", "stale"}
+    assert set(nodes) == {"alpha", "beta", "lead", "stale"}
+    assert set(org_nodes) == {"alpha", "beta", "grove-master", "lead@dev10", "stale"}
+    assert org_nodes["grove-master"]["children"] == ["lead@dev10"]
+    assert org_nodes["lead@dev10"]["children"] == ["alpha", "beta", "stale"]
+    assert org_nodes["alpha"]["parent"] == "lead@dev10"
     assert nodes["alpha"]["tmux_pane"] == "dev10:1.2"
     assert nodes["alpha"]["session_id"] == "sess-a"
     assert nodes["alpha"]["status"] == "running"
@@ -5448,9 +5616,14 @@ def test_nodes_reread_registry_on_each_request_and_include_meta(tmp_path: Path) 
     assert org.status_code == 200
     assert {node["name"] for node in first.json()} == {"alpha", "lead"}
     assert {node["name"] for node in second.json()} == {"alpha", "gamma", "lead"}
-    assert {node["name"] for node in second.json()} == {
-        node["name"] for node in org.json()["nodes"]
+    assert {node["name"] for node in org.json()["nodes"]} == {
+        "alpha",
+        "gamma",
+        "grove-master",
+        "lead@dev10",
     }
+    org_nodes = {node["name"]: node for node in org.json()["nodes"]}
+    assert org_nodes["lead@dev10"]["children"] == ["alpha", "gamma"]
     lead = next(node for node in second.json() if node["name"] == "lead")
     assert lead["kind"] == "meta"
     assert lead["tmux_pane"] == ""
@@ -5515,24 +5688,30 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
         "board": "dev10",
         "display_name": "grove-dev",
     }
-    assert payload["roots"] == ["hidden", "lead", "lead-pane"]
+    assert payload["roots"] == ["grove-master"]
     assert payload["groups"] == [
-        {"name": "core", "parent": "lead", "nodes": ["lead", "worker"]},
-        {"name": "verify", "parent": "lead", "nodes": ["qa"]},
+        {"name": "core", "parent": "lead@dev10", "nodes": ["lead@dev10", "worker"]},
+        {"name": "verify", "parent": "lead@dev10", "nodes": ["qa"]},
     ]
-    assert set(nodes) == {"hidden", "lead", "lead-pane", "qa", "worker"}
-    assert nodes["lead"]["children"] == ["qa", "worker"]
-    assert nodes["lead"]["exposed"] is True
-    assert nodes["lead"]["unavailable_reason"] == ""
+    assert set(nodes) == {"grove-master", "hidden", "lead@dev10", "lead-pane", "qa", "worker"}
+    assert nodes["grove-master"]["parent"] == ""
+    assert nodes["grove-master"]["children"] == ["lead@dev10"]
+    assert nodes["lead@dev10"]["parent"] == "grove-master"
+    assert nodes["lead@dev10"]["children"] == ["hidden", "lead-pane", "qa", "worker"]
+    assert nodes["lead@dev10"]["exposed"] is True
+    assert nodes["lead@dev10"]["unavailable_reason"] == ""
     assert nodes["hidden"]["exposed"] is False
+    assert nodes["hidden"]["parent"] == "lead@dev10"
     assert nodes["hidden"]["status"] == "dead"
     assert nodes["hidden"]["unavailable_reason"] == "no live pane"
     assert nodes["lead-pane"]["exposed"] is True
+    assert nodes["lead-pane"]["parent"] == "lead@dev10"
     assert nodes["lead-pane"]["status"] == "idle"
     assert nodes["lead-pane"]["terminal_allowed"] is True
     assert nodes["lead-pane"]["input_allowed"] is False
     assert nodes["lead-pane"]["unavailable_reason"] == ""
-    assert nodes["qa"]["parent"] == "lead"
+    assert nodes["qa"]["parent"] == "lead@dev10"
+    assert nodes["worker"]["parent"] == "lead@dev10"
     assert nodes["worker"]["status"] == "running"
     assert payload["default_assignee"] == "lead"
     assert [candidate["name"] for candidate in payload["assignee_candidates"]] == [
@@ -5731,16 +5910,17 @@ def test_org_adds_external_lead_for_grouped_workers(tmp_path: Path) -> None:
     assert response.status_code == 200
     payload = response.json()
     nodes = {node["name"]: node for node in payload["nodes"]}
-    assert payload["roots"] == ["lead"]
-    assert nodes["lead"]["agent"] == "claude"
-    assert nodes["lead"]["role"] == "orchestrator"
-    assert nodes["lead"]["status"] == "external"
-    assert nodes["lead"]["children"] == ["dev", "reviewer"]
-    assert nodes["dev"]["parent"] == "lead"
-    assert nodes["reviewer"]["parent"] == "lead"
+    assert payload["roots"] == ["grove-master"]
+    assert nodes["grove-master"]["children"] == ["lead@dev10"]
+    assert nodes["lead@dev10"]["agent"] == "claude"
+    assert nodes["lead@dev10"]["role"] == "orchestrator"
+    assert nodes["lead@dev10"]["status"] == "external"
+    assert nodes["lead@dev10"]["children"] == ["dev", "reviewer"]
+    assert nodes["dev"]["parent"] == "lead@dev10"
+    assert nodes["reviewer"]["parent"] == "lead@dev10"
     assert payload["groups"] == [
-        {"name": "grove-dev", "parent": "lead", "nodes": ["dev"]},
-        {"name": "review", "parent": "lead", "nodes": ["reviewer"]},
+        {"name": "grove-dev", "parent": "lead@dev10", "nodes": ["dev"]},
+        {"name": "review", "parent": "lead@dev10", "nodes": ["reviewer"]},
     ]
     assert payload["default_assignee"] == "lead"
     assert [candidate["name"] for candidate in payload["assignee_candidates"]] == [
@@ -6594,7 +6774,11 @@ def test_update_node_reparents_and_preserves_runtime_fields(tmp_path: Path) -> N
     )
 
     assert response.status_code == 200
-    assert response.json()["roots"] == ["lead", "qa"]
+    assert response.json()["roots"] == ["grove-master"]
+    response_nodes = {node["name"]: node for node in response.json()["nodes"]}
+    assert response_nodes["lead@dev10"]["children"] == ["qa"]
+    assert response_nodes["qa"]["parent"] == "lead@dev10"
+    assert response_nodes["qa"]["children"] == ["worker"]
     worker_payload = next(node for node in response.json()["nodes"] if node["name"] == "worker")
     assert worker_payload["description"] == "Verifies releases."
     registry = read_registry(tmp_path, "dev10")

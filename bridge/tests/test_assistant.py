@@ -13,7 +13,6 @@ from grove_bridge.assistant import (
     AssistantActor,
     AssistantBroker,
     AssistantBusy,
-    AssistantContentBlocked,
     AssistantContext,
     AssistantScope,
     AssistantTransportError,
@@ -421,9 +420,10 @@ def test_handle_turn_action_rejects_hallucinated_node_with_llm_text(
     assert "decision-json" in llm.calls[1]["user_prompt"]
 
 
-def test_handle_turn_fails_closed_when_internal_terms_survive_rewrite(
+def test_handle_turn_returns_llm_denial_when_preview_terms_survive_rewrite(
     tmp_path: Path,
 ) -> None:
+    safe_denial = "확인 문구를 만들 수 없어 진행하지 않았어요. 요청을 다시 적어 주세요."
     llm = SequenceLLMClient(
         json.dumps(
             {
@@ -434,16 +434,21 @@ def test_handle_turn_fails_closed_when_internal_terms_survive_rewrite(
         ),
         "PR1 cannot do action handoff yet.",
         "PR3 routing still cannot do it.",
+        safe_denial,
     )
     broker = AssistantBroker(llm_client=llm)
 
-    with pytest.raises(AssistantContentBlocked, match="internal implementation terms"):
-        broker.handle_turn(
-            "새 프로젝트 만들어줘",
-            _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
-        )
+    response = broker.handle_turn(
+        "새 프로젝트 만들어줘",
+        _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
+    )
 
-    assert len(llm.calls) == 3
+    assert response.response_type == "denied"
+    assert response.answer is not None
+    assert response.answer.text == safe_denial
+    assert response.proposal is None
+    assert response.requires_confirmation is False
+    assert len(llm.calls) == 4
     assert "rewrite-required" in llm.calls[2]["user_prompt"]
 
 

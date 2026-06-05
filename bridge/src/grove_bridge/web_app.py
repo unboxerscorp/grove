@@ -198,6 +198,7 @@ PROJECT_BOARD_ALIASES = frozenset({"main", "default"})
 DELEGATE_BOARD_ALIASES = frozenset({"dev-room"})
 DELEGATE_BOARD_OWNER_PROJECT = "dev10"
 LEAD_NODE_NAME = "lead"
+GROVE_MASTER_NODE_NAME = "grove-master"
 PROJECT_MASTER_NODE_NAME = "project-master"
 GUI_FEATURES = (
     "quota",
@@ -366,6 +367,12 @@ class NodeRecord(TypedDict):
     terminal_allowed: bool
     input_allowed: bool
     unavailable_reason: str
+
+
+class OrgGraphRecord(NodeRecord):
+    project: str
+    registry_name: str
+    click_action: dict[str, object] | None
 
 
 class CommentPayload(BaseModel):
@@ -7470,6 +7477,155 @@ def _org_node_records(config: WebAppConfig) -> list[NodeRecord]:
     return sorted(nodes, key=lambda node: node["name"])
 
 
+def _org_graph_records(config: WebAppConfig) -> list[OrgGraphRecord]:
+    project_names = _visible_project_names_for_config(config)
+    if config.registry_session not in project_names:
+        project_names.append(config.registry_session)
+    records: list[OrgGraphRecord] = [_org_graph_master_record(config)]
+    for project_name in sorted(set(project_names)):
+        project_config = replace(config, registry_session=project_name)
+        try:
+            project_nodes = _org_node_records(project_config)
+        except HTTPException:
+            continue
+        raw_names = {node["name"] for node in project_nodes}
+        for node in project_nodes:
+            if node["name"] == GROVE_MASTER_NODE_NAME:
+                continue
+            records.append(
+                _org_graph_record_for_project(
+                    node,
+                    project=project_name,
+                    current=project_name == config.registry_session,
+                    raw_names=raw_names,
+                )
+            )
+    return sorted(records, key=lambda node: (node["parent"] != "", node["project"], node["name"]))
+
+
+def _org_graph_master_record(config: WebAppConfig) -> OrgGraphRecord:
+    master_node: NodeRecord | None = None
+    for project_name in _visible_project_names_for_config(config):
+        project_config = replace(config, registry_session=project_name)
+        try:
+            for node in _registry_node_records(project_config):
+                if node["name"] == GROVE_MASTER_NODE_NAME:
+                    master_node = node
+                    break
+        except HTTPException:
+            continue
+        if master_node is not None:
+            break
+    if master_node is None:
+        master_node = _node_record(
+            name=GROVE_MASTER_NODE_NAME,
+            agent="codex",
+            pane="",
+            session_id="",
+            status="external",
+            role="GROVE MASTER",
+            parent="",
+            group="master",
+            description="GROVE MASTER root.",
+            kind="meta",
+            config=config,
+        )
+    return _org_graph_record(
+        master_node,
+        name=GROVE_MASTER_NODE_NAME,
+        parent="",
+        project="",
+        registry_name=GROVE_MASTER_NODE_NAME,
+        click_action={
+            "type": "open_master_chat",
+            "project": config.registry_session,
+        },
+    )
+
+
+def _org_graph_record_for_project(
+    node: NodeRecord,
+    *,
+    project: str,
+    current: bool,
+    raw_names: set[str],
+) -> OrgGraphRecord:
+    display_name = _org_display_node_name(node["name"], project=project, current=current)
+    parent = _org_graph_parent(node, project=project, current=current, raw_names=raw_names)
+    click_action: dict[str, object] | None = None
+    if node["name"] == LEAD_NODE_NAME:
+        click_action = {"type": "switch_project", "project": project}
+    return _org_graph_record(
+        node,
+        name=display_name,
+        parent=parent,
+        project=project,
+        registry_name=node["name"],
+        click_action=click_action,
+    )
+
+
+def _org_graph_record(
+    node: NodeRecord,
+    *,
+    name: str,
+    parent: str,
+    project: str,
+    registry_name: str,
+    click_action: dict[str, object] | None,
+) -> OrgGraphRecord:
+    return {
+        **node,
+        "name": name,
+        "parent": parent,
+        "project": project,
+        "registry_name": registry_name,
+        "click_action": click_action,
+    }
+
+
+def _org_display_node_name(raw_name: str, *, project: str, current: bool) -> str:
+    if raw_name == LEAD_NODE_NAME:
+        return _project_lead_node_name(project)
+    if current:
+        return raw_name
+    return f"{raw_name}@{project}"
+
+
+def _project_lead_node_name(project: str) -> str:
+    return f"{LEAD_NODE_NAME}@{project}"
+
+
+def _org_graph_parent(
+    node: NodeRecord,
+    *,
+    project: str,
+    current: bool,
+    raw_names: set[str],
+) -> str:
+    raw_name = node["name"]
+    if raw_name == GROVE_MASTER_NODE_NAME:
+        return ""
+    raw_parent = node["parent"]
+    if raw_name == LEAD_NODE_NAME:
+        if raw_parent and raw_parent != GROVE_MASTER_NODE_NAME and raw_parent in raw_names:
+            return _org_display_node_name(raw_parent, project=project, current=current)
+        return GROVE_MASTER_NODE_NAME
+    if raw_parent:
+        if raw_parent == GROVE_MASTER_NODE_NAME:
+            return GROVE_MASTER_NODE_NAME
+        if raw_parent in raw_names:
+            return _org_display_node_name(raw_parent, project=project, current=current)
+    return _project_lead_node_name(project)
+
+
+def _org_group_parent(parents: set[str]) -> str:
+    clean = {parent for parent in parents if parent}
+    if len(clean) == 1:
+        return next(iter(clean))
+    return GROVE_MASTER_NODE_NAME
+
+
 def _delegation_payload(
     store: SQLiteBoardStore | None,
     *,
@@ -7624,30 +7780,35 @@ def _org_payload(
     store: SQLiteBoardStore | None = None,
     project: ProjectContext | None = None,
 ) -> dict[str, object]:
-    nodes = _org_node_records(config)
-    names = {node["name"] for node in nodes}
+    nodes = _org_graph_records(config)
+    names = {str(node["name"]) for node in nodes}
     children_by_parent: dict[str, list[str]] = {name: [] for name in names}
     groups: dict[str, list[str]] = {}
+    group_parents: dict[str, set[str]] = {}
     parent_by_node: dict[str, str] = {}
     for node in nodes:
-        parent = _org_parent(node, names=names)
-        parent_by_node[node["name"]] = parent
+        node_name = str(node["name"])
+        parent = str(node["parent"])
+        parent_by_node[node_name] = parent
         if parent in names:
-            children_by_parent[parent].append(node["name"])
-        group = node["group"]
-        if group:
-            groups.setdefault(group, []).append(node["name"])
+            children_by_parent[parent].append(node_name)
+        group = str(node["group"])
+        if group and node_name != GROVE_MASTER_NODE_NAME:
+            groups.setdefault(group, []).append(node_name)
+            group_parent = node_name if node["registry_name"] == LEAD_NODE_NAME else parent
+            group_parents.setdefault(group, set()).add(group_parent or GROVE_MASTER_NODE_NAME)
 
     graph_nodes: list[dict[str, object]] = []
     for node in nodes:
-        parent = parent_by_node[node["name"]]
+        node_name = str(node["name"])
+        parent = parent_by_node[node_name]
         graph_nodes.append(
             {
-                "name": node["name"],
+                "name": node_name,
                 "agent": node["agent"],
                 "role": node["role"],
                 "parent": parent,
-                "children": sorted(children_by_parent[node["name"]]),
+                "children": sorted(children_by_parent[node_name]),
                 "group": node["group"],
                 "tmux_pane": node["tmux_pane"],
                 "session_id": node["session_id"],
@@ -7658,6 +7819,13 @@ def _org_payload(
                 "terminal_allowed": node["terminal_allowed"],
                 "input_allowed": node["input_allowed"],
                 "unavailable_reason": node["unavailable_reason"],
+                "project": node["project"],
+                "registry_name": node["registry_name"],
+                **(
+                    {"click_action": node["click_action"]}
+                    if node.get("click_action") is not None
+                    else {}
+                ),
             }
         )
 
@@ -7668,7 +7836,11 @@ def _org_payload(
         "project_leads": _project_lead_payloads(config),
         "roots": sorted(node["name"] for node in nodes if not parent_by_node[node["name"]]),
         "groups": [
-            {"name": group, "parent": LEAD_NODE_NAME, "nodes": sorted(group_nodes)}
+            {
+                "name": group,
+                "parent": _org_group_parent(group_parents.get(group, set())),
+                "nodes": sorted(group_nodes),
+            }
             for group, group_nodes in sorted(groups.items())
         ],
         "nodes": graph_nodes,
@@ -7747,13 +7919,13 @@ def _external_lead_node(config: WebAppConfig) -> NodeRecord:
 def _org_parent(node: NodeRecord, *, names: set[str]) -> str:
     name = node["name"]
     parent = node["parent"]
-    if name == LEAD_NODE_NAME:
-        return ""
-    if name == PROJECT_MASTER_NODE_NAME and LEAD_NODE_NAME in names:
-        return LEAD_NODE_NAME
     if parent in names:
         return parent
-    if node["group"] and LEAD_NODE_NAME in names:
+    if name == GROVE_MASTER_NODE_NAME:
+        return ""
+    if name == LEAD_NODE_NAME and GROVE_MASTER_NODE_NAME in names:
+        return GROVE_MASTER_NODE_NAME
+    if not parent and name != LEAD_NODE_NAME and LEAD_NODE_NAME in names:
         return LEAD_NODE_NAME
     return ""
 

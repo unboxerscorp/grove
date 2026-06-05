@@ -576,7 +576,27 @@ class AssistantBroker:
         facts: Mapping[str, object],
         audit_events: tuple[MasterAuditEvent, ...],
     ) -> MasterChatResponse:
-        spec = _complete_action_spec(self._llm_client, message=message, facts=facts)
+        try:
+            spec = _complete_action_spec(self._llm_client, message=message, facts=facts)
+        except AssistantContentBlocked as exc:
+            fallback_spec = _fallback_action_spec_from_request(message, context=context)
+            if fallback_spec is None:
+                return self._llm_response(
+                    context,
+                    message=message,
+                    classification=classification,
+                    facts=facts,
+                    mode="blocked",
+                    decision={
+                        "decision": "deny",
+                        "reason": "action_spec_unavailable",
+                        "detail": _safe_public_text(exc),
+                        "execution": "not_performed",
+                    },
+                    response_type="denied",
+                    audit_events=audit_events,
+                )
+            spec = fallback_spec
         validation = _validate_action_spec(spec, context=context)
         if validation is not None:
             return self._llm_response(
@@ -642,8 +662,6 @@ class AssistantBroker:
             proposal=proposal,
             facts=facts,
         )
-        with self._pending_lock:
-            self._pending_actions[confirmation_id] = pending
         created_event = _audit_event(
             context,
             kind="master.proposal.created",
@@ -658,27 +676,48 @@ class AssistantBroker:
             reason=proposal.audit_reason,
             extra={"confirmation_id": confirmation_id},
         )
-        return self._llm_response(
-            context,
-            message=message,
-            classification=classification,
-            facts=facts,
-            mode="action_preview",
-            decision={
-                "decision": "preview",
-                "confirmation_id": confirmation_id,
-                "assistant_action": action_payload,
-                "execution": "not_performed",
-                "confirm": {
-                    "command": f"confirm {confirmation_id}",
-                    "endpoint": "/api/master/chat/confirm",
+        try:
+            response = self._llm_response(
+                context,
+                message=message,
+                classification=classification,
+                facts=facts,
+                mode="action_preview",
+                decision={
+                    "decision": "preview",
+                    "confirmation_id": confirmation_id,
+                    "assistant_action": action_payload,
+                    "execution": "not_performed",
+                    "confirm": {
+                        "command": f"confirm {confirmation_id}",
+                        "endpoint": "/api/master/chat/confirm",
+                    },
                 },
-            },
-            response_type="preview",
-            audit_events=(*audit_events, created_event, preview_event),
-            requires_confirmation=True,
-            proposal=proposal,
-        )
+                response_type="preview",
+                audit_events=(*audit_events, created_event, preview_event),
+                requires_confirmation=True,
+                proposal=proposal,
+            )
+        except AssistantContentBlocked as exc:
+            return self._llm_response(
+                context,
+                message=message,
+                classification=classification,
+                facts=facts,
+                mode="blocked",
+                decision={
+                    "decision": "deny",
+                    "reason": "action_preview_text_unavailable",
+                    "detail": _safe_public_text(exc),
+                    "execution": "not_performed",
+                    "assistant_action": action_payload,
+                },
+                response_type="denied",
+                audit_events=audit_events,
+            )
+        with self._pending_lock:
+            self._pending_actions[confirmation_id] = pending
+        return response
 
     def _confirmed_action_response(
         self,
@@ -1180,14 +1219,21 @@ def _assistant_system_prompt(*, mode: str = "answer") -> str:
 
 def _assistant_action_spec_system_prompt() -> str:
     return (
-        "You convert a grove assistant user request into one compact JSON object only. "
-        "Return no prose and no markdown. Schema: "
+        "You convert a grove assistant user request into one compact JSON object only for "
+        "a confirmation preview. You are not executing, creating, spawning, assigning, "
+        "routing, or mutating anything; you are only describing the proposed action so a "
+        "separate operator confirmation card can be shown. This JSON-only summary is allowed. "
+        "Return no prose, no refusal, no explanation, and no markdown. Schema: "
         '{"action_type":"create_project|spawn_node|assign_task|delegate_task",'
         '"target":"string","params":{...}}. '
         "Use only facts supplied in the facts JSON. For create_project, target is the new "
         "project name. For spawn_node, target is the new node name and params.project may "
-        "name the project. For assign_task, target is an existing task id and params.assignee "
-        "is the node. For delegate_task, target is the node and params.task_id is the task id."
+        "name the project. If the user asks for a reviewer node without a specific name, "
+        'use target "reviewer" and params {"role":"reviewer","group":"review"}. '
+        "For assign_task, target is an existing task id and params.assignee is the node. "
+        "For delegate_task, target is the node and params.task_id is the task id. If a "
+        "field is unclear, still return the closest JSON object rather than prose; the "
+        "bridge will validate it after you respond."
     )
 
 
@@ -1255,6 +1301,66 @@ def _complete_action_spec(
         user_prompt=_assistant_user_prompt(message=message, facts=facts, decision=None),
     )
     return _parse_action_spec(raw)
+
+
+def _fallback_action_spec_from_request(
+    message: str,
+    *,
+    context: AssistantContext,
+) -> AssistantActionSpec | None:
+    normalized = message.lower()
+    if any(term in normalized for term in ("리뷰어", "reviewer")) and any(
+        term in normalized
+        for term in ("노드", "node", "에이전트", "agent", "만들", "생성", "spawn")
+    ):
+        return AssistantActionSpec(
+            action_type="spawn_node",
+            target="reviewer",
+            params={
+                "project": context.scope.selected_project,
+                "role": "reviewer",
+                "group": "review",
+            },
+        )
+    if any(term in normalized for term in ("노드", "node", "에이전트", "agent", "spawn")):
+        return AssistantActionSpec(
+            action_type="spawn_node",
+            target=_node_target_from_message(message) or "new-node",
+            params={"project": context.scope.selected_project},
+        )
+    if any(term in normalized for term in ("프로젝트", "project")):
+        return AssistantActionSpec(
+            action_type="create_project",
+            target=_project_target_from_message(message) or "new-project",
+            params={},
+        )
+    return None
+
+
+def _node_target_from_message(message: str) -> str | None:
+    for pattern in (
+        r"([A-Za-z0-9_.-]+)\s*(?:node|agent)\b",
+        r"([가-힣A-Za-z0-9_.-]+)\s*(?:노드|에이전트)",
+    ):
+        match = re.search(pattern, message, flags=re.I)
+        if match is not None:
+            target = _safe_public_text(match.group(1)).strip(" _.-")
+            if target and target.lower() not in {"node", "agent", "노드", "에이전트"}:
+                return target
+    return None
+
+
+def _project_target_from_message(message: str) -> str | None:
+    for pattern in (
+        r"([A-Za-z0-9_.-]+)\s*project\b",
+        r"([가-힣A-Za-z0-9_.-]+)\s*프로젝트",
+    ):
+        match = re.search(pattern, message, flags=re.I)
+        if match is not None:
+            target = _safe_public_text(match.group(1)).strip(" _.-")
+            if target and target.lower() not in {"project", "프로젝트"}:
+                return target
+    return None
 
 
 def _parse_action_spec(raw: object) -> AssistantActionSpec:
