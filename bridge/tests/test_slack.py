@@ -1956,6 +1956,7 @@ def test_slack_command_preview_confirm_approve_and_replay_denied(tmp_path: Path)
 
     assert connector.handle_event(slack_event("UOP", f"<@BOT> approve {task.id}"))
     confirm = confirmation_id(slack.posts[-1][1])
+    assert f"approve item {task.id}" in str(assistant.notice_calls[-1]["reason"])
     assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approval-pending"
     assert connector.handle_event(addressed_slack_event("UOP", f"confirm {confirm}", ts="444.557"))
     assert connector.handle_event(addressed_slack_event("UOP", f"confirm {confirm}", ts="444.558"))
@@ -1964,7 +1965,7 @@ def test_slack_command_preview_confirm_approve_and_replay_denied(tmp_path: Path)
     assert state["state"] == "approved"
     assert slack.posts[-2][1] == "LLM completed the Slack request."
     assert slack.posts[-1][1] == "LLM explained why the request was not completed."
-    assert f"approved task id={task.id}" in str(assistant.notice_calls[-2]["reason"])
+    assert f"approved item id={task.id}" in str(assistant.notice_calls[-2]["reason"])
     assert "confirmation_unknown_or_used" in str(assistant.notice_calls[-1]["reason"])
     assert "xoxb-" not in "\n".join(post[1] for post in slack.posts)
     assert "/Users" not in "\n".join(post[1] for post in slack.posts)
@@ -1996,7 +1997,7 @@ def test_slack_command_non_owner_cannot_consume_confirmation(tmp_path: Path) -> 
 
     assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approved"
     assert slack.posts[-1][1] == "LLM completed the Slack request."
-    assert f"approved task id={task.id}" in str(assistant.notice_calls[-1]["reason"])
+    assert f"approved item id={task.id}" in str(assistant.notice_calls[-1]["reason"])
 
 
 def test_slack_command_expired_confirmation_and_cross_project_denied(tmp_path: Path) -> None:
@@ -2026,6 +2027,40 @@ def test_slack_command_expired_confirmation_and_cross_project_denied(tmp_path: P
     assert slack.posts[-1][1] == "LLM explained why the request was not completed."
     assert "scope" in str(assistant.notice_calls[-1]["reason"])
     assert store.task_execution_state(board="other", task_id=task.id)["state"] == "approval-pending"
+
+
+def test_slack_command_preview_confirm_abort_reports_item_id(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = execution_task(store)
+    slack = FakeSlackClient()
+    assistant = LLMNoticeAssistantBroker()
+    connector = command_connector(store, slack, assistant_broker=assistant)
+
+    assert connector.handle_event(addressed_slack_event("UOP", f"abort {task.id}"))
+    confirm = confirmation_id(slack.posts[-1][1])
+    assert f"abort item {task.id}" in str(assistant.notice_calls[-1]["reason"])
+    assert connector.handle_event(addressed_slack_event("UOP", f"confirm {confirm}", ts="444.562"))
+
+    assert slack.posts[-1][1] == "LLM completed the Slack request."
+    assert f"aborted item id={task.id}" in str(assistant.notice_calls[-1]["reason"])
+
+
+def test_slack_control_command_copy_uses_item_terms() -> None:
+    source = Path(slack_module.__file__).read_text(encoding="utf-8")
+
+    for stale in (
+        "approve <task>",
+        "abort <task>",
+        "invalid task id",
+        "task has no execution node",
+        "task is not awaiting approval",
+        "task execution is already terminal",
+        "approved task id",
+        "aborted task id",
+        "approve task",
+        "abort task",
+    ):
+        assert stale not in source
 
 
 def test_slack_assistant_action_preview_confirm_records_decision_only(tmp_path: Path) -> None:

@@ -1595,7 +1595,7 @@ class SlackConnector:
         parsed = _parse_mutating_command(command, args)
         if parsed is None:
             return (
-                "deny: invalid command; expected approve <task>, abort <task>, killswitch <on|off>"
+                "deny: invalid command; expected approve <item>, abort <item>, killswitch <on|off>"
             )
         if self.command_config is None or self.confirmations is None:
             return "deny: slack control commands disabled"
@@ -1756,11 +1756,11 @@ class SlackConnector:
         assert self.command_config is not None
         task_id = pending.args[0]
         if not _valid_task_ref(task_id):
-            return "deny: invalid task id"
+            return "deny: invalid item id"
         task = self.store.get_task(board=self.command_config.board, task_id=task_id)
         node = _execution_node_for_task(task)
         if node is None:
-            return "deny: task has no execution node"
+            return "deny: item has no execution node"
         gate = self.store.execution_gate_state(
             board=self.command_config.board,
             node=node,
@@ -1782,7 +1782,7 @@ class SlackConnector:
             task_id=task.id,
             actor=actor,
         ):
-            return "deny: task is not awaiting approval"
+            return "deny: item is not awaiting approval"
         self._audit_slack_command(
             command="approve",
             event=pending.event,
@@ -1792,7 +1792,7 @@ class SlackConnector:
             task_id=task.id,
             run_id=task.current_run_id,
         )
-        return f"completed: approved task id={_safe_slack_text(task.id)}"
+        return f"completed: approved item id={_safe_slack_text(task.id)}"
 
     def _execute_abort(
         self,
@@ -1803,7 +1803,7 @@ class SlackConnector:
         assert self.command_config is not None
         task_id = pending.args[0]
         if not _valid_task_ref(task_id):
-            return "deny: invalid task id"
+            return "deny: invalid item id"
         task = self.store.get_task(board=self.command_config.board, task_id=task_id)
         reason = "slack command abort"
         if not self.store.abort_execution(
@@ -1812,7 +1812,7 @@ class SlackConnector:
             actor=actor,
             reason=reason,
         ):
-            return "deny: task execution is already terminal"
+            return "deny: item execution is already terminal"
         self._audit_slack_command(
             command="abort",
             event=pending.event,
@@ -1822,7 +1822,7 @@ class SlackConnector:
             task_id=task.id,
             run_id=task.current_run_id,
         )
-        return f"completed: aborted task id={_safe_slack_text(task.id)}"
+        return f"completed: aborted item id={_safe_slack_text(task.id)}"
 
     def _execute_killswitch(
         self,
@@ -3085,7 +3085,7 @@ def _parse_killswitch_args(args: tuple[str, ...]) -> tuple[str, str | None, str]
 
 def _pending_command_summary(pending: SlackPendingCommand) -> str:
     if pending.command in {"approve", "abort"}:
-        return f"{pending.command} task {_safe_slack_text(pending.args[0])}"
+        return f"{pending.command} item {_safe_slack_text(pending.args[0])}"
     if pending.command == "task_create":
         proposal = _decode_intake_proposal(pending.args)
         if proposal is None:
