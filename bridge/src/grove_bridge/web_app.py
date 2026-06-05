@@ -2519,6 +2519,8 @@ def create_app(
     @app.get("/{path:path}", response_model=None)
     def spa_or_asset_endpoint(request: Request, path: str) -> Response:
         config_value = _config(request)
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="api endpoint not found")
         if _is_static_asset_path(path):
             asset = _safe_dist_path(config_value.dist_dir, path)
             if asset is not None and asset.is_file():

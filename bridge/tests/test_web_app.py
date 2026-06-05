@@ -134,6 +134,19 @@ def test_index_injects_session_token_and_serves_dist_assets(tmp_path: Path) -> N
     assert 'window.__GROVE_SESSION_TOKEN__ = "test-token"' in fallback.text
 
 
+def test_api_path_miss_does_not_fall_back_to_spa_html(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get(
+        "/api/ws-ticket?kind=terminal&pane_id=dev10:0.0",
+        headers=auth_headers(client),
+    )
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/json")
+    assert "window.__GROVE_SESSION_TOKEN__" not in response.text
+
+
 def test_index_does_not_bootstrap_token_on_non_loopback_without_unsafe_bind(
     tmp_path: Path,
 ) -> None:
