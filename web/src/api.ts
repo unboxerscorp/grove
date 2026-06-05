@@ -269,6 +269,34 @@ export interface NodePatch {
   group?: string | null;
 }
 
+export interface NodeTerminateOptions {
+  caller?: string;
+  confirm?: boolean;
+  confirmationId?: string;
+  operatorOverride?: boolean;
+}
+
+export interface NodeTerminateResult {
+  ok?: boolean;
+  confirmed: boolean;
+  confirmation_required?: boolean;
+  requires_confirmation?: boolean;
+  confirmation_id: string;
+  node: string;
+  caller?: string;
+  operator_override?: boolean;
+  subtree?: string[];
+  result?: {
+    session?: string;
+    removed?: Array<{
+      name: string;
+      pane?: string;
+      paneKilled?: boolean;
+      paneMissing?: boolean;
+    }>;
+  };
+}
+
 // web_app.py _node_connect_payload: tmux attach/select-pane commands to connect
 // to a node's pane (the "SSH/connect" string). 404 when the node has no pane.
 export interface NodeConnect {
@@ -1095,6 +1123,32 @@ export const api = {
       throw new Error(detail);
     }
     return (await res.json()) as OrgNode;
+  },
+
+  async terminateNode(name: string, opts: NodeTerminateOptions): Promise<NodeTerminateResult> {
+    const body = {
+      ...(opts.caller ? { caller: opts.caller } : {}),
+      ...(opts.confirm ? { confirm: true } : {}),
+      ...(opts.confirmationId ? { confirmation_id: opts.confirmationId } : {}),
+      ...(opts.operatorOverride ? { operator_override: true } : {}),
+    };
+    const res = await fetch(`/api/nodes/${enc(name)}/terminate`, {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j.detail) detail = j.detail;
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as NodeTerminateResult;
   },
 
   // Live status: project + node liveness summary; detail=1 adds per-node rows.

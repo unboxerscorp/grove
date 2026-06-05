@@ -9,6 +9,8 @@ export interface DespawnInput {
   node?: string;
   group?: string;
   all?: boolean;
+  caller?: string;
+  operatorOverride?: boolean;
   yes?: boolean;
   session?: string;
 }
@@ -79,6 +81,11 @@ function groupTarget(input: DespawnInput): string | undefined {
   return group ? validateGroveName(group, "--group") : undefined;
 }
 
+function callerName(input: DespawnInput): string | undefined {
+  const caller = trimmed(input.caller);
+  return caller ? validateGroveName(caller, "--caller") : undefined;
+}
+
 function targetNodes(ctx: Context, input: DespawnInput): string[] {
   const node = singleTarget(input);
   const group = groupTarget(input);
@@ -100,6 +107,22 @@ function targetNodes(ctx: Context, input: DespawnInput): string[] {
     return names;
   }
   return Object.keys(ctx.registry.nodes);
+}
+
+function assertTerminationAllowed(ctx: Context, input: DespawnInput, names: string[]): void {
+  if (input.operatorOverride) return;
+  const caller = callerName(input);
+  if (!caller) throw new Error("despawn requires --caller <node> or --operator-override");
+  if (!ctx.registry.nodes[caller]) throw new Error(`caller not found in registry: ${caller}`);
+
+  for (const name of names) {
+    if (name === caller) throw new Error(`${caller} cannot despawn itself`);
+    const runtime: NodeRuntime | undefined = ctx.registry.nodes[name];
+    if (!runtime) throw new Error(`node not found in registry: ${name}`);
+    if (runtime.parent !== caller) {
+      throw new Error(`${caller} cannot despawn ${name}: node is not a direct child`);
+    }
+  }
 }
 
 function removeParentLinks(runtime: NodeRuntime, removed: Set<string>): NodeRuntime {
@@ -155,6 +178,7 @@ export async function despawnNodes(
   const session = validateGroveName(trimmed(input.session) ?? baseCtx.config.session, "--session");
   const ctx = sessionContext(baseCtx, session);
   const names = targetNodes(ctx, input);
+  assertTerminationAllowed(ctx, input, names);
   const runtimes = names.map((name) => ctx.registry.nodes[name]!);
   const removed = await killTargetPanes(session, runtimes, deps);
   removeFromRegistry(ctx, names);

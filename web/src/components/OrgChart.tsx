@@ -421,8 +421,10 @@ function NodeDrawer(props: {
   boardId: string | null;
   onClose: () => void;
   onTerminal: (node: OrgNode) => void;
+  onTerminate: (node: OrgNode) => void;
+  terminating?: boolean;
 }) {
-  const { node, boardId, onClose, onTerminal } = props;
+  const { node, boardId, onClose, onTerminal, onTerminate, terminating } = props;
   const { t } = useI18n();
   const panelRef = useRef<HTMLElement | null>(null);
   useFocusTrap(true, panelRef);
@@ -514,6 +516,14 @@ function NodeDrawer(props: {
               {t("org.openTerminal")} ↗
             </button>
           )}
+          <button
+            type="button"
+            className="dr-btn dr-btn--ghost node-drawer__terminate"
+            disabled={terminating}
+            onClick={() => onTerminate(node)}
+          >
+            {terminating ? t("node.terminating") : t("node.terminate")}
+          </button>
 
           <form className="dr-drawer__section node-drawer__assign-sec" onSubmit={assign}>
             <h3 className="dr-drawer__h">{t("node.assign")}</h3>
@@ -648,6 +658,8 @@ export function OrgChart(props: {
   const [delegateNode, setDelegateNode] = useState<string | null>(null); // delegate popover
   const [pending, setPending] = useState<{ name: string; parent?: string } | null>(null);
   const [drawerNode, setDrawerNode] = useState<OrgNode | null>(null);
+  const [terminating, setTerminating] = useState<string | null>(null);
+  const [terminateError, setTerminateError] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const curRef = useRef<Positions>(cur);
@@ -835,6 +847,37 @@ export function OrgChart(props: {
         .catch(() => runTween(layout.positions)); // snap back on failure
     },
     [layout.positions, runTween],
+  );
+
+  const terminateNode = useCallback(
+    (node: OrgNode) => {
+      if (terminating) return;
+      setTerminating(node.name);
+      setTerminateError(null);
+      api
+        .terminateNode(node.name, { operatorOverride: true })
+        .then((preview) => {
+          const subtreeCount = preview.subtree?.length ?? 1;
+          if (!window.confirm(t("node.terminateConfirm", { node: node.name, count: subtreeCount }))) return null;
+          return api.terminateNode(node.name, {
+            operatorOverride: true,
+            confirm: true,
+            confirmationId: preview.confirmation_id,
+          });
+        })
+        .then((confirmed) => {
+          if (!confirmed) return;
+          setReloadKey((k) => k + 1);
+          setDrawerNode((curNode) => (curNode?.name === node.name ? null : curNode));
+        })
+        .catch(() => {
+          setTerminateError(t("node.terminateError"));
+        })
+        .finally(() => {
+          setTerminating((curNode) => (curNode === node.name ? null : curNode));
+        });
+    },
+    [t, terminating],
   );
 
   // --- drag -----------------------------------------------------------------
@@ -1122,6 +1165,7 @@ export function OrgChart(props: {
       )}
 
       {error && <div className="org__msg is-error">{error}</div>}
+      {terminateError && <div className="org__msg is-error">{terminateError}</div>}
       {!error && nodes.length === 0 && <div className="org__msg">{t("org.empty")}</div>}
 
       <MasterOrgStrip
@@ -1384,6 +1428,8 @@ export function OrgChart(props: {
             setDrawerNode(null);
             onOpenTerminal(node.tmux_pane);
           }}
+          onTerminate={terminateNode}
+          terminating={terminating === drawerNode.name}
         />
       )}
     </section>

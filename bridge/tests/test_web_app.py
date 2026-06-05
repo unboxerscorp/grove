@@ -550,6 +550,7 @@ def test_shared_access_viewer_is_read_only_for_mutations(
         ("POST", f"/api/tasks/{done_task.id}/retro", {"text": "retro", "node": "worker"}),
         ("POST", "/api/nodes", {"name": "viewer-node", "agent": "codex"}),
         ("PATCH", "/api/nodes/worker", {"group": "review"}),
+        ("POST", "/api/nodes/worker/terminate", {"operator_override": True}),
         ("POST", "/api/nodes/worker/autopickup", {"enabled": True}),
         ("POST", "/api/execution", {"enabled": True}),
         ("POST", "/api/nodes/worker/execution", {"enabled": True}),
@@ -6865,6 +6866,220 @@ def test_create_node_payload_cwd_overrides_project_workspace(
     ]
 
 
+def test_terminate_node_owner_preview_and_confirm_uses_literal_despawn_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_terminate_registry(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps({"session": "dev10", "removed": [{"name": "child"}]}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    client = make_client(tmp_path, store)
+
+    preview = client.post(
+        "/api/nodes/child/terminate",
+        headers=auth_headers(client),
+        json={"caller": "owner"},
+    )
+    assert preview.status_code == 200
+    assert preview.json()["confirmed"] is False
+    assert preview.json()["subtree"] == ["child", "grand"]
+    assert calls == []
+
+    confirm = client.post(
+        "/api/nodes/child/terminate",
+        headers=auth_headers(client),
+        json={
+            "caller": "owner",
+            "confirm": True,
+            "confirmation_id": preview.json()["confirmation_id"],
+        },
+    )
+
+    assert confirm.status_code == 200
+    assert confirm.json()["confirmed"] is True
+    assert confirm.json()["result"] == {"session": "dev10", "removed": [{"name": "child"}]}
+    assert calls == [
+        [
+            "grove",
+            "despawn",
+            "child",
+            "--caller",
+            "owner",
+            "--session",
+            "dev10",
+            "--json",
+        ]
+    ]
+    audit_events = store.list_audit_events(board="dev10", action="terminate")
+    assert len(audit_events) == 1
+    assert audit_events[0].kind == "audit.node.terminate"
+    assert audit_events[0].payload["actor"] == {
+        "kind": "node",
+        "id": "owner",
+        "login": "owner",
+        "role": "none",
+    }
+    assert audit_events[0].payload["target"] == {
+        "type": "node",
+        "id": "child",
+        "node": "child",
+    }
+    assert audit_events[0].payload["subtree"] == ["child", "grand"]
+
+
+def test_terminate_node_rejects_non_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_terminate_registry(tmp_path)
+    monkeypatch.setattr(
+        "grove_bridge.web_app.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("despawn should not run for non-owner"),
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post(
+        "/api/nodes/child/terminate",
+        headers=auth_headers(client),
+        json={"caller": "other"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "caller does not own target node"
+
+
+def test_terminate_node_rejects_descendant_not_direct_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_terminate_registry(tmp_path)
+    monkeypatch.setattr(
+        "grove_bridge.web_app.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("despawn should not run for non-direct ownership"),
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post(
+        "/api/nodes/grand/terminate",
+        headers=auth_headers(client),
+        json={"caller": "owner"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "caller does not own target node"
+
+
+def test_terminate_node_operator_override_succeeds_and_audits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_terminate_registry(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps({"session": "dev10", "removed": [{"name": "child"}]}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    client = make_client(tmp_path, store)
+    preview = client.post(
+        "/api/nodes/child/terminate",
+        headers=auth_headers(client),
+        json={"operator_override": True},
+    )
+
+    confirm = client.post(
+        "/api/nodes/child/terminate",
+        headers=auth_headers(client),
+        json={
+            "operator_override": True,
+            "confirm": True,
+            "confirmation_id": preview.json()["confirmation_id"],
+        },
+    )
+
+    assert preview.status_code == 200
+    assert confirm.status_code == 200
+    assert calls == [
+        [
+            "grove",
+            "despawn",
+            "child",
+            "--operator-override",
+            "--session",
+            "dev10",
+            "--json",
+        ]
+    ]
+    audit_events = store.list_audit_events(board="dev10", action="terminate")
+    assert audit_events[0].payload["actor"] == {
+        "kind": "local",
+        "id": "lead",
+        "login": "lead",
+        "role": "none",
+    }
+    assert audit_events[0].payload["operator_override"] is True
+
+
+def test_terminate_node_confirm_requires_matching_confirmation_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_terminate_registry(tmp_path)
+    monkeypatch.setattr(
+        "grove_bridge.web_app.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("despawn should not run without valid confirmation"),
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    missing = client.post(
+        "/api/nodes/child/terminate",
+        headers=auth_headers(client),
+        json={"caller": "owner", "confirm": True},
+    )
+    mismatch = client.post(
+        "/api/nodes/child/terminate",
+        headers=auth_headers(client),
+        json={"caller": "owner", "confirm": True, "confirmation_id": "wrong"},
+    )
+
+    assert missing.status_code == 400
+    assert mismatch.status_code == 400
+    assert missing.json()["detail"] == "confirmation_id is required"
+    assert mismatch.json()["detail"] == "confirmation_id does not match"
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -7893,6 +8108,39 @@ def write_registry(
     path = tmp_path / ".grove" / session / "registry.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(registry), encoding="utf-8")
+
+
+def write_terminate_registry(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "owner": {
+                "name": "owner",
+                "agent": "codex",
+                "children": ["child"],
+                "tmux_pane": "dev10:1.0",
+            },
+            "child": {
+                "name": "child",
+                "agent": "claude",
+                "parent": "owner",
+                "children": ["grand"],
+                "tmux_pane": "dev10:1.1",
+            },
+            "grand": {
+                "name": "grand",
+                "agent": "codex",
+                "parent": "child",
+                "tmux_pane": "dev10:1.2",
+            },
+            "other": {
+                "name": "other",
+                "agent": "codex",
+                "tmux_pane": "dev10:1.3",
+            },
+        },
+    )
 
 
 def complete_run_at(

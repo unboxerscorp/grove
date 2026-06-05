@@ -95,7 +95,7 @@ describe("despawnNodes", () => {
     const ctx = context();
     const state = deps();
 
-    const result = await despawnNodes(ctx, { node: "maker" }, state.deps);
+    const result = await despawnNodes(ctx, { caller: "lead", node: "maker" }, state.deps);
 
     expect(state.guardSessions).toEqual(["dev10"]);
     expect(state.killed).toEqual(["dev10:2.%5"]);
@@ -116,7 +116,7 @@ describe("despawnNodes", () => {
     const ctx = context();
     const state = deps(false);
 
-    const result = await despawnNodes(ctx, { node: "maker" }, state.deps);
+    const result = await despawnNodes(ctx, { caller: "lead", node: "maker" }, state.deps);
 
     expect(state.killed).toEqual(["dev10:2.%5"]);
     expect(ctx.registry.nodes.maker).toBeUndefined();
@@ -135,7 +135,7 @@ describe("despawnNodes", () => {
     const ctx = context(reg);
     const state = deps();
 
-    const result = await despawnNodes(ctx, { node: "maker" }, state.deps);
+    const result = await despawnNodes(ctx, { caller: "lead", node: "maker" }, state.deps);
 
     expect(state.killed).toEqual([]);
     expect(ctx.registry.nodes.maker).toBeUndefined();
@@ -160,11 +160,65 @@ describe("despawnNodes", () => {
     expect(state.killed).toEqual([]);
   });
 
+  test("requires caller identity unless operator override is explicit", async () => {
+    const ctx = context();
+    const state = deps();
+
+    await expect(despawnNodes(ctx, { node: "maker" }, state.deps)).rejects.toThrow(
+      "despawn requires --caller <node> or --operator-override",
+    );
+
+    expect(state.killed).toEqual([]);
+    expect(ctx.registry.nodes.maker).toBeDefined();
+  });
+
+  test("rejects despawn of a node not owned by caller", async () => {
+    const ctx = context();
+    const state = deps();
+
+    await expect(
+      despawnNodes(ctx, { caller: "maker", node: "viewer" }, state.deps),
+    ).rejects.toThrow("maker cannot despawn viewer: node is not a direct child");
+
+    expect(state.killed).toEqual([]);
+    expect(ctx.registry.nodes.viewer).toBeDefined();
+  });
+
+  test("operator override can despawn non-owned nodes", async () => {
+    const ctx = context();
+    const state = deps();
+
+    const result = await despawnNodes(ctx, { node: "viewer", operatorOverride: true }, state.deps);
+
+    expect(state.killed).toEqual(["dev10:2.%6"]);
+    expect(ctx.registry.nodes.viewer).toBeUndefined();
+    expect(result.removed.map((item) => item.name)).toEqual(["viewer"]);
+  });
+
+  test("bulk group despawn rejects any target outside caller ownership", async () => {
+    const reg = registry();
+    reg.nodes.viewer!.parent = "maker";
+    const ctx = context(reg);
+    const state = deps();
+
+    await expect(
+      despawnNodes(ctx, { caller: "lead", group: "core", yes: true }, state.deps),
+    ).rejects.toThrow("lead cannot despawn viewer: node is not a direct child");
+
+    expect(state.killed).toEqual([]);
+    expect(ctx.registry.nodes.maker).toBeDefined();
+    expect(ctx.registry.nodes.viewer).toBeDefined();
+  });
+
   test("tears down a group and removes parent links", async () => {
     const ctx = context();
     const state = deps();
 
-    const result = await despawnNodes(ctx, { group: "core", yes: true }, state.deps);
+    const result = await despawnNodes(
+      ctx,
+      { caller: "lead", group: "core", yes: true },
+      state.deps,
+    );
 
     expect(state.killed).toEqual(["dev10:2.%5", "dev10:2.%6"]);
     expect(Object.keys(ctx.registry.nodes)).toEqual(["lead"]);
@@ -177,7 +231,11 @@ describe("despawnNodes", () => {
     const state = deps();
     state.deps.hasSession = async () => false;
 
-    const result = await despawnNodes(ctx, { all: true, yes: true }, state.deps);
+    const result = await despawnNodes(
+      ctx,
+      { all: true, operatorOverride: true, yes: true },
+      state.deps,
+    );
 
     expect(state.guardSessions).toEqual([]);
     expect(state.killed).toEqual([]);

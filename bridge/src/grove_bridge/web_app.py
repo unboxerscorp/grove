@@ -104,6 +104,7 @@ POLL_INTERVAL_SECONDS = 1.0
 TMUX_TIMEOUT_SECONDS = 5.0
 NODE_INPUT_RATE_LIMIT_SECONDS = 1.0
 GROVE_SPAWN_TIMEOUT_SECONDS = 30.0
+GROVE_DESPAWN_TIMEOUT_SECONDS = 30.0
 GROVE_PROJECT_TIMEOUT_SECONDS = 30.0
 TAILSCALE_IP_TIMEOUT_SECONDS = 1.0
 TRANSCRIPT_MAX_BYTES = 2_000_000
@@ -305,6 +306,16 @@ class AuthContext:
 
 
 @dataclass(frozen=True)
+class NodeTerminatePlan:
+    target: str
+    caller: str | None
+    actor: dict[str, object]
+    operator_override: bool
+    subtree: list[str]
+    confirmation_id: str
+
+
+@dataclass(frozen=True)
 class TicketGrant:
     ticket: str
     expires_at: float
@@ -475,6 +486,13 @@ class NodeUpdatePayload(BaseModel):
     parent: str | None = Field(default=None, max_length=100)
     group: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=1000)
+
+
+class NodeTerminatePayload(BaseModel):
+    caller: str | None = Field(default=None, max_length=100)
+    confirm: bool = False
+    confirmation_id: str | None = Field(default=None, max_length=200)
+    operator_override: bool = False
 
 
 class NodeSendPayload(BaseModel):
@@ -2004,6 +2022,43 @@ def create_app(
             summary=name,
         )
         return org
+
+    @app.post("/api/nodes/{node}/terminate")
+    def terminate_node_endpoint(
+        request: Request,
+        node: str,
+        payload: NodeTerminatePayload,
+    ) -> dict[str, object]:
+        auth = _require_state_change(request)
+        project = resolve_project(request)
+        plan = _node_terminate_plan(node, payload, auth=auth, config=project.config)
+        if not payload.confirm:
+            return _node_terminate_payload(plan, confirmed=False)
+        supplied = _optional_text(
+            payload.confirmation_id,
+            field_name="confirmation_id",
+            max_length=200,
+        )
+        if supplied is None:
+            raise HTTPException(status_code=400, detail="confirmation_id is required")
+        if not _confirmation_id_matches(supplied, plan.confirmation_id):
+            raise HTTPException(status_code=400, detail="confirmation_id does not match")
+        result = _despawn_node(plan, config=project.config)
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.node.terminate",
+            actor=plan.actor,
+            action="terminate",
+            target={"type": "node", "id": plan.target, "node": plan.target},
+            payload={
+                "project": project.name,
+                "caller": plan.caller or "",
+                "operator_override": plan.operator_override,
+                "subtree": plan.subtree,
+            },
+            summary=plan.target,
+        )
+        return _node_terminate_payload(plan, confirmed=True, result=result)
 
     @app.post("/api/nodes/{node}/send")
     def send_node_input_endpoint(
@@ -8349,6 +8404,167 @@ def _update_node_relationships(
 
     _write_registry_atomic(registry_path, registry)
     return _org_payload(config)
+
+
+def _node_terminate_plan(
+    name: str,
+    payload: NodeTerminatePayload,
+    *,
+    auth: AuthContext,
+    config: WebAppConfig,
+) -> NodeTerminatePlan:
+    target = _validated_node_ref(name, field_name="node")
+    _, _, raw_nodes = _load_mutable_registry(config)
+    nodes_by_name = _nodes_by_name(raw_nodes)
+    if target not in nodes_by_name:
+        raise HTTPException(status_code=404, detail="node not found")
+    subtree = _node_subtree_names(target, nodes_by_name)
+
+    caller: str | None = None
+    if payload.operator_override:
+        _require_operator_access(auth, detail="node terminate requires operator role")
+        actor = _actor_payload(auth)
+    else:
+        caller = _optional_node_ref(payload.caller, field_name="caller")
+        if caller is None:
+            raise HTTPException(status_code=400, detail="caller is required")
+        if auth.mode != AuthMode.LOCAL_TOKEN:
+            raise HTTPException(
+                status_code=403,
+                detail="node terminate requires node auth or operator override",
+            )
+        if caller not in nodes_by_name:
+            raise HTTPException(status_code=404, detail="caller not found")
+        if _mapping_string(nodes_by_name[target], "parent") != caller:
+            raise HTTPException(status_code=403, detail="caller does not own target node")
+        actor = _node_actor_payload(caller)
+
+    confirmation_id = _node_terminate_confirmation_id(
+        config,
+        target=target,
+        caller=caller,
+        operator_override=payload.operator_override,
+        subtree=subtree,
+    )
+    return NodeTerminatePlan(
+        target=target,
+        caller=caller,
+        actor=actor,
+        operator_override=payload.operator_override,
+        subtree=subtree,
+        confirmation_id=confirmation_id,
+    )
+
+
+def _node_terminate_payload(
+    plan: NodeTerminatePlan,
+    *,
+    confirmed: bool,
+    result: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "ok": True,
+        "confirmed": confirmed,
+        "confirmation_required": not confirmed,
+        "requires_confirmation": not confirmed,
+        "confirmation_id": plan.confirmation_id,
+        "node": plan.target,
+        "caller": plan.caller or "",
+        "operator_override": plan.operator_override,
+        "subtree": plan.subtree,
+    }
+    if result is not None:
+        payload["result"] = dict(result)
+    return payload
+
+
+def _node_actor_payload(node: str) -> dict[str, object]:
+    return {"kind": "node", "id": node, "login": node, "role": "none"}
+
+
+def _node_terminate_confirmation_id(
+    config: WebAppConfig,
+    *,
+    target: str,
+    caller: str | None,
+    operator_override: bool,
+    subtree: Sequence[str],
+) -> str:
+    material = json.dumps(
+        {
+            "action": "node.terminate",
+            "session": config.registry_session,
+            "target": target,
+            "caller": caller or "",
+            "operator_override": operator_override,
+            "subtree": list(subtree),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hmac.new(
+        config.token.encode("utf-8"),
+        material.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _confirmation_id_matches(supplied: str, expected: str) -> bool:
+    try:
+        supplied_bytes = supplied.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return hmac.compare_digest(supplied_bytes, expected.encode("ascii"))
+
+
+def _node_subtree_names(
+    name: str,
+    nodes_by_name: Mapping[str, dict[str, object]],
+) -> list[str]:
+    subtree: list[str] = []
+    seen: set[str] = set()
+    pending = [name]
+    while pending:
+        current = pending.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        subtree.append(current)
+        pending.extend(sorted(_direct_children(current, nodes_by_name)))
+    return subtree
+
+
+def _despawn_node(plan: NodeTerminatePlan, *, config: WebAppConfig) -> dict[str, object]:
+    args = ["grove", "despawn", plan.target]
+    if plan.operator_override:
+        args.append("--operator-override")
+    elif plan.caller is not None:
+        args.extend(["--caller", plan.caller])
+    args.extend(["--session", config.registry_session, "--json"])
+    try:
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=GROVE_DESPAWN_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail="grove CLI not found") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=400, detail="grove despawn timed out") from exc
+    if proc.returncode != 0:
+        raise HTTPException(
+            status_code=400,
+            detail=_safe_cli_error(proc.stdout, proc.stderr, fallback="grove despawn failed"),
+        )
+    try:
+        loaded: object = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="grove despawn returned invalid json") from exc
+    if not isinstance(loaded, dict):
+        raise HTTPException(status_code=400, detail="grove despawn returned invalid json")
+    return {str(key): value for key, value in loaded.items()}
 
 
 def _load_mutable_registry(

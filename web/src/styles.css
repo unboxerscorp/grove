@@ -1518,6 +1518,11 @@ button {
   color: var(--text);
 }
 
+.org-act:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .org-act--term:hover {
   color: var(--teal);
   border-color: var(--teal);
@@ -1649,7 +1654,15 @@ button {
 .node-drawer__term {
   width: 100%;
   justify-content: center;
-  margin: 4px 0 18px;
+  margin: 4px 0 8px;
+}
+
+.node-drawer__terminate {
+  width: 100%;
+  justify-content: center;
+  margin: 0 0 18px;
+  border-color: color-mix(in srgb, var(--coral), transparent 45%);
+  color: var(--coral);
 }
 
 .node-drawer__assign-sec {

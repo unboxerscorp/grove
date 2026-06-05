@@ -161,6 +161,11 @@ const KO: Dict = {
   "node.cancel": "취소",
   "node.createError": "노드를 생성하지 못했습니다",
   "node.nameRequired": "이름을 입력하세요",
+  "node.terminate": "종료",
+  "node.terminating": "종료 중…",
+  "node.terminateConfirm":
+    "「{node}」 노드를 종료할까요? 영향 노드 {count}개를 확인했습니다. tmux pane을 kill하고 프로젝트 registry에서 제거합니다.",
+  "node.terminateError": "노드를 종료하지 못했습니다",
 
   "node.fact.role": "역할",
   "node.fact.group": "그룹",
@@ -910,6 +915,11 @@ const EN: Dict = {
   "node.cancel": "Cancel",
   "node.createError": "failed to create node",
   "node.nameRequired": "name is required",
+  "node.terminate": "terminate",
+  "node.terminating": "terminating…",
+  "node.terminateConfirm":
+    "Terminate “{node}”? The server preview found {count} affected node(s). This kills its tmux pane and removes it from the project registry.",
+  "node.terminateError": "failed to terminate node",
 
   "node.fact.role": "role",
   "node.fact.group": "group",

@@ -136,6 +136,8 @@ program
   .option("--session <session>", "target tmux/grove session")
   .option("--group <group>", "despawn every node in a group (requires --yes)")
   .option("--all", "despawn every node in the session registry (requires --yes)")
+  .option("--caller <node>", "node requesting termination; must parent every normal target")
+  .option("--operator-override", "explicit operator override for ownership enforcement")
   .option("-y, --yes", "confirm bulk despawn")
   .option("-c, --config <file>", "path to grove.yaml")
   .option("--json", "print the despawn result as JSON")
