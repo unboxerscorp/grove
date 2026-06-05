@@ -23,7 +23,7 @@ Decide:
 - role: maker, reviewer, qa, specialist, moderator, or similar
 - parent: the coordinating node
 - group: optional fan-out or team label
-- cwd or workspace metadata for assigned tasks
+- cwd or workspace metadata for assigned work or human-facing items
 - window or pane placement if the human operator requested it
 
 Reviewer work should use an existing persistent reviewer node. If no suitable reviewer exists, request one from the human operator.
@@ -53,5 +53,5 @@ Do not route work to the node until it is visible in org output and has a pane a
 
 - Use `--agent antigravity` for nodes backed by the `agy` CLI.
 - Grove work should run in a visible interactive pane. Headless mode is for explicit one-shot checks only.
-- The interactive launch may include `--dangerously-skip-permissions` under local operator control. The flag only changes CLI permission prompts; it does not relax `AGENTS.md`, skill, board, or handoff rules.
+- The interactive launch may include `--dangerously-skip-permissions` under local operator control. The flag only changes CLI permission prompts; it does not relax `AGENTS.md`, skill, human-facing list, or handoff rules.
 - The interactive submit sequence is paste, Enter, Enter. The lead owns live parity verification.
