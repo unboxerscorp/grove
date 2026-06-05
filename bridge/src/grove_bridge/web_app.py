@@ -30,6 +30,15 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, sta
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
+from grove_bridge.assistant import (
+    AssistantActor,
+    AssistantBroker,
+    AssistantContext,
+    AssistantLLMClient,
+    AssistantScope,
+    AssistantSurface,
+    AssistantUnavailable,
+)
 from grove_bridge.auth import Account, DashboardRole
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
 from grove_bridge.config import default_board_db_path
@@ -630,6 +639,7 @@ def create_app(
     *,
     config: WebAppConfig | None = None,
     store: SQLiteBoardStore | None = None,
+    assistant_client: AssistantLLMClient | None = None,
 ) -> FastAPI:
     app_config = config or WebAppConfig(
         grove_home=Path(os.environ.get("GROVE_HOME", "~/.grove")).expanduser(),
@@ -639,6 +649,8 @@ def create_app(
     app = FastAPI(title="grove dev room")
     app.state.config = app_config
     app.state.store = board_store
+    app.state.assistant_client = assistant_client
+    app.state.assistant_broker = None
     app.state.ticket_store = TicketStore()
     app.state.team_session_store = TeamSessionStore()
     app.state.team_join_code_store = TeamJoinCodeStore()
@@ -5772,30 +5784,17 @@ def _handle_master_chat_request(
     auth: AuthContext,
     project: ProjectContext,
 ) -> dict[str, object]:
-    module = _load_master_module()
-    master_actor = _master_actor(module, auth)
-    scope = _master_scope(module, project, payload)
-    context = _master_request_context(module, payload, actor=master_actor, scope=scope)
-    redacted_message = _safe_public_text(payload.message)
-    turn = _master_construct(
-        module,
-        "MasterTurn",
-        context=context,
-        message=payload.message,
-        redacted_message=redacted_message,
-    )
-    route_target = _master_feedback_route_target(module, project=project)
-    chat_request = _master_construct(
-        module,
-        "MasterChatRequest",
-        turn=turn,
-        route_target=route_target,
+    context = _assistant_context(
+        payload,
+        auth=auth,
+        project=project,
+        store=_store(request),
     )
     try:
-        handler = cast(Callable[[object], object], _master_attr(module, "handle_master_chat"))
-        response = handler(chat_request)
-    except NotImplementedError as exc:
-        raise HTTPException(status_code=503, detail="master chat is not implemented") from exc
+        response = _assistant_broker(request).handle_turn(payload.message, context)
+    except AssistantUnavailable as exc:
+        LOGGER.warning("event=master_chat_unavailable error=%s", _safe_log_text(exc))
+        raise HTTPException(status_code=503, detail="master chat is unavailable") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=_safe_public_text(exc)) from exc
     except Exception as exc:
@@ -5810,8 +5809,54 @@ def _handle_master_chat_request(
     rendered = _jsonable(response)
     if not isinstance(rendered, dict):
         raise HTTPException(status_code=503, detail="master chat returned invalid response")
-    _enrich_master_chat_answer(rendered, _store(request), project=project)
     return rendered
+
+
+def _assistant_broker(request: Request) -> AssistantBroker:
+    broker = getattr(request.app.state, "assistant_broker", None)
+    if isinstance(broker, AssistantBroker):
+        return broker
+    raw_client = getattr(request.app.state, "assistant_client", None)
+    client = cast(AssistantLLMClient | None, raw_client)
+    broker = AssistantBroker(llm_client=client)
+    request.app.state.assistant_broker = broker
+    return broker
+
+
+def _assistant_context(
+    payload: MasterChatPayload,
+    *,
+    auth: AuthContext,
+    project: ProjectContext,
+    store: SQLiteBoardStore,
+) -> AssistantContext:
+    actor = _actor_payload(auth)
+    role = str(actor.get("role") or "none")
+    is_operator = auth.mode != AuthMode.TEAM_COOKIE or role in {"admin", "operator"}
+    workspace = _project_workspace(
+        _registry_path(project.config).parent,
+        _load_registry(project.config),
+    )
+    workspace_path = Path(workspace).expanduser() if workspace else None
+    return AssistantContext(
+        conversation_id=_master_request_id(payload.conversation_id, prefix="conv"),
+        request_id=_master_request_id(payload.request_id, prefix="req"),
+        actor=AssistantActor(
+            id=_actor_id(actor),
+            role="operator" if auth.mode == AuthMode.LOCAL_TOKEN else role,
+            is_operator=is_operator,
+            display_name=str(actor.get("login") or _actor_id(actor)),
+        ),
+        scope=AssistantScope(
+            selected_project=project.name,
+            board=project.board,
+            visible_projects=_visible_project_names(project),
+            origin_surface=cast(AssistantSurface, payload.origin_surface),
+            origin_page=_safe_public_text(payload.origin_page) if payload.origin_page else None,
+        ),
+        store=store,
+        workspace_path=workspace_path,
+    )
 
 
 def _load_master_module() -> ModuleType:

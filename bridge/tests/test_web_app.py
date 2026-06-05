@@ -20,6 +20,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import grove_bridge.team_auth as team_auth
 import grove_bridge.web_app as web_app
+from grove_bridge.assistant import AssistantBusy, AssistantLLMClient, AssistantUnavailable
 from grove_bridge.auth_status import ToolAuthStatus
 from grove_bridge.store import BoardEvent, SQLiteBoardStore
 from grove_bridge.team_auth import (
@@ -33,6 +34,28 @@ from grove_bridge.team_auth import (
     session_secret_path,
 )
 from grove_bridge.web_app import AuthMode, WebAppConfig, create_app
+
+
+class FakeAssistantLLMClient:
+    def __init__(self, text: str = "LLM answer from facts. [fact:board.status_counts]") -> None:
+        self.text = text
+        self.calls: list[dict[str, str]] = []
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append({"system_prompt": system_prompt, "user_prompt": user_prompt})
+        return self.text
+
+
+class UnavailableAssistantLLMClient:
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        _ = (system_prompt, user_prompt)
+        raise AssistantUnavailable("llm unavailable")
+
+
+class BusyAssistantLLMClient:
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        _ = (system_prompt, user_prompt)
+        raise AssistantBusy("assistant node rate limited")
 
 
 def payload_contains_number(value: object, needle: int | float) -> bool:
@@ -1832,7 +1855,8 @@ def test_master_chat_returns_answer_and_records_redacted_audit(tmp_path: Path) -
     assert payload["request_id"] == "req-web"
     assert payload["response_type"] == "answer"
     assert payload["classification"]["intent"] == "capability.explain"
-    assert payload["answer"]["text"].startswith("MASTER can answer")
+    assert payload["answer"]["text"] == "LLM answer from facts. [fact:board.status_counts]"
+    assert payload["answer"]["citations"] == ["fact:board.status_counts"]
     assert payload["proposal"] is None
     rendered = json.dumps(payload)
     assert secret not in rendered
@@ -1845,7 +1869,7 @@ def test_master_chat_returns_answer_and_records_redacted_audit(tmp_path: Path) -
     assert audits[0].kind == "audit.master.turn.received"
 
 
-def test_master_chat_returns_feedback_preview_with_default_route(tmp_path: Path) -> None:
+def test_master_chat_denies_feedback_handoff_until_pr3(tmp_path: Path) -> None:
     client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
 
     response = client.post(
@@ -1860,17 +1884,13 @@ def test_master_chat_returns_feedback_preview_with_default_route(tmp_path: Path)
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["response_type"] == "preview"
-    assert payload["requires_confirmation"] is True
+    assert payload["response_type"] == "denied"
+    assert payload["requires_confirmation"] is False
     assert payload["classification"]["kind"] == "feedback_route"
-    assert payload["feedback_route"]["route"] == {
-        "project": "grove-dev",
-        "board": "dev10",
-        "assignee": "grove-master",
-        "labels": ["grove-feedback"],
-    }
-    assert payload["proposal"]["requires_operator"] is True
-    assert payload["operator_gate"]["allowed"] is True
+    assert payload["feedback_route"] is None
+    assert payload["proposal"] is None
+    assert payload["operator_gate"]["allowed"] is False
+    assert "PR1" in payload["operator_gate"]["reason"]
 
 
 def test_master_chat_team_operator_requires_csrf_and_succeeds(tmp_path: Path) -> None:
@@ -2029,31 +2049,28 @@ def test_master_chat_answer_includes_project_board_org_and_human_facts(
     answer = payload["answer"]
     assert answer is not None
     text = answer["text"]
-    assert "future web route should attach" not in text
-    assert "Reviewers: 2" in text
-    assert "ready=1" in text
-    assert "running=1" in text
-    assert "blocked=1" in text
-    assert "done=1" in text
-    assert "ask-human=1" in text
-    assert "needs_human=1" in text
-    assert "project-master" in text
-    assert "human-lead" in text
-    assert "Projects: dev10, dev11" in text
+    assert text == "LLM answer from facts. [fact:board.status_counts]"
     facts = answer["metadata"]["facts"]
-    assert facts["project"] == {"selected": "dev10", "board": "dev10"}
+    assert facts["project"] == {
+        "selected": "dev10",
+        "board": "dev10",
+        "visible": ["dev10", "dev11"],
+    }
     assert facts["board"]["status_counts"] == {
         "ready": 1,
         "running": 1,
         "blocked": 1,
+        "review": 0,
         "done": 1,
         "archived": 0,
+        "ask_human": 0,
     }
-    assert facts["reviewers"]["count"] == 2
-    assert facts["human"]["ask_human_count"] == 1
-    assert facts["human"]["needs_human_count"] == 1
-    assert facts["org"]["project_master"]["present"] is True
-    assert facts["projects"]["visible"] == ["dev10", "dev11"]
+    assert {task["title"] for task in facts["board"]["in_flight"]} == {
+        "Running backend",
+        "Needs human decision",
+    }
+    assert facts["agent_health"]["nodes"] == []
+    assert facts["recent_commits"] == []
 
 
 def test_master_chat_rejects_missing_or_bad_payload(tmp_path: Path) -> None:
@@ -2075,12 +2092,12 @@ def test_master_chat_rejects_missing_or_bad_payload(tmp_path: Path) -> None:
     assert bad_message_type.status_code == 422
 
 
-def test_master_chat_unavailable_module_returns_503(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
-    monkeypatch.setattr(web_app, "_load_master_module", lambda: object())
+def test_master_chat_unavailable_llm_returns_503(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        assistant_client=UnavailableAssistantLLMClient(),
+    )
 
     response = client.post(
         "/api/master/chat",
@@ -2090,6 +2107,27 @@ def test_master_chat_unavailable_module_returns_503(
 
     assert response.status_code == 503
     assert response.json()["detail"] == "master chat is unavailable"
+
+
+def test_master_chat_busy_assistant_node_returns_retry_answer(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        assistant_client=BusyAssistantLLMClient(),
+    )
+
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={"message": "안녕"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response_type"] == "answer"
+    assert "비서 잠시 바쁨" in payload["answer"]["text"]
+    assert "재시도" in payload["answer"]["text"]
+    assert payload["answer"]["metadata"]["llm"]["status"] == "busy"
 
 
 def test_inbox_returns_blocked_and_ask_human_items_with_cursor_and_redaction(
@@ -7169,6 +7207,7 @@ def make_client(
     retro_analytics_enabled: bool = False,
     usage_trend_enabled: bool = False,
     node_input_enabled: bool = False,
+    assistant_client: AssistantLLMClient | None = None,
 ) -> TestClient:
     dist = tmp_path / "dist"
     dist.mkdir(exist_ok=True)
@@ -7202,8 +7241,13 @@ def make_client(
         usage_trend_enabled=usage_trend_enabled,
         node_input_enabled=node_input_enabled,
     )
+    app = create_app(
+        config=config,
+        store=store,
+        assistant_client=assistant_client or FakeAssistantLLMClient(),
+    )
     return TestClient(
-        create_app(config=config, store=store),
+        app,
         base_url=f"http://{host}:{port}",
         raise_server_exceptions=raise_server_exceptions,
     )
