@@ -451,6 +451,7 @@ export function OrgChart(props: {
   const [childrenMap, setChildrenMap] = useState<Record<string, string[]>>({});
   const [rootList, setRootList] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   // v1.29 cross-project org.
   const [master, setMaster] = useState<MasterMeta | null>(null);
@@ -481,6 +482,7 @@ export function OrgChart(props: {
   // its cleanup sets its own `alive=false` before the new run starts.
   useEffect(() => {
     let alive = true;
+    setLoading(true);
     api
       .getOrg()
       .then((o) => {
@@ -492,9 +494,13 @@ export function OrgChart(props: {
         setMaster(o.master ?? null);
         setProjectLeads(o.project_leads ?? []);
         setError(null);
+        setLoading(false);
       })
       .catch((e: unknown) => {
-        if (alive) setError(e instanceof Error ? e.message : t("org.loadError"));
+        if (alive) {
+          setError(e instanceof Error ? e.message : t("org.loadError"));
+          setLoading(false);
+        }
       });
     return () => {
       alive = false;
@@ -802,7 +808,7 @@ export function OrgChart(props: {
         <div className="org__lead">
           <GroveMark size={18} className="org__mark" />
           <span className="org__title">{t("org.title")}</span>
-          <span className="org__sub">{t("org.subtitle", { n: nodes.length, g: groups.length })}</span>
+          <span className="org__sub">{loading ? t("org.loading") : t("org.subtitle", { n: nodes.length, g: groups.length })}</span>
         </div>
         <div className="org__tools">
           <button type="button" className={cx("org-addbtn", adding && "is-open")} onClick={() => setAdding((v) => !v)}>
@@ -835,7 +841,8 @@ export function OrgChart(props: {
 
       {error && <div className="org__msg is-error">{error}</div>}
       {terminateError && <div className="org__msg is-error">{terminateError}</div>}
-      {!error && nodes.length === 0 && <div className="org__msg">{t("org.empty")}</div>}
+      {!error && loading && nodes.length === 0 && <div className="org__msg">{t("org.loading")}</div>}
+      {!error && !loading && nodes.length === 0 && <div className="org__msg">{t("org.empty")}</div>}
 
       <MasterOrgStrip
         masterOrg={masterOrg}

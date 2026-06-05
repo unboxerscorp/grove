@@ -387,6 +387,11 @@ let ticketSeq = 0;
 const ticketBindings: Record<string, { kind: string; pane: string; project: string }> = {};
 let taskSeq = 0;
 
+let orgDelayMs = 0;
+diag.setOrgDelay = (ms: number): void => {
+  orgDelayMs = Math.max(0, Math.min(5000, Math.floor(ms)));
+};
+
 // Audit log seed — MIRRORS web_app.py _audit_event_payload exactly: object
 // `actor` ({kind,id,login,role}) and object `target` ({type,id,node}), a numeric
 // `cursor` (rowid), epoch-seconds `ts`, and top-level task_id/from_node/to_node.
@@ -2372,7 +2377,11 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const hdrs = init?.headers as Record<string, string> | undefined;
     const proj = hdrs?.["X-Grove-Project"] ?? "";
     diag.projectHeader = proj;
-    return Promise.resolve(json(proj === SOLO_PROJECT ? buildSoloOrg() : buildOrg(proj || "dev10")));
+    const response = json(proj === SOLO_PROJECT ? buildSoloOrg() : buildOrg(proj || "dev10"));
+    if (orgDelayMs > 0) {
+      return new Promise((resolve) => setTimeout(() => resolve(response), orgDelayMs));
+    }
+    return Promise.resolve(response);
   }
 
   if (p === "/api/nodes") {

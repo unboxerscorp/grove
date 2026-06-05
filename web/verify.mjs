@@ -90,6 +90,23 @@ async function coreMain() {
       };
     });
 
+    await page.evaluate(() => window.__MOCK__?.setOrgDelay?.(800));
+    await page.click('.dr-sidebar .dr-tab[data-view="team"]');
+    await page.waitForSelector(".org", { timeout: 8000 });
+    await new Promise((r) => setTimeout(r, 120));
+    const teamLoading = await page.evaluate(() => ({
+      nodes: document.querySelectorAll(".org-node").length,
+      emptyCopy: /노드가 없습니다|no nodes yet/i.test(document.querySelector(".org__msg")?.textContent ?? ""),
+      msg: (document.querySelector(".org__msg")?.textContent ?? "").trim(),
+      sub: (document.querySelector(".org__sub")?.textContent ?? "").trim(),
+    }));
+    await page.evaluate(() => window.__MOCK__?.setOrgDelay?.(0));
+    await page.waitForSelector(".org-node", { timeout: 8000 });
+    const teamFinal = await page.evaluate(() => ({
+      nodes: document.querySelectorAll(".org-node").length,
+      sub: (document.querySelector(".org__sub")?.textContent ?? "").trim(),
+    }));
+
     await page.click('.dr-sidebar .dr-tab[data-view="terminal"]');
     await page.waitForSelector(".dr-term .xterm", { timeout: 8000 });
     await page.waitForFunction(() => /#\d+/.test(document.querySelector(".dr-term .xterm-rows")?.textContent ?? ""), {
@@ -132,6 +149,9 @@ async function coreMain() {
       sidebar.visibleViewsOk &&
       sidebar.hiddenViewsAbsent &&
       sidebar.drawersOk &&
+      teamLoading.nodes === 0 &&
+      !teamLoading.emptyCopy &&
+      teamFinal.nodes >= 1 &&
       terminal.name === "root" &&
       /terminal/.test(terminal.ticketKind) &&
       /ws\/terminal/.test(terminal.wsUrl) &&
@@ -154,6 +174,8 @@ async function coreMain() {
         JSON.stringify(
           {
             sidebar,
+            teamLoading,
+            teamFinal,
             terminal,
             slackGuide,
             board,
@@ -169,6 +191,8 @@ async function coreMain() {
       JSON.stringify({
         mode: "core",
         sidebarGroups: sidebar.groups,
+        teamLoading,
+        teamFinal,
         terminal: { name: terminal.name, pane: terminal.pane, chars: terminal.chars },
         lists: board.lists,
       }),
@@ -1283,8 +1307,18 @@ async function main() {
       !drawerManualOptions.includes("ask_human");
 
     // Interactive org canvas: switch to the Team tab; assert the graph renders
-    // (nodes, bezier edges, group legend).
+    // (nodes, bezier edges, group legend). The org request can be slow on the
+    // live bridge, so the initial loading state must not look like an empty org.
+    await page.evaluate(() => window.__MOCK__?.setOrgDelay?.(800));
     await page.$eval('.dr-tab[data-view="team"]', (el) => el.click());
+    await page.waitForSelector(".org", { timeout: 5000 });
+    await new Promise((r) => setTimeout(r, 120));
+    const orgLoading = await page.evaluate(() => ({
+      nodes: document.querySelectorAll(".org-node").length,
+      emptyCopy: /노드가 없습니다|no nodes yet/i.test(document.querySelector(".org__msg")?.textContent ?? ""),
+      msg: document.querySelector(".org__msg")?.textContent ?? "",
+    }));
+    await page.evaluate(() => window.__MOCK__?.setOrgDelay?.(0));
     await page.waitForSelector(".org-node", { timeout: 8000 });
     await new Promise((r) => setTimeout(r, 650)); // let the entrance layout tween settle
     const orgView = await page.evaluate(() => ({
@@ -3693,6 +3727,8 @@ async function main() {
     const addOk = addTask.created === NEW_TITLE;
     const mirrorOk = term.markerCount === 1; // no accumulation
     const teamOk =
+      orgLoading.nodes === 0 &&
+      !orgLoading.emptyCopy &&
       orgView.nodes >= 1 &&
       orgView.edges >= 1 &&
       orgView.legend >= 1 &&
@@ -3777,6 +3813,7 @@ async function main() {
       boardCard,
       ...term,
       orgNodes: orgView.nodes,
+      orgNoPrematureEmpty: orgLoading.nodes === 0 && !orgLoading.emptyCopy,
       edges: orgView.edges,
       legend: orgView.legend,
       dragLabelsOk,
