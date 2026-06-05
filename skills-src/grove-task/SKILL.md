@@ -1,11 +1,11 @@
 ---
 name: grove-task
-description: Use when moving a human-facing TODO, feedback, or ask-human task through status transitions.
+description: Use when moving a human-facing TODO, feedback, or ask-human list item through status transitions.
 ---
 
 # grove-task
 
-Use `grove task` when a human-facing task already exists and the operator-facing state needs an update. Do not use tasks as the required node-to-node communication protocol.
+Use `grove task` when a human-facing list item already exists and the operator-facing state needs an update. Do not use list items as the required node-to-node communication protocol.
 
 ## Commands
 

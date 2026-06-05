@@ -1,6 +1,6 @@
 ---
 name: grove-delegate
-description: Use when handing context or requests to another grove node without forcing task-based communication.
+description: Use when handing context or requests to another grove node without forcing list-item communication.
 ---
 
 # grove-delegate (alias: grove:delegate)
@@ -23,7 +23,7 @@ grove wait <node>
 
 The org tree records ownership and reporting structure. It is not a communication boundary. Nodes may talk across siblings or projects using `project:node` or `--project`.
 
-Do not force node-to-node implementation, review, or blocker traffic through board tasks. Board tasks are for human TODOs, human feedback, and ask-human records.
+Do not force node-to-node implementation, review, or blocker traffic through human-facing list items. List items are for human TODOs, human feedback, and ask-human records.
 
 Do not autonomously create or delete nodes. If the human explicitly asks for an org change, use the operator-marked GUI/API/CLI path and report the result.
 
@@ -41,6 +41,6 @@ A useful direct handoff should include:
 
 If a needed node does not exist, ask the human operator or project lead to request an org change.
 
-## Human Tasks
+## Human-Facing Items
 
-Use human-facing tasks only for operator TODOs, feedback, and "human judgment needed" items. A human may reference a task number when instructing master or a project lead.
+Use human-facing list items only for operator TODOs, feedback, and "human judgment needed" records. A human may reference an item id when instructing master or a project lead.

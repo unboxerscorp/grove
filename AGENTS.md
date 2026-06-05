@@ -18,7 +18,7 @@ This repo is growing into a cockpit product with multiple makers working at once
 - Any node may inspect, communicate, and work across projects and streams when the human request or practical task requires it. Prefer the local owner style and avoid unrelated refactors.
 - Reviewer and QA roles describe default focus, not capability limits. They may still communicate directly, run checks, and make changes when explicitly asked or when it is the practical route.
 - Nodes may communicate across the visible org regardless of hierarchy or project. Use direct node messaging, tmux capture, or tmux input as appropriate.
-- Board tasks are human-facing TODO, feedback, and ask-human records. Do not use board tasks as the required node-to-node communication protocol.
+- Human-facing list items are operator TODO, feedback, and ask-human records. Do not use list items as the required node-to-node communication protocol.
 - Nodes must not autonomously spawn, terminate, or rearrange nodes. When the human explicitly asks for an org change, use the operator-marked GUI/API/CLI path and report what changed.
 - Before routing work or contacting another node, inspect the org so the target role, tmux pane, and cwd are known.
 - `agy`/`antigravity` nodes follow the same org-awareness and direct-communication model as `codex` and `claude`; `.agents/AGENTS.md` carries runtime-specific parity notes.

@@ -25,7 +25,7 @@ Check:
 
 Hierarchy is ownership and reporting metadata, not a communication restriction. Nodes may address reachable nodes in any project with `project:node` or command `--project`.
 
-Use direct conversation for node-to-node work. Do not force implementation, review, or blocker traffic through board tasks.
+Use direct conversation for node-to-node work. Do not force implementation, review, or blocker traffic through human-facing list items.
 
 If the target node does not exist, ask the human operator or project lead to request an org change. Do not spawn it yourself unless the human explicitly asks you to create it through the operator-marked path.
 

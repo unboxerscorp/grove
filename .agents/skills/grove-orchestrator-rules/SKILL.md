@@ -33,7 +33,7 @@ grove org --json
 grove status
 ```
 
-Human task operations:
+Human-facing list item operations:
 
 ```text
 create_task(board, title, body, metadata)
@@ -42,4 +42,4 @@ ask_human(task, reason)
 done(task, comment)
 ```
 
-Use tasks only for human-facing TODO, feedback, and ask-human records. Use direct node communication for node-to-node work.
+Use list items only for human-facing TODO, feedback, and ask-human records. Use direct node communication for node-to-node work.
