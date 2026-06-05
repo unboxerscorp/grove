@@ -155,13 +155,13 @@ program
 
 program
   .command("delegate <node> <title...>")
-  .description("create a human-facing TODO/feedback task associated with a grove node")
-  .option("--body <text>", "task body")
+  .description("create a human-facing TODO/feedback item associated with a grove node")
+  .option("--body <text>", "human-facing item body")
   .option("--board <board>", "target board slug", "default")
   .option("--session <session>", "target grove session/project")
   .option("--allow-remote", "allow sending the dashboard token to a non-loopback grove-web URL")
   .option("-c, --config <file>", "path to grove.yaml")
-  .option("--json", "print the created task as JSON")
+  .option("--json", "print the created human-facing item as JSON")
   .action(
     run((node: string, title: string[], opts: Record<string, unknown>) =>
       cmdDelegate(node, rawVariadicMessage("delegate", node, title), withConfig(opts)),

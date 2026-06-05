@@ -168,7 +168,7 @@ describe("delegateTask", () => {
     expect(result.node).toBe("maker");
   });
 
-  test("prepends a grove context pack to delegated task bodies", async () => {
+  test("prepends a grove context pack to human-facing item bodies", async () => {
     const state = deps({ env: { GROVE_WEB_URL: "http://127.0.0.1:9999" } });
 
     await delegateTask(
@@ -216,12 +216,12 @@ describe("delegateTask", () => {
     ).rejects.toThrow("could not reach grove-web at http://127.0.0.1:8765 for session dev10");
   });
 
-  test("reports non-2xx task creation failures", async () => {
+  test("reports non-2xx human-facing item creation failures", async () => {
     const state = deps({ responseStatus: 502 });
 
     await expect(
       delegateTask("maker", "Fix issue", { session: "dev10" }, state.deps),
-    ).rejects.toThrow("grove-web task create failed");
+    ).rejects.toThrow("grove-web human-facing item create failed");
   });
 
   test("rejects non-loopback web URLs before reading or sending the dashboard token", async () => {
@@ -242,7 +242,7 @@ describe("delegateTask", () => {
 
     expect(state.calls[0]?.url).toBe("http://10.0.0.5:8765/api/boards/default/tasks");
     expect(state.warnings).toEqual([
-      "delegate sending dashboard token to non-loopback grove-web URL: http://10.0.0.5:8765",
+      "human-facing item create sending dashboard token to non-loopback grove-web URL: http://10.0.0.5:8765",
     ]);
   });
 
@@ -257,17 +257,19 @@ describe("delegateTask", () => {
     expect(state.warnings[0]).toContain("non-loopback grove-web URL");
   });
 
-  test("renders text and JSON from the created task", async () => {
+  test("renders text and JSON from the created human-facing item", async () => {
     const state = deps({ env: { GROVE_WEB_URL: "http://127.0.0.1:9999" } });
     const result = await delegateTask("maker", "Fix issue", {}, state.deps);
 
-    expect(renderDelegateText(result)).toBe("delegated task-1 -> maker on default (dev10)");
+    expect(renderDelegateText(result)).toBe(
+      "created human-facing item task-1 for maker on default (dev10)",
+    );
     expect(JSON.parse(renderDelegateJson(result))).toEqual(result.task);
   });
 });
 
 describe("cmdDelegate", () => {
-  test("prints created task JSON when requested", async () => {
+  test("prints created human-facing item JSON when requested", async () => {
     const state = deps({ env: { GROVE_WEB_URL: "http://127.0.0.1:9999" } });
     const writes: string[] = [];
     vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {

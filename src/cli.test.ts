@@ -23,12 +23,12 @@ describe("CLI help text", () => {
     expect(source).toContain("first terminal event among listed nodes");
   });
 
-  test("delegate command creates human-facing tasks", () => {
+  test("delegate command creates human-facing items", () => {
     const source = readFileSync(join(here, "cli.ts"), "utf8");
 
     expect(source).toContain("delegate <node> <title...>");
     expect(source).toContain(
-      "create a human-facing TODO/feedback task associated with a grove node",
+      "create a human-facing TODO/feedback item associated with a grove node",
     );
   });
 

@@ -121,7 +121,9 @@ export function isLoopbackWebUrl(baseUrl: string): boolean {
 function assertRemoteAllowed(baseUrl: string, input: DelegateInput, deps: DelegateDeps): void {
   if (isLoopbackWebUrl(baseUrl)) return;
   if (input.allowRemote || isTruthyEnv(deps.env["GROVE_DELEGATE_ALLOW_REMOTE"])) {
-    deps.warn(`delegate sending dashboard token to non-loopback grove-web URL: ${baseUrl}`);
+    deps.warn(
+      `human-facing item create sending dashboard token to non-loopback grove-web URL: ${baseUrl}`,
+    );
     return;
   }
   throw new Error(
@@ -262,7 +264,7 @@ export async function delegateTask(
   if (!response.ok) {
     const details = errorSnippet(responseText);
     throw new Error(
-      `grove-web task create failed at ${endpoint} for session ${session} (HTTP ${response.status} ${response.statusText}; token ${tokenPath})${details ? `: ${details}` : ""}`,
+      `grove-web human-facing item create failed at ${endpoint} for session ${session} (HTTP ${response.status} ${response.statusText}; token ${tokenPath})${details ? `: ${details}` : ""}`,
     );
   }
 
@@ -277,7 +279,7 @@ export async function delegateTask(
 
 export function renderDelegateText(result: DelegateResult): string {
   const id = typeof result.task["id"] === "string" ? result.task["id"] : "(unknown-task)";
-  return `delegated ${id} -> ${result.node} on ${result.board} (${result.session})`;
+  return `created human-facing item ${id} for ${result.node} on ${result.board} (${result.session})`;
 }
 
 export function renderDelegateJson(result: DelegateResult): string {
