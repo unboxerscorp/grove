@@ -164,6 +164,27 @@ function nodeAccessFlags(pane: string): {
   };
 }
 
+function mockNodeLivenessStatus(status: string): "running" | "stale" | "error" | "idle" {
+  switch (status.trim().toLowerCase()) {
+    case "active":
+    case "running":
+      return "running";
+    case "stale":
+      return "stale";
+    case "error":
+      return "error";
+    default:
+      return "idle";
+  }
+}
+
+function mockNodeDetailStatus(status: string): string {
+  const clean = status.trim().toLowerCase();
+  if (clean === "active") return "running";
+  if (clean === "done") return "dead";
+  return clean || "idle";
+}
+
 function basicNode(n: OrgNodeMock) {
   return {
     name: n.name,
@@ -390,6 +411,12 @@ let taskSeq = 0;
 let orgDelayMs = 0;
 diag.setOrgDelay = (ms: number): void => {
   orgDelayMs = Math.max(0, Math.min(5000, Math.floor(ms)));
+};
+diag.setNodeStatus = (name: string, status: string): boolean => {
+  const node = ORG_NODES.find((n) => n.name === name);
+  if (!node) return false;
+  node.status = status;
+  return true;
 };
 
 // Audit log seed — MIRRORS web_app.py _audit_event_payload exactly: object
@@ -1186,10 +1213,12 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     diag.statusFetches = ((diag.statusFetches as number) ?? 0) + 1;
     const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
     // Mirrors web_app.py _node_liveness_summary: each node classified once into
-    // running/stale/error, everything else idle. error is NOT folded into stale.
-    const running = ORG_NODES.filter((n) => n.status === "running").length;
-    const stale = ORG_NODES.filter((n) => n.status === "stale").length;
-    const error = ORG_NODES.filter((n) => n.status === "error").length;
+    // running/stale/error, everything else idle. Registry "active" aliases to
+    // running/live; error is NOT folded into stale.
+    const statuses = ORG_NODES.map((n) => mockNodeLivenessStatus(n.status));
+    const running = statuses.filter((s) => s === "running").length;
+    const stale = statuses.filter((s) => s === "stale").length;
+    const error = statuses.filter((s) => s === "error").length;
     const idle = ORG_NODES.length - running - stale - error;
     const body: Record<string, unknown> = {
       project: proj,
@@ -1202,7 +1231,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       diag.statusDetailFetched = true;
       body.node_details = ORG_NODES.map((n) => {
         // explicit registry status -> "explicit"; derived (error/done) -> "inferred".
-        const status = n.status === "done" ? "dead" : n.status;
+        const status = mockNodeDetailStatus(n.status);
         const inferred = n.status === "error" || n.status === "done";
         return {
           name: n.name,

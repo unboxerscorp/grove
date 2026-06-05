@@ -92,6 +92,34 @@ async function coreMain() {
       };
     });
 
+    await page.waitForFunction(
+      () => /\d/.test(document.querySelector(".nodestat__chip.is-running")?.textContent ?? ""),
+      { timeout: 8000 },
+    );
+    const num = (s) => parseInt((s || "").trim(), 10);
+    const statusInitial = await page.evaluate(() => ({
+      running: (document.querySelector(".nodestat__chip.is-running")?.textContent ?? "").trim(),
+      idle: (document.querySelector(".nodestat__chip.is-idle")?.textContent ?? "").trim(),
+    }));
+    const activeAliasSetup = await page.evaluate(() => {
+      const setNodeStatus = window.__MOCK__?.setNodeStatus;
+      return typeof setNodeStatus === "function" ? setNodeStatus("frontend", "active") : false;
+    });
+    if (activeAliasSetup) {
+      const before = await page.evaluate(() => window.__MOCK__?.statusFetches ?? 0);
+      await page.waitForFunction((prev) => (window.__MOCK__?.statusFetches ?? 0) > prev, { timeout: 8000 }, before);
+    }
+    const statusActiveAlias = await page.evaluate(() => ({
+      running: (document.querySelector(".nodestat__chip.is-running")?.textContent ?? "").trim(),
+      idle: (document.querySelector(".nodestat__chip.is-idle")?.textContent ?? "").trim(),
+    }));
+    const statusActiveAliasOk =
+      num(statusInitial.running) === 2 &&
+      num(statusInitial.idle) === 3 &&
+      activeAliasSetup &&
+      num(statusActiveAlias.running) === 3 &&
+      num(statusActiveAlias.idle) === 2;
+
     await page.evaluate(() => window.__MOCK__?.setOrgDelay?.(800));
     await page.click('.dr-sidebar .dr-tab[data-view="team"]');
     await page.waitForSelector(".org", { timeout: 8000 });
@@ -153,6 +181,7 @@ async function coreMain() {
       sidebar.drawersOk &&
       sidebar.liveStat === "4" &&
       /4\/6/.test(sidebar.liveMeta) &&
+      statusActiveAliasOk &&
       teamLoading.nodes === 0 &&
       !teamLoading.emptyCopy &&
       teamFinal.nodes >= 1 &&
@@ -183,6 +212,9 @@ async function coreMain() {
             terminal,
             slackGuide,
             board,
+            statusInitial,
+            statusActiveAlias,
+            statusActiveAliasOk,
             errors,
           },
           null,
@@ -198,6 +230,8 @@ async function coreMain() {
         teamLoading,
         teamFinal,
         terminal: { name: terminal.name, pane: terminal.pane, chars: terminal.chars },
+        statusInitial,
+        statusActiveAlias,
         lists: board.lists,
       }),
     );
