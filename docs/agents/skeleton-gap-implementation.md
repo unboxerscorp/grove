@@ -10,13 +10,13 @@
 
 1. `GROVE MASTER → 프로젝트 lead → 프로젝트별 조직도`는 유지한다. 단 hierarchy는 소유/보고 metadata이지 통신 제한이 아니다.
 2. 모든 프로젝트/노드는 cwd를 명시한다. 프로젝트를 만들면 프로젝트 cwd에서 lead가 생기고, 그 프로젝트에 사람이 추가 생성한 노드는 같은 cwd에서 실행된다.
-3. 모든 노드는 다른 프로젝트를 포함해 어느 노드와도 직접 대화하거나 지시할 수 있어야 한다. task를 통신 프로토콜로 강제하지 않는다.
-4. 보드 task는 사람 TODO, 사람 피드백, ask-human/판단 대기 기록이다. 노드 간 구현/리뷰/차단 보고를 보드 task 전용 흐름으로 강제하지 않는다.
+3. 모든 노드는 다른 프로젝트를 포함해 어느 노드와도 직접 대화하거나 지시할 수 있어야 한다. 사람용 목록 항목을 통신 프로토콜로 강제하지 않는다.
+4. 사람용 목록 항목은 사람 TODO, 사람 피드백, ask-human/판단 대기 기록이다. 노드 간 구현/리뷰/차단 보고를 목록 항목 전용 흐름으로 강제하지 않는다.
 5. 조직도 변경은 사람 소유다. 노드는 자율 spawn/despawn하지 않는다. 다만 사람이 CLI/GUI/API에서 명시 지시하면 operator-marked 경로로 생성/삭제할 수 있어야 한다.
 6. 모든 노드는 항상 조직도, 각 노드 역할, tmux pane 좌표, cwd를 볼 수 있어야 한다. `grove org --json`, `/api/org`, context pack, startup docs가 이 정보를 보존한다.
 7. Slack과 web chat은 MASTER와 자유 대화/지시 경로다. rule-based facts-only 응답이나 arbitrary gate로 가두지 않는다.
 8. 현재 운영은 Mac mini의 단일 `dev10` tmux를 기본으로 한다. 다른 프로젝트 registry는 MASTER가 볼 수 있어야 하되, 실제 node pane/cwd가 권위다.
-9. 웹 기본 UI는 사람이 쓰는 핵심 cockpit만 노출한다. 사람용 목록, 조직도, 터미널 모니터링, Slack/master chat, SSH/connect, inbox/audit/setup이 기본 표면이다. 구형 execution/cost/ledger/aggregation/handoff/routing/chain 패널은 기본 탐색에서 제거한다.
+9. 웹 기본 UI는 사람이 쓰는 핵심 cockpit만 노출한다. 사람용 목록, 조직도, 터미널 모니터링, Slack/master chat, inbox/audit/setup이 기본 표면이다. 터미널별 attach/connect 정보와 join 딥링크는 호환 경로로 유지하되 기본 탐색 표면은 아니다. 구형 execution/cost/ledger/aggregation/handoff/routing/chain 패널은 기본 탐색에서 제거한다.
 10. 실시간 터미널 모니터링은 core 기능이다. terminal tab은 선택 pane이 없으면 첫 viewable pane에 자동 연결하고, 첫 방문 overlay가 클릭을 막지 않아야 하며, 실제 사용자 클릭으로 `/api/ws-ticket` terminal ticket + `/ws/terminal` frame 수신 + xterm 렌더를 e2e 검증한다.
 
 ## 캐논 스켈레톤 8항 (현재 기준)
@@ -26,7 +26,7 @@
 3. 노드는 계층과 무관하게 자유 통신. **다른 프로젝트** 노드에게도 질문/지시 가능.
 4. 조직도 변경은 사람 소유다. 노드는 자율 spawn/terminate하지 않지만, 사람이 명시 지시하면 operator-marked CLI/GUI/API 경로로 생성/삭제할 수 있다.
 5. 모든 노드는 역할 기재. 역할은 **템플릿(프리셋)** 으로 UI 생성 시 + 노드가 하위 생성 시 주입.
-6. 모든 노드는 자기 역할 + GROVE 조직도 + tmux pane + cwd + 업무방식을 **항상** 인지한다. task를 노드 간 통신 프로토콜로 강제하지 않는다.
+6. 모든 노드는 자기 역할 + GROVE 조직도 + tmux pane + cwd + 업무방식을 **항상** 인지한다. 사람용 목록 항목을 노드 간 통신 프로토콜로 강제하지 않는다.
 7. 사람은 Slack/웹 UI로 MASTER와 대화. 필요 시 각 프로젝트 lead 터미널에 SSH로 직접 대화.
 8. (원아이디어) 은닉 서브에이전트 생성/삭제가 아니라, 역할+기억 유지되는 **지속 세션**이 업무를 주고받음.
 
@@ -90,10 +90,10 @@
 
 ### PR-F 조직인지 + context pack (owner: orch-master) **[MAJOR]**
 
-- **신설 공용 "grove context pack" 빌더**(예 `src/context-pack.ts` + bridge 대응): 호출노드 정체성 + 프로젝트 + 프로젝트 lead + 보이는 조직 요약 + 통신규약 + task 프로토콜 + 타깃 역할. size-cap + redaction(assistant facts-pack 패턴 재사용).
-- dispatch context는 노드가 조직도, 역할, tmux pane, cwd를 잃지 않게 하는 보조 정보다. 보드 task를 노드 간 필수 통신 프로토콜로 강제하지 않는다.
+- **신설 공용 "grove context pack" 빌더**(예 `src/context-pack.ts` + bridge 대응): 호출노드 정체성 + 프로젝트 + 프로젝트 lead + 보이는 조직 요약 + 통신규약 + 사람용 목록 모델 + 타깃 역할. size-cap + redaction(assistant facts-pack 패턴 재사용).
+- dispatch context는 노드가 조직도, 역할, tmux pane, cwd를 잃지 않게 하는 보조 정보다. 사람용 목록 항목을 노드 간 필수 통신 프로토콜로 강제하지 않는다.
 - 베이스 MD 강화: `AGENTS.md`에 "기동 시 `grove org --json`로 자기 정체성 블록 고정" 강제 섹션 + **`CLAUDE.md` 신설**(역할+조직+업무방식 강하게). 캐논과 **모순 제거**: AGENTS.md `:16` "Makers scoped"·`:17` "Reviewers read-only"를 자유통신·자유spawn과 정합화.
-- 과거 보드 task 중심 통신 스킬은 폐기됐다. 현재 스킬은 direct node communication과 human-facing task model을 설명한다.
+- 과거 보드 중심 통신 스킬은 폐기됐다. 현재 스킬은 direct node communication과 human-facing item model을 설명한다.
 - 2026-06-05 현재 `build_assistant_facts`는 live `dev10` registry에서 `agent_health.node_count=3`을 반환한다. facts JSON은 참고 컨텍스트이며, MASTER는 repo/runtime/org를 자유롭게 직접 확인할 수 있다.
 
 ### PR-G 사람↔lead SSH/터미널 (owner: orch-product)
@@ -111,7 +111,7 @@
 
 ## 발주 규약 (캐논 item 6 — 본 발주서 자체가 모델링)
 
-모든 direct send/ask/delegate에는 **GROVE 업무방식 요약 + 현재 조직도 + 타깃 역할**을 context pack으로 첨부한다. 보드 task는 사람 TODO/피드백/ask-human 기록이며, 노드 간 통신 프로토콜로 강제하지 않는다.
+모든 direct send/ask/delegate에는 **GROVE 업무방식 요약 + 현재 조직도 + 타깃 역할**을 context pack으로 첨부한다. 사람용 목록 항목은 사람 TODO/피드백/ask-human 기록이며, 노드 간 통신 프로토콜로 강제하지 않는다.
 
 - 게이트: 코드 변경 최종 게이트 `pnpm check`. PR-별 검증(아래) 통과 전 done 금지.
 - 충돌방지: 공통 파일(web_app.py·ops.ts·registry.ts·context.ts) 동시편집 회피 → 본 발주서의 웨이브 순서 준수. worktree 격리 가능 PR은 격리.
