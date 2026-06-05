@@ -1026,8 +1026,40 @@ class SlackConnector:
             if reminders and latest + config.reminder_after_seconds > now:
                 continue
             step = len(reminders) + 1
-            text = _digest_reminder_text(task=task, step=step, max_reminders=config.max_reminders)
             pending_thread_ts = _digest_reminder_pending_key(task=task, step=step)
+            task_thread_ts = _task_slack_thread_ts(
+                self.store,
+                board=config.board,
+                task=task,
+                channel=target_channel,
+            )
+            reminder_event = SlackEvent(
+                team="",
+                channel=target_channel,
+                user="slack-digest",
+                text=f"digest reminder for task {task.id}",
+                ts=pending_thread_ts,
+                thread_ts=task_thread_ts,
+                event_type="message",
+            )
+            text = self._assistant_notice_text(
+                reminder_event,
+                thread_ts=task_thread_ts or pending_thread_ts,
+                decision="digest_reminder",
+                reason=_digest_reminder_notice_reason(
+                    task=task,
+                    step=step,
+                    max_reminders=config.max_reminders,
+                ),
+                metadata={
+                    "task_id": task.id,
+                    "title": task.title,
+                    "status": task.status,
+                    "needs_human": _needs_human(task),
+                    "step": step,
+                    "max_reminders": config.max_reminders,
+                },
+            )
             try:
                 self.store.upsert_slack_thread(
                     board=config.board,
@@ -1048,12 +1080,7 @@ class SlackConnector:
                 ts = self.slack_client.post_message(
                     channel=target_channel,
                     text=text,
-                    thread_ts=_task_slack_thread_ts(
-                        self.store,
-                        board=config.board,
-                        task=task,
-                        channel=target_channel,
-                    ),
+                    thread_ts=task_thread_ts,
                 )
             except Exception as exc:
                 LOGGER.warning("Slack digest reminder post failed: %s", _safe_log_error(exc))
@@ -3151,10 +3178,11 @@ def _build_intake_preview_blocks(
     )
 
 
-def _digest_reminder_text(*, task: Task, step: int, max_reminders: int) -> str:
+def _digest_reminder_notice_reason(*, task: Task, step: int, max_reminders: int) -> str:
     kind = "ask-human" if _needs_human(task) else "blocked"
     return _safe_slack_text(
-        f"Reminder {step}/{max_reminders}: {kind} task `{task.id}` is still blocked — {task.title}"
+        f"digest reminder {step}/{max_reminders}: {kind} task `{task.id}` remains blocked; "
+        f"title={task.title}"
     )
 
 

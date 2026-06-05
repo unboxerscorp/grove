@@ -36,6 +36,18 @@ class FakeLLMClient:
         return self.text
 
 
+class SequenceLLMClient:
+    def __init__(self, *texts: str) -> None:
+        self.texts = list(texts)
+        self.calls: list[dict[str, str]] = []
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append({"system_prompt": system_prompt, "user_prompt": user_prompt})
+        if self.texts:
+            return self.texts.pop(0)
+        return ""
+
+
 class FailingLLMClient:
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         _ = (system_prompt, user_prompt)
@@ -306,6 +318,25 @@ def test_handle_turn_guides_action_requests_with_llm_without_internal_terms(
     assert "PR1" not in response.answer.text
     assert "PR3" not in response.answer.text
     assert "handoff" not in response.answer.text.lower()
+
+
+def test_handle_turn_fails_closed_when_internal_terms_survive_rewrite(
+    tmp_path: Path,
+) -> None:
+    llm = SequenceLLMClient(
+        "PR1 cannot do action handoff yet.",
+        "PR3 routing still cannot do it.",
+    )
+    broker = AssistantBroker(llm_client=llm)
+
+    with pytest.raises(AssistantUnavailable, match="internal implementation terms"):
+        broker.handle_turn(
+            "새 프로젝트 만들어줘",
+            _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
+        )
+
+    assert len(llm.calls) == 2
+    assert "rewrite-required" in llm.calls[1]["user_prompt"]
 
 
 def test_build_assistant_facts_includes_top_in_flight_health_and_recent_commits(

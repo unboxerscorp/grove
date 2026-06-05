@@ -435,7 +435,6 @@ class AssistantBroker:
                 self._llm_client,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                fallback_message=message,
                 mode=mode,
             )
         except AssistantBusy:
@@ -885,7 +884,6 @@ def _complete_visible_text(
     *,
     system_prompt: str,
     user_prompt: str,
-    fallback_message: str,
     mode: str,
 ) -> str:
     answer_text = _safe_public_text(
@@ -910,17 +908,11 @@ def _complete_visible_text(
     ).strip()
     if rewritten and not _contains_internal_implementation_terms(rewritten):
         return rewritten
-    return _safe_visibility_fallback(fallback_message)
+    raise AssistantUnavailable("assistant returned internal implementation terms after rewrite")
 
 
 def _contains_internal_implementation_terms(text: str) -> bool:
     return INTERNAL_IMPLEMENTATION_TERM_RE.search(text) is not None
-
-
-def _safe_visibility_fallback(message: str) -> str:
-    if re.search(r"[가-힣]", message):
-        return "지금은 그렇게 처리할 수 없어요. 보드나 UI에서 직접 진행해 주세요."
-    return "I cannot do that directly right now. Please use the board or UI for the action."
 
 
 def _pre_filter_block_reason(message: str) -> str | None:

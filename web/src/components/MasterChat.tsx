@@ -302,9 +302,9 @@ export function MasterChat(props: { openSignal?: number } = {}) {
           if (!mounted.current) return;
           setUnavailable(false);
           conversationId.current = res.conversation_id || conversationId.current;
-          upsert({ id: clientId, role: "user", text: trimmed, ts, status: "sent" });
           const replyText = masterReplyText(res);
           if (replyText) {
+            upsert({ id: clientId, role: "user", text: trimmed, ts, status: "sent" });
             upsert({
               id: res.request_id ? `m-${res.request_id}` : genId("m"),
               role: "master",
@@ -313,6 +313,12 @@ export function MasterChat(props: { openSignal?: number } = {}) {
               status: "sent",
               facts: masterReplyFacts(res),
             });
+          } else {
+            // The response carried no user-visible LLM text (e.g. a denied/gate
+            // response without answer.text). Treat the exchange as a retryable
+            // error — NEVER surface internal gate/rule text (operator_gate.reason)
+            // in its place.
+            upsert({ id: clientId, role: "user", text: trimmed, ts, status: "error" });
           }
         })
         .catch((e) => {

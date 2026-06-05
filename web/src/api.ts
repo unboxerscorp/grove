@@ -858,8 +858,11 @@ export interface MasterChatResponse {
   audit_events?: unknown[];
 }
 
-/** Human reply text for a master response, by response_type: answer.text |
- *  proposal.summary (else feedback-route title) | operator_gate.reason. */
+/** User-visible reply text for a master response. Only LLM-authored text is ever
+ *  shown: answer.text (any type) or, for a preview, the proposal summary. A denied
+ *  response renders ONLY answer.text — operator_gate.reason is a non-LLM rule/gate
+ *  string and must never reach the user; absent answer.text returns "" so the
+ *  caller treats it as an error/unavailable exchange. */
 export function masterReplyText(res: MasterChatResponse): string {
   const fr = res.feedback_route;
   const routeTitle = typeof fr === "string" ? fr : (fr?.title ?? "");
@@ -869,7 +872,7 @@ export function masterReplyText(res: MasterChatResponse): string {
     case "preview":
       return res.proposal?.summary ?? routeTitle;
     case "denied":
-      return res.operator_gate?.reason ?? "";
+      return res.answer?.text ?? "";
     default:
       return res.answer?.text ?? res.proposal?.summary ?? "";
   }

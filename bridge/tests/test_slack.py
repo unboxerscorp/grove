@@ -1926,6 +1926,7 @@ def test_slack_digest_reminder_requires_gui_digest_enabled(tmp_path: Path) -> No
         clock=clock,
     )
     slack = FakeSlackClient()
+    assistant = FakeAssistantBroker(notice_text="LLM digest reminder")
     connector = SlackConnector(
         store=store,
         slack_client=slack,
@@ -1933,6 +1934,7 @@ def test_slack_digest_reminder_requires_gui_digest_enabled(tmp_path: Path) -> No
         human_gate=HumanGateConfig(board="main", channel="C123"),
         chat_route=ChatRouteConfig(default_node="chat-node"),
         digest_config=config,
+        assistant_broker=assistant,
     )
 
     assert connector.poll_digest_reminders() == 0
@@ -1943,7 +1945,8 @@ def test_slack_digest_reminder_requires_gui_digest_enabled(tmp_path: Path) -> No
 
     assert connector.poll_digest_reminders() == 1
     assert len(slack.posts) == 1
-    assert "Reminder 1/1" in slack.posts[0][1]
+    assert slack.posts[0][1] == "LLM digest reminder"
+    assert assistant.notice_calls[-1]["decision"] == "digest_reminder"
 
 
 def test_slack_digest_reminder_is_bounded_and_read_only(tmp_path: Path) -> None:
@@ -1959,6 +1962,7 @@ def test_slack_digest_reminder_is_bounded_and_read_only(tmp_path: Path) -> None:
     )
     clock = MutableClock(now=store.get_task(board="main", task_id=task.id).updated_at + 20)
     slack = FakeSlackClient()
+    assistant = FakeAssistantBroker(notice_text="LLM digest reminder")
     connector = SlackConnector(
         store=store,
         slack_client=slack,
@@ -1975,6 +1979,7 @@ def test_slack_digest_reminder_is_bounded_and_read_only(tmp_path: Path) -> None:
             max_reminders=1,
             clock=clock,
         ),
+        assistant_broker=assistant,
     )
 
     first = connector.poll_digest_reminders()
@@ -1983,7 +1988,8 @@ def test_slack_digest_reminder_is_bounded_and_read_only(tmp_path: Path) -> None:
     assert first == 1
     assert second == 0
     assert slack.posts == [("C123", slack.posts[0][1], "human-thread")]
-    assert "Reminder 1/1" in slack.posts[0][1]
+    assert slack.posts[0][1] == "LLM digest reminder"
+    assert assistant.notice_calls[-1]["decision"] == "digest_reminder"
     reminders = store.list_slack_threads(task_id=task.id, mode=slack_module.DIGEST_REMINDER_MODE)
     assert len(reminders) == 1
     assert store.get_task(board="main", task_id=task.id).status == "blocked"
@@ -2006,6 +2012,7 @@ def test_slack_digest_reminder_post_success_db_failure_does_not_repost(
     )
     clock = MutableClock(now=store.get_task(board="main", task_id=task.id).updated_at + 20)
     slack = FakeSlackClient()
+    assistant = FakeAssistantBroker(notice_text="LLM digest reminder")
     original_upsert_slack_thread = store.upsert_slack_thread
     fail_actual_record = True
 
@@ -2051,6 +2058,7 @@ def test_slack_digest_reminder_post_success_db_failure_does_not_repost(
             max_reminders=1,
             clock=clock,
         ),
+        assistant_broker=assistant,
     )
 
     assert connector.poll_digest_reminders() == 0

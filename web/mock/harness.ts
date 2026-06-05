@@ -1821,7 +1821,12 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       if (/\b(deploy|prod|production|delete|drop|destroy)\b/.test(lower)) {
         response_type = "denied";
         classification = "command";
-        operator_gate = { reason: "operator approval required for production/destructive actions (mock)" };
+        // The user-visible denial is LLM-authored answer.text. operator_gate.reason
+        // is non-LLM rule/gate metadata — present for audit, NEVER rendered.
+        answer = {
+          text: "⚠ that's a production/destructive action — I can't run it from chat; an operator must approve it directly. (mock-llm)",
+        };
+        operator_gate = { reason: "GATE: operator_role_required — non-llm rule text (must not reach the user)" };
       } else if (/\b(add|create|build|make|implement|task|fix)\b/.test(lower)) {
         response_type = "preview";
         classification = "task";

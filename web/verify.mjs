@@ -3190,21 +3190,26 @@ async function main() {
       };
     });
 
-    // denied path: a deploy/destructive message -> operator_gate.reason master bubble.
+    // denied path: a deploy/destructive message -> the LLM-authored answer.text is
+    // shown; the non-LLM operator_gate.reason must NOT be exposed to the user.
     await mpage.type(".dr-mchat__input", "deploy to prod");
     await mpage.keyboard.press("Enter");
     await mpage.waitForFunction(
       () =>
         Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble')).some((b) =>
-          /operator approval required/.test(b.textContent ?? ""),
+          /mock-llm/.test(b.textContent ?? ""),
         ),
       { timeout: 5000 },
     );
-    const mchatDenied = await mpage.evaluate(() =>
-      Array.from(document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble')).some((b) =>
-        /operator approval required/.test(b.textContent ?? ""),
-      ),
-    );
+    const mchatDenied = await mpage.evaluate(() => {
+      const masters = Array.from(
+        document.querySelectorAll('.dr-mchat__row[data-role="master"] .dr-mchat__bubble'),
+      ).map((b) => b.textContent ?? "");
+      return {
+        llmShown: masters.some((t) => /mock-llm/.test(t)),
+        gateHidden: !masters.some((t) => /non-llm|GATE:/.test(t)),
+      };
+    });
 
     // v1.29 cross-project org (task_c2fda5b7): the GROVE MASTER root in the org
     // chart opens the floating chat via the safe custom event, and a non-current
@@ -3265,7 +3270,8 @@ async function main() {
       mchat.answer.hasAnswer &&
       mchat.answer.hasFacts &&
       mchat.preview.hasProposal &&
-      mchat.denied &&
+      mchat.denied.llmShown &&
+      mchat.denied.gateHidden &&
       mchat.masterRootOpensChat &&
       mchat.leadSwitch.switched &&
       mchat.viewerHidden &&
