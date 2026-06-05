@@ -1743,9 +1743,9 @@ async function run() {
     Boolean(emptyAudit.json) && typeof emptyAudit.json.next_cursor === "number",
   );
 
-  // Seed two audit.task.assign events on the ALPHA board (POST task w/ assignee).
+  // Seed two assign audit events on the ALPHA human-facing list (legacy POST path).
   eq(
-    "seed: assign task -> worker (200)",
+    "seed: assign item -> worker (200)",
     (await req("POST", `/api/boards/${ALPHA}/tasks`, {
       token,
       project: ALPHA,
@@ -1754,7 +1754,7 @@ async function run() {
     200,
   );
   eq(
-    "seed: assign task -> lead (200)",
+    "seed: assign item -> lead (200)",
     (await req("POST", `/api/boards/${ALPHA}/tasks`, {
       token,
       project: ALPHA,

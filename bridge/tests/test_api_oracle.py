@@ -13,9 +13,9 @@ def test_api_oracle_exhaustive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         tmp_path,
         session="dev10",
         nodes={
-            "project-master": {
+            "lead": {
                 "agent": "codex",
-                "name": "project-master",
+                "name": "lead",
                 "tmux_pane": "dev10:1.0",
             },
         },
@@ -203,19 +203,18 @@ def test_api_oracle_exhaustive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     # but the 403 vs 404/200 gate check is the main thing.
 
     # Autonomy toggles / Exec
-    assert (
-        viewer_client.get("/api/nodes/project-master/autopickup", headers=v_headers).status_code
-        == 200
-    ), "Viewer can read autopickup"
+    assert viewer_client.get("/api/nodes/lead/autopickup", headers=v_headers).status_code == 200, (
+        "Viewer can read autopickup"
+    )
     assert (
         op_client.post(
-            "/api/nodes/project-master/autopickup", json={"enabled": True}, headers=op_headers
+            "/api/nodes/lead/autopickup", json={"enabled": True}, headers=op_headers
         ).status_code
         == 200
     ), "Operator can toggle autopickup"
     assert (
         viewer_client.post(
-            "/api/nodes/project-master/autopickup", json={"enabled": True}, headers=v_headers
+            "/api/nodes/lead/autopickup", json={"enabled": True}, headers=v_headers
         ).status_code
         == 403
     ), "Viewer cannot toggle autopickup"

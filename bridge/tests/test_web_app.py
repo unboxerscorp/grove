@@ -2356,13 +2356,6 @@ def test_master_chat_answer_includes_project_board_org_and_human_facts(
         tmp_path,
         "dev10",
         {
-            "project-master": {
-                "name": "project-master",
-                "agent": "claude",
-                "role": "orchestrator",
-                "status": "external",
-                "parent": "lead",
-            },
             "lead": {
                 "name": "lead",
                 "agent": "claude",
@@ -2374,7 +2367,7 @@ def test_master_chat_answer_includes_project_board_org_and_human_facts(
                 "name": "m-py",
                 "agent": "codex",
                 "role": "backend maker",
-                "parent": "project-master",
+                "parent": "lead",
                 "group": "bridge",
                 "status": "running",
                 "tmux_pane": "dev10:1.1",
@@ -2383,7 +2376,7 @@ def test_master_chat_answer_includes_project_board_org_and_human_facts(
                 "name": "r-qa",
                 "agent": "claude",
                 "role": "reviewer",
-                "parent": "project-master",
+                "parent": "lead",
                 "group": "review",
                 "tmux_pane": "dev10:1.2",
             },
@@ -2391,7 +2384,7 @@ def test_master_chat_answer_includes_project_board_org_and_human_facts(
                 "name": "human-lead",
                 "agent": "human",
                 "role": "reviewer",
-                "parent": "project-master",
+                "parent": "lead",
                 "group": "human",
                 "status": "external",
             },
@@ -2402,8 +2395,8 @@ def test_master_chat_answer_includes_project_board_org_and_human_facts(
         tmp_path,
         "dev11",
         {
-            "project-master": {
-                "name": "project-master",
+            "lead": {
+                "name": "lead",
                 "agent": "claude",
                 "role": "orchestrator",
                 "status": "external",
@@ -2477,11 +2470,11 @@ def test_master_chat_answer_includes_project_board_org_and_human_facts(
     }
     agent_health = facts["agent_health"]
     assert agent_health["status_counts"] == {}
-    assert agent_health["node_count"] == 5
+    assert agent_health["node_count"] == 4
     assert agent_health["reviewer_count"] == 2
     assert agent_health["reviewer_names"] == ["human-lead", "r-qa"]
     nodes = {node["node"]: node for node in agent_health["nodes"]}
-    assert set(nodes) == {"human-lead", "lead", "m-py", "project-master", "r-qa"}
+    assert set(nodes) == {"human-lead", "lead", "m-py", "r-qa"}
     assert nodes["r-qa"] == {
         "node": "r-qa",
         "agent": "claude",
@@ -5439,7 +5432,7 @@ def test_org_includes_master_and_cross_project_leads(
     write_registry(
         tmp_path,
         "dev11",
-        {"project-master": {"name": "project-master", "agent": "claude"}},
+        {"lead": {"name": "lead", "agent": "claude"}},
         workspace="/repo/dev11",
         display_name="Client Project /Users/chopin/secret xoxb-" + ("s" * 44),
     )
@@ -6273,25 +6266,25 @@ def test_org_payload_includes_master_and_human_routing_support(
         tmp_path,
         "dev10",
         {
-            "project-master": {
-                "name": "project-master",
+            "lead": {
+                "name": "lead",
                 "agent": "claude",
                 "role": "orchestrator",
-                "status": "external",
-                "parent": "lead",
+                "status": "running",
+                "tmux_pane": "dev10:1.0",
             },
             "worker": {
                 "name": "worker",
                 "agent": "codex",
                 "role": "maker",
-                "parent": "project-master",
+                "parent": "lead",
                 "tmux_pane": "dev10:1.1",
             },
             "human-reviewer": {
                 "name": "human-reviewer",
                 "agent": "human",
                 "role": "reviewer",
-                "parent": "project-master",
+                "parent": "lead",
                 "group": "human",
                 "status": "external",
             },
@@ -6302,8 +6295,8 @@ def test_org_payload_includes_master_and_human_routing_support(
         tmp_path,
         "dev11",
         {
-            "project-master": {
-                "name": "project-master",
+            "lead": {
+                "name": "lead",
                 "agent": "claude",
                 "role": "orchestrator",
                 "status": "external",
@@ -6319,8 +6312,7 @@ def test_org_payload_includes_master_and_human_routing_support(
     payload = response.json()
     nodes = {node["name"]: node for node in payload["nodes"]}
     candidates = {candidate["name"]: candidate for candidate in payload["assignee_candidates"]}
-    assert nodes["project-master"]["parent"] == "lead@dev10"
-    assert nodes["worker"]["parent"] == "project-master"
+    assert nodes["worker"]["parent"] == "lead@dev10"
     assert nodes["human-reviewer"]["kind"] == "human"
     assert nodes["human-reviewer"]["status"] == "external"
     assert candidates["human-reviewer"]["human"] is True
@@ -6332,7 +6324,7 @@ def test_org_payload_includes_master_and_human_routing_support(
         "selected_project": "dev10",
         "visible_projects": ["dev10", "dev11"],
         "project_master": {
-            "name": "worker",
+            "name": "lead",
             "present": True,
             "default_assignee": True,
         },

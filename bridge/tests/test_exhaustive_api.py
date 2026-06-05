@@ -17,7 +17,7 @@ def setup_harness(
     tuple[TestClient, dict[str, str]],
 ]:
     store = SQLiteBoardStore(tmp_path / "board.db")
-    write_registry(tmp_path, session="dev10", nodes={"project-master": {"name": "project-master"}})
+    write_registry(tmp_path, session="dev10", nodes={"lead": {"name": "lead"}})
     write_team_member(tmp_path, secret="v-sec", role="viewer", name="viewer_user", member_id="m-1")
     write_team_member(
         tmp_path, secret="o-sec", role="operator", name="op_user", append=True, member_id="m-2"
@@ -68,7 +68,7 @@ def test_exhaustive_api_tier1_harness(tmp_path: Path, monkeypatch: pytest.Monkey
     # Viewer should be 403
     res_v = v_c.post(
         "/api/boards/main/tasks",
-        json={"title": "Test", "assignee": "project-master"},
+        json={"title": "Test", "assignee": "lead"},
         headers=v_h,
     )
     assert res_v.status_code == 403
@@ -77,7 +77,7 @@ def test_exhaustive_api_tier1_harness(tmp_path: Path, monkeypatch: pytest.Monkey
     # Operator / Admin should be 200
     res_o = o_c.post(
         "/api/boards/main/tasks",
-        json={"title": "Test", "assignee": "project-master"},
+        json={"title": "Test", "assignee": "lead"},
         headers=o_h,
     )
     assert res_o.status_code == 200, res_o.json()

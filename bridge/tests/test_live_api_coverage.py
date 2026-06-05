@@ -29,7 +29,7 @@ def test_live_journey_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     # 2. task create
     task_res = client.post(
         "/api/boards/dev10/tasks",
-        json={"title": "Test task", "assignee": "project-master"},
+        json={"title": "Test item", "assignee": "lead"},
         headers=headers,
     )
     assert task_res.status_code == 200
@@ -98,7 +98,7 @@ def test_live_journey_viewer_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     # viewer cannot create task
     task_res = viewer.post(
         "/api/boards/dev10/tasks",
-        json={"title": "Test task", "assignee": "project-master"},
+        json={"title": "Test item", "assignee": "lead"},
         headers=headers,
     )
     assert task_res.status_code == 403
