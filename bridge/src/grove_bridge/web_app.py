@@ -1435,6 +1435,12 @@ def create_app(
             raise HTTPException(status_code=400, detail=_safe_public_text(str(exc))) from exc
         return _decision_dispatch_payload(_store(request), result, project=project)
 
+    @app.get("/api/master/chat")
+    def master_chat_history_endpoint(request: Request) -> dict[str, object]:
+        _require_auth(request)
+        resolve_project(request)
+        return {"messages": []}
+
     @app.post("/api/master/chat", response_model=None)
     def master_chat_endpoint(
         request: Request,

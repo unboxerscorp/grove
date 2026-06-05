@@ -2067,6 +2067,15 @@ def test_master_chat_returns_answer_and_records_redacted_audit(tmp_path: Path) -
     assert audits[0].kind == "audit.master.turn.received"
 
 
+def test_master_chat_history_get_returns_empty_message_list(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.get("/api/master/chat", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    assert response.json() == {"messages": []}
+
+
 def test_master_chat_guides_feedback_actions_with_llm_text(tmp_path: Path) -> None:
     client = make_client(
         tmp_path,
