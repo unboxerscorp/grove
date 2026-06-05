@@ -64,6 +64,13 @@ function assertLiveE2eDefaultsCurrentPort() {
   }
 }
 
+function assertLiveE2eAvoidsReentrantMasterChatPost() {
+  const live = readFileSync(path.join(root, "e2e", "live.mjs"), "utf8");
+  if (/path:\s*["']\/api\/master\/chat["']\s*,\s*method:\s*["']POST["']/.test(live)) {
+    throw new Error("live e2e must not POST /api/master/chat because it can reenter the active grove-master turn");
+  }
+}
+
 function findChrome() {
   return [
     process.env.CHROME_PATH,
@@ -247,6 +254,7 @@ async function coreMain() {
   assertNoLegacyProjectMasterMock();
   assertNoLegacyProjectMasterE2eFixtures();
   assertLiveE2eDefaultsCurrentPort();
+  assertLiveE2eAvoidsReentrantMasterChatPost();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
   }
@@ -495,6 +503,7 @@ async function main() {
     assertNoLegacyProjectMasterMock();
     assertNoLegacyProjectMasterE2eFixtures();
     assertLiveE2eDefaultsCurrentPort();
+    assertLiveE2eAvoidsReentrantMasterChatPost();
     await verifyRetiredLegacySurfaces(browser);
     // The historical full-panel script below is intentionally archived. It
     // assumes the old all-surfaces sidebar and is no longer the default
