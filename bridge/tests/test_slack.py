@@ -547,7 +547,7 @@ def test_slack_status_probe_reports_not_configured_and_socket_connected(tmp_path
     assert connected_status["intake"] == {"enabled": True}
 
 
-def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Path) -> None:
+def test_human_decision_notice_uses_item_copy_and_records_thread_reply(tmp_path: Path) -> None:
     board = "main"
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = store.create_task(
@@ -586,7 +586,10 @@ def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Pa
     assert isinstance(notice_message, str)
     assert "human gate" not in notice_message.lower()
     assert "Human decision needed" in notice_message
+    assert "Human decision needed for item" in notice_message
     assert "Which branch?" in notice_message
+    assert "unblock the task" not in notice_message.lower()
+    assert "Reply in this thread to add the answer." in notice_message
     assert assistant.notice_calls[0]["metadata"] == {
         "task_id": task.id,
         "title": "Need human",
@@ -617,6 +620,8 @@ def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Pa
     assert comments[-1].body == "ANSWER: Use branch feature/live."
     assert slack.posts[-1] == ("C123", "LLM completed the Slack request.", "ts-1")
     assert assistant.notice_calls[-1]["decision"] == "completed"
+    assert assistant.notice_calls[-1]["reason"] == "human_reply_recorded_answer"
+    assert "unblock" not in assistant.notice_calls[-1]["reason"]
     assert connector.handle_event(
         SlackEvent(
             team="T1",
@@ -673,7 +678,10 @@ def test_human_gate_default_notice_does_not_route_to_master_node(
     assert connector.poll_human_gates() == 1
     assert slack.posts[0][0] == "C123"
     assert "Human decision needed" in slack.posts[0][1]
+    assert "Human decision needed for item" in slack.posts[0][1]
     assert "Which branch?" in slack.posts[0][1]
+    assert "unblock the task" not in slack.posts[0][1].lower()
+    assert "Reply in this thread to add the answer." in slack.posts[0][1]
     assert chat.calls == []
 
 

@@ -1962,7 +1962,7 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="completed",
-                reason="human_reply_recorded_task_unblocked",
+                reason="human_reply_recorded_answer",
                 thread_ts=thread_ts,
             )
         return True
@@ -2710,12 +2710,12 @@ def _human_gate_notice_text(task: Task) -> str:
     title = _safe_slack_text(task.title)
     assignee = _safe_slack_text(task.assignee or "unassigned")
     lines = [
-        f"Human decision needed for task {task.id}: {title}",
+        f"Human decision needed for item {task.id}: {title}",
         f"Assignee: {assignee}",
     ]
     if question:
         lines.append(f"Question: {question}")
-    lines.append("Reply in this thread to answer and unblock the task.")
+    lines.append("Reply in this thread to add the answer.")
     return "\n".join(lines)
 
 
