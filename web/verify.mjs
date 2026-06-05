@@ -69,12 +69,25 @@ async function coreMain() {
       if (/Failed to load resource|net::|fonts\.googleapis/.test(t)) return;
       errors.push("console: " + t);
     });
+    await page.evaluateOnNewDocument(() => {
+      window.__GROVE_MOCK_STATUS_DELAY_MS__ = 1200;
+    });
 
     await page.goto("file://" + htmlPath, { waitUntil: "load" });
     await page.waitForSelector(".devroom .dr-brand", { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
     await page.waitForFunction(() => !document.querySelector(".onb-wizard"), { timeout: 2000 });
+
+    const statusLoading = await page.evaluate(() => {
+      const text = (document.querySelector(".nodestat")?.textContent ?? "").replace(/\s+/g, " ").trim();
+      return {
+        loading: !!document.querySelector(".nodestat__loading"),
+        text,
+        noFalseZero: !/0\s*(전체|total)/i.test(text),
+      };
+    });
+    await page.evaluate(() => window.__MOCK__?.setStatusDelay?.(0));
 
     const sidebar = await page.evaluate(() => {
       const inSidebar = (selector) => !!document.querySelector(`.dr-sidebar ${selector}`);
@@ -183,6 +196,8 @@ async function coreMain() {
       sidebar.liveStat === "4" &&
       /4\/6/.test(sidebar.liveMeta) &&
       statusActiveAliasOk &&
+      statusLoading.loading &&
+      statusLoading.noFalseZero &&
       teamLoading.nodes === 0 &&
       !teamLoading.emptyCopy &&
       teamFinal.nodes >= 1 &&
@@ -216,6 +231,7 @@ async function coreMain() {
             statusInitial,
             statusActiveAlias,
             statusActiveAliasOk,
+            statusLoading,
             errors,
           },
           null,
@@ -233,6 +249,7 @@ async function coreMain() {
         terminal: { name: terminal.name, pane: terminal.pane, chars: terminal.chars },
         statusInitial,
         statusActiveAlias,
+        statusLoading,
         lists: board.lists,
       }),
     );

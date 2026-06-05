@@ -412,6 +412,13 @@ let orgDelayMs = 0;
 diag.setOrgDelay = (ms: number): void => {
   orgDelayMs = Math.max(0, Math.min(5000, Math.floor(ms)));
 };
+let statusDelayMs = Math.max(
+  0,
+  Math.min(5000, Math.floor(Number((window as unknown as { __GROVE_MOCK_STATUS_DELAY_MS__?: number }).__GROVE_MOCK_STATUS_DELAY_MS__ ?? 0))),
+);
+diag.setStatusDelay = (ms: number): void => {
+  statusDelayMs = Math.max(0, Math.min(5000, Math.floor(ms)));
+};
 diag.setNodeStatus = (name: string, status: string): boolean => {
   const node = ORG_NODES.find((n) => n.name === name);
   if (!node) return false;
@@ -1243,7 +1250,11 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         };
       });
     }
-    return Promise.resolve(json(body));
+    const response = json(body);
+    if (statusDelayMs > 0) {
+      return new Promise((resolve) => setTimeout(() => resolve(response), statusDelayMs));
+    }
+    return Promise.resolve(response);
   }
 
   if (p === "/api/gui-features") {

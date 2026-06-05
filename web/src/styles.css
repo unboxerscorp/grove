@@ -329,6 +329,17 @@ button {
   background: var(--coral);
 }
 
+.nodestat__bar.is-loading .nodestat__seg {
+  background: var(--line-soft);
+}
+
+.nodestat__loading {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
 .nodestat__chip {
   display: inline-flex;
   align-items: center;

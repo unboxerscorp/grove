@@ -178,6 +178,7 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
 
   // Use the backend's authoritative counts directly (idle/error are classified
   // server-side; deriving idle would fold error nodes into idle).
+  const loading = summary === null;
   const running = summary?.running ?? 0;
   const total = summary?.total ?? 0;
   const stale = summary?.stale ?? 0;
@@ -187,41 +188,52 @@ export function NodeStatusBar({ liveTick, projectTick }: { liveTick: number; pro
   return (
     <div className="nodestat" role="status" aria-label={t("status.nodes")}>
       <span className="nodestat__label">{t("status.nodes")}</span>
-      <div className="nodestat__bar" aria-hidden="true">
-        <span className="nodestat__seg is-running" style={{ flexGrow: running }} />
-        <span className="nodestat__seg is-idle" style={{ flexGrow: idle }} />
-        <span className="nodestat__seg is-stale" style={{ flexGrow: stale }} />
-        <span className="nodestat__seg is-error" style={{ flexGrow: error }} />
-      </div>
-      <span className="nodestat__chip is-running">
-        <span className="nodestat__led" />
-        {running} {t("status.running")}
-      </span>
-      <span className="nodestat__chip is-idle">
-        <span className="nodestat__led" />
-        {idle} {t("status.idle")}
-      </span>
-      <span className="nodestat__chip is-stale">
-        <span className="nodestat__led" />
-        {stale} {t("status.stale")}
-      </span>
-      <span className="nodestat__chip is-error">
-        <span className="nodestat__led" />
-        {error} {t("status.error")}
-      </span>
-      <span className="nodestat__total">
-        {total} {t("status.total")}
-      </span>
-      <button
-        type="button"
-        className={cx("nodestat__more", open && "is-open")}
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        {t("status.detail")} ▾
-      </button>
+      {loading ? (
+        <>
+          <div className="nodestat__bar is-loading" aria-hidden="true">
+            <span className="nodestat__seg is-idle" style={{ flexGrow: 1 }} />
+          </div>
+          <span className="nodestat__loading">{t("status.loading")}</span>
+        </>
+      ) : (
+        <>
+          <div className="nodestat__bar" aria-hidden="true">
+            <span className="nodestat__seg is-running" style={{ flexGrow: running }} />
+            <span className="nodestat__seg is-idle" style={{ flexGrow: idle }} />
+            <span className="nodestat__seg is-stale" style={{ flexGrow: stale }} />
+            <span className="nodestat__seg is-error" style={{ flexGrow: error }} />
+          </div>
+          <span className="nodestat__chip is-running">
+            <span className="nodestat__led" />
+            {running} {t("status.running")}
+          </span>
+          <span className="nodestat__chip is-idle">
+            <span className="nodestat__led" />
+            {idle} {t("status.idle")}
+          </span>
+          <span className="nodestat__chip is-stale">
+            <span className="nodestat__led" />
+            {stale} {t("status.stale")}
+          </span>
+          <span className="nodestat__chip is-error">
+            <span className="nodestat__led" />
+            {error} {t("status.error")}
+          </span>
+          <span className="nodestat__total">
+            {total} {t("status.total")}
+          </span>
+          <button
+            type="button"
+            className={cx("nodestat__more", open && "is-open")}
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+          >
+            {t("status.detail")} ▾
+          </button>
+        </>
+      )}
 
-      {open && (
+      {!loading && open && (
         <div className="nodestat-detail" role="region" aria-label={t("status.detail")}>
           {(detail ?? []).map((d) => {
             const st = pickup[d.name];
