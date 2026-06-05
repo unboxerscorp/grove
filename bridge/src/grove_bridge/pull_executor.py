@@ -769,14 +769,14 @@ def build_task_prompt(
     env_lines = "\n".join(f"{key}={value}" for key, value in sorted(env.items()))
     body = task.body.strip() if task.body else "(no body)"
     prompt = (
-        "You are executing a grove board task.\n\n"
-        f"Task: {task.id}\n"
+        "You are working on a grove human-facing item.\n\n"
+        f"Item: {task.id}\n"
         f"Board: {board}\n"
         f"Assignee node: {task.assignee or '(unassigned)'}\n"
         f"Workspace: {workspace}\n\n"
         f"Title:\n{task.title}\n\n"
         f"Body:\n{body}\n\n"
-        "Environment values for this task:\n"
+        "Environment values for this item:\n"
         f"{env_lines}\n\n"
         "Work in the resolved workspace when applicable. Return a concise handoff summary "
         "including changed files, verification commands, and remaining risks."

@@ -570,6 +570,8 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
     assert "lead -> codex-a" in prompt
     assert "xoxb-secret" not in prompt
     assert "dev10:1.2" in prompt
+    assert "You are working on a grove human-facing item." in prompt
+    assert "You are executing a grove board task." not in prompt
     assert "Implement native board" in prompt
     assert "Wire grove board tasks to grove." in prompt
     assert "Assignee node: codex-a" in prompt
