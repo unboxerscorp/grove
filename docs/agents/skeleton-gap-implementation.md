@@ -25,7 +25,7 @@
 2. 프로젝트는 자체 tmux 또는 공유 tmux 가능. 현재 기본 운영은 단일 `dev10` tmux 공유다. 단 각 프로젝트의 lead+멤버 노드는 **그 프로젝트 디렉토리(cwd)** 에서 CLI 실행.
 3. 노드는 계층과 무관하게 자유 통신. **다른 프로젝트** 노드에게도 질문/지시 가능.
 4. 조직도 변경은 사람 소유다. 노드는 자율 spawn/terminate하지 않지만, 사람이 명시 지시하면 operator-marked CLI/GUI/API 경로로 생성/삭제할 수 있다.
-5. 모든 노드는 역할 기재. 역할은 **템플릿(프리셋)** 으로 UI 생성 시 + 노드가 하위 생성 시 주입.
+5. 모든 노드는 역할 기재. 역할은 사람이 명시한 GUI/API/CLI 생성 경로에서 **템플릿(프리셋)** 으로 주입.
 6. 모든 노드는 자기 역할 + GROVE 조직도 + tmux pane + cwd + 업무방식을 **항상** 인지한다. 사람용 목록 항목을 노드 간 통신 프로토콜로 강제하지 않는다.
 7. 사람은 Slack/웹 UI로 MASTER와 대화. 필요 시 각 프로젝트 lead 터미널에 SSH로 직접 대화.
 8. (원아이디어) 은닉 서브에이전트 생성/삭제가 아니라, 역할+기억 유지되는 **지속 세션**이 업무를 주고받음.
@@ -84,7 +84,7 @@
 ### PR-E 역할 프리셋 (owner: orch-gui)
 
 - **신설 `src/role-presets.ts`**: 노드 타입별 페르소나 본문(lead/sub-orch/maker-py/maker-fe/reviewer/qa/test/docs 등) 카탈로그. 키→본문 확장.
-- `src/commands/spawn.ts`: `--role-preset <type>` → 본문 확장해 `ops.ts:421 submitMessage`로 주입(자유 override 허용). 하위 spawn 동일 해석. preset id/version persist.
+- `src/commands/spawn.ts`: `--role-preset <type>` → 본문 확장해 `ops.ts:421 submitMessage`로 주입(자유 override 허용). 사람이 명시한 GUI/API/CLI 생성 경로에서 동일 해석. preset id/version persist.
 - `bridge/.../web_app.py`: NodeCreatePayload preset passthrough.
 - `web/src/components/OrgChart.tsx NodeForm`: role을 **프리셋 select + preview + editable**로.
 
