@@ -787,17 +787,6 @@ class SlackConnector:
             self._seen_event_keys.discard(expired)
         return True
 
-    def _has_assistant_thread(self, event: SlackEvent, *, thread_ts: str) -> bool:
-        for thread in self.store.list_slack_threads(mode="chat"):
-            if (
-                thread.team_id == event.team
-                and thread.channel_id == event.channel
-                and thread.thread_ts == thread_ts
-                and thread.node == "assistant"
-            ):
-                return True
-        return False
-
     def _has_human_reply_thread(self, event: SlackEvent, *, thread_ts: str) -> bool:
         return (
             self.store.find_notify_sub(
@@ -829,17 +818,8 @@ class SlackConnector:
             event,
             thread_ts=thread_ts,
         )
-        is_assistant_thread = is_thread_reply and self._has_assistant_thread(
-            event,
-            thread_ts=thread_ts,
-        )
         is_slash_command = _normalize_slack_text(event.text).startswith("/")
-        if (
-            not is_addressed
-            and not is_human_reply_thread
-            and not is_assistant_thread
-            and not is_slash_command
-        ):
+        if not is_addressed and not is_human_reply_thread and not is_slash_command:
             return False
         if not self._remember_event(event):
             return True
@@ -851,8 +831,6 @@ class SlackConnector:
             event, thread_ts=thread_ts
         ):
             return True
-        if is_assistant_thread:
-            return self._handle_chat(event, thread_ts=thread_ts)
         return False
 
     def _assistant_priority_event(self, event: SlackEvent) -> bool:

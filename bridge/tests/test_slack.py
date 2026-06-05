@@ -1234,7 +1234,9 @@ def test_slack_digest_command_ignores_cold_channel_message_without_mention(
     assert store.list_audit_events(board="main") == []
 
 
-def test_chat_routing_allows_engaged_thread_followup_without_mention(tmp_path: Path) -> None:
+def test_chat_routing_ignores_engaged_thread_followup_without_mention(
+    tmp_path: Path,
+) -> None:
     slack = FakeSlackClient()
     chat = FakeChatFacade()
     assistant = FakeAssistantBroker("assistant thread reply")
@@ -1258,22 +1260,24 @@ def test_chat_routing_allows_engaged_thread_followup_without_mention(tmp_path: P
             event_type="app_mention",
         )
     )
-    assert connector.handle_event(
-        SlackEvent(
-            team="T1",
-            channel="C123",
-            user="U2",
-            text="say more",
-            ts="111.225",
-            thread_ts="111.224",
-            event_type="message",
+    assert (
+        connector.handle_event(
+            SlackEvent(
+                team="T1",
+                channel="C123",
+                user="U2",
+                text="say more",
+                ts="111.225",
+                thread_ts="111.224",
+                event_type="message",
+            )
         )
+        is False
     )
 
     assert chat.calls == []
-    assert [call[0] for call in assistant.calls] == ["summarize status", "say more"]
+    assert [call[0] for call in assistant.calls] == ["summarize status"]
     assert slack.posts == [
-        ("C123", "assistant thread reply", "111.224"),
         ("C123", "assistant thread reply", "111.224"),
     ]
 
@@ -2375,7 +2379,7 @@ def test_slack_nl_thread_context_and_task_mutation_still_requires_confirm(tmp_pa
         text="details",
         ts="555.001",
         thread_ts="555.000",
-        event_type="message",
+        event_type="app_mention",
     )
     mutation = SlackEvent(
         team="T1",
@@ -2384,7 +2388,7 @@ def test_slack_nl_thread_context_and_task_mutation_still_requires_confirm(tmp_pa
         text="make a task for that",
         ts="555.002",
         thread_ts="555.000",
-        event_type="message",
+        event_type="app_mention",
     )
 
     assert connector.handle_event(root)
