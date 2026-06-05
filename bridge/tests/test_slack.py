@@ -2174,7 +2174,9 @@ def test_slack_intake_preview_confirm_creates_redacted_task(tmp_path: Path) -> N
     assert preview_blocks is None
     assert preview.startswith("LLM preview ready.")
     notice_broker = cast(LLMNoticeAssistantBroker, connector.assistant_broker)
-    assert "preview: create bug task" in str(notice_broker.notice_calls[-1]["reason"])
+    preview_reason = str(notice_broker.notice_calls[-1]["reason"])
+    assert "preview: create bug item" in preview_reason
+    assert "bug task" not in preview_reason
     assert "xoxb-" not in preview
     assert "/Users" not in preview
     assert "alice@example.com" not in preview
@@ -2199,6 +2201,9 @@ def test_slack_intake_preview_confirm_creates_redacted_task(tmp_path: Path) -> N
     assert "xoxb-" not in combined
     assert "/Users" not in combined
     assert "alice@example.com" not in combined
+    completed_reason = str(notice_broker.notice_calls[-2]["reason"])
+    assert "created human-facing item" in completed_reason
+    assert "created task" not in completed_reason
     assert "confirmation_unknown_or_used" in str(notice_broker.notice_calls[-1]["reason"])
     audits = store.list_audit_events(board="main", action="slack_intake_create")
     assert len(audits) == 1

@@ -1356,7 +1356,10 @@ class SlackConnector:
             self._post_assistant_notice(
                 event,
                 decision="deny",
-                reason="insufficient role: operator or admin role is required to create tasks",
+                reason=(
+                    "insufficient role: operator or admin role is required to create "
+                    "human-facing items"
+                ),
                 response_type="denied",
                 thread_ts=thread_ts,
             )
@@ -1426,7 +1429,7 @@ class SlackConnector:
             },
         )
         text = (
-            f"preview: create {_safe_slack_text(proposal.intent)} task "
+            f"preview: create {_safe_slack_text(proposal.intent)} item "
             f"title={_safe_slack_text(proposal.title)}; "
             f"confirm {pending.confirmation_id}; "
             f"ttl_seconds={self.command_config.confirmation_ttl_seconds}"
@@ -1665,7 +1668,7 @@ class SlackConnector:
                 status="denied",
                 summary="insufficient role",
             )
-            return "deny: operator or admin role required to create tasks"
+            return "deny: operator or admin role required to create human-facing items"
         proposal = _decode_intake_proposal(pending.args)
         if proposal is None:
             self._audit_slack_command(
@@ -1710,7 +1713,7 @@ class SlackConnector:
             target={"type": "task", "id": task.id},
             task_id=task.id,
             status="ok",
-            summary=f"created {proposal.intent} task",
+            summary=f"created {proposal.intent} item",
             payload={
                 "intent": proposal.intent,
                 "labels": list(proposal.labels),
@@ -1722,13 +1725,13 @@ class SlackConnector:
             event=pending.event,
             actor=actor,
             status="ok",
-            summary="created task",
+            summary="created human-facing item",
             target={"type": "task", "id": task.id},
             task_id=task.id,
             payload={"intent": proposal.intent},
         )
         return (
-            f"completed: created task id={_safe_slack_text(task.id)} "
+            f"completed: created human-facing item id={_safe_slack_text(task.id)} "
             f"title={_safe_slack_text(task.title)}"
         )
 
@@ -3086,8 +3089,8 @@ def _pending_command_summary(pending: SlackPendingCommand) -> str:
     if pending.command == "task_create":
         proposal = _decode_intake_proposal(pending.args)
         if proposal is None:
-            return "create slack intake task"
-        return f"create {proposal.intent} task {_safe_slack_text(proposal.title)}"
+            return "create slack intake item"
+        return f"create {proposal.intent} item {_safe_slack_text(proposal.title)}"
     scope, target, enabled = _parse_killswitch_args(pending.args)
     if scope == "node":
         return f"set node {_safe_slack_text(target or '')} kill-switch {enabled}"
