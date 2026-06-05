@@ -1,9 +1,9 @@
 {
-  "generated_for": "uie2e (isolated Tier-1)",
+  "generated_for": "isolated Tier-1",
   "counts": {
-    "total": 60,
-    "enabled": 49,
-    "needs_stable_hook": 39
+    "total": 46,
+    "enabled": 29,
+    "needs_stable_hook": 35
   },
   "page_errors_during_crawl": 0,
   "controls": [
@@ -79,20 +79,6 @@
       "needs_stable_hook": true
     },
     {
-      "id": "board::dr-select::(unnamed)",
-      "view": "board",
-      "tag": "select",
-      "role": "select",
-      "name": "상태",
-      "compClass": "dr-select",
-      "classes": [
-        "dr-select"
-      ],
-      "disabled": false,
-      "stableHook": "",
-      "needs_stable_hook": true
-    },
-    {
       "id": "board::dr-addbtn::(unnamed)",
       "view": "board",
       "tag": "button",
@@ -111,7 +97,7 @@
       "view": "board",
       "tag": "button",
       "role": "button",
-      "name": "준비에 추가",
+      "name": "피드백 및 할 일에 추가",
       "compClass": "dr-col__add",
       "classes": [
         "dr-col__add"
@@ -125,38 +111,10 @@
       "view": "board",
       "tag": "button",
       "role": "button",
-      "name": "진행 중에 추가",
+      "name": "사람 판단 필요에 추가",
       "compClass": "dr-col__add",
       "classes": [
         "dr-col__add"
-      ],
-      "disabled": false,
-      "stableHook": "",
-      "needs_stable_hook": true
-    },
-    {
-      "id": "board::dr-col__add::(unnamed)",
-      "view": "board",
-      "tag": "button",
-      "role": "button",
-      "name": "검토에 추가",
-      "compClass": "dr-col__add",
-      "classes": [
-        "dr-col__add"
-      ],
-      "disabled": false,
-      "stableHook": "",
-      "needs_stable_hook": true
-    },
-    {
-      "id": "team::org-deleg-toggle::(unnamed)",
-      "view": "team",
-      "tag": "button",
-      "role": "button",
-      "name": "위임",
-      "compClass": "org-deleg-toggle",
-      "classes": [
-        "org-deleg-toggle"
       ],
       "disabled": false,
       "stableHook": "",
@@ -177,45 +135,50 @@
       "needs_stable_hook": true
     },
     {
-      "id": "trend::trend-window__btn::7d",
-      "view": "trend",
-      "tag": "button",
-      "role": "button",
-      "name": "7d",
-      "compClass": "trend-window__btn",
-      "classes": [
-        "trend-window__btn"
-      ],
-      "disabled": false,
+      "id": "exec::(view)::tab-not-reachable",
+      "view": "exec",
+      "tag": "(view)",
+      "role": "(unreachable)",
+      "name": "tab not reachable",
+      "compClass": "",
+      "classes": [],
+      "disabled": true,
       "stableHook": "",
       "needs_stable_hook": true
     },
     {
-      "id": "trend::trend-window__btn::14d",
-      "view": "trend",
-      "tag": "button",
-      "role": "button",
-      "name": "14d",
-      "compClass": "trend-window__btn",
-      "classes": [
-        "trend-window__btn",
-        "is-on"
-      ],
-      "disabled": false,
+      "id": "ledger::(view)::tab-not-reachable",
+      "view": "ledger",
+      "tag": "(view)",
+      "role": "(unreachable)",
+      "name": "tab not reachable",
+      "compClass": "",
+      "classes": [],
+      "disabled": true,
       "stableHook": "",
       "needs_stable_hook": true
     },
     {
-      "id": "trend::trend-window__btn::30d",
+      "id": "trend::(view)::tab-not-reachable",
       "view": "trend",
-      "tag": "button",
-      "role": "button",
-      "name": "30d",
-      "compClass": "trend-window__btn",
-      "classes": [
-        "trend-window__btn"
-      ],
-      "disabled": false,
+      "tag": "(view)",
+      "role": "(unreachable)",
+      "name": "tab not reachable",
+      "compClass": "",
+      "classes": [],
+      "disabled": true,
+      "stableHook": "",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "insights::(view)::tab-not-reachable",
+      "view": "insights",
+      "tag": "(view)",
+      "role": "(unreachable)",
+      "name": "tab not reachable",
+      "compClass": "",
+      "classes": [],
+      "disabled": true,
       "stableHook": "",
       "needs_stable_hook": true
     },
@@ -282,81 +245,62 @@
       "needs_stable_hook": true
     },
     {
-      "id": "connect::dr-btn::(unnamed)",
+      "id": "connect::(view)::tab-not-reachable",
       "view": "connect",
-      "tag": "button",
-      "role": "button",
-      "name": "초대 링크 만들기",
-      "compClass": "dr-btn",
-      "classes": [
-        "dr-btn",
-        "dr-btn--primary",
-        "connect-invite__btn"
-      ],
-      "disabled": false,
-      "stableHook": "",
-      "needs_stable_hook": true
-    },
-    {
-      "id": "connect::dr-btn::(unnamed)",
-      "view": "connect",
-      "tag": "button",
-      "role": "button",
-      "name": "참가",
-      "compClass": "dr-btn",
-      "classes": [
-        "dr-btn",
-        "dr-btn--primary",
-        "connect-join__btn"
-      ],
+      "tag": "(view)",
+      "role": "(unreachable)",
+      "name": "tab not reachable",
+      "compClass": "",
+      "classes": [],
       "disabled": true,
       "stableHook": "",
       "needs_stable_hook": true
     },
     {
-      "id": "handoff::dr-input::handoff-json",
-      "view": "handoff",
-      "tag": "textarea",
-      "role": "textarea",
-      "name": "받은 handoff 패키지(JSON)를 붙여넣기",
-      "compClass": "dr-input",
-      "classes": [
-        "dr-input",
-        "handoff-paste__input"
-      ],
-      "disabled": false,
-      "stableHook": "",
-      "needs_stable_hook": true
-    },
-    {
-      "id": "handoff::dr-btn::(unnamed)",
-      "view": "handoff",
-      "tag": "button",
-      "role": "button",
-      "name": "미리보기",
-      "compClass": "dr-btn",
-      "classes": [
-        "dr-btn",
-        "dr-btn--ghost",
-        "handoff-preview__btn"
-      ],
+      "id": "routing::(view)::tab-not-reachable",
+      "view": "routing",
+      "tag": "(view)",
+      "role": "(unreachable)",
+      "name": "tab not reachable",
+      "compClass": "",
+      "classes": [],
       "disabled": true,
       "stableHook": "",
       "needs_stable_hook": true
     },
     {
-      "id": "cost::dr-btn::(unnamed)",
+      "id": "agg::(view)::tab-not-reachable",
+      "view": "agg",
+      "tag": "(view)",
+      "role": "(unreachable)",
+      "name": "tab not reachable",
+      "compClass": "",
+      "classes": [],
+      "disabled": true,
+      "stableHook": "",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "handoff::(view)::tab-not-reachable",
+      "view": "handoff",
+      "tag": "(view)",
+      "role": "(unreachable)",
+      "name": "tab not reachable",
+      "compClass": "",
+      "classes": [],
+      "disabled": true,
+      "stableHook": "",
+      "needs_stable_hook": true
+    },
+    {
+      "id": "cost::(view)::tab-not-reachable",
       "view": "cost",
-      "tag": "button",
-      "role": "button",
-      "name": "↻ 새로고침",
-      "compClass": "dr-btn",
-      "classes": [
-        "dr-btn",
-        "dr-btn--ghost",
-        "cost-refresh"
-      ],
-      "disabled": false,
+      "tag": "(view)",
+      "role": "(unreachable)",
+      "name": "tab not reachable",
+      "compClass": "",
+      "classes": [],
+      "disabled": true,
       "stableHook": "",
       "needs_stable_hook": true
     },
@@ -373,20 +317,6 @@
         "auth-refresh"
       ],
       "disabled": false,
-      "stableHook": "",
-      "needs_stable_hook": true
-    },
-    {
-      "id": "auth::setup-switch::off",
-      "view": "auth",
-      "tag": "button",
-      "role": "switch",
-      "name": "OFF",
-      "compClass": "setup-switch",
-      "classes": [
-        "setup-switch"
-      ],
-      "disabled": true,
       "stableHook": "",
       "needs_stable_hook": true
     },
@@ -577,20 +507,6 @@
       "needs_stable_hook": false
     },
     {
-      "id": "drawer:chain::dr-drawer__close::(unnamed)",
-      "view": "drawer:chain",
-      "tag": "button",
-      "role": "button",
-      "name": "닫기",
-      "compClass": "dr-drawer__close",
-      "classes": [
-        "dr-drawer__close"
-      ],
-      "disabled": false,
-      "stableHook": "",
-      "needs_stable_hook": true
-    },
-    {
       "id": "drawer:master-chat::(drawer)::dr-mchat-fab",
       "view": "drawer:master-chat",
       "tag": "(drawer)",
@@ -607,7 +523,7 @@
       "view": "drawer:command-palette",
       "tag": "button",
       "role": "option",
-      "name": "▤보드작업",
+      "name": "▤목록작업",
       "compClass": "cmdk__item",
       "classes": [
         "cmdk__item",
@@ -650,62 +566,6 @@
       "view": "drawer:command-palette",
       "tag": "button",
       "role": "option",
-      "name": "▶실행운영",
-      "compClass": "cmdk__item",
-      "classes": [
-        "cmdk__item"
-      ],
-      "disabled": false,
-      "stableHook": "view:exec",
-      "needs_stable_hook": false
-    },
-    {
-      "id": "drawer:command-palette::cmdk__item::(unnamed)",
-      "view": "drawer:command-palette",
-      "tag": "button",
-      "role": "option",
-      "name": "▦원장운영",
-      "compClass": "cmdk__item",
-      "classes": [
-        "cmdk__item"
-      ],
-      "disabled": false,
-      "stableHook": "view:ledger",
-      "needs_stable_hook": false
-    },
-    {
-      "id": "drawer:command-palette::cmdk__item::(unnamed)",
-      "view": "drawer:command-palette",
-      "tag": "button",
-      "role": "option",
-      "name": "↗추세운영",
-      "compClass": "cmdk__item",
-      "classes": [
-        "cmdk__item"
-      ],
-      "disabled": false,
-      "stableHook": "view:trend",
-      "needs_stable_hook": false
-    },
-    {
-      "id": "drawer:command-palette::cmdk__item::(unnamed)",
-      "view": "drawer:command-palette",
-      "tag": "button",
-      "role": "option",
-      "name": "◍인사이트운영",
-      "compClass": "cmdk__item",
-      "classes": [
-        "cmdk__item"
-      ],
-      "disabled": false,
-      "stableHook": "view:insights",
-      "needs_stable_hook": false
-    },
-    {
-      "id": "drawer:command-palette::cmdk__item::(unnamed)",
-      "view": "drawer:command-palette",
-      "tag": "button",
-      "role": "option",
       "name": "#연동커뮤니케이션",
       "compClass": "cmdk__item",
       "classes": [
@@ -713,34 +573,6 @@
       ],
       "disabled": false,
       "stableHook": "view:integrations",
-      "needs_stable_hook": false
-    },
-    {
-      "id": "drawer:command-palette::cmdk__item::(unnamed)",
-      "view": "drawer:command-palette",
-      "tag": "button",
-      "role": "option",
-      "name": "⚯연결커뮤니케이션",
-      "compClass": "cmdk__item",
-      "classes": [
-        "cmdk__item"
-      ],
-      "disabled": false,
-      "stableHook": "view:connect",
-      "needs_stable_hook": false
-    },
-    {
-      "id": "drawer:command-palette::cmdk__item::(unnamed)",
-      "view": "drawer:command-palette",
-      "tag": "button",
-      "role": "option",
-      "name": "⤳알림 라우팅커뮤니케이션",
-      "compClass": "cmdk__item",
-      "classes": [
-        "cmdk__item"
-      ],
-      "disabled": false,
-      "stableHook": "view:routing",
       "needs_stable_hook": false
     },
     {
@@ -762,34 +594,6 @@
       "view": "drawer:command-palette",
       "tag": "button",
       "role": "option",
-      "name": "⊞집계룸 간",
-      "compClass": "cmdk__item",
-      "classes": [
-        "cmdk__item"
-      ],
-      "disabled": false,
-      "stableHook": "view:agg",
-      "needs_stable_hook": false
-    },
-    {
-      "id": "drawer:command-palette::cmdk__item::(unnamed)",
-      "view": "drawer:command-palette",
-      "tag": "button",
-      "role": "option",
-      "name": "⇄인계룸 간",
-      "compClass": "cmdk__item",
-      "classes": [
-        "cmdk__item"
-      ],
-      "disabled": false,
-      "stableHook": "view:handoff",
-      "needs_stable_hook": false
-    },
-    {
-      "id": "drawer:command-palette::cmdk__item::(unnamed)",
-      "view": "drawer:command-palette",
-      "tag": "button",
-      "role": "option",
       "name": "⌗감사감사",
       "compClass": "cmdk__item",
       "classes": [
@@ -797,34 +601,6 @@
       ],
       "disabled": false,
       "stableHook": "drawer:audit",
-      "needs_stable_hook": false
-    },
-    {
-      "id": "drawer:command-palette::cmdk__item::(unnamed)",
-      "view": "drawer:command-palette",
-      "tag": "button",
-      "role": "option",
-      "name": "⛓위임 체인감사",
-      "compClass": "cmdk__item",
-      "classes": [
-        "cmdk__item"
-      ],
-      "disabled": false,
-      "stableHook": "drawer:chain",
-      "needs_stable_hook": false
-    },
-    {
-      "id": "drawer:command-palette::cmdk__item::(unnamed)",
-      "view": "drawer:command-palette",
-      "tag": "button",
-      "role": "option",
-      "name": "$비용비용",
-      "compClass": "cmdk__item",
-      "classes": [
-        "cmdk__item"
-      ],
-      "disabled": false,
-      "stableHook": "view:cost",
       "needs_stable_hook": false
     },
     {
