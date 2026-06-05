@@ -1,5 +1,10 @@
 # grove audit, org graph, cost 설계
 
+> Status: historical v1.3 design. Current grove uses direct node communication
+> and human-facing list items; board/task names below are legacy backing API and
+> historical audit design vocabulary, not the current node-to-node coordination
+> model.
+
 상태: v1.3 설계안. 구현은 후속 작업에서 진행한다.
 
 ## 현재 기준

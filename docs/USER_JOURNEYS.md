@@ -1,5 +1,12 @@
 # grove 사용자 여정 (User Journeys) — v1.1
 
+> Status: historical v1.1 coverage map. Do not use this file as the current
+> product model. Current grove uses direct node communication, a human-facing
+> list for operator TODO/feedback/ask-human records, concrete project lead nodes,
+> and a shared host tmux session such as `dev10`. Legacy terms below such as
+> board/task/delegation describe old API/test names or historical journeys, not a
+> required node-to-node protocol.
+
 로컬 dev-room 제품 **grove**의 대표 사용자 여정을 기록하고, 각 여정을 자동 테스트가 어디까지
 커버하는지(또는 신규 테스트가 필요한지)를 환류하기 위한 문서다. 코드는 수정하지 않는다.
 
