@@ -2554,6 +2554,8 @@ def _write_web_companion(config: WebAppConfig, *, started_at: int) -> None:
         "port": config.port,
         "pid": os.getpid(),
         "started_at": started_at,
+        "allowed_hosts": list(config.allowed_hosts),
+        "remote_urls": [_http_url(host, config.port) for host in config.allowed_hosts],
     }
     _write_secret_json_atomic(
         _web_companion_path(config.grove_home, config.registry_session),

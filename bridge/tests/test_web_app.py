@@ -1215,6 +1215,7 @@ def test_web_companion_is_written_for_delegate_discovery(tmp_path: Path) -> None
         SQLiteBoardStore(tmp_path / "board.db"),
         host="0.0.0.0",
         port=9876,
+        allowed_hosts=("100.100.90.87", "192.168.1.186"),
     )
     web_path = tmp_path / ".grove" / "dev10" / "web.json"
 
@@ -1226,6 +1227,11 @@ def test_web_companion_is_written_for_delegate_discovery(tmp_path: Path) -> None
         "port": 9876,
         "pid": os.getpid(),
         "started_at": payload["started_at"],
+        "allowed_hosts": ["100.100.90.87", "192.168.1.186"],
+        "remote_urls": [
+            "http://100.100.90.87:9876",
+            "http://192.168.1.186:9876",
+        ],
     }
     assert isinstance(payload["started_at"], int)
     assert web_path.stat().st_mode & 0o777 == 0o600
