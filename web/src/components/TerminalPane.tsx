@@ -84,6 +84,7 @@ function SshConnect({ node, t }: { node: GroveNode; t: TFn }) {
         </button>
       ) : (
         <span className="dr-term__connect-cmd">
+          {connect.label && <span className="dr-term__connect-label">{connect.label}</span>}
           <code className="dr-term__connect-code">{cmd}</code>
           <button type="button" className="dr-term__connect-copy" onClick={copy}>
             {copied ? t("term.connect.copied") : t("term.connect.copy")}
@@ -160,18 +161,18 @@ function TerminalTools({ node, t }: { node: GroveNode; t: TFn }) {
       alive = false;
     };
   }, [node.name]);
-  // The lead pane (input_allowed=false) and meta/no-pane nodes are view-only: no
-  // send box and no connect command (the backend rejects send/connect for them).
+  const canConnect = node.terminal_allowed !== false;
   if (node.input_allowed === false) {
     return (
       <div className="dr-term__tools">
+        {canConnect && !isViewer && <SshConnect node={node} t={t} />}
         <div className="dr-term__send-viewer" data-viewonly="1">{t("term.send.viewOnly")}</div>
       </div>
     );
   }
   return (
     <div className="dr-term__tools">
-      <SshConnect node={node} t={t} />
+      {canConnect && <SshConnect node={node} t={t} />}
       {isViewer ? (
         <div className="dr-term__send-viewer">{t("term.send.viewer")}</div>
       ) : (

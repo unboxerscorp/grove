@@ -143,9 +143,9 @@ const LEAD_NODE: OrgNodeMock = {
   status: "external",
 };
 
-// v1.28 access flags — mirror web_app.py NodeRecord + _pane_allowed: a node with
-// a valid worker pane is fully exposed; the LEAD pane (window.pane == 0.0) is
-// terminal_allowed (viewable) but NOT input_allowed (no send / no connect);
+// v1.28+ access flags — mirror web_app.py NodeRecord + _pane_allowed: any valid
+// pane is terminal/connect visible; the LEAD pane (window.pane == 0.0) is
+// terminal_allowed but NOT input_allowed (no web send);
 // a node with no/invalid pane (meta) is neither.
 function nodeAccessFlags(pane: string): {
   exposed: boolean;
@@ -159,10 +159,10 @@ function nodeAccessFlags(pane: string): {
   }
   const isLead = Number(match[1]) === 0 && Number(match[2]) === 0;
   return {
-    exposed: !isLead,
+    exposed: true,
     terminal_allowed: true, // any real pane is viewable (incl. the lead pane)
-    input_allowed: !isLead, // lead pane (0.0) rejects input/send/connect
-    unavailable_reason: isLead ? "lead pane is not exposed" : "",
+    input_allowed: !isLead, // lead pane (0.0) rejects input/send
+    unavailable_reason: "",
   };
 }
 
@@ -201,16 +201,15 @@ function isDescendant(ancestor: string, candidate: string): boolean {
   return false;
 }
 
-// v1.27 assignee candidates (mirror web_app.py _assignee_candidates): project
-// nodes + lead/orchestrator, with project-master as the default.
+// v1.33 assignee candidates (mirror web_app.py _assignee_candidates): visible
+// persistent nodes are the default; project-master remains only as metadata.
 const ASSIGNEE_CANDIDATES = [
-  { name: "project-master", agent: "claude", role: "orchestrator", status: "external", default: true },
   ...ORG_NODES.map((n) => ({
     name: n.name,
     agent: n.agent,
     role: n.role ?? "",
     status: n.status,
-    default: false,
+    default: n.name === "root",
     ...(n.agent === "human"
       ? {
           human: true,
@@ -219,6 +218,7 @@ const ASSIGNEE_CANDIDATES = [
         }
       : {}),
   })),
+  { name: "project-master", agent: "claude", role: "orchestrator", status: "external", default: false },
   { name: "lead", agent: "claude", role: "none", status: "external", default: false },
 ];
 
@@ -230,9 +230,9 @@ function buildMasterOrg(selected: string) {
     scope: "cross_project",
     selected_project: selected,
     visible_projects: visible,
-    project_master: { name: "project-master", present: true, default_assignee: true },
+    project_master: { name: "project-master", present: true, default_assignee: false },
     delegation: {
-      default_assignee: "project-master",
+      default_assignee: "root",
       create_task_endpoint: "/api/boards/{board_id}/tasks",
       watch_endpoint: "/ws/board",
       watch_ticket_endpoint: "/api/ws-ticket",
@@ -263,7 +263,7 @@ function buildOrg(proj = "dev10") {
     roots: orgNodes.filter((n) => !n.parent).map((n) => n.name),
     groups,
     children,
-    default_assignee: "project-master",
+    default_assignee: "root",
     assignee_candidates: ASSIGNEE_CANDIDATES,
     master_org: buildMasterOrg(proj),
     ...mockOrgExtras(proj),
@@ -547,19 +547,27 @@ diag.setExecutionGlobal = (enabled: boolean, killSwitch: boolean): void => {
 // Current-viewer role for /api/me. Default: local-token (operator-equivalent,
 // member null). Verify flips to a team "viewer" to prove proactive control lock.
 // ?viewer=1 seeds viewer at load so a fresh goto/reload mounts the app as a
-// viewer (used to assert the operator-only master-chat launcher is hidden);
-// diag.setViewer still flips it at runtime for re-fetch-based checks.
+// viewer; diag.setViewer still flips it at runtime for re-fetch-based checks.
 let viewerMode = new URLSearchParams(window.location.search).get("viewer") === "1";
 diag.setViewer = (on: boolean): void => {
   viewerMode = on;
 };
+
+function isMasterChatActionRequest(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    /\b(add|assign|build|create|delete|deploy|destroy|drop|execute|fix|handoff|implement|make|prod|production|route|run|setup|spawn|task)\b/.test(
+      lower,
+    ) || /(만들|생성|추가|셋업|설정|라우팅|위임|맡겨|배정|배포|실행|삭제|제거|수정|고쳐)/.test(message)
+  );
+}
 
 // master chat (GET/POST /api/master/chat). Mirrors grove-py: POST returns a raw
 // MasterChatResponse (response_type answer|preview|denied + answer/proposal/
 // operator_gate); the history GET is unimplemented (POST-only route) -> 405, which
 // the FE treats as "no history". default ON so the floating widget is demoable;
 // diag.setMasterChatEnabled(false) -> 503 {detail} (hard transport death, no LLM
-// text); viewer POST -> 403 (operator-only).
+// text); viewer factual POST is allowed, while viewer action-like POST -> 403.
 let masterChatEnabled = true;
 diag.setMasterChatEnabled = (on: boolean): void => {
   masterChatEnabled = on;
@@ -1796,15 +1804,14 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 
   if (p === "/api/master/chat") {
     // Mirrors grove-py /api/master/chat. 503 while disabled (backend WIP); the
-    // history GET is unimplemented (POST-only route) -> 405; viewer POST -> 403.
-    // POST returns a raw MasterChatResponse, with a deterministic mock
-    // classification so all three response_types are demoable.
+    // history GET is unimplemented (POST-only route) -> 405. POST returns a raw
+    // MasterChatResponse, with a deterministic mock classification so all three
+    // response_types are demoable.
     const reject = (status: number, detail: string) =>
       Promise.resolve(new Response(JSON.stringify({ detail }), { status }));
     if (!masterChatEnabled) return reject(503, "master chat is not available yet");
     if (method === "GET") return reject(405, "method not allowed");
     if (method === "POST") {
-      if (viewerMode) return reject(403, "master chat requires operator role");
       const body = (init?.body ? JSON.parse(init.body as string) : {}) as {
         message?: string;
         conversation_id?: string;
@@ -1813,6 +1820,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         origin_page?: string;
       };
       const message = typeof body.message === "string" ? body.message : "";
+      if (viewerMode && isMasterChatActionRequest(message)) return reject(403, "master chat requires operator role");
       masterSeq += 1;
       const conversationId = body.conversation_id || `conv-${masterSeq}`;
       const requestId = body.request_id || `req-${masterSeq}`;
@@ -1885,7 +1893,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
             facts: {
               project: { selected: "dev10", board: "dev10" },
               projects: { visible: PROJECTS.map((p) => p.name).sort() },
-              org: { node_count: ORG_NODES.length, project_master: { name: "project-master", present: true, default_assignee: true } },
+              org: { node_count: ORG_NODES.length, project_master: { name: "project-master", present: true, default_assignee: false } },
               board: { status_counts: { ready: 1, running: 1, blocked: 1, done: 1, archived: 0 } },
               reviewers: { count: 2, nodes: ["human-reviewer", "researcher"] },
               human: {
@@ -1897,7 +1905,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
                 answer_endpoint: "/api/tasks/{task_id}/answer",
               },
               delegation: {
-                default_assignee: "project-master",
+                default_assignee: "root",
                 create_task_endpoint: "/api/boards/{board_id}/tasks",
                 watch_endpoint: "/ws/board",
                 watch_ticket_endpoint: "/api/ws-ticket",
@@ -2327,7 +2335,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         name: String(body.name ?? "untitled"),
         board: String(body.name ?? "untitled"),
         dashboardCommand: `grove-web --session ${String(body.name ?? "untitled")}`,
-        default_assignee: "project-master",
+        default_assignee: "root",
         project_master: { name: "project-master", status: "external" },
         workspace: body.clone ? `~/dev/${body.name}` : `~/dev/${body.name}`,
         node_count: 1,
@@ -2440,8 +2448,9 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const rec = projNodes.find((n) => n.name === node);
     if (!rec)
       return Promise.resolve(new Response(JSON.stringify({ detail: "node not found" }), { status: 404 }));
-    // Mirror _node_connect_payload (_pane_allowed): the lead pane (0.0) 404s.
-    if (!nodeAccessFlags(rec.tmux_pane).exposed)
+    // Mirror _node_connect_payload (_pane_allowed): any terminal_allowed pane can
+    // return a connect command, including the lead pane.
+    if (!nodeAccessFlags(rec.tmux_pane).terminal_allowed)
       return Promise.resolve(new Response(JSON.stringify({ detail: "node not found" }), { status: 404 }));
     diag.nodeConnectFetched = node;
     const session = rec.tmux_pane.split(":")[0];
@@ -2450,7 +2459,9 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         project: proj,
         node,
         tmux_target: rec.tmux_pane,
-        commands: { attach: `tmux attach -t ${session}`, select_pane: `tmux select-pane -t ${rec.tmux_pane}` },
+        mode: "local_tmux_attach",
+        label: "Local tmux attach",
+        commands: { attach: `tmux attach -t ${session}`, local_attach: `tmux attach -t ${session}`, select_pane: `tmux select-pane -t ${rec.tmux_pane}` },
       }),
     );
   }

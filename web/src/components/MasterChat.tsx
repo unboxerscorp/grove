@@ -1,11 +1,12 @@
 // MasterChat — floating web chat widget (Channel-Talk style, bottom-right).
 //
-// v1.27. Operator-only conversational launcher to the project-master orchestrator.
-// Mounted once at the app root (see app.tsx). Strings live in i18n.tsx (mchat.*)
-// and styles in styles.css (.dr-mchat); the REST calls live in api.ts.
+// v1.27. Conversational launcher to the project-master orchestrator. Mounted
+// once at the app root (see app.tsx). Strings live in i18n.tsx (mchat.*), styles
+// in styles.css (.dr-mchat), and the REST calls live in api.ts.
 //
-// operator-only: viewers (team read-only members) never see the launcher — the
-// component renders null for them, mirroring grove's operator-gated controls.
+// Viewers may ask read-only/factual questions. Action preview/confirmation stays
+// operator-gated by grove-py, and this component only renders confirm controls
+// for operators.
 //
 // Backend (POST /api/master/chat) is served by grove-py. A transport failure that
 // still has an assistant fallback comes back as a normal answer (answer.text =
@@ -147,6 +148,7 @@ function MessageBubble({
   onRetry,
   onConfirm,
   confirmingId,
+  allowConfirm,
 }: {
   msg: ChatMessage;
   lang: Lang;
@@ -154,10 +156,11 @@ function MessageBubble({
   onRetry: (m: ChatMessage) => void;
   onConfirm: (m: ChatMessage) => void;
   confirmingId: string | null;
+  allowConfirm: boolean;
 }) {
   const isUser = msg.role === "user";
   const empty = msg.text.length === 0;
-  const canConfirm = !isUser && msg.confirmationId && msg.confirmationState !== "confirmed";
+  const canConfirm = allowConfirm && !isUser && msg.confirmationId && msg.confirmationState !== "confirmed";
   return (
     <div className={`dr-mchat__row dr-mchat__row--${isUser ? "user" : "master"}`} data-role={msg.role} data-status={msg.status}>
       <div className="dr-mchat__bubble">
@@ -201,7 +204,7 @@ export function MasterChat(props: { openSignal?: number } = {}) {
   const { openSignal = 0 } = props;
   const { t, lang } = useI18n();
 
-  const [role, setRole] = useState<"loading" | "operator" | "viewer">("loading");
+  const [role, setRole] = useState<"loading" | "operator" | "viewer" | "unavailable">("loading");
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -226,11 +229,9 @@ export function MasterChat(props: { openSignal?: number } = {}) {
     if (openSignal > 0) setOpen(true);
   }, [openSignal]);
 
-  // operator-only gate — fails CLOSED: the launcher shows only on a successful
-  // /api/me with a non-viewer member (local-token member null = operator). A
-  // viewer member OR any /api/me failure resolves to a non-operator role and
-  // hides the widget — never expose the operator launcher when the role is
-  // unknown (an operator can reload to recover).
+  // Auth gate: show the launcher only after /api/me succeeds. Operators can
+  // preview/confirm actions; viewers can still send factual turns and the
+  // backend rejects action-like turns.
   useEffect(() => {
     let alive = true;
     api
@@ -238,7 +239,7 @@ export function MasterChat(props: { openSignal?: number } = {}) {
       .then((me) => {
         if (alive) setRole(me?.member?.role === "viewer" ? "viewer" : "operator");
       })
-      .catch(() => alive && setRole("viewer"));
+      .catch(() => alive && setRole("unavailable"));
     return () => {
       alive = false;
     };
@@ -407,8 +408,7 @@ export function MasterChat(props: { openSignal?: number } = {}) {
 
   const empty = useMemo(() => messages.length === 0, [messages]);
 
-  // operator-only: render nothing for viewers (and while the role is resolving).
-  if (role !== "operator") return null;
+  if (role === "loading" || role === "unavailable") return null;
 
   return (
     <div className="dr-mchat">
@@ -445,6 +445,7 @@ export function MasterChat(props: { openSignal?: number } = {}) {
                 onRetry={onRetry}
                 onConfirm={doConfirm}
                 confirmingId={confirmingId}
+                allowConfirm={role === "operator"}
               />
             ))}
             {busy && (

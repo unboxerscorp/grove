@@ -838,8 +838,9 @@ class AssistantBroker:
 
 def create_default_assistant_client(env: Mapping[str, str] | None = None) -> AssistantLLMClient:
     source = env if env is not None else os.environ
+    direct_mode = source.get("GROVE_ASSISTANT_DIRECT_FALLBACK", "").strip().lower()
     api_key = source.get("GROVE_ASSISTANT_API_KEY", "").strip()
-    if api_key:
+    if api_key and direct_mode in {"1", "true", "yes", "dev", "test"}:
         return AnthropicAssistantClient(api_key=api_key)
     return NodeRoutedAssistantClient()
 
@@ -1592,6 +1593,11 @@ def _pre_filter_block_reason(message: str) -> str | None:
     return None
 
 
+def requires_master_chat_action_gate(message: str) -> bool:
+    clean = _safe_public_text(message)
+    return _is_action_handoff_request(clean, classify_master_message(clean))
+
+
 def _is_action_handoff_request(
     message: str,
     classification: MasterClassification,
@@ -1793,6 +1799,8 @@ def _client_metadata(client: AssistantLLMClient) -> dict[str, object]:
             "transport": "direct",
             "provider": "anthropic",
             "model": client.model,
+            "status": "dev_test_fallback",
+            "production_default": "node-routed",
         }
     return {
         "transport": "injected",
@@ -1887,4 +1895,5 @@ __all__ = [
     "NodeRoutedAssistantClient",
     "build_assistant_facts",
     "create_default_assistant_client",
+    "requires_master_chat_action_gate",
 ]

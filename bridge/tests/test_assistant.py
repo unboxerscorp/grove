@@ -19,6 +19,7 @@ from grove_bridge.assistant import (
     NodeRoutedAssistantClient,
     build_assistant_facts,
     create_default_assistant_client,
+    requires_master_chat_action_gate,
 )
 from grove_bridge.store import SQLiteBoardStore
 
@@ -139,15 +140,61 @@ def test_default_transport_uses_node_routed_without_grove_assistant_api_key(
     assert client.node_name == "grove-assistant"
 
 
-def test_default_transport_uses_direct_client_when_grove_assistant_api_key_is_present(
+def test_default_transport_uses_node_routed_when_grove_assistant_api_key_is_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("GROVE_ASSISTANT_API_KEY", "test-key")
+    monkeypatch.delenv("GROVE_ASSISTANT_DIRECT_FALLBACK", raising=False)
+
+    client = create_default_assistant_client()
+
+    assert isinstance(client, NodeRoutedAssistantClient)
+    assert client.node_name == "grove-assistant"
+
+
+def test_default_transport_uses_direct_client_only_for_dev_test_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GROVE_ASSISTANT_API_KEY", "test-key")
+    monkeypatch.setenv("GROVE_ASSISTANT_DIRECT_FALLBACK", "test")
 
     client = create_default_assistant_client()
 
     assert isinstance(client, AnthropicAssistantClient)
     assert client.api_key == "test-key"
+
+
+def test_direct_fallback_metadata_discloses_dev_test_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_complete(
+        self: AnthropicAssistantClient,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> str:
+        _ = (self, system_prompt, user_prompt)
+        return "직접 fallback 응답입니다. [fact:board.status_counts]"
+
+    monkeypatch.setattr(AnthropicAssistantClient, "complete", fake_complete)
+    broker = AssistantBroker(llm_client=AnthropicAssistantClient(api_key="test-key"))
+
+    response = broker.handle_turn(
+        "MASTER로 뭐 가능?",
+        _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
+    )
+
+    assert response.answer is not None
+    llm_metadata = cast(dict[str, object], response.answer.metadata["llm"])
+    assert llm_metadata["transport"] == "direct"
+    assert llm_metadata["status"] == "dev_test_fallback"
+    assert llm_metadata["production_default"] == "node-routed"
+
+
+def test_action_gate_helper_covers_broker_action_terms() -> None:
+    assert requires_master_chat_action_gate("배포해줘") is True
+    assert requires_master_chat_action_gate("MASTER 상태 요약해줘") is False
 
 
 def test_node_routed_transport_invokes_grove_assistant_cli_with_prompt(tmp_path: Path) -> None:

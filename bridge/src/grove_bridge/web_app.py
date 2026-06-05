@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -23,7 +24,7 @@ from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from types import ModuleType
-from typing import Annotated, TypedDict, cast
+from typing import Annotated, NotRequired, TypedDict, cast
 from urllib.parse import unquote, urlparse
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, status
@@ -40,6 +41,7 @@ from grove_bridge.assistant import (
     AssistantSurface,
     AssistantTransportError,
     AssistantUnavailable,
+    requires_master_chat_action_gate,
 )
 from grove_bridge.auth import Account, DashboardRole
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
@@ -380,6 +382,7 @@ class NodeRecord(TypedDict):
     terminal_allowed: bool
     input_allowed: bool
     unavailable_reason: str
+    connect_host: NotRequired[str]
 
 
 class OrgGraphRecord(NodeRecord):
@@ -1429,10 +1432,7 @@ def create_app(
         request: Request,
         payload: MasterChatPayload,
     ) -> dict[str, object] | Response:
-        auth = _require_operator_state_change(
-            request,
-            detail="master chat requires operator role",
-        )
+        auth = _require_master_chat_turn_access(request, payload)
         project = resolve_project(request)
         return _handle_master_chat_request(
             request,
@@ -1487,7 +1487,7 @@ def create_app(
             "workspace": workspace or "",
             "node_count": _project_node_count(created_config),
             "status": _mapping_string(result, "status") or _tmux_session_status(created_name),
-            "default_assignee": PROJECT_MASTER_NODE_NAME,
+            "default_assignee": _default_assignee(created_config),
             "project_master": project_master,
         }
         project = resolve_project(request)
@@ -2123,12 +2123,14 @@ def create_app(
 
     @app.get("/api/nodes/{node}/connect")
     def node_connect_endpoint(request: Request, node: str) -> dict[str, object]:
-        _require_auth(request)
+        auth = _require_auth(request)
         project = resolve_target_project(
             request,
             caller_project=resolve_project(request),
         )
         node_record = _node_record_in_project(node, config=project.config)
+        if not node_record["input_allowed"]:
+            _require_operator_access(auth, detail="lead terminal connect requires operator role")
         return _node_connect_payload(node_record, project=project)
 
     @app.get("/api/nodes/{node}/autopickup")
@@ -5732,6 +5734,18 @@ def _require_operator_state_change(
     return auth
 
 
+def _require_master_chat_turn_access(
+    request: Request,
+    payload: MasterChatPayload,
+) -> AuthContext:
+    if requires_master_chat_action_gate(payload.message):
+        return _require_operator_state_change(
+            request,
+            detail="master chat action preview requires operator role",
+        )
+    return _require_auth(request)
+
+
 def _require_team_csrf(request: Request, *, auth: AuthContext) -> None:
     supplied = request.headers.get(CSRF_HEADER)
     expected = auth.csrf_token
@@ -7450,6 +7464,7 @@ def _registry_node_records(config: WebAppConfig) -> list[NodeRecord]:
                     description="",
                     kind="registry",
                     config=config,
+                    connect_host="",
                     unavailable_reason="invalid node record",
                 )
             )
@@ -7472,6 +7487,7 @@ def _registry_node_records(config: WebAppConfig) -> list[NodeRecord]:
                 description=_mapping_string(node, "description") or "",
                 kind=_node_kind_for_registry(node),
                 config=config,
+                connect_host=_node_connect_host_from_registry(node),
             )
         )
     return sorted(nodes, key=lambda node: node["name"])
@@ -7490,6 +7506,7 @@ def _node_record(
     description: str,
     kind: str,
     config: WebAppConfig,
+    connect_host: str = "",
     unavailable_reason: str | None = None,
 ) -> NodeRecord:
     reason = unavailable_reason
@@ -7498,7 +7515,7 @@ def _node_record(
     exposed = reason == ""
     status = _node_record_status(status, reason=reason, kind=kind)
     input_allowed = exposed and _valid_input_tmux_pane(pane, config=config)
-    return {
+    payload: NodeRecord = {
         "name": name,
         "agent": agent,
         "tmux_pane": pane,
@@ -7514,6 +7531,17 @@ def _node_record(
         "input_allowed": input_allowed,
         "unavailable_reason": reason,
     }
+    if connect_host:
+        payload["connect_host"] = connect_host
+    return payload
+
+
+def _node_connect_host_from_registry(node: Mapping[str, object]) -> str:
+    for key in ("connect_host", "ssh_host", "remote_host", "hostname", "host"):
+        value = _mapping_string(node, key)
+        if value is not None and value.strip():
+            return value.strip()
+    return ""
 
 
 def _node_record_status(status: str, *, reason: str, kind: str) -> str:
@@ -7550,7 +7578,10 @@ def _project_master_exists(config: WebAppConfig) -> bool:
 
 
 def _default_assignee(config: WebAppConfig) -> str:
-    return PROJECT_MASTER_NODE_NAME if _project_master_exists(config) else LEAD_NODE_NAME
+    candidates = _persistent_assignee_nodes(config)
+    if LEAD_NODE_NAME in candidates:
+        return LEAD_NODE_NAME
+    return candidates[0] if candidates else LEAD_NODE_NAME
 
 
 def _assignee_candidates(config: WebAppConfig) -> list[dict[str, object]]:
@@ -7558,9 +7589,6 @@ def _assignee_candidates(config: WebAppConfig) -> list[dict[str, object]]:
     by_name: dict[str, dict[str, object]] = {}
     for node in _registry_node_records(config):
         by_name[node["name"]] = _assignee_candidate_payload(node, default=default)
-    if _project_master_exists(config):
-        master = _project_master_node(config)
-        by_name[PROJECT_MASTER_NODE_NAME] = _assignee_candidate_payload(master, default=default)
     if LEAD_NODE_NAME not in by_name:
         by_name[LEAD_NODE_NAME] = _assignee_candidate_payload(
             _external_lead_node(config),
@@ -7570,6 +7598,16 @@ def _assignee_candidates(config: WebAppConfig) -> list[dict[str, object]]:
         by_name.values(),
         key=lambda item: (not bool(item["default"]), str(item["name"])),
     )
+
+
+def _persistent_assignee_nodes(config: WebAppConfig) -> list[str]:
+    names: list[str] = []
+    for node in _registry_node_records(config):
+        if node["kind"] == "meta":
+            continue
+        if node["terminal_allowed"]:
+            names.append(node["name"])
+    return sorted(dict.fromkeys(names))
 
 
 def _reviewer_candidates(config: WebAppConfig) -> list[dict[str, object]]:
@@ -8305,18 +8343,43 @@ def _node_connect_payload(
 ) -> dict[str, object]:
     pane = node["tmux_pane"]
     match = TMUX_PANE_RE.fullmatch(pane)
-    if match is None or not _pane_input_allowed(pane, config=project.config):
+    if match is None or not _pane_allowed(pane, config=project.config):
         raise HTTPException(status_code=404, detail="node not found")
     session = match.group("session")
+    local_attach = f"tmux attach -t {session}"
+    select_pane = f"tmux select-pane -t {pane}"
+    commands = {
+        "attach": local_attach,
+        "local_attach": local_attach,
+        "select_pane": select_pane,
+    }
+    mode = "local_tmux_attach"
+    label = "Local tmux attach"
+    ssh_host = _ssh_connect_host(node.get("connect_host", ""))
+    if ssh_host is not None:
+        remote = f"{select_pane} && {local_attach}"
+        ssh_attach = f"ssh {shlex.quote(ssh_host)} {shlex.quote(remote)}"
+        commands["attach"] = ssh_attach
+        commands["ssh_attach"] = ssh_attach
+        mode = "ssh_tmux_attach"
+        label = f"SSH tmux attach ({ssh_host})"
     return {
         "project": project.name,
         "node": node["name"],
         "tmux_target": pane,
-        "commands": {
-            "attach": f"tmux attach -t {session}",
-            "select_pane": f"tmux select-pane -t {pane}",
-        },
+        "mode": mode,
+        "label": label,
+        "commands": commands,
     }
+
+
+def _ssh_connect_host(value: str) -> str | None:
+    host = _normalize_hostname(value)
+    if host is None or host in LOOPBACK_HOSTS or host in WILDCARD_BIND_HOSTS:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", host):
+        return None
+    return host
 
 
 def _check_node_input_rate_limit(

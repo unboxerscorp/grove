@@ -5535,6 +5535,7 @@ button {
 .dr-term__connect { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .dr-term__connect-btn { font-size: 11.5px; padding: 5px 11px; }
 .dr-term__connect-cmd { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 360px; }
+.dr-term__connect-label { flex: none; font-size: 10.5px; color: var(--dim); white-space: nowrap; }
 .dr-term__connect-code {
   font-family: var(--mono); font-size: 11px; color: var(--teal);
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;

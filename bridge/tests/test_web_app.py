@@ -2243,7 +2243,7 @@ def test_master_chat_action_confirm_requires_team_csrf(tmp_path: Path) -> None:
     assert store.list_decision_proposals(board="dev10") == []
 
 
-def test_master_chat_team_operator_requires_csrf_and_succeeds(tmp_path: Path) -> None:
+def test_master_chat_team_operator_factual_turn_does_not_require_csrf(tmp_path: Path) -> None:
     write_team_member(tmp_path, secret="operator-secret", role="operator")
     client = make_client(
         tmp_path,
@@ -2253,7 +2253,8 @@ def test_master_chat_team_operator_requires_csrf_and_succeeds(tmp_path: Path) ->
     login = client.post("/api/login", json={"name": "alice", "secret": "operator-secret"})
     csrf = str(login.json()["csrf"])
 
-    missing_csrf = client.post("/api/master/chat", json={"message": "MASTER로 뭐 가능?"})
+    no_csrf_factual = client.post("/api/master/chat", json={"message": "MASTER로 뭐 가능?"})
+    no_csrf_action = client.post("/api/master/chat", json={"message": "배포해줘"})
     allowed = client.post(
         "/api/master/chat",
         headers={CSRF_HEADER: csrf},
@@ -2261,12 +2262,13 @@ def test_master_chat_team_operator_requires_csrf_and_succeeds(tmp_path: Path) ->
     )
 
     assert login.status_code == 200
-    assert missing_csrf.status_code == 403
+    assert no_csrf_factual.status_code == 200
+    assert no_csrf_action.status_code == 403
     assert allowed.status_code == 200
     assert allowed.json()["response_type"] == "answer"
 
 
-def test_master_chat_viewer_denied_by_state_change_gate(tmp_path: Path) -> None:
+def test_master_chat_viewer_can_read_facts_but_cannot_preview_actions(tmp_path: Path) -> None:
     write_team_member(tmp_path, secret="viewer-secret", role="viewer")
     client = make_client(
         tmp_path,
@@ -2289,7 +2291,8 @@ def test_master_chat_viewer_denied_by_state_change_gate(tmp_path: Path) -> None:
 
     assert login.status_code == 200
     assert denied.status_code == 403
-    assert answer.status_code == 403
+    assert answer.status_code == 200
+    assert answer.json()["response_type"] == "answer"
 
 
 def test_master_chat_answer_includes_project_board_org_and_human_facts(
@@ -5440,7 +5443,7 @@ def test_create_project_invokes_new_project_with_literal_argv(
         "workspace": "/repo/new-dev",
         "node_count": 1,
         "status": "running",
-        "default_assignee": "project-master",
+        "default_assignee": "lead",
         "project_master": {
             "name": "project-master",
             "agent": "claude",
@@ -5477,10 +5480,10 @@ def test_create_project_invokes_new_project_with_literal_argv(
         "board": "new-dev",
         "display_name": "new-dev",
     }
-    assert org.json()["default_assignee"] == "project-master"
+    assert org.json()["default_assignee"] == "lead"
     assert [candidate["name"] for candidate in org.json()["assignee_candidates"]] == [
-        "project-master",
         "lead",
+        "project-master",
     ]
     project_task = client.post(
         "/api/boards/main/tasks",
@@ -5958,10 +5961,10 @@ def test_org_payload_includes_master_and_human_routing_support(
         "project_master": {
             "name": "project-master",
             "present": True,
-            "default_assignee": True,
+            "default_assignee": False,
         },
         "delegation": {
-            "default_assignee": "project-master",
+            "default_assignee": "worker",
             "create_task_endpoint": "/api/boards/{board_id}/tasks",
             "watch_endpoint": "/ws/board",
             "watch_ticket_endpoint": "/api/ws-ticket",
@@ -6016,10 +6019,10 @@ def test_org_adds_external_lead_for_grouped_workers(tmp_path: Path) -> None:
         {"name": "grove-dev", "parent": "lead@dev10", "nodes": ["dev"]},
         {"name": "review", "parent": "lead@dev10", "nodes": ["reviewer"]},
     ]
-    assert payload["default_assignee"] == "lead"
+    assert payload["default_assignee"] == "dev"
     assert [candidate["name"] for candidate in payload["assignee_candidates"]] == [
-        "lead",
         "dev",
+        "lead",
         "reviewer",
     ]
 
@@ -6239,7 +6242,12 @@ def test_node_connect_info_is_read_only_and_project_scoped(tmp_path: Path) -> No
         "dev10",
         {
             "lead": {"name": "lead", "agent": "claude", "tmux_pane": "dev10:0.0"},
-            "worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"},
+            "worker": {
+                "name": "worker",
+                "agent": "codex",
+                "tmux_pane": "dev10:2.0",
+                "connect_host": "builder.example",
+            },
         },
     )
     write_registry(
@@ -6258,16 +6266,37 @@ def test_node_connect_info_is_read_only_and_project_scoped(tmp_path: Path) -> No
     )
 
     assert response.status_code == 200
-    assert response.json() == {
+    worker_payload = response.json()
+    assert worker_payload == {
         "project": "dev10",
         "node": "worker",
         "tmux_target": "dev10:2.0",
+        "mode": "ssh_tmux_attach",
+        "label": "SSH tmux attach (builder.example)",
         "commands": {
-            "attach": "tmux attach -t dev10",
+            "attach": (
+                "ssh builder.example 'tmux select-pane -t dev10:2.0 && tmux attach -t dev10'"
+            ),
+            "local_attach": "tmux attach -t dev10",
             "select_pane": "tmux select-pane -t dev10:2.0",
+            "ssh_attach": (
+                "ssh builder.example 'tmux select-pane -t dev10:2.0 && tmux attach -t dev10'"
+            ),
         },
     }
-    assert lead.status_code == 404
+    assert lead.status_code == 200
+    assert lead.json() == {
+        "project": "dev10",
+        "node": "lead",
+        "tmux_target": "dev10:0.0",
+        "mode": "local_tmux_attach",
+        "label": "Local tmux attach",
+        "commands": {
+            "attach": "tmux attach -t dev10",
+            "local_attach": "tmux attach -t dev10",
+            "select_pane": "tmux select-pane -t dev10:0.0",
+        },
+    }
     assert scoped.status_code == 404
     assert store.list_events_after(cursor=0, limit=100) == before_events
 

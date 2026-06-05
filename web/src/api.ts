@@ -303,7 +303,9 @@ export interface NodeConnect {
   project?: string;
   node: string;
   tmux_target: string;
-  commands: { attach: string; select_pane?: string };
+  mode?: "local_tmux_attach" | "ssh_tmux_attach" | string;
+  label?: string;
+  commands: { attach: string; local_attach?: string; ssh_attach?: string; select_pane?: string };
 }
 
 export interface SlackConfig {
