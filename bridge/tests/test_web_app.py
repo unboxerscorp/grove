@@ -6345,6 +6345,14 @@ def test_org_payload_includes_master_and_human_routing_support(
     }
 
 
+def test_web_app_does_not_synthesize_legacy_project_master_node() -> None:
+    source = Path(web_app.__file__).read_text(encoding="utf-8")
+
+    assert "PROJECT_MASTER_NODE_NAME" not in source
+    assert "_project_master_exists" not in source
+    assert "_project_master_node" not in source
+
+
 def test_org_adds_external_lead_for_grouped_workers(tmp_path: Path) -> None:
     write_registry(
         tmp_path,

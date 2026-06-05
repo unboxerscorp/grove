@@ -206,7 +206,6 @@ DELEGATE_BOARD_ALIASES = frozenset({"dev-room"})
 DELEGATE_BOARD_OWNER_PROJECT = "dev10"
 LEAD_NODE_NAME = "lead"
 GROVE_MASTER_NODE_NAME = "grove-master"
-PROJECT_MASTER_NODE_NAME = "project-master"
 GUI_FEATURES = (
     "quota",
     "intake",
@@ -7634,13 +7633,6 @@ def _node_unavailable_reason(pane: str, *, kind: str, config: WebAppConfig) -> s
     return ""
 
 
-def _project_master_exists(config: WebAppConfig) -> bool:
-    raw_nodes = _load_registry(config).get("nodes")
-    if not isinstance(raw_nodes, dict):
-        return False
-    return PROJECT_MASTER_NODE_NAME in _nodes_by_name(cast(dict[str, object], raw_nodes))
-
-
 def _default_assignee(config: WebAppConfig) -> str:
     candidates = _persistent_assignee_nodes(config)
     if LEAD_NODE_NAME in candidates:
@@ -7792,10 +7784,6 @@ def _manual_task_status(value: str) -> str:
 
 def _org_node_records(config: WebAppConfig) -> list[NodeRecord]:
     nodes = _registry_node_records(config)
-    if _project_master_exists(config) and not any(
-        node["name"] == PROJECT_MASTER_NODE_NAME for node in nodes
-    ):
-        nodes.append(_project_master_node(config))
     if not any(node["name"] == LEAD_NODE_NAME for node in nodes) and not _contains_grove_master(
         nodes
     ):
@@ -8050,22 +8038,6 @@ def _master_org_payload(config: WebAppConfig) -> dict[str, object]:
             "answer_endpoint": "/api/tasks/{task_id}/answer",
         },
     }
-
-
-def _project_master_node(config: WebAppConfig) -> NodeRecord:
-    return _node_record(
-        name=PROJECT_MASTER_NODE_NAME,
-        agent="claude",
-        pane="",
-        session_id="",
-        status="external",
-        role="orchestrator",
-        parent="",
-        group="",
-        description="Project master/orchestrator.",
-        kind="meta",
-        config=config,
-    )
 
 
 def _external_lead_node(config: WebAppConfig) -> NodeRecord:
