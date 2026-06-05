@@ -27,6 +27,7 @@ from grove_bridge.store import NodeHealth, SQLiteBoardStore, Task
 
 ASSISTANT_FACT_MAX_BYTES = 8192
 ASSISTANT_TOP_IN_FLIGHT = 5
+ASSISTANT_TOP_NODES = 30
 ASSISTANT_RECENT_COMMITS = 5
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -41,6 +42,7 @@ IN_FLIGHT_STATUSES = ("running", "review", "blocked", "ask_human")
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 CITATION_RE = re.compile(r"\[(fact:[A-Za-z0-9_.-]+)\]")
+REVIEWER_NODE_RE = re.compile(r"^(?:rev-[A-Za-z0-9_.-]+|reviewer|grove-reviewer)$", re.I)
 INJECTION_RE = re.compile(
     r"(?i)\b("
     r"ignore (?:all |previous |prior )?instructions|"
@@ -88,7 +90,7 @@ ACTION_HANDOFF_TERMS = (
     "production",
 )
 
-AssistantSurface = Literal["floating_web_chat", "api"]
+AssistantSurface = Literal["floating_web_chat", "slack", "api"]
 
 
 class AssistantUnavailable(RuntimeError):
@@ -151,6 +153,7 @@ class AssistantContext:
     scope: AssistantScope
     store: SQLiteBoardStore
     workspace_path: Path | None = None
+    grove_home: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -480,10 +483,111 @@ def _agent_health(context: AssistantContext) -> dict[str, object]:
     status_counts: dict[str, int] = {}
     for row in rows:
         status_counts[row.status] = status_counts.get(row.status, 0) + 1
+    by_node: dict[str, dict[str, object]] = {}
+    for node in _registry_node_facts(
+        context.scope.selected_project,
+        grove_home=context.grove_home,
+    ):
+        by_node[str(node["node"])] = node
+    for row in rows:
+        base = by_node.get(row.node, {})
+        by_node[row.node] = {**base, **_node_health_fact(row)}
+    nodes = sorted(
+        by_node.values(),
+        key=lambda node: (not _is_reviewer_node_fact(node), str(node["node"])),
+    )
+    reviewer_names = [str(node["node"]) for node in nodes if _is_reviewer_node_fact(node)]
     return {
         "status_counts": dict(sorted(status_counts.items())),
-        "nodes": [_node_health_fact(row) for row in rows[:10]],
+        "node_count": len(nodes),
+        "reviewer_count": len(reviewer_names),
+        "reviewer_names": reviewer_names,
+        "nodes": _compact_node_facts(nodes, limit=ASSISTANT_TOP_NODES),
     }
+
+
+def _registry_node_facts(project: str, *, grove_home: Path | None) -> list[dict[str, object]]:
+    registry_path = _registry_path(project, grove_home=grove_home)
+    try:
+        loaded = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(loaded, Mapping):
+        return []
+    raw_nodes = loaded.get("nodes")
+    if not isinstance(raw_nodes, Mapping):
+        return []
+    nodes: list[dict[str, object]] = []
+    for key, raw_node in raw_nodes.items():
+        if not isinstance(key, str) or not isinstance(raw_node, Mapping):
+            continue
+        node = {str(node_key): value for node_key, value in raw_node.items()}
+        name = _mapping_text(node, "name") or key
+        fact: dict[str, object] = {
+            "node": _safe_public_text(name),
+            "source": "registry",
+        }
+        for field_name in ("agent", "role", "group", "parent", "kind", "status"):
+            field_value = _mapping_text(node, field_name)
+            if field_value is not None:
+                fact[field_name] = _compact_node_text(field_value)
+        nodes.append(fact)
+    return sorted(nodes, key=lambda node: str(node["node"]))
+
+
+def _registry_path(project: str, *, grove_home: Path | None) -> Path:
+    root = grove_home or Path(_first_env("GROVE_HOME", default="~/.grove"))
+    return root.expanduser() / project / "registry.json"
+
+
+def _mapping_text(mapping: Mapping[str, object], key: str) -> str | None:
+    value = mapping.get(key)
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _is_reviewer_node_fact(node: Mapping[str, object]) -> bool:
+    name = str(node.get("node") or "").casefold()
+    role = str(node.get("role") or "").casefold()
+    group = str(node.get("group") or "").casefold()
+    return (
+        bool(REVIEWER_NODE_RE.fullmatch(name))
+        or "review" in role
+        or "review" in group
+        or "reviewer" in name
+    )
+
+
+def _compact_node_facts(
+    nodes: Sequence[Mapping[str, object]],
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    compact: list[dict[str, object]] = []
+    for node in nodes[:limit]:
+        item: dict[str, object] = {}
+        for field_name in (
+            "node",
+            "agent",
+            "role",
+            "group",
+            "status",
+            "reason",
+            "message",
+            "source",
+        ):
+            value = node.get(field_name)
+            if isinstance(value, str) and value.strip():
+                item[field_name] = _compact_node_text(value)
+        if item:
+            compact.append(item)
+    return compact
+
+
+def _compact_node_text(value: str) -> str:
+    return _summary_text(value, max_length=96)
 
 
 def _node_health_fact(row: NodeHealth) -> dict[str, object]:
@@ -561,11 +665,15 @@ def _bounded_fact_pack(facts: dict[str, object], *, max_bytes: int) -> dict[str,
         reduced["board"] = {**board, "in_flight": []}
     health = reduced.get("agent_health")
     if isinstance(health, dict):
-        reduced["agent_health"] = {**health, "nodes": []}
+        reduced["agent_health"] = _compact_agent_health(health, node_limit=15)
     reduced["recent_commits"] = []
     reduced["truncated"] = True
     if _json_size(reduced) <= max_bytes:
         return reduced
+    compact_health = _compact_agent_health(
+        cast(Mapping[str, object], reduced.get("agent_health", {})),
+        node_limit=10,
+    )
     return {
         "project": reduced.get("project", {}),
         "board": {
@@ -573,14 +681,31 @@ def _bounded_fact_pack(facts: dict[str, object], *, max_bytes: int) -> dict[str,
                 "status_counts", {}
             )
         },
-        "agent_health": {
-            "status_counts": (cast(Mapping[str, object], reduced.get("agent_health", {}))).get(
-                "status_counts", {}
-            )
-        },
+        "agent_health": compact_health,
         "recent_commits": [],
         "truncated": True,
     }
+
+
+def _compact_agent_health(
+    health: Mapping[str, object],
+    *,
+    node_limit: int,
+) -> dict[str, object]:
+    raw_nodes = health.get("nodes")
+    nodes = (
+        _compact_node_facts(cast(Sequence[Mapping[str, object]], raw_nodes), limit=node_limit)
+        if isinstance(raw_nodes, Sequence) and not isinstance(raw_nodes, str | bytes)
+        else []
+    )
+    compact: dict[str, object] = {
+        "status_counts": health.get("status_counts", {}),
+        "node_count": health.get("node_count", 0),
+        "reviewer_count": health.get("reviewer_count", 0),
+        "reviewer_names": health.get("reviewer_names", []),
+        "nodes": nodes,
+    }
+    return compact
 
 
 def _json_size(value: Mapping[str, object]) -> int:

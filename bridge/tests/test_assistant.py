@@ -61,6 +61,11 @@ class FakeCompletedProcess:
         self.stderr = stderr
 
 
+@pytest.fixture(autouse=True)
+def isolated_grove_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path / ".grove"))
+
+
 def test_handle_turn_calls_llm_with_redacted_bounded_facts_and_returns_answer(
     tmp_path: Path,
 ) -> None:
@@ -309,6 +314,75 @@ def test_build_assistant_facts_includes_top_in_flight_health_and_recent_commits(
     assert len(recent_commits) == 5
     assert recent_commits[0]["subject"] == "Commit 0 [path]"
     assert len(json.dumps(facts, ensure_ascii=False).encode("utf-8")) <= 8192
+
+
+def test_build_assistant_facts_includes_registry_nodes_when_health_is_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    grove_home = tmp_path / ".grove"
+    registry_dir = grove_home / "dev10"
+    registry_dir.mkdir(parents=True)
+    secret = "xoxb-" + ("r" * 44)
+    (registry_dir / "registry.json").write_text(
+        json.dumps(
+            {
+                "nodes": {
+                    "maker": {
+                        "name": "maker",
+                        "agent": "codex",
+                        "role": "builder",
+                        "group": "dev",
+                        "tmux_pane": "dev10:1.1",
+                        "transcript_path": f"/Users/chopin/private/{secret}.jsonl",
+                    },
+                    "rev-ui": {
+                        "name": "rev-ui",
+                        "agent": "claude",
+                        "role": "reviewer",
+                        "group": "review",
+                        "tmux_pane": "dev10:2.1",
+                    },
+                    "grove-reviewer": {
+                        "name": "grove-reviewer",
+                        "agent": "codex",
+                        "role": "qa",
+                        "group": "verify",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GROVE_HOME", str(grove_home))
+
+    facts = build_assistant_facts(
+        _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path)
+    )
+    agent_health = cast(dict[str, object], facts["agent_health"])
+    nodes = cast(list[dict[str, object]], agent_health["nodes"])
+
+    assert agent_health["reviewer_count"] == 2
+    assert agent_health["reviewer_names"] == ["grove-reviewer", "rev-ui"]
+    assert {node["node"] for node in nodes} == {"grove-reviewer", "maker", "rev-ui"}
+    assert nodes[0]["agent"] in {"claude", "codex"}
+    rendered = json.dumps(agent_health, ensure_ascii=False, sort_keys=True)
+    assert "tmux_pane" not in rendered
+    assert "transcript" not in rendered
+    assert "dev10:1.1" not in rendered
+    assert secret not in rendered
+    assert "/Users/chopin" not in rendered
+    assert len(json.dumps(facts, ensure_ascii=False).encode("utf-8")) <= 8192
+
+    bounded = build_assistant_facts(
+        _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
+        max_bytes=1200,
+    )
+    bounded_health = cast(dict[str, object], bounded["agent_health"])
+    assert bounded_health["reviewer_count"] == 2
+    assert bounded_health["reviewer_names"] == ["grove-reviewer", "rev-ui"]
+    assert cast(list[dict[str, object]], bounded_health["nodes"])
+    assert len(json.dumps(bounded, ensure_ascii=False).encode("utf-8")) <= 1200
 
 
 def test_handle_turn_surfaces_llm_unavailable(tmp_path: Path) -> None:
