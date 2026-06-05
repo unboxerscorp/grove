@@ -5725,6 +5725,7 @@ def test_create_project_invokes_new_project_with_literal_argv(
             "exposed": True,
             "terminal_allowed": True,
             "input_allowed": True,
+            "pane_exists": True,
             "unavailable_reason": "",
         },
     }
@@ -5929,11 +5930,13 @@ def test_nodes_expose_all_registry_nodes_with_precise_availability(
     assert nodes["alpha"]["session_id"] == "sess-a"
     assert nodes["alpha"]["status"] == "running"
     assert nodes["alpha"]["exposed"] is True
+    assert nodes["alpha"]["pane_exists"] is True
     assert nodes["alpha"]["terminal_allowed"] is True
     assert nodes["alpha"]["input_allowed"] is True
     assert nodes["alpha"]["unavailable_reason"] == ""
     assert nodes["beta"]["status"] == "dead"
     assert nodes["beta"]["exposed"] is False
+    assert nodes["beta"]["pane_exists"] is False
     assert nodes["beta"]["unavailable_reason"] == "no live pane"
     assert nodes["stale"]["status"] == "stale"
     assert nodes["stale"]["exposed"] is False
@@ -5941,6 +5944,7 @@ def test_nodes_expose_all_registry_nodes_with_precise_availability(
     assert nodes["lead"]["kind"] == "meta"
     assert nodes["lead"]["status"] == "external"
     assert nodes["lead"]["exposed"] is False
+    assert nodes["lead"]["pane_exists"] is False
     assert nodes["lead"]["unavailable_reason"] == "meta node has no pane"
 
 
@@ -5985,14 +5989,17 @@ def test_nodes_mark_missing_tmux_panes_unavailable(
     nodes = {node["name"]: node for node in nodes_response.json()}
     org_nodes = {node["name"]: node for node in org_response.json()["nodes"]}
     assert nodes["web"]["status"] == "active"
+    assert nodes["web"]["pane_exists"] is True
     assert nodes["web"]["terminal_allowed"] is True
     assert nodes["web"]["input_allowed"] is True
     assert nodes["web"]["unavailable_reason"] == ""
     assert nodes["slack"]["status"] == "dead"
+    assert nodes["slack"]["pane_exists"] is False
     assert nodes["slack"]["terminal_allowed"] is False
     assert nodes["slack"]["input_allowed"] is False
     assert nodes["slack"]["unavailable_reason"] == "tmux pane missing"
     assert org_nodes["slack"]["status"] == "dead"
+    assert org_nodes["slack"]["pane_exists"] is False
     assert org_nodes["slack"]["terminal_allowed"] is False
     assert org_nodes["slack"]["unavailable_reason"] == "tmux pane missing"
 

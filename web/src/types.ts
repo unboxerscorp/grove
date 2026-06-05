@@ -75,6 +75,7 @@ export interface GroveNode {
   terminal_allowed?: boolean;
   input_allowed?: boolean;
   exposed?: boolean;
+  pane_exists?: boolean;
   unavailable_reason?: string;
   health?: NodeHealth;
 }

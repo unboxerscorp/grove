@@ -386,6 +386,7 @@ class NodeRecord(TypedDict):
     terminal_allowed: bool
     input_allowed: bool
     unavailable_reason: str
+    pane_exists: bool
     connect_host: NotRequired[str]
 
 
@@ -7483,6 +7484,7 @@ def _registry_nodes(config: WebAppConfig) -> list[dict[str, object]]:
             "terminal_allowed": node["terminal_allowed"],
             "input_allowed": node["input_allowed"],
             "unavailable_reason": node["unavailable_reason"],
+            "pane_exists": node["pane_exists"],
         }
         for node in _org_node_records(config)
     ]
@@ -7564,6 +7566,7 @@ def _node_record(
     exposed = reason == ""
     status = _node_record_status(status, reason=reason, kind=kind)
     input_allowed = exposed and _valid_input_tmux_pane(pane, config=config)
+    pane_exists = exposed
     payload: NodeRecord = {
         "name": name,
         "agent": agent,
@@ -7580,6 +7583,7 @@ def _node_record(
         "terminal_allowed": exposed,
         "input_allowed": input_allowed,
         "unavailable_reason": reason,
+        "pane_exists": pane_exists,
     }
     if connect_host:
         payload["connect_host"] = connect_host
@@ -7994,6 +7998,7 @@ def _org_payload(
                 "terminal_allowed": node["terminal_allowed"],
                 "input_allowed": node["input_allowed"],
                 "unavailable_reason": node["unavailable_reason"],
+                "pane_exists": node["pane_exists"],
                 "project": node["project"],
                 "registry_name": node["registry_name"],
                 **(
