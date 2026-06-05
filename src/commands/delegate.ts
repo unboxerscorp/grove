@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { loadConfig } from "../config.js";
+import { contextPackNodesFromRegistry, prependGroveContextPack } from "../context-pack.js";
 import { loadRegistry, type Registry } from "../registry.js";
 import { warn } from "../util/log.js";
 import { validateGroveName } from "../util/names.js";
@@ -172,11 +173,15 @@ function readToken(session: string, deps: DelegateDeps): { path: string; token: 
   return { path: file, token };
 }
 
-function assertNodeExists(session: string, node: string, deps: DelegateDeps): void {
+function registryForSession(session: string, deps: DelegateDeps): Registry {
   const registry = deps.loadRegistry(session);
   if (!registry) {
     throw new Error(`no registry found for session ${session}; run grove up or grove spawn first`);
   }
+  return registry;
+}
+
+function assertNodeExists(session: string, node: string, registry: Registry): void {
   if (!registry.nodes[node]) {
     const known = Object.keys(registry.nodes).join(", ") || "(none)";
     throw new Error(`node not found in registry: ${node}. known nodes: ${known}`);
@@ -211,15 +216,24 @@ export async function delegateTask(
 
   const session = resolveSession(input, deps);
   const board = validateGroveName(trimmed(input.board) ?? DEFAULT_BOARD, "--board");
-  assertNodeExists(session, node, deps);
+  const registry = registryForSession(session, deps);
+  assertNodeExists(session, node, registry);
 
   const baseUrl = discoverWebUrl(session, deps);
   assertRemoteAllowed(baseUrl, input, deps);
   const { path: tokenPath, token } = readToken(session, deps);
   const endpoint = `${baseUrl}/api/boards/${encodeURIComponent(board)}/tasks`;
+  const target = registry.nodes[node];
+  const body = prependGroveContextPack(input.body ?? "(no body)", {
+    callerNode: "grove delegate CLI",
+    nodes: contextPackNodesFromRegistry(registry),
+    project: session,
+    targetNode: node,
+    targetRole: target?.role,
+  });
   const payload = {
     assignee: node,
-    body: input.body ?? null,
+    body,
     priority: 0,
     status: "ready",
     title,

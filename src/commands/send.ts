@@ -50,7 +50,7 @@ export async function cmdSend(
       snapshot: before,
     });
   }
-  await submitMessage(nc, message);
+  await submitMessage(nc, message, { callerNode: "grove send CLI", context: ctx });
 
   const submitted = await poll(
     () => {

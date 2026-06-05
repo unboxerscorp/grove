@@ -30,6 +30,7 @@ from grove_bridge.assistant import (
 )
 from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.config import default_board_db_path
+from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
 from grove_bridge.master import MasterChatResponse, MasterChatResponseType
 from grove_bridge.store import SlackThread, SQLiteBoardStore, Task
 
@@ -1622,7 +1623,11 @@ class SlackConnector:
         task = self.store.create_task(
             board=config.board,
             title=proposal.title,
-            body=proposal.body,
+            body=_slack_task_body_with_grove_context(
+                proposal.body,
+                config=config,
+                target_node=assignee,
+            ),
             assignee=assignee,
             status="ready",
             priority=proposal.priority,
@@ -2725,6 +2730,26 @@ def _build_intake_task_proposal(
             "message_ts": _safe_slack_text(event.ts),
             "user": _safe_slack_text(event.user),
         },
+    )
+
+
+def _slack_task_body_with_grove_context(
+    body: str | None,
+    *,
+    config: SlackCommandConfig,
+    target_node: str | None,
+) -> str:
+    nodes = tuple(
+        ContextPackNode(name=node, parent="lead")
+        for node in sorted(config.node_names)
+        if node.strip()
+    )
+    return prepend_grove_context_pack(
+        body,
+        caller_node="slack intake",
+        nodes=nodes,
+        project=config.board,
+        target_node=target_node,
     )
 
 

@@ -48,12 +48,11 @@ describe("submitMessage", () => {
 
     await submitMessage(nc, "ship it");
 
-    expect(sequence).toEqual([
-      "literal:\u001b[200~ship it\u001b[201~",
-      "sleep:220",
-      "enter",
-      "sleep:260",
-      "enter",
-    ]);
+    expect(sequence[0]).toContain("GROVE CONTEXT PACK");
+    expect(sequence[0]).toContain("Target node: agy");
+    expect(sequence[0]).toContain("Original message:\nship it");
+    expect(sequence[0]?.startsWith("literal:\u001b[200~")).toBe(true);
+    expect(sequence[0]?.endsWith("ship it\u001b[201~")).toBe(true);
+    expect(sequence.slice(1)).toEqual(["sleep:220", "enter", "sleep:260", "enter"]);
   });
 });

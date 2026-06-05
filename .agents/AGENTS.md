@@ -10,7 +10,7 @@ This directory mirrors grove skills for agent runtimes that read `.agents/skills
 
 ## Runtime parity
 
-- The six grove skills in this tree must stay byte-for-byte aligned with `skills-src/` and `skills/`.
+- Grove skills in this tree must stay byte-for-byte aligned with `skills-src/` and `skills/`.
 - `agy` nodes use grove's `antigravity` agent type and follow the same board delegation protocol as `codex` and `claude`.
 - Interactive grove nodes run in a visible pane; headless mode is only for explicit one-shot checks.
 - grove may launch the interactive CLI with `--dangerously-skip-permissions`; that flag does not change repo, board, skill, or handoff rules.

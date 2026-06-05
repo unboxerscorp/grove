@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -477,6 +478,32 @@ board_db_path = "{db_path}"
 def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
     tmp_path: Path,
 ) -> None:
+    grove_config = tmp_path / "cockpit.grove.yaml"
+    grove_config.write_text("session: dev10\ncwd: /repo\nnodes: {}\n", encoding="utf-8")
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "nodes": {
+                    "codex-a": {
+                        "agent": "codex",
+                        "group": "product",
+                        "name": "codex-a",
+                        "parent": "lead",
+                        "role": "Python maker token=xoxb-secret dev10:1.2",
+                    },
+                    "lead": {
+                        "agent": "codex",
+                        "name": "lead",
+                        "parent": "grove-master",
+                        "role": "Project lead",
+                    },
+                },
+                "session": "dev10",
+            }
+        ),
+        encoding="utf-8",
+    )
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = store.create_task(
         board="main",
@@ -502,7 +529,7 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
             "codex-a": LaneConfig(
                 assignee="codex-a",
                 nodes=("codex-a",),
-                grove_config="cockpit.grove.yaml",
+                grove_config=str(grove_config),
                 timeout="30m",
             )
         },
@@ -535,6 +562,14 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
     assert result.completed == 1
     assert runner.calls[0][0] == "codex-a"
     prompt = runner.calls[0][1]
+    assert "GROVE CONTEXT PACK" in prompt
+    assert "Project: dev10" in prompt
+    assert "Project lead: lead" in prompt
+    assert "Target node: codex-a" in prompt
+    assert "Target role: Python maker" in prompt
+    assert "lead -> codex-a" in prompt
+    assert "xoxb-secret" not in prompt
+    assert "dev10:1.2" not in prompt
     assert "Implement native board" in prompt
     assert "Wire grove board tasks to grove." in prompt
     assert "Assignee node: codex-a" in prompt

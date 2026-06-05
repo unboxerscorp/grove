@@ -1845,6 +1845,10 @@ def test_slack_intake_preview_confirm_creates_redacted_task(tmp_path: Path) -> N
     assert len(tasks) == 1
     task = tasks[0]
     assert task.assignee == "worker"
+    assert "GROVE CONTEXT PACK" in (task.body or "")
+    assert "Project: main" in (task.body or "")
+    assert "Target node: worker" in (task.body or "")
+    assert "Original message:" in (task.body or "")
     assert task.priority == 1
     assert task.created_by == "member-op"
     labels = cast(list[str], task.metadata["labels"])

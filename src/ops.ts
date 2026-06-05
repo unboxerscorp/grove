@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 
 import type { Context, NodeCtx } from "./context.js";
+import { prependNodeContextPack } from "./context-pack.js";
 import { eventLogSize, readTurnEventsSince } from "./events.js";
 import { type NodeRuntime, saveRegistry, updateRegistryNode } from "./registry.js";
 import {
@@ -208,8 +209,19 @@ export function clearPending(ctx: Context, nc: NodeCtx): void {
  * Type a message into a node's pane and submit it. Uses bracketed paste so
  * multi-line content stays intact and does not submit on every newline.
  */
-export async function submitMessage(nc: NodeCtx, message: string): Promise<void> {
-  await sendLiteral(nc.addr, BP_START + message + BP_END);
+export async function submitMessage(
+  nc: NodeCtx,
+  message: string,
+  opts: {
+    callerNode?: string;
+    context?: Context;
+    includeContextPack?: boolean;
+    project?: string;
+  } = {},
+): Promise<void> {
+  const submittedMessage =
+    opts.includeContextPack === false ? message : prependNodeContextPack(nc, message, opts);
+  await sendLiteral(nc.addr, BP_START + submittedMessage + BP_END);
   await sleep(220);
   await sendEnter(nc.addr);
   if (nc.adapter.submit === "enter-enter") {
@@ -338,7 +350,7 @@ export async function ask(
       eventLogOffset,
     });
   }
-  await submitMessage(nc, message);
+  await submitMessage(nc, message, { callerNode: "grove ask CLI", context: ctx });
   const res = await waitForCompletion(ctx, nc, {
     timeoutMs,
     fromOffset,
@@ -419,7 +431,7 @@ export async function launchNode(ctx: Context, nc: NodeCtx): Promise<void> {
   // Fresh node: establish its role before detecting the transcript (the file
   // is created once the first turn runs).
   if (!resumeId && node.role) {
-    await submitMessage(nc, node.role);
+    await submitMessage(nc, node.role, { callerNode: "grove launch bootstrap", context: ctx });
   }
 
   if (!resumeId) {

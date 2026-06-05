@@ -1308,6 +1308,27 @@ def test_project_header_returns_404_for_unknown_project(tmp_path: Path) -> None:
 
 def test_rest_creates_task_on_board(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "codex",
+                "role": "Project lead",
+                "parent": "grove-master",
+                "tmux_pane": "dev10:1.0",
+            },
+            "worker": {
+                "name": "worker",
+                "agent": "codex",
+                "role": "Implementation maker token=xoxb-secret dev10:1.2",
+                "parent": "lead",
+                "group": "product",
+                "tmux_pane": "dev10:1.2",
+            },
+        },
+    )
     client = make_client(tmp_path, store)
     headers = auth_headers(client)
 
@@ -1317,7 +1338,7 @@ def test_rest_creates_task_on_board(tmp_path: Path) -> None:
         json={
             "title": "New task",
             "body": "Task details",
-            "assignee": "lead",
+            "assignee": "worker",
             "reviewer": "lead",
             "status": "blocked",
             "priority": 7,
@@ -1327,12 +1348,20 @@ def test_rest_creates_task_on_board(tmp_path: Path) -> None:
     assert created.status_code == 200
     task = created.json()
     assert task["title"] == "New task"
-    assert task["body"] == "Task details"
-    assert task["assignee"] == "lead"
+    assert "GROVE CONTEXT PACK" in task["body"]
+    assert "Project: dev10" in task["body"]
+    assert "Project lead: lead" in task["body"]
+    assert "Target node: worker" in task["body"]
+    assert "Target role: Implementation maker" in task["body"]
+    assert "Original message:\nTask details" in task["body"]
+    assert "xoxb-secret" not in task["body"]
+    assert "dev10:1.2" not in task["body"]
+    assert task["assignee"] == "worker"
     assert task["reviewer"] == "lead"
     assert task["status"] == "blocked"
     stored = store.get_task(board="dev10", task_id=task["id"])
     assert stored.priority == 7
+    assert stored.body == task["body"]
     assert stored.reviewer == "lead"
     assert store.list_audit_events(board="dev10", action="reviewer-set")
 
@@ -4586,6 +4615,9 @@ def test_handoff_accept_trust_idempotency_and_receiver_local_only(tmp_path: Path
     accepted = tasks[0]
     assert accepted.status == "ready"
     assert accepted.assignee is None
+    assert "GROVE CONTEXT PACK" in (accepted.body or "")
+    assert "Project: dev11" in (accepted.body or "")
+    assert "Original message:\nCreate this locally" in (accepted.body or "")
     assert accepted.priority == 3
     assert accepted.metadata["labels"] == ["handoff"]
     accepted_handoff = cast(dict[str, object], accepted.metadata["handoff"])

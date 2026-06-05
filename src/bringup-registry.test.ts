@@ -5,7 +5,7 @@ import type { ResolvedNode } from "./config.js";
 import type { Context, NodeCtx } from "./context.js";
 import { bringUp } from "./ops.js";
 import { saveRegistry } from "./registry.js";
-import { paneCommand, paneTarget, sendText } from "./tmux.js";
+import { paneCommand, paneTarget, sendLiteral, sendText } from "./tmux.js";
 
 vi.mock("./registry.js", () => {
   return {
@@ -110,6 +110,7 @@ describe("bringUp registry tmux pane metadata", () => {
     vi.mocked(paneCommand).mockReset();
     vi.mocked(paneCommand).mockResolvedValue("zsh");
     vi.mocked(paneTarget).mockClear();
+    vi.mocked(sendLiteral).mockClear();
     vi.mocked(sendText).mockClear();
   });
 
@@ -193,6 +194,34 @@ describe("bringUp registry tmux pane metadata", () => {
         role: "Builder",
       }),
     );
+  });
+
+  test("bootstraps fresh node roles with real project and visible org context", async () => {
+    const ctx = makeContext([
+      node("lead", { children: ["maker"], parent: "grove-master", role: "Project lead" }),
+      node("maker", { parent: "lead", role: "Implementation maker" }),
+    ]);
+    ctx.registry.nodes.reviewer = {
+      agent: "codex",
+      group: "review",
+      name: "reviewer",
+      parent: "lead",
+      role: "Reviewer",
+    };
+
+    await bringUp(ctx);
+
+    const submitted = vi
+      .mocked(sendLiteral)
+      .mock.calls.map((call) => call[1])
+      .find((text) => text.includes("Original message:\nImplementation maker"));
+    expect(submitted).toContain("GROVE CONTEXT PACK");
+    expect(submitted).toContain("Caller node: grove launch bootstrap");
+    expect(submitted).toContain("Project: dev10");
+    expect(submitted).toContain("Project lead: lead");
+    expect(submitted).toContain("Target node: maker");
+    expect(submitted).toContain("Target role: Implementation maker");
+    expect(submitted).toContain("lead -> reviewer");
   });
 
   test("preserves dynamic team fields from registry when config omits them", async () => {

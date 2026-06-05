@@ -5,6 +5,7 @@ export { antigravityAdapter, claudeAdapter, codexAdapter, getAdapter } from "./a
 export type { AgentAdapter, Completion, DetectedSession, LaunchSpec } from "./adapters/types.js";
 export * from "./config.js";
 export * from "./context.js";
+export * from "./context-pack.js";
 export * from "./ops.js";
 export * from "./rebind.js";
 export * from "./registry.js";

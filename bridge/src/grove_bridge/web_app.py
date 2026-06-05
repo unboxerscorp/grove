@@ -44,6 +44,7 @@ from grove_bridge.assistant import (
 from grove_bridge.auth import Account, DashboardRole
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
 from grove_bridge.config import default_board_db_path
+from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
 from grove_bridge.slack import (
     HUMAN_GATE_MODE,
     HUMAN_GATE_PENDING_MODE,
@@ -1708,10 +1709,16 @@ def create_app(
         reviewer = _validated_task_reviewer(payload.reviewer, project=project)
         status_value = _manual_task_status(payload.status)
         resolved_board = _resolve_board_id(board_id, project=project)
+        task_body = _task_body_with_grove_context(
+            payload.body,
+            actor=actor,
+            assignee=assignee,
+            project=project,
+        )
         task = _store(request).create_task(
             board=resolved_board,
             title=title,
-            body=payload.body,
+            body=task_body,
             assignee=assignee,
             reviewer=reviewer,
             status=status_value,
@@ -4440,7 +4447,12 @@ def _accept_handoff_payload(
         board=project.board,
         handoff_id=cast(str, payload["handoff_id"]),
         title=cast(str, task_payload["title"]),
-        body=cast(str | None, task_payload.get("body")),
+        body=_task_body_with_grove_context(
+            cast(str | None, task_payload.get("body")),
+            actor=actor,
+            assignee=None,
+            project=project,
+        ),
         priority=cast(int, task_payload["priority"]),
         labels=cast(list[str], task_payload["labels"]),
         metadata={
@@ -6818,6 +6830,50 @@ def _resolve_board_id(board_id: str, *, project: ProjectContext) -> str:
         status_code=404,
         detail=f"board {clean!r} not in project {project.name!r}",
     )
+
+
+def _task_body_with_grove_context(
+    body: str | None,
+    *,
+    actor: Mapping[str, object],
+    assignee: str | None,
+    project: ProjectContext,
+) -> str:
+    nodes = _context_pack_nodes_for_project(project.config)
+    return prepend_grove_context_pack(
+        body,
+        caller_node=_actor_id(actor),
+        nodes=nodes,
+        project=project.name,
+        project_lead=LEAD_NODE_NAME,
+        target_node=assignee,
+        target_role=_context_pack_target_role(nodes, assignee),
+    )
+
+
+def _context_pack_nodes_for_project(config: WebAppConfig) -> tuple[ContextPackNode, ...]:
+    return tuple(
+        ContextPackNode(
+            name=node["name"],
+            agent=node["agent"],
+            parent=node["parent"],
+            group=node["group"],
+            role=node["role"],
+        )
+        for node in _org_node_records(config)
+    )
+
+
+def _context_pack_target_role(
+    nodes: Sequence[ContextPackNode],
+    target_node: str | None,
+) -> str | None:
+    if target_node is None:
+        return None
+    for node in nodes:
+        if node.name == target_node:
+            return node.role
+    return None
 
 
 def _validated_ticket_scope(

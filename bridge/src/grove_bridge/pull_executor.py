@@ -20,6 +20,11 @@ from grove_bridge.config import (
     default_board_db_path,
     load_bridge_config,
 )
+from grove_bridge.context_pack import (
+    ContextPackNode,
+    context_pack_nodes_from_registry,
+    prepend_grove_context_pack,
+)
 from grove_bridge.grove import (
     GroveRunnerProtocol,
     GroveRunResult,
@@ -543,7 +548,20 @@ class PullExecutor:
                 claim_lock=claimed.claim_lock,
                 workspace=workspace,
             )
-            prompt = build_task_prompt(task, board=board, workspace=workspace, env=env)
+            prompt_context = _prompt_context_for_lane(
+                lane,
+                fallback_project=board,
+                target_node=task.assignee,
+            )
+            prompt = build_task_prompt(
+                task,
+                board=board,
+                workspace=workspace,
+                env=env,
+                nodes=prompt_context.nodes,
+                project=prompt_context.project,
+                target_role=prompt_context.target_role,
+            )
             if not self._dispatch_gate_clear(board=board, node=node, task=task):
                 return
             run = self.grove_runner.run_task(
@@ -744,10 +762,13 @@ def build_task_prompt(
     board: str,
     workspace: Path,
     env: Mapping[str, str],
+    nodes: Sequence[ContextPackNode] = (),
+    project: str | None = None,
+    target_role: str | None = None,
 ) -> str:
     env_lines = "\n".join(f"{key}={value}" for key, value in sorted(env.items()))
     body = task.body.strip() if task.body else "(no body)"
-    return (
+    prompt = (
         "You are executing a grove board task.\n\n"
         f"Task: {task.id}\n"
         f"Board: {board}\n"
@@ -760,6 +781,96 @@ def build_task_prompt(
         "Work in the resolved workspace when applicable. Return a concise handoff summary "
         "including changed files, verification commands, and remaining risks."
     )
+    return prepend_grove_context_pack(
+        prompt,
+        caller_node="grove pull executor",
+        nodes=nodes,
+        project=project or board,
+        target_node=task.assignee,
+        target_role=target_role,
+    )
+
+
+@dataclass(frozen=True)
+class PromptContext:
+    project: str
+    nodes: tuple[ContextPackNode, ...] = ()
+    target_role: str | None = None
+
+
+def _prompt_context_for_lane(
+    lane: LaneConfig,
+    *,
+    fallback_project: str,
+    target_node: str | None,
+) -> PromptContext:
+    loaded = _load_prompt_registry(lane.grove_config)
+    if loaded is None:
+        return PromptContext(project=fallback_project)
+    project, nodes = loaded
+    return PromptContext(
+        nodes=nodes,
+        project=project or fallback_project,
+        target_role=_prompt_target_role(nodes, target_node),
+    )
+
+
+def _prompt_target_role(
+    nodes: Sequence[ContextPackNode],
+    target_node: str | None,
+) -> str | None:
+    if target_node is None:
+        return None
+    for node in nodes:
+        if node.name == target_node:
+            return node.role
+    return None
+
+
+def _load_prompt_registry(
+    grove_config: str | None,
+) -> tuple[str, tuple[ContextPackNode, ...]] | None:
+    if grove_config is None or not grove_config.strip():
+        return None
+    config_path = Path(grove_config).expanduser()
+    session = _session_from_grove_config(config_path)
+    candidates: list[Path] = []
+    if config_path.is_file():
+        candidates.append(config_path.with_name("registry.json"))
+    if session is not None:
+        candidates.append(Path("~/.grove").expanduser() / session / "registry.json")
+    for registry_path in candidates:
+        loaded = _load_prompt_registry_file(registry_path)
+        if loaded is not None:
+            registry_session, nodes = loaded
+            return registry_session or session or "", nodes
+    return None
+
+
+def _session_from_grove_config(config_path: Path) -> str | None:
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"(?m)^\s*session\s*:\s*['\"]?([A-Za-z0-9_-]+)['\"]?\s*$", text)
+    return None if match is None else match.group(1)
+
+
+def _load_prompt_registry_file(
+    registry_path: Path,
+) -> tuple[str, tuple[ContextPackNode, ...]] | None:
+    try:
+        loaded = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(loaded, Mapping):
+        return None
+    raw_nodes = loaded.get("nodes")
+    if not isinstance(raw_nodes, Mapping):
+        return None
+    raw_session = loaded.get("session")
+    session = raw_session if isinstance(raw_session, str) else ""
+    return session, context_pack_nodes_from_registry(raw_nodes)
 
 
 def _failure_comment(run: GroveRunResult) -> str:

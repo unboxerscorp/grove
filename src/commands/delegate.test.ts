@@ -146,27 +146,46 @@ describe("delegateTask", () => {
     );
 
     expect(state.calls).toHaveLength(1);
-    expect(state.calls[0]).toEqual({
-      init: {
-        body: JSON.stringify({
-          assignee: "maker",
-          body: "Run pnpm check:ts",
-          priority: 0,
-          status: "ready",
-          title: "Fix issue",
-        }),
-        headers: {
-          "Content-Type": "application/json",
-          Origin: "http://127.0.0.1:9999",
-          "X-Grove-Project": "dev10",
-          "X-Grove-Session-Token": "token-123",
-        },
-        method: "POST",
-      },
-      url: "http://127.0.0.1:9999/api/boards/default/tasks",
+    expect(state.calls[0]?.url).toBe("http://127.0.0.1:9999/api/boards/default/tasks");
+    expect(state.calls[0]?.init.headers).toEqual({
+      "Content-Type": "application/json",
+      Origin: "http://127.0.0.1:9999",
+      "X-Grove-Project": "dev10",
+      "X-Grove-Session-Token": "token-123",
     });
+    expect(state.calls[0]?.init.method).toBe("POST");
+    const posted = JSON.parse(state.calls[0]?.init.body ?? "{}") as Record<string, unknown>;
+    expect(posted).toEqual(
+      expect.objectContaining({
+        assignee: "maker",
+        priority: 0,
+        status: "ready",
+        title: "Fix issue",
+      }),
+    );
+    expect(String(posted["body"])).toContain("Original message:\nRun pnpm check:ts");
     expect(result.task["id"]).toBe("task-1");
     expect(result.node).toBe("maker");
+  });
+
+  test("prepends a grove context pack to delegated task bodies", async () => {
+    const state = deps({ env: { GROVE_WEB_URL: "http://127.0.0.1:9999" } });
+
+    await delegateTask(
+      "maker",
+      "Fix issue",
+      { board: "default", body: "Run pnpm check:ts", session: "dev10" },
+      state.deps,
+    );
+
+    const payload = JSON.parse(state.calls[0]?.init.body ?? "{}") as { body?: string };
+    expect(payload.body).toContain("GROVE CONTEXT PACK");
+    expect(payload.body).toContain("Caller node: grove delegate CLI");
+    expect(payload.body).toContain("Project: dev10");
+    expect(payload.body).toContain("Target node: maker");
+    expect(payload.body).toContain("Target role: Maker");
+    expect(payload.body).toContain("Original message:\nRun pnpm check:ts");
+    expect(payload.body).not.toContain("dev10:1.%5");
   });
 
   test("uses config session when --session is omitted", async () => {
