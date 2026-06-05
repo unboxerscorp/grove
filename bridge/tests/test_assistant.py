@@ -209,7 +209,7 @@ def test_node_routed_transport_raises_busy_on_timeout_or_rate_limit(tmp_path: Pa
         limited_client.complete(system_prompt="system", user_prompt="message")
 
 
-def test_handle_turn_returns_retry_message_when_assistant_node_is_busy(tmp_path: Path) -> None:
+def test_handle_turn_uses_minimal_fallback_when_assistant_node_is_busy(tmp_path: Path) -> None:
     broker = AssistantBroker(llm_client=BusyLLMClient())
 
     response = broker.handle_turn(
@@ -219,14 +219,13 @@ def test_handle_turn_returns_retry_message_when_assistant_node_is_busy(tmp_path:
 
     assert response.response_type == "answer"
     assert response.answer is not None
-    assert "비서 잠시 바쁨" in response.answer.text
-    assert "재시도" in response.answer.text
+    assert response.answer.text == "지금은 답변을 만들 수 없어요. 잠시 뒤 다시 시도해 주세요."
     llm_metadata = cast(dict[str, object], response.answer.metadata["llm"])
     assert llm_metadata["status"] == "busy"
 
 
-def test_handle_turn_blocks_prompt_injection_without_calling_llm(tmp_path: Path) -> None:
-    llm = FakeLLMClient()
+def test_handle_turn_blocks_prompt_injection_with_llm_generated_denial(tmp_path: Path) -> None:
+    llm = FakeLLMClient("그 요청은 안전하게 도와드릴 수 없어요. 다른 방식으로 질문해 주세요.")
     broker = AssistantBroker(llm_client=llm)
 
     response = broker.handle_turn(
@@ -235,15 +234,55 @@ def test_handle_turn_blocks_prompt_injection_without_calling_llm(tmp_path: Path)
     )
 
     assert response.response_type == "denied"
-    assert response.answer is None
+    assert response.answer is not None
+    assert response.answer.text == (
+        "그 요청은 안전하게 도와드릴 수 없어요. 다른 방식으로 질문해 주세요."
+    )
     assert response.operator_gate is not None
     assert response.operator_gate.allowed is False
-    assert "blocked" in response.operator_gate.reason
-    assert llm.calls == []
+    assert response.operator_gate.reason == (
+        "그 요청은 안전하게 도와드릴 수 없어요. 다른 방식으로 질문해 주세요."
+    )
+    assert len(llm.calls) == 1
+    prompt = llm.calls[0]["user_prompt"]
+    assert "decision-json" in prompt
+    assert "prompt-injection request" in prompt
 
 
-def test_handle_turn_gates_action_handoff_for_pr1_without_calling_llm(tmp_path: Path) -> None:
-    llm = FakeLLMClient()
+def test_handle_notice_generates_user_visible_text_from_llm(tmp_path: Path) -> None:
+    llm = FakeLLMClient(
+        "권한이 필요한 작업이라 지금은 처리하지 않았어요. 운영자에게 요청해 주세요."
+    )
+    broker = AssistantBroker(llm_client=llm)
+
+    response = broker.handle_notice(
+        "approve task-1",
+        _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
+        decision="deny",
+        reason="operator role required",
+        response_type="denied",
+    )
+
+    assert response.response_type == "denied"
+    assert response.answer is not None
+    assert response.answer.text == (
+        "권한이 필요한 작업이라 지금은 처리하지 않았어요. 운영자에게 요청해 주세요."
+    )
+    assert response.operator_gate is not None
+    assert response.operator_gate.reason == (
+        "권한이 필요한 작업이라 지금은 처리하지 않았어요. 운영자에게 요청해 주세요."
+    )
+    assert len(llm.calls) == 1
+    system_prompt = llm.calls[0]["system_prompt"]
+    user_prompt = llm.calls[0]["user_prompt"]
+    assert "implementation terms" in system_prompt
+    assert "operator role required" in user_prompt
+
+
+def test_handle_turn_guides_action_requests_with_llm_without_internal_terms(
+    tmp_path: Path,
+) -> None:
+    llm = FakeLLMClient("아직 제가 직접 만들 수는 없어요. 보드에서 새 프로젝트를 추가해 주세요.")
     broker = AssistantBroker(llm_client=llm)
 
     response = broker.handle_turn(
@@ -251,14 +290,22 @@ def test_handle_turn_gates_action_handoff_for_pr1_without_calling_llm(tmp_path: 
         _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
     )
 
-    assert response.response_type == "denied"
+    assert response.response_type == "answer"
     assert response.classification.kind == "workflow_setup"
+    assert response.answer is not None
+    assert response.answer.text == (
+        "아직 제가 직접 만들 수는 없어요. 보드에서 새 프로젝트를 추가해 주세요."
+    )
     assert response.proposal is None
     assert response.requires_confirmation is False
-    assert response.operator_gate is not None
-    assert response.operator_gate.allowed is False
-    assert "PR1" in response.operator_gate.reason
-    assert llm.calls == []
+    assert response.operator_gate is None
+    assert len(llm.calls) == 1
+    system_prompt = llm.calls[0]["system_prompt"]
+    assert "directly execute" in system_prompt
+    assert "implementation terms" in system_prompt
+    assert "PR1" not in response.answer.text
+    assert "PR3" not in response.answer.text
+    assert "handoff" not in response.answer.text.lower()
 
 
 def test_build_assistant_facts_includes_top_in_flight_health_and_recent_commits(

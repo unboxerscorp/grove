@@ -1869,8 +1869,14 @@ def test_master_chat_returns_answer_and_records_redacted_audit(tmp_path: Path) -
     assert audits[0].kind == "audit.master.turn.received"
 
 
-def test_master_chat_denies_feedback_handoff_until_pr3(tmp_path: Path) -> None:
-    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+def test_master_chat_guides_feedback_actions_with_llm_text(tmp_path: Path) -> None:
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        assistant_client=FakeAssistantLLMClient(
+            "아직 직접 등록하지는 않았어요. 보드에서 피드백 task를 추가해 주세요."
+        ),
+    )
 
     response = client.post(
         "/api/master/chat",
@@ -1884,13 +1890,19 @@ def test_master_chat_denies_feedback_handoff_until_pr3(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["response_type"] == "denied"
+    assert payload["response_type"] == "answer"
     assert payload["requires_confirmation"] is False
     assert payload["classification"]["kind"] == "feedback_route"
     assert payload["feedback_route"] is None
     assert payload["proposal"] is None
-    assert payload["operator_gate"]["allowed"] is False
-    assert "PR1" in payload["operator_gate"]["reason"]
+    assert payload["operator_gate"] is None
+    assert payload["answer"]["text"] == (
+        "아직 직접 등록하지는 않았어요. 보드에서 피드백 task를 추가해 주세요."
+    )
+    rendered = json.dumps(payload, ensure_ascii=False)
+    assert "PR1" not in rendered
+    assert "PR3" not in rendered
+    assert "handoff" not in rendered.lower()
 
 
 def test_master_chat_team_operator_requires_csrf_and_succeeds(tmp_path: Path) -> None:
@@ -2141,8 +2153,7 @@ def test_master_chat_busy_assistant_node_returns_retry_answer(tmp_path: Path) ->
     assert response.status_code == 200
     payload = response.json()
     assert payload["response_type"] == "answer"
-    assert "비서 잠시 바쁨" in payload["answer"]["text"]
-    assert "재시도" in payload["answer"]["text"]
+    assert payload["answer"]["text"] == "지금은 답변을 만들 수 없어요. 잠시 뒤 다시 시도해 주세요."
     assert payload["answer"]["metadata"]["llm"]["status"] == "busy"
 
 

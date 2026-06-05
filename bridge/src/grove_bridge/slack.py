@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 
 from grove_bridge.assistant import (
+    ASSISTANT_TRANSPORT_FALLBACK_TEXT,
     AssistantActor,
     AssistantBroker,
     AssistantContext,
@@ -27,7 +28,7 @@ from grove_bridge.assistant import (
 )
 from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.config import default_board_db_path
-from grove_bridge.master import MasterChatResponse
+from grove_bridge.master import MasterChatResponse, MasterChatResponseType
 from grove_bridge.store import SlackThread, SQLiteBoardStore, Task
 
 LOGGER = logging.getLogger(__name__)
@@ -153,6 +154,18 @@ class SlackIntentClassifier(Protocol):
 
 class AssistantBrokerProtocol(Protocol):
     def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse: ...
+
+    def handle_notice(
+        self,
+        message: str,
+        context: AssistantContext,
+        *,
+        decision: str,
+        reason: str,
+        response_type: MasterChatResponseType = "answer",
+        requires_confirmation: bool = False,
+        metadata: Mapping[str, object] | None = None,
+    ) -> MasterChatResponse: ...
 
 
 @dataclass(frozen=True)
@@ -868,11 +881,9 @@ class SlackConnector:
             return self._handle_assistant_turn(event, thread_ts=thread_ts)
         if event.thread_ts is not None and self._handle_human_reply(event, thread_ts=thread_ts):
             return True
-        if self._handle_command(event, thread_ts=thread_ts):
-            return True
-        if self._handle_read_only_query(event, thread_ts=thread_ts):
-            return True
-        if self._handle_intake(event, thread_ts=thread_ts):
+        if _explicit_reserved_command_text(event.text) and self._handle_command(
+            event, thread_ts=thread_ts
+        ):
             return True
         return self._handle_chat(event, thread_ts=thread_ts)
 
@@ -895,9 +906,11 @@ class SlackConnector:
         thread_ts = event.thread_ts or event.ts
         config = self.command_config
         if config is None:
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Slack control commands are not enabled for this project.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="Slack control commands are not enabled for this project.",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return True
@@ -910,16 +923,20 @@ class SlackConnector:
                 status="denied",
                 summary="unmapped slack identity",
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Denied: this Slack identity is not mapped to a grove member.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="unmapped slack identity",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return True
         if self.confirmations is None:
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="No pending confirmations are available.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="No pending confirmations are available.",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return True
@@ -935,9 +952,11 @@ class SlackConnector:
                 status="denied",
                 summary=error or "confirmation failed",
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text=f"Denied: {_safe_slack_text(error or 'confirmation failed')}.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason=error or "confirmation failed",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return True
@@ -949,14 +968,21 @@ class SlackConnector:
                 status="rejected",
                 summary="answer-only selected",
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="No task was created. I will treat this as answer-only.",
+            self._post_assistant_notice(
+                event,
+                decision="answer_only",
+                reason="No task was created; answer-only was selected.",
                 thread_ts=thread_ts,
             )
             return True
         result = self._execute_pending_command(pending)
-        self.slack_client.post_message(channel=event.channel, text=result, thread_ts=thread_ts)
+        self._post_assistant_notice(
+            event,
+            decision=_slack_notice_decision_from_result(result),
+            reason=_slack_notice_reason_from_result(result),
+            response_type=_slack_notice_response_type_from_result(result),
+            thread_ts=thread_ts,
+        )
         return True
 
     def poll_digest(self) -> int:
@@ -1123,11 +1149,11 @@ class SlackConnector:
                 summary="usage query requires operator role",
                 payload={"query": query.name, "reason": query.reason},
             )
-            message = _read_only_denied_message("Usage and ledger details require operator role.")
-            self.slack_client.post_message(
-                channel=event.channel,
-                text=message.text,
-                blocks=message.blocks,
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="Usage and ledger details require operator role.",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             self._remember_thread_context(context_key, query)
@@ -1147,10 +1173,10 @@ class SlackConnector:
             summary=f"answered {query.name} query",
             payload={"query": query.name, "reason": query.reason},
         )
-        self.slack_client.post_message(
-            channel=event.channel,
-            text=message.text,
-            blocks=message.blocks,
+        self._post_assistant_notice(
+            event,
+            decision="status",
+            reason=message.text,
             thread_ts=thread_ts,
         )
         self._remember_thread_context(context_key, query)
@@ -1196,9 +1222,11 @@ class SlackConnector:
             return False
         config = self.command_config
         if config is None:
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Slack control commands are not enabled for this project.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="Slack control commands are not enabled for this project.",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return True
@@ -1215,9 +1243,10 @@ class SlackConnector:
                 status="ok",
                 summary="status",
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text=self._command_status_text(config.board),
+            self._post_assistant_notice(
+                event,
+                decision="status",
+                reason=self._command_status_text(config.board),
                 thread_ts=thread_ts,
             )
             return True
@@ -1229,9 +1258,11 @@ class SlackConnector:
                 status="denied",
                 summary="unmapped slack identity",
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Denied: this Slack identity is not mapped to a grove member.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="unmapped slack identity",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return True
@@ -1263,9 +1294,11 @@ class SlackConnector:
                 status="denied",
                 summary="insufficient role",
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Denied: operator or admin role is required for this command.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="insufficient role: operator or admin role is required for this command",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return True
@@ -1275,7 +1308,14 @@ class SlackConnector:
             event=event,
             actor=actor,
         )
-        self.slack_client.post_message(channel=event.channel, text=preview, thread_ts=thread_ts)
+        self._post_assistant_notice(
+            event,
+            decision=_slack_notice_decision_from_result(preview),
+            reason=_slack_notice_reason_from_result(preview),
+            response_type=_slack_notice_response_type_from_result(preview),
+            thread_ts=thread_ts,
+            requires_confirmation="confirm " in preview,
+        )
         return True
 
     def _handle_digest_command(
@@ -1294,9 +1334,11 @@ class SlackConnector:
                 status="denied",
                 summary="insufficient role",
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Denied: operator or admin role is required for digest config.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="insufficient role: operator or admin role is required for digest config",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return
@@ -1308,9 +1350,11 @@ class SlackConnector:
                 status="denied",
                 summary="digest is not configured",
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Slack digest is not configured for this connector.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="Slack digest is not configured for this connector.",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return
@@ -1343,9 +1387,11 @@ class SlackConnector:
                 "digest_action": action,
             },
         )
-        self.slack_client.post_message(
-            channel=event.channel,
-            text=_safe_slack_text(response),
+        self._post_assistant_notice(
+            event,
+            decision=_slack_notice_decision_from_result(response),
+            reason=_slack_notice_reason_from_result(response),
+            response_type=_slack_notice_response_type_from_result(response),
             thread_ts=thread_ts,
         )
 
@@ -1360,9 +1406,11 @@ class SlackConnector:
     ) -> None:
         config = self.command_config
         if config is None or not self._intake_enabled(config):
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Slack intake is not enabled for this project.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="Slack intake is not enabled for this project.",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return
@@ -1375,9 +1423,11 @@ class SlackConnector:
                 summary="insufficient role",
                 payload={"intent": command},
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Denied: operator or admin role is required to create tasks.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="insufficient role: operator or admin role is required to create tasks",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return
@@ -1396,11 +1446,22 @@ class SlackConnector:
             actor=actor,
             classification=classification,
         )
-        self.slack_client.post_message(
-            channel=event.channel,
-            text=preview.text,
+        if preview is None:
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="Slack intake is not enabled for this project.",
+                response_type="denied",
+                thread_ts=thread_ts,
+            )
+            return
+        self._post_assistant_notice(
+            event,
+            decision="preview",
+            reason=preview.text,
             blocks=preview.blocks,
             thread_ts=thread_ts,
+            requires_confirmation=True,
         )
 
     def _handle_intake(self, event: SlackEvent, *, thread_ts: str) -> bool:
@@ -1437,9 +1498,11 @@ class SlackConnector:
                 summary="unmapped slack identity",
                 payload={"intent": classification.intent},
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Denied: this Slack identity is not mapped to a grove member.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="unmapped slack identity",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return True
@@ -1452,9 +1515,11 @@ class SlackConnector:
                 summary="insufficient role",
                 payload={"intent": classification.intent},
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Denied: operator or admin role is required to create tasks.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="insufficient role: operator or admin role is required to create tasks",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return True
@@ -1463,8 +1528,22 @@ class SlackConnector:
             actor=actor,
             classification=classification,
         )
-        self.slack_client.post_message(
-            channel=event.channel, text=preview.text, blocks=preview.blocks, thread_ts=thread_ts
+        if preview is None:
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="Slack intake is not enabled for this project.",
+                response_type="denied",
+                thread_ts=thread_ts,
+            )
+            return True
+        self._post_assistant_notice(
+            event,
+            decision="preview",
+            reason=preview.text,
+            blocks=preview.blocks,
+            thread_ts=thread_ts,
+            requires_confirmation=True,
         )
         return True
 
@@ -1474,12 +1553,9 @@ class SlackConnector:
         event: SlackEvent,
         actor: SlackCommandMember,
         classification: SlackIntentClassification,
-    ) -> SlackBlockMessage:
+    ) -> SlackBlockMessage | None:
         if self.command_config is None or self.confirmations is None:
-            return SlackBlockMessage(
-                text="Slack intake is not enabled for this project.",
-                blocks=(),
-            )
+            return None
         proposal = _build_intake_task_proposal(
             event=event,
             classification=classification,
@@ -1528,16 +1604,20 @@ class SlackConnector:
         parts: Sequence[str],
     ) -> None:
         if len(parts) != 2:
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Usage: confirm <confirmation-id>",
+            self._post_assistant_notice(
+                event,
+                decision="usage",
+                reason="Usage: confirm <confirmation-id>",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return
         if self.confirmations is None:
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="No pending confirmations are available.",
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason="No pending confirmations are available.",
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return
@@ -1551,18 +1631,26 @@ class SlackConnector:
                 summary=error or "confirmation failed",
             )
             response = (
-                "Denied: only the member who created the preview can confirm it."
+                "Only the member who created the preview can confirm it."
                 if error == "confirmation owner mismatch"
-                else f"Denied: {_safe_slack_text(error or 'confirmation failed')}."
+                else f"{_safe_slack_text(error or 'confirmation failed')}."
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text=response,
+            self._post_assistant_notice(
+                event,
+                decision="deny",
+                reason=response,
+                response_type="denied",
                 thread_ts=thread_ts,
             )
             return
         result = self._execute_pending_command(pending)
-        self.slack_client.post_message(channel=event.channel, text=result, thread_ts=thread_ts)
+        self._post_assistant_notice(
+            event,
+            decision=_slack_notice_decision_from_result(result),
+            reason=_slack_notice_reason_from_result(result),
+            response_type=_slack_notice_response_type_from_result(result),
+            thread_ts=thread_ts,
+        )
 
     def _preview_command(
         self,
@@ -1934,9 +2022,10 @@ class SlackConnector:
             body=_answer_comment_body(event.text),
         )
         if self.store.unblock_task_by_id(task_id=task.id, actor=author):
-            self.slack_client.post_message(
-                channel=event.channel,
-                text="Recorded your reply and unblocked the task.",
+            self._post_assistant_notice(
+                event,
+                decision="completed",
+                reason="Recorded the Slack reply and unblocked the task.",
                 thread_ts=thread_ts,
             )
         return True
@@ -1951,7 +2040,7 @@ class SlackConnector:
                 response = self.assistant_broker.handle_turn(text, context)
         except AssistantUnavailable as exc:
             LOGGER.warning("Slack assistant transport failed: %s", _safe_log_error(exc))
-            response_text = "비서 잠시 바쁨. 잠시 후 다시 재시도해 주세요."
+            response_text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
             self._audit_slack_command(
                 command="assistant",
                 event=event,
@@ -1961,9 +2050,7 @@ class SlackConnector:
             )
         except Exception as exc:
             LOGGER.warning("Slack assistant broker failed: %s", _safe_log_error(exc))
-            response_text = (
-                "I could not complete that request safely. Check grove logs for details."
-            )
+            response_text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
             self._audit_slack_command(
                 command="assistant",
                 event=event,
@@ -2041,6 +2128,65 @@ class SlackConnector:
         if actor is not None:
             return _slack_member_actor(event.user, actor)
         return _slack_actor(event.user, role="read-only")
+
+    def _assistant_notice_text(
+        self,
+        event: SlackEvent,
+        *,
+        thread_ts: str,
+        decision: str,
+        reason: str,
+        response_type: MasterChatResponseType = "answer",
+        requires_confirmation: bool = False,
+        metadata: Mapping[str, object] | None = None,
+    ) -> str:
+        context = self._assistant_context(event, thread_ts=thread_ts)
+        message = _normalize_slack_text(event.text)
+        try:
+            response = self.assistant_broker.handle_notice(
+                message,
+                context,
+                decision=decision,
+                reason=reason,
+                response_type=response_type,
+                requires_confirmation=requires_confirmation,
+                metadata=metadata,
+            )
+        except AssistantUnavailable as exc:
+            LOGGER.warning("Slack assistant notice transport failed: %s", _safe_log_error(exc))
+            return ASSISTANT_TRANSPORT_FALLBACK_TEXT
+        except Exception as exc:
+            LOGGER.warning("Slack assistant notice failed: %s", _safe_log_error(exc))
+            return ASSISTANT_TRANSPORT_FALLBACK_TEXT
+        return _assistant_response_text(response)
+
+    def _post_assistant_notice(
+        self,
+        event: SlackEvent,
+        *,
+        thread_ts: str,
+        decision: str,
+        reason: str,
+        response_type: MasterChatResponseType = "answer",
+        requires_confirmation: bool = False,
+        metadata: Mapping[str, object] | None = None,
+        blocks: Sequence[Mapping[str, object]] | None = None,
+    ) -> str:
+        text = self._assistant_notice_text(
+            event,
+            thread_ts=thread_ts,
+            decision=decision,
+            reason=reason,
+            response_type=response_type,
+            requires_confirmation=requires_confirmation,
+            metadata=metadata,
+        )
+        return self.slack_client.post_message(
+            channel=event.channel,
+            text=text,
+            thread_ts=thread_ts,
+            blocks=blocks,
+        )
 
     def _assistant_board(self) -> str:
         if self.command_config is not None:
@@ -2544,7 +2690,31 @@ def _assistant_response_text(response: MasterChatResponse) -> str:
         return _safe_slack_text(response.answer.text)
     if response.operator_gate is not None and response.operator_gate.reason.strip():
         return _safe_slack_text(response.operator_gate.reason)
-    return "I could not complete that request safely. Check grove logs for details."
+    return ASSISTANT_TRANSPORT_FALLBACK_TEXT
+
+
+def _slack_notice_decision_from_result(result: str) -> str:
+    lowered = result.lower()
+    if (
+        lowered.startswith("denied")
+        or lowered.startswith("invalid")
+        or lowered.startswith("usage:")
+    ):
+        return "deny"
+    if lowered.startswith("preview:"):
+        return "preview"
+    return "completed"
+
+
+def _slack_notice_response_type_from_result(result: str) -> MasterChatResponseType:
+    return "denied" if _slack_notice_decision_from_result(result) == "deny" else "answer"
+
+
+def _slack_notice_reason_from_result(result: str) -> str:
+    safe = _safe_slack_text(result).strip()
+    if safe.lower().startswith("denied:"):
+        return safe.split(":", 1)[1].strip()
+    return safe
 
 
 def _assistant_workspace_path() -> Path:
@@ -2939,18 +3109,8 @@ def _build_intake_preview_blocks(
     confirmation_id: str,
     ttl_seconds: int,
 ) -> tuple[Mapping[str, object], ...]:
-    summary = (
-        "*Slack intake preview*\n"
-        f"Intent: `{_safe_slack_text(proposal.intent)}`  "
-        f"Confidence: `{proposal.confidence:.2f}`\n"
-        f"*Title*: {_safe_slack_text(proposal.title)}\n"
-        f"*Body*: {_safe_slack_text(proposal.body)}\n"
-        f"*Labels*: {', '.join(_safe_slack_text(label) for label in proposal.labels) or 'none'}\n"
-        f"*Assignee*: {_safe_slack_text(proposal.assignee or 'unassigned')}\n"
-        f"Expires in {ttl_seconds}s."
-    )
-    blocks = list(_mrkdwn_section_blocks(summary))
-    blocks.append(
+    _ = (proposal, ttl_seconds)
+    return (
         {
             "type": "actions",
             "block_id": "grove_intake_actions",
@@ -2987,9 +3147,8 @@ def _build_intake_preview_blocks(
                     },
                 },
             ],
-        }
+        },
     )
-    return tuple(blocks)
 
 
 def _digest_reminder_text(*, task: Task, step: int, max_reminders: int) -> str:
