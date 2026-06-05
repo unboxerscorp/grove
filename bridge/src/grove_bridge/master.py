@@ -504,7 +504,7 @@ def draft_feedback_route(
     severity: FeedbackSeverity,
     route: FeedbackRouteTarget,
 ) -> FeedbackRouteDraft:
-    """Draft a grove-feedback task payload without creating a board task."""
+    """Draft a grove-feedback item payload without creating a list item."""
     redacted = redact_secret_text(turn.redacted_message or turn.message)
     summary = _feedback_summary(redacted)
     title = _feedback_title(summary)

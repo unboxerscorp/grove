@@ -1,4 +1,4 @@
-"""Subprocess runner for handing claimed board tasks to grove nodes."""
+"""Subprocess runner for handing claimed human-facing items to grove nodes."""
 
 from __future__ import annotations
 

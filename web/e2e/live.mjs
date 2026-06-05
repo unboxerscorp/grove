@@ -1,7 +1,7 @@
 // Live browser e2e against the REAL grove web server.
 //
 // This intentionally targets the running cockpit at http://127.0.0.1:9131 and
-// clicks the SPA like an operator. It creates only unique p2-live-* board tasks,
+// clicks the SPA like an operator. It creates only unique p2-live-* list items,
 // avoids existing tasks, and restores mutable GUI feature state in finally.
 
 import { spawnSync } from "node:child_process";
@@ -384,8 +384,8 @@ async function createTaskViaUi(page, { title, body, status = "ready" }) {
   await page.click(".dr-addform__submit");
   const response = await responsePromise;
   const json = await responseJson(response);
-  assertCheck("board task POST returns 2xx", response.ok(), `HTTP ${response.status()} ${safeJson(json)}`);
-  assertCheck("board task POST returns task id", typeof json?.id === "string", safeJson(json));
+  assertCheck("list item POST returns 2xx", response.ok(), `HTTP ${response.status()} ${safeJson(json)}`);
+  assertCheck("list item POST returns item id", typeof json?.id === "string", safeJson(json));
   await page.waitForSelector(taskSelector(json.id), { visible: true, timeout: 15_000 });
   check("new task card appears in board DOM", true, json.id);
   return json;

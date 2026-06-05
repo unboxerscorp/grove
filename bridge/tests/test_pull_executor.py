@@ -508,7 +508,7 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
     task = store.create_task(
         board="main",
         title="Implement native board",
-        body="Wire grove board tasks to grove.",
+        body="Wire grove human-facing items to grove.",
         assignee="codex-a",
     )
     runner = FakeRunner(
@@ -573,7 +573,7 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
     assert "You are working on a grove human-facing item." in prompt
     assert "You are executing a grove board task." not in prompt
     assert "Implement native board" in prompt
-    assert "Wire grove board tasks to grove." in prompt
+    assert "Wire grove human-facing items to grove." in prompt
     assert "Assignee node: codex-a" in prompt
     assert "GROVE_BOARD_TASK=" in prompt
     assert "GROVE_BOARD_RUN_ID=" in prompt

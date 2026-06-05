@@ -1,4 +1,4 @@
-"""Pull ready grove board tasks into grove node pools."""
+"""Pull ready grove human-facing items into grove node pools."""
 
 from __future__ import annotations
 

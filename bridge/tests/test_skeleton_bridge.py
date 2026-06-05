@@ -92,14 +92,14 @@ def test_skeleton_project_scoping_isolation(tmp_path: Path) -> None:
     assert res.status_code == 200
     t2_id = res.json()["id"]
 
-    # Check dev10 board tasks
+    # Check dev10 human-facing items
     res = client.get("/api/boards/dev10/tasks", headers=headers)
     assert res.status_code == 200
     dev10_ids = [t["id"] for t in res.json()]
     assert t1_id in dev10_ids
     assert t2_id not in dev10_ids
 
-    # Check proj_b board tasks
+    # Check proj_b human-facing items
     res = client.get("/api/boards/proj_b/tasks", headers=headers_b)
     assert res.status_code == 200
     proj_b_ids = [t["id"] for t in res.json()]

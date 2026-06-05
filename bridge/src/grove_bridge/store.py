@@ -227,7 +227,7 @@ class DecisionConflict(RuntimeError):
 
 
 class SQLiteBoardStore:
-    """SQLite implementation of grove board task and run operations."""
+    """SQLite implementation of grove human-facing item and run operations."""
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path).expanduser()

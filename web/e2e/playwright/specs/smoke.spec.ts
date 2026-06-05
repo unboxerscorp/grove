@@ -45,7 +45,7 @@ test.describe("cockpit smoke", () => {
     await expect(page.locator(".dr-card").first()).toBeVisible();
   });
 
-  test("API helper reaches health + board tasks with the operator token", async ({ request, server }) => {
+  test("API helper reaches health + list items with the operator token", async ({ request, server }) => {
     const api = makeApi(request, server.baseUrl, server.token);
     const health = await api.health();
     expect(health.ok()).toBeTruthy();

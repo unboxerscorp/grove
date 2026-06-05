@@ -779,7 +779,7 @@ def test_decision_ledger_api_quorum_and_dispatch_idempotency(tmp_path: Path) -> 
         json={
             "proposer": "codex",
             "title": "Build delegated task",
-            "body": "Create the child board task.",
+            "body": "Create the child human-facing item.",
             "assignee": "maker",
             "reviewer": "reviewer",
         },
