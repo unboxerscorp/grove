@@ -92,7 +92,7 @@
 
 - **신설 공용 "grove context pack" 빌더**(예 `src/context-pack.ts` + bridge 대응): 호출노드 정체성 + 프로젝트 + 프로젝트 lead + 보이는 조직 요약 + 통신규약 + 사람용 목록 모델 + 타깃 역할. size-cap + redaction(assistant facts-pack 패턴 재사용).
 - dispatch context는 노드가 조직도, 역할, tmux pane, cwd를 잃지 않게 하는 보조 정보다. 사람용 목록 항목을 노드 간 필수 통신 프로토콜로 강제하지 않는다.
-- 베이스 MD 강화: `AGENTS.md`에 "기동 시 `grove org --json`로 자기 정체성 블록 고정" 강제 섹션 + **`CLAUDE.md` 신설**(역할+조직+업무방식 강하게). 캐논과 **모순 제거**: AGENTS.md `:16` "Makers scoped"·`:17` "Reviewers read-only"를 자유통신·자유spawn과 정합화.
+- 베이스 MD 강화: `AGENTS.md`에 "기동 시 `grove org --json`로 자기 정체성 블록 고정" 강제 섹션 + **`CLAUDE.md` 신설**(역할+조직+업무방식 강하게). 캐논과 **모순 제거**: AGENTS.md `:16` "Makers scoped"·`:17` "Reviewers read-only"를 자유통신·사람이 명시한 operator-marked 조직 변경과 정합화.
 - 과거 보드 중심 통신 스킬은 폐기됐다. 현재 스킬은 direct node communication과 human-facing item model을 설명한다.
 - 2026-06-05 현재 `build_assistant_facts`는 live `dev10` registry에서 `agent_health.node_count=3`을 반환한다. facts JSON은 참고 컨텍스트이며, MASTER는 repo/runtime/org를 자유롭게 직접 확인할 수 있다.
 
