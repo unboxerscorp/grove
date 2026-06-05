@@ -6,7 +6,7 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
-- 2026-06-06 04:51 KST 기준 최신 live 운영:
+- 2026-06-06 04:55 KST 기준 최신 live 운영:
   - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
   - 단일 tmux 세션 `dev10`만 사용한다. panes: `dev10:0.0 grove-master`, `dev10:1.0 web`, `dev10:2.0 slack`, `dev10:3.0 advisor`.
   - web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`로 실행한다. 명령은 `0.0.0.0:8765`, `--unsafe-bind`, `--enable-node-input`, `--enable-intake`, `--allow-host 100.100.90.87,192.168.1.186`를 포함한다.
@@ -15,8 +15,8 @@
   - advisor는 `dev10:3.0`의 Claude 노드이며 약 5분마다 `grove-master`를 점검한다. 사용자가 명시 중단하기 전까지 루프를 멈추지 않는다.
   - `/api/projects`는 `dev10` 하나만 반환해야 한다. `/api/boards`는 프로젝트 헤더가 없어도 현재 active project board만 반환해야 하며, 과거 `p2-test` 같은 stale board가 섞이면 회귀다. `/api/org`의 `default_assignee`와 `master_org.project_master.name`은 `grove-master`여야 하며 advisor가 default가 되면 회귀다.
   - `~/.grove/boards/board.db`의 stale `p2-test` board/task 찌꺼기는 삭제했다. 삭제 전 백업은 `~/.grove/boards/board.db.bak.pre-p2-cleanup-1780682270`이다. 이후 DB 전체 `tasks=0`, live `/api/boards/default/tasks=[]`, `/api/inbox.total=0`을 확인했다.
-  - 최신 live product-code 커밋은 `42ad5c4 fix: normalize active nodes in summary counts`이다. 최신 non-doc HEAD에는 `99386c1 test: guard active node liveness in web mock`가 추가되어 있다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
-  - 최신 검증: `pnpm check` green(TS/Vitest 54 files 286 tests, bridge pytest 443 passed), `web npm run build && npm run verify && npm run typecheck` green. core verify는 mock `/api/status`에서도 node status `active -> running` alias를 검사한다(`2 실행 중/3 대기`에서 frontend를 active로 바꾼 뒤 `3 실행 중/2 대기`). live web 재배포 health 200. live Chrome smoke에서 NodeStatusBar `4 실행 중 / 0 대기 / 4 전체`, sidebar `4/4 실시간`, active rows `활성/실행 중`, Team delayed `/api/org` 로딩 중 `노드 불러오는 중`, 완료 후 4 nodes/3 edges/3 groups 확인. `/api/status`는 running=4/idle=0, summary export node status도 `active -> running` alias 적용, `/api/nodes`와 `/api/org` 모두 4개 노드 `pane_exists:true`, `/api/projects=[dev10]`, `/api/boards=[dev10 task_count=0]`, `/api/inbox.total=0`, `grove org --json` nodes 4개 pane live, Slack `socket_connected`, heartbeat fresh.
+  - 최신 live product-code 커밋은 `f1070ae fix: describe master chat counts as human items`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
+  - 최신 검증: `pnpm check` green(TS/Vitest 54 files 286 tests, bridge pytest 444 passed), `web npm run build && npm run verify && npm run typecheck` green. core verify는 mock `/api/status`에서도 node status `active -> running` alias를 검사한다(`2 실행 중/3 대기`에서 frontend를 active로 바꾼 뒤 `3 실행 중/2 대기`). live web 재배포 health 200. live Chrome smoke에서 NodeStatusBar `4 실행 중 / 0 대기 / 4 전체`, sidebar `4/4 실시간`, active rows `활성/실행 중`, Team delayed `/api/org` 로딩 중 `노드 불러오는 중`, 완료 후 4 nodes/3 edges/3 groups 확인. `/api/status`는 running=4/idle=0, summary export node status도 `active -> running` alias 적용, master chat fallback/fact summary는 board count를 `Human items`로 설명한다. `/api/nodes`와 `/api/org` 모두 4개 노드 `pane_exists:true`, `/api/projects=[dev10]`, `/api/boards=[dev10 task_count=0]`, `/api/inbox.total=0`, `grove org --json` nodes 4개 pane live, Slack `socket_connected`, heartbeat fresh.
 - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
 - 앞으로 기본 운영은 `dev10` tmux 하나를 쓴다. 현재 서비스 창은 `dev10:1.0 web`, `dev10:2.0 slack`이다.
 - 프로젝트 ID와 host tmux 세션은 분리됐다. web 프로젝트 생성은 `grove new-project --tmux-session dev10`로 새 프로젝트 registry를 만들고 pane은 `dev10`에 둔다.
@@ -41,10 +41,11 @@
 - watchdog/executor OFF 유지(멀티리뷰+사용자 승인 전 실가동 금지).
 - 과거 handoff에는 lead가 통합만 맡는 운영 제한이 있었다. 현재 사용자는 필요하면 master가 직접 작업해도 된다고 정정했다.
 
-## 1. 현재 live product-code = 42ad5c4, 최신 test guard = 99386c1 (트리 클린)
+## 1. 현재 live product-code = f1070ae (트리 클린)
 
 최근 완료된 안정화:
 
+- `f1070ae fix: describe master chat counts as human items`: master chat fallback/fact summary와 web mock answer에서 board count를 `Board tasks`가 아니라 `Human items`로 설명한다. board를 노드 간 통신 프로토콜처럼 보이게 하는 잔여 copy를 제거했다. RED(`Board tasks:` 노출) 확인 후 bridge regression test 추가, `web npm run build && npm run verify`, `pnpm check` green, live web 재배포 health 200.
 - `99386c1 test: guard active node liveness in web mock`: live product fix 이후 mock `/api/status`도 registry `active`를 `running`으로 정규화하게 맞췄다. core `web/verify.mjs`가 상태를 `active`로 바꾼 뒤 NodeStatusBar가 `3 실행 중/2 대기`로 바뀌는지 확인한다. RED(`2 실행 중/3 대기` 고정) 확인 후 fix, `web npm run build && npm run verify && npm run typecheck`, `pnpm check` green.
 - `42ad5c4 fix: normalize active nodes in summary counts`: summary export/aggregate의 node `by_status`에서도 `active`를 `running`으로 정규화한다. 외부 리포트에서 active 서비스 노드가 `other`로 빠지는 것을 막는다. bridge summary privacy test와 `pnpm check`, live web 재배포 health 200 확인.
 - `c954317 fix: classify active nodes as live in status`: `/api/status`가 registry `active` 서비스 노드를 idle로 분류해 상단 NodeStatusBar가 `running=1/idle=3`처럼 보이던 문제를 고쳤다. summary와 detail 모두 `active`를 running/live 계열로 정규화한다. bridge regression test, `pnpm check`, live API/DOM smoke green.
