@@ -20,6 +20,15 @@ function assertNoInboxUnblockCopy() {
   }
 }
 
+function assertNoDelegateTaskCopy() {
+  const source = readFileSync(path.join(root, "src", "i18n.tsx"), "utf8");
+  const bundle = existsSync(path.join(root, "dist", "app.js")) ? readFileSync(path.join(root, "dist", "app.js"), "utf8") : "";
+  const forbidden = /(작업 위임|작업 부여|Delegate task|Assign task|Delegate to this node|이 노드로 위임)/i;
+  if (forbidden.test(`${source}\n${bundle}`)) {
+    throw new Error("node action copy must describe creating human-facing items, not delegated tasks");
+  }
+}
+
 function findChrome() {
   return [
     process.env.CHROME_PATH,
@@ -35,6 +44,7 @@ function findChrome() {
 
 async function coreMain() {
   assertNoInboxUnblockCopy();
+  assertNoDelegateTaskCopy();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
   }
