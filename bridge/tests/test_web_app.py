@@ -637,6 +637,12 @@ def test_status_includes_token_gated_node_liveness_summary(tmp_path: Path) -> No
                 "status": "running",
                 "last_seen": 123,
             },
+            "service": {
+                "name": "service",
+                "agent": "codex",
+                "tmux_pane": "dev10:1.4",
+                "status": "active",
+            },
             "stale": {
                 "name": "stale",
                 "agent": "claude",
@@ -661,8 +667,8 @@ def test_status_includes_token_gated_node_liveness_summary(tmp_path: Path) -> No
     assert missing.status_code == 401
     assert response.status_code == 200
     assert response.json()["nodes"] == {
-        "total": 4,
-        "running": 1,
+        "total": 5,
+        "running": 2,
         "stale": 1,
         "idle": 1,
         "error": 1,
@@ -676,6 +682,8 @@ def test_status_includes_token_gated_node_liveness_summary(tmp_path: Path) -> No
         "source": "registry",
         "confidence": "explicit",
     }
+    assert by_name["service"]["status"] == "running"
+    assert by_name["service"]["status_reason"] == "registry status: active"
     assert by_name["stale"]["status"] == "dead"
     assert by_name["broken"]["status"] == "error"
     assert by_name["broken"]["status_reason"] == "crashed"

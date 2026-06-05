@@ -2656,7 +2656,7 @@ def _node_liveness_summary(config: WebAppConfig) -> dict[str, int]:
     counts = {"total": len(nodes), "running": 0, "stale": 0, "idle": 0, "error": 0}
     for node in nodes:
         status_value = node["status"]
-        if status_value == "running":
+        if status_value in {"active", "running"}:
             counts["running"] += 1
         elif status_value == "stale":
             counts["stale"] += 1
@@ -2713,6 +2713,8 @@ def _normalized_node_detail_status(value: str) -> str:
     clean = value.strip().lower()
     if clean in {"running", "idle", "error", "blocked", "dead"}:
         return clean
+    if clean == "active":
+        return "running"
     if clean == "stale":
         return "dead"
     return "idle"
