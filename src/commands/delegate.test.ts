@@ -135,7 +135,7 @@ describe("discoverWebUrl", () => {
 });
 
 describe("delegateTask", () => {
-  test("creates a ready board task assigned to an existing registry node", async () => {
+  test("creates a ready human-facing item associated with an existing registry node", async () => {
     const state = deps({ env: { GROVE_WEB_URL: "http://127.0.0.1:9999" } });
 
     const result = await delegateTask(
