@@ -5684,6 +5684,10 @@ def test_create_project_invokes_new_project_with_literal_argv(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, object]] = []
+    lead_role = (
+        "Project lead for new-dev. Coordinate direct node communication and use "
+        "human-facing list items only for operator TODO, feedback, and ask-human records."
+    )
 
     def fake_run(
         args: list[str],
@@ -5711,7 +5715,7 @@ def test_create_project_invokes_new_project_with_literal_argv(
                 "lead": {
                     "name": "lead",
                     "agent": "claude",
-                    "role": "Project lead for new-dev. Coordinate the project board and team.",
+                    "role": lead_role,
                     "group": "core",
                     "parent": "",
                     "tmux_pane": "dev10:3.0",
@@ -5766,7 +5770,7 @@ def test_create_project_invokes_new_project_with_literal_argv(
             "tmux_pane": "dev10:3.0",
             "session_id": "",
             "status": "idle",
-            "role": "Project lead for new-dev. Coordinate the project board and team.",
+            "role": lead_role,
             "parent": "",
             "group": "core",
             "description": "",

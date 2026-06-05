@@ -6,7 +6,7 @@ import { color, info, warn } from "../util/log.js";
 
 function template(session: string, cwd: string): string {
   return `# grove org-chart — declare your tree of agents here.
-# docs: https://github.com/  (see grove-protocol.md for the delegation protocol)
+# docs: see grove-context.md for the direct-org working model
 
 session: ${session}
 cwd: ${cwd}
@@ -19,10 +19,11 @@ nodes:
   lead:
     agent: claude
     role: |
-      You are the lead of this grove. Break work down and delegate to your
-      team with \`grove send <node> "<task>"\`, then collect results with
-      \`grove wait <node>\`. The tree records ownership, not who may talk to
-      whom. See grove-protocol.md.
+      You are the lead of this grove. Keep the org, roles, tmux panes, and cwd
+      visible. Use direct node communication with \`grove send\`, \`grove ask\`,
+      tmux capture, or tmux input as appropriate. Human-facing list items are
+      for operator TODO, feedback, and ask-human records; they are not the
+      required node-to-node protocol. See grove-context.md.
     children: [maker-1, maker-2, reviewer]
 
   maker-1:
@@ -33,43 +34,58 @@ nodes:
 
   reviewer:
     agent: claude
-    role: "Read-only code review of diffs. Never edit files."
+    role: "Review diffs, run checks, surface risks, and make focused fixes when asked or practical."
 `;
 }
 
-const PROTOCOL = `# grove delegation protocol
+const CONTEXT_DOC = `# grove context
 
 You are a node in a *grove* — a tree of AI agents, each running in its own tmux
 pane. The tree records ownership and reporting structure; it is not a
 communication boundary. You can send or ask any reachable node, including nodes
 in another project with \`project:node\` or \`--project <project>\`.
 
+## direct node communication
+
+Use direct node communication for implementation, review, verification, and
+blocker traffic. A node can inspect tmux panes, use \`grove send\`, use \`grove
+ask\`, or type into another pane when that is the practical route and the
+operator has allowed it.
+
+Human-facing list items are for operator TODOs, feedback, and ask-human
+decisions. They are durable records for humans, not the required protocol for
+node-to-node work.
+
 ## Commands you can run
 
-- \`grove status\` — see every node in the tree and what it last did.
-- \`grove send <node> "<task>"\` — hand a node a task (returns immediately).
+- \`grove org --json\` — inspect nodes, roles, panes, cwd, and hierarchy.
+- \`grove status\` — see node state and recent activity.
+- \`grove send <node> "<message>"\` — send a direct non-blocking message.
 - \`grove wait <node>\` — block until that node finishes its current turn and
   print what it produced.
-- \`grove ask <node> "<task>"\` — \`send\` + \`wait\` in one call (use this for
-  request/response delegation).
-- \`grove ask <project:node> "<task>"\` — direct request/response to another
+- \`grove ask <node> "<message>"\` — \`send\` + \`wait\` in one call.
+- \`grove ask <project:node> "<message>"\` — direct request/response to another
   project.
 
-## How to delegate well
+## Working well
 
-1. Give each child a *self-contained* task: what to do, which files, how to
-   verify, and what to report back.
+1. Start by checking \`grove org --json\` so you know your node name, role,
+   parent, children, tmux pane, and cwd.
+2. Give peers clear, self-contained context: what to inspect or change, which
+   files matter, how to verify, and what result to report.
 2. Prefer \`grove ask\` when you need the result before continuing.
 3. Fan out with \`grove send\` to multiple nodes, then \`grove wait\` or
    \`grove gather\` when you need to join.
-4. Children are themselves full agents — they can have their own children. Keep
-   tasks at the altitude of the node you're addressing.
+4. Any visible node can communicate or work across the org. The hierarchy is
+   ownership and reporting metadata, not a capability cage.
+5. Do not autonomously spawn, terminate, or rearrange nodes. When the human
+   explicitly asks for an org change, use the operator-marked path.
 
 ## Example
 
 \`\`\`bash
-grove ask maker-1 "Implement input validation in src/auth.ts. Run the tests in
-auth.test.ts and report pass/fail plus the commit hash."
+grove ask maker-1 "Inspect src/auth.ts retry behavior. If a focused fix is
+needed, make it, run the relevant tests, and report the result plus commit hash."
 \`\`\`
 `;
 
@@ -87,7 +103,7 @@ function seedRegistry(session: string, cwd: string): void {
     parent: "",
     role:
       existing?.role ??
-      "Project lead for this grove. Coordinate the project board and delegate to child nodes.",
+      "Project lead for this grove. Keep direct node communication moving and use human-facing list items only for operator TODO, feedback, and ask-human records.",
   };
   saveRegistry(registry);
   ensureSharedMasterRegistry(cwd);
@@ -101,7 +117,7 @@ export async function cmdInit(opts: {
   const cwd = process.cwd();
   const session = opts.session ?? path.basename(cwd);
   const configPath = path.resolve(cwd, "grove.yaml");
-  const protocolPath = path.resolve(cwd, "grove-protocol.md");
+  const contextPath = path.resolve(cwd, "grove-context.md");
 
   if (existsSync(configPath) && !opts.force) {
     warn(`${color.bold("grove.yaml")} already exists — use --force to overwrite`);
@@ -110,11 +126,11 @@ export async function cmdInit(opts: {
     info(`wrote ${color.bold("grove.yaml")}`);
   }
 
-  if (existsSync(protocolPath) && !opts.force) {
-    warn(`grove-protocol.md already exists — leaving it`);
+  if (existsSync(contextPath) && !opts.force) {
+    warn(`grove-context.md already exists — leaving it`);
   } else {
-    writeFileSync(protocolPath, PROTOCOL);
-    info(`wrote ${color.bold("grove-protocol.md")}`);
+    writeFileSync(contextPath, CONTEXT_DOC);
+    info(`wrote ${color.bold("grove-context.md")}`);
   }
 
   seedRegistry(session, cwd);

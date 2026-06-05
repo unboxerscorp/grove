@@ -160,13 +160,14 @@ describe("createNewProject", () => {
           agent: "claude",
           group: "core",
           name: "lead",
-          role: "Project lead for alpha. Coordinate the project board and team.",
+          role: "Project lead for alpha. Coordinate direct node communication and use human-facing list items only for operator TODO, feedback, and ask-human records.",
           session_id: "session-lead",
         },
       ],
       updated_at: "2026-06-03T00:00:00.000Z",
       workspace: ".",
     });
+    expect(savedRegistry.nodes["lead"]?.role).not.toContain("project board");
   });
 
   test("can keep the project registry while hosting panes in an existing shared tmux session", async () => {

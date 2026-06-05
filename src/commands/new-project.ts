@@ -149,7 +149,7 @@ function defaultNodes(project: string): ProjectNodeSpec[] {
       group: "core",
       name: PROJECT_LEAD_NODE_NAME,
       parent: "",
-      role: `Project lead for ${project}. Coordinate the project board and team.`,
+      role: `Project lead for ${project}. Coordinate direct node communication and use human-facing list items only for operator TODO, feedback, and ask-human records.`,
     },
   ];
 }

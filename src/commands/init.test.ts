@@ -47,7 +47,7 @@ async function initModules(groveHome: string): Promise<{
 }
 
 describe("cmdInit", () => {
-  test("writes grove.yaml and delegation protocol in the current project", async () => {
+  test("writes grove.yaml and direct-org context docs in the current project", async () => {
     const root = enterTempProject();
     const groveHome = path.join(root, ".test-grove-home");
     const { cmdInit, loadRegistry } = await initModules(groveHome);
@@ -59,14 +59,27 @@ describe("cmdInit", () => {
     expect(config).toContain("session: dev10");
     expect(config).toContain(`cwd: ${root}`);
     expect(config).toContain("nodes:");
-    expect(readFileSync(path.join(root, "grove-protocol.md"), "utf8")).toContain("grove wait");
-    expect(loadRegistry("dev10")?.nodes.lead).toEqual(
+    expect(config).not.toContain("delegation protocol");
+    expect(config).not.toContain("grove-protocol.md");
+    expect(config).not.toContain("Read-only");
+    expect(config).not.toContain("Never edit files");
+    const context = readFileSync(path.join(root, "grove-context.md"), "utf8");
+    expect(context).toContain("direct node communication");
+    expect(context).toContain("Human-facing list items");
+    expect(context).toContain("grove org --json");
+    expect(context).not.toContain("delegation protocol");
+    expect(context).not.toContain("board task");
+    const lead = loadRegistry("dev10")?.nodes.lead;
+    expect(lead).toEqual(
       expect.objectContaining({
         cwd: root,
         name: "lead",
         parent: "",
       }),
     );
+    expect(lead?.role).toContain("direct node communication");
+    expect(lead?.role).toContain("human-facing list items");
+    expect(lead?.role).not.toContain("project board");
     expect(loadRegistry(".master")?.nodes["grove-master"]).toEqual(
       expect.objectContaining({
         name: "grove-master",
@@ -80,18 +93,22 @@ describe("cmdInit", () => {
     const { cmdInit } = await initModules(path.join(root, ".test-grove-home"));
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const configPath = path.join(root, "grove.yaml");
-    const protocolPath = path.join(root, "grove-protocol.md");
+    const contextPath = path.join(root, "grove-context.md");
+    const legacyProtocolPath = path.join(root, "grove-protocol.md");
     writeFileSync(configPath, "existing config");
-    writeFileSync(protocolPath, "existing protocol");
+    writeFileSync(contextPath, "existing context");
+    writeFileSync(legacyProtocolPath, "existing protocol");
 
     await cmdInit({});
 
     expect(readFileSync(configPath, "utf8")).toBe("existing config");
-    expect(readFileSync(protocolPath, "utf8")).toBe("existing protocol");
+    expect(readFileSync(contextPath, "utf8")).toBe("existing context");
+    expect(readFileSync(legacyProtocolPath, "utf8")).toBe("existing protocol");
 
     await cmdInit({ force: true, session: "forced" });
 
     expect(readFileSync(configPath, "utf8")).toContain("session: forced");
-    expect(readFileSync(protocolPath, "utf8")).toContain("grove ask");
+    expect(readFileSync(contextPath, "utf8")).toContain("direct node communication");
+    expect(readFileSync(legacyProtocolPath, "utf8")).toBe("existing protocol");
   });
 });
