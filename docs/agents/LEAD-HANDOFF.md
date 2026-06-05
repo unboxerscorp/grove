@@ -6,17 +6,17 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
-- 2026-06-06 05:03 KST 기준 최신 live 운영:
+- 2026-06-06 05:10 KST 기준 최신 live 운영:
   - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
   - 단일 tmux 세션 `dev10`만 사용한다. panes: `dev10:0.0 grove-master`, `dev10:1.0 web`, `dev10:2.0 slack`, `dev10:3.0 advisor`.
   - web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`로 실행한다. 명령은 `0.0.0.0:8765`, `--unsafe-bind`, `--enable-node-input`, `--enable-intake`, `--allow-host 100.100.90.87,192.168.1.186`를 포함한다.
   - 원격 접속 URL은 tailnet `http://100.100.90.87:8765`, LAN `http://192.168.1.186:8765`이다. remote terminal은 tailnet URL에서 실제 Chrome smoke로 `.dr-conn is-live`, xterm 렌더, 기본 선택 `grove-master`/`dev10:0.0`을 확인했다. `~/.grove/dev10/web.json`도 `allowed_hosts`와 `remote_urls`를 노출한다.
-  - Slack은 `dev10:2.0`에서 `/Users/chopin/.grove/dev10/run-slack-loop.sh`로 실행한다. `/api/slack/config/status`는 `socket_connected`, `~/.grove/dev10/slack-runtime.json` heartbeat가 갱신된다. 2026-06-06 05:03 KST 기준 Slack pane은 `dev10:2.0`, runtime pid는 `84491`, heartbeat fresh이다.
+  - Slack은 `dev10:2.0`에서 `/Users/chopin/.grove/dev10/run-slack-loop.sh`로 실행한다. `/api/slack/config/status`는 `socket_connected`, `~/.grove/dev10/slack-runtime.json` heartbeat가 갱신된다. 2026-06-06 05:10 KST 기준 Slack pane은 `dev10:2.0`, runtime pid는 `22392`, heartbeat fresh이다. `832b2a2` bridge prompt/context-pack 반영을 위해 같은 pane을 respawn했으며 socket 재연결을 확인했다.
   - advisor는 `dev10:3.0`의 Claude 노드이며 약 5분마다 `grove-master`를 점검한다. 사용자가 명시 중단하기 전까지 루프를 멈추지 않는다.
   - `/api/projects`는 `dev10` 하나만 반환해야 한다. `/api/boards`는 프로젝트 헤더가 없어도 현재 active project board만 반환해야 하며, 과거 `p2-test` 같은 stale board가 섞이면 회귀다. `/api/org`의 `default_assignee`와 `master_org.project_master.name`은 `grove-master`여야 하며 advisor가 default가 되면 회귀다.
   - `~/.grove/boards/board.db`의 stale `p2-test` board/task 찌꺼기는 삭제했다. 삭제 전 백업은 `~/.grove/boards/board.db.bak.pre-p2-cleanup-1780682270`이다. 이후 DB 전체 `tasks=0`, live `/api/boards/default/tasks=[]`, `/api/inbox.total=0`을 확인했다.
-  - 최신 product-code 커밋은 `dbbd742 fix: describe role preset items as human lists`이다. live web code 기준 최신 재배포 반영 커밋도 `dbbd742`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
-  - 최신 검증: `pnpm check` green(TS/Vitest 54 files 286 tests, bridge pytest 444 passed), `web npm run build && npm run verify` green. core verify는 mock `/api/status`에서도 node status `active -> running` alias를 검사한다(`2 실행 중/3 대기`에서 frontend를 active로 바꾼 뒤 `3 실행 중/2 대기`). role preset preview/source도 `보드 task` 대신 `사람용 목록 항목`으로 설명하며 `web/verify.mjs`가 해당 copy 회귀를 막는다. live web 재배포 health 200(started_at `1780689758`). live Chrome smoke에서 NodeStatusBar `4 실행 중 / 0 대기 / 4 전체`, sidebar `4/4 실시간`, active rows `활성/실행 중`, Team delayed `/api/org` 로딩 중 `노드 불러오는 중`, 완료 후 4 nodes/3 edges/3 groups 확인. `/api/status`는 running=4/idle=0, summary export node status도 `active -> running` alias 적용, master chat fallback/fact summary는 board count를 `Human items`로 설명한다. `/api/nodes`와 `/api/org` 모두 4개 노드 `pane_exists:true`, `/api/projects=[dev10]`, token-only `/api/boards=[dev10 task_count=0]`, explicit `X-Grove-Project: dev10` `/api/boards`는 호환 alias `dev-room`과 `dev10`만 반환, `/api/inbox.total=0`, `grove org --json` nodes 4개 pane live, Slack `socket_connected`, heartbeat fresh.
+  - 최신 product-code 커밋은 `832b2a2 fix: describe context packs as human list items`이다. live web/Slack code 기준 최신 재배포·재시작 반영 커밋도 `832b2a2`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
+  - 최신 검증: `pnpm check` green(TS/Vitest 54 files 286 tests, bridge pytest 444 passed), `web npm run build && npm run verify` green. core verify는 mock `/api/status`에서도 node status `active -> running` alias를 검사한다(`2 실행 중/3 대기`에서 frontend를 active로 바꾼 뒤 `3 실행 중/2 대기`). role preset preview/source도 `보드 task` 대신 `사람용 목록 항목`으로 설명하며 `web/verify.mjs`가 해당 copy 회귀를 막는다. context pack과 master Slack/web chat system prompt도 `Board tasks are...` 대신 `Human-facing list items are...`로 설명한다. live web 재배포 health 200(started_at `1780690168`). live Chrome smoke에서 NodeStatusBar `4 실행 중 / 0 대기 / 4 전체`, sidebar `4/4 실시간`, active rows `활성/실행 중`, Team delayed `/api/org` 로딩 중 `노드 불러오는 중`, 완료 후 4 nodes/3 edges/3 groups 확인. `/api/status`는 running=4/idle=0, summary export node status도 `active -> running` alias 적용, master chat fallback/fact summary는 board count를 `Human items`로 설명한다. `/api/nodes`와 `/api/org` 모두 4개 노드 `pane_exists:true`, `/api/projects=[dev10]`, token-only `/api/boards=[dev10 task_count=0]`, explicit `X-Grove-Project: dev10` `/api/boards`는 호환 alias `dev-room`과 `dev10`만 반환, `/api/inbox.total=0`, `grove org --json` nodes 4개 pane live, Slack `socket_connected`, heartbeat fresh.
 - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
 - 앞으로 기본 운영은 `dev10` tmux 하나를 쓴다. 현재 서비스 창은 `dev10:1.0 web`, `dev10:2.0 slack`이다.
 - 프로젝트 ID와 host tmux 세션은 분리됐다. web 프로젝트 생성은 `grove new-project --tmux-session dev10`로 새 프로젝트 registry를 만들고 pane은 `dev10`에 둔다.
@@ -41,10 +41,11 @@
 - watchdog/executor OFF 유지(멀티리뷰+사용자 승인 전 실가동 금지).
 - 과거 handoff에는 lead가 통합만 맡는 운영 제한이 있었다. 현재 사용자는 필요하면 master가 직접 작업해도 된다고 정정했다.
 
-## 1. 현재 product-code = dbbd742 (트리 클린)
+## 1. 현재 product-code = 832b2a2 (트리 클린)
 
 최근 완료된 안정화:
 
+- `832b2a2 fix: describe context packs as human list items`: TypeScript/Python context pack 기본 communication protocol과 master Slack/web chat system prompt에서 `Board tasks are...` 문구를 제거하고 `Human-facing list items are...`로 정렬했다. TS/Python context pack tests와 assistant prompt regression을 RED→GREEN으로 추가했다. `pnpm check` green. live web 재배포와 Slack pane respawn 후 web health 200, `/api/status running=4`, `/api/boards=[dev10 task_count=0]`, Slack pid `22392` `socket_connected` heartbeat fresh, panes `dev10:0/1/2/3` 확인.
 - `dbbd742 fix: describe role preset items as human lists`: CLI canonical role preset과 web NodeForm preset preview에서 `보드 task` 문구를 제거하고 `사람용 목록 항목` 모델로 정렬했다. `src/role-presets.test.ts`와 `web/verify.mjs`에 회귀 가드를 추가했다. RED(`보드 task` 노출) 확인 후 `pnpm vitest run src/role-presets.test.ts`, `web npm run build && npm run verify`, `pnpm check` green. live web 재배포 health 200, Slack pid `84491` 유지 및 heartbeat fresh 확인.
 - `b6aa03d fix: describe executor prompts as human items`: pull executor가 노드에 넘기는 프롬프트 헤더를 `grove board task 실행`이 아니라 `grove human-facing item 작업`으로 정렬했다. env 변수명은 호환성 때문에 유지했다. RED(`You are executing a grove board task`) 확인 후 pull executor regression, `tests/test_pull_executor.py` 34 passed, `pnpm check` green.
 - `f1070ae fix: describe master chat counts as human items`: master chat fallback/fact summary와 web mock answer에서 board count를 `Board tasks`가 아니라 `Human items`로 설명한다. board를 노드 간 통신 프로토콜처럼 보이게 하는 잔여 copy를 제거했다. RED(`Board tasks:` 노출) 확인 후 bridge regression test 추가, `web npm run build && npm run verify`, `pnpm check` green, live web 재배포 health 200.
