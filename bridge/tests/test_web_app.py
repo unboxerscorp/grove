@@ -4418,7 +4418,13 @@ def test_summary_endpoint_is_default_off_token_scoped_and_privacy_allowlisted(
                 "agent": f"xapp-{secret}",
                 "status": f"/Users/chopin/private/{secret}",
                 "tmux_pane": "dev11:1.0",
-            }
+            },
+            "service11": {
+                "name": "service11",
+                "agent": "codex",
+                "status": "active",
+                "tmux_pane": "dev11:1.1",
+            },
         },
     )
     default_client = make_client(tmp_path, store)
@@ -4438,8 +4444,8 @@ def test_summary_endpoint_is_default_off_token_scoped_and_privacy_allowlisted(
     assert payload["payload"]["project"] == "dev11"
     assert payload["payload"]["summary"]["tasks"]["total"] == 2
     assert payload["payload"]["summary"]["tasks"]["by_status"] == {"other": 1, "ready": 1}
-    assert payload["payload"]["summary"]["nodes"]["by_status"] == {"other": 1}
-    assert payload["payload"]["summary"]["nodes"]["by_agent"] == {"other": 1}
+    assert payload["payload"]["summary"]["nodes"]["by_status"] == {"other": 1, "running": 1}
+    assert payload["payload"]["summary"]["nodes"]["by_agent"] == {"codex": 1, "other": 1}
     rendered = json.dumps(payload)
     assert secret not in rendered
     assert "/Users/chopin" not in rendered

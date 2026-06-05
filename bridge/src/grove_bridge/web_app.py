@@ -4367,6 +4367,8 @@ def _summary_counts(values: Iterable[str], *, allowed_values: frozenset[str]) ->
 
 def _summary_allowed_count_key(value: str, *, allowed_values: frozenset[str]) -> str:
     normalized = value.strip().lower()
+    if allowed_values == SUMMARY_NODE_STATUSES and normalized == "active":
+        return "running"
     if normalized in allowed_values:
         return normalized
     return SUMMARY_OTHER_BUCKET
