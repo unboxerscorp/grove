@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -20,7 +21,12 @@ from starlette.websockets import WebSocketDisconnect
 
 import grove_bridge.team_auth as team_auth
 import grove_bridge.web_app as web_app
-from grove_bridge.assistant import AssistantBusy, AssistantLLMClient, AssistantTransportError
+from grove_bridge.assistant import (
+    AssistantBusy,
+    AssistantLLMClient,
+    AssistantTransportError,
+    NodeRoutedAssistantClient,
+)
 from grove_bridge.auth_status import ToolAuthStatus
 from grove_bridge.store import BoardEvent, SQLiteBoardStore
 from grove_bridge.team_auth import (
@@ -2509,6 +2515,96 @@ def test_master_chat_unavailable_llm_returns_503(tmp_path: Path) -> None:
 
     assert response.status_code == 503
     assert response.json()["detail"] == "master chat is unavailable"
+
+
+def test_master_chat_node_routed_requires_live_target_before_cli(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def runner(
+        args: Sequence[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+        cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        _ = (capture_output, text, timeout, check, cwd)
+        command = list(args)
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="should not route",
+            stderr="",
+        )
+
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        assistant_client=NodeRoutedAssistantClient(cli_path=tmp_path / "cli.js", runner=runner),
+    )
+
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={"message": "What is your capability?"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "master chat is unavailable"
+    assert calls == []
+
+
+def test_master_chat_node_routed_allows_live_registry_target(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "grove-master": {
+                "name": "grove-master",
+                "agent": "codex",
+                "tmux_pane": "dev10:0.0",
+                "status": "active",
+            }
+        },
+    )
+
+    def runner(
+        args: Sequence[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+        cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        _ = (capture_output, text, timeout, check, cwd)
+        command = list(args)
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="MASTER answer from routed node",
+            stderr="",
+        )
+
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        assistant_client=NodeRoutedAssistantClient(cli_path=tmp_path / "cli.js", runner=runner),
+    )
+
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={"message": "What is your capability?"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["answer"]["text"] == "MASTER answer from routed node"
+    assert len(calls) == 1
 
 
 def test_master_chat_busy_assistant_node_returns_retry_answer(tmp_path: Path) -> None:

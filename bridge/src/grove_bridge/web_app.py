@@ -41,6 +41,8 @@ from grove_bridge.assistant import (
     AssistantSurface,
     AssistantTransportError,
     AssistantUnavailable,
+    NodeRoutedAssistantClient,
+    create_default_assistant_client,
     requires_master_chat_action_gate,
 )
 from grove_bridge.auth import Account, DashboardRole
@@ -5934,6 +5936,9 @@ def _handle_master_chat_request(
     auth: AuthContext,
     project: ProjectContext,
 ) -> dict[str, object] | Response:
+    assistant_client = _assistant_client(request)
+    if not _node_routed_target_available(project.config, assistant_client):
+        raise HTTPException(status_code=503, detail="master chat is unavailable")
     context = _assistant_context(
         payload,
         auth=auth,
@@ -5975,6 +5980,9 @@ def _handle_master_chat_confirm_request(
     auth: AuthContext,
     project: ProjectContext,
 ) -> dict[str, object] | Response:
+    assistant_client = _assistant_client(request)
+    if not _node_routed_target_available(project.config, assistant_client):
+        raise HTTPException(status_code=503, detail="master chat is unavailable")
     context = _assistant_context(
         MasterChatPayload(
             message=f"confirm {payload.confirmation_id}",
@@ -6028,11 +6036,35 @@ def _assistant_broker(request: Request) -> AssistantBroker:
     broker = getattr(request.app.state, "assistant_broker", None)
     if isinstance(broker, AssistantBroker):
         return broker
-    raw_client = getattr(request.app.state, "assistant_client", None)
-    client = cast(AssistantLLMClient | None, raw_client)
+    client = _assistant_client(request)
     broker = AssistantBroker(llm_client=client)
     request.app.state.assistant_broker = broker
     return broker
+
+
+def _assistant_client(request: Request) -> AssistantLLMClient:
+    raw_client = getattr(request.app.state, "assistant_client", None)
+    if raw_client is not None:
+        return cast(AssistantLLMClient, raw_client)
+    client = create_default_assistant_client()
+    request.app.state.assistant_client = client
+    return client
+
+
+def _node_routed_target_available(config: WebAppConfig, client: AssistantLLMClient) -> bool:
+    if not isinstance(client, NodeRoutedAssistantClient):
+        return True
+    target = client.node_name.strip()
+    if not target:
+        return False
+    configs = [config]
+    if config.registry_session != ".master":
+        configs.append(replace(config, registry_session=".master"))
+    for candidate_config in configs:
+        for node in _registry_node_records(candidate_config):
+            if node["name"] == target and node["terminal_allowed"]:
+                return True
+    return False
 
 
 def _assistant_context(
