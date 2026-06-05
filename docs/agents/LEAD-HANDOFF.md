@@ -41,10 +41,11 @@
 - watchdog/executor OFF 유지(멀티리뷰+사용자 승인 전 실가동 금지).
 - 과거 handoff에는 lead가 통합만 맡는 운영 제한이 있었다. 현재 사용자는 필요하면 master가 직접 작업해도 된다고 정정했다.
 
-## 1. 현재 product-code = aebb6f9 (HEAD 5202dbd, 트리 클린)
+## 1. 현재 product-code = 64429a6 (트리 클린)
 
 최근 완료된 안정화:
 
+- `64429a6 fix: describe task command items in help`: 호환 명령명 `grove task`는 유지하되 사용자 help copy를 사람용 item 모델로 정렬했다. `task_id` metavar/`human-facing task`/`updated task`/`previous task status`/`task run id` 노출을 `item_id`/`human-facing item`/`updated item`/`previous item status`/`item run id`로 교체했고, `src/cli.test.ts`에 회귀 가드를 추가했다. RED(`pnpm vitest run src/cli.test.ts` 1 failed)→GREEN(6 passed) 확인, `pnpm build`로 live runtime `dist/cli.js` 반영, `node dist/cli.js task --help`에서 item copy 확인, `pnpm check` green(TS/Vitest 54 files 288 tests, bridge pytest 449).
 - `5202dbd test: clean stale delegated task wording`: USER_GUIDE 예시와 bridge regression test 이름/fixture에 남은 generic `delegate/delegated task` copy를 사람용 항목/조율 모델로 정리했다. 의도적 legacy regression/negative assertion/역사 문서 외 stale current-model grep hit는 남기지 않는다. docs/tests-only라 live 재시작 불필요. `pnpm check` green(TS/Vitest 54 files 287 tests, bridge pytest 449).
 - `aebb6f9 fix: bound web graceful shutdown`: web child가 long-lived browser/WS 연결 때문에 SIGTERM graceful drain을 무한 대기할 수 있던 리스크를 닫았다. `WEB_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS=5`를 `uvicorn.run(timeout_graceful_shutdown=...)`에 연결하고 bridge regression을 추가했다. isolated child는 TERM 후 ~1s 종료, live old-code child는 TERM 후 stuck으로 KILL 필요, new-code live child는 TERM 후 ~6s self-exit하며 KILL 없이 wrapper가 재기동했다. live web 재배포 후 health 200, `/api/status running=4`, `/api/projects=[dev10]`, `/api/org default_assignee=grove-master`, panes 0/1/2/3, Slack heartbeat fresh 확인. `pnpm check` green(TS/Vitest 54 files 287 tests, bridge pytest 449). `0bccf28`에 handoff 기록.
 - `19dd57a fix: stop synthesizing legacy project master nodes`: bridge web app에서 unreachable synthetic `project-master` helper/constant/append path를 제거했다. registry/org에 없는 legacy project-master를 web/API가 보정 생성하지 않도록 source-level guard를 추가했다. targeted org/master-chat tests, `test_web_app.py` 206 passed, `pnpm check` green(bridge pytest 448). 제품코드라 web만 재시작했고 live health/API green 확인. `5d57280`에 handoff 기록.
