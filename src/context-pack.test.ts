@@ -46,7 +46,8 @@ describe("buildGroveContextPack", () => {
     expect(pack).toContain("lead -> maker");
     expect(pack).toContain("pane=dev10:1.3");
     expect(pack).toContain("cwd=/repo/dev10");
-    expect(pack).toContain("Board tasks are for human TODO");
+    expect(pack).toContain("Human-facing list items are for human TODO");
+    expect(pack).not.toContain("Board tasks are");
     expect(pack).not.toContain("xoxb-secret");
     expect(pack).toContain("dev10:1.2");
     expect(Buffer.byteLength(pack, "utf8")).toBeLessThanOrEqual(1_200);

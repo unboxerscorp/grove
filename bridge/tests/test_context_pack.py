@@ -46,7 +46,8 @@ def test_build_grove_context_pack_redacts_and_bounds_visible_context() -> None:
     assert "lead -> worker" in pack
     assert "pane=dev10:1.3" in pack
     assert "cwd=/repo/dev10" in pack
-    assert "Board tasks are for human TODO" in pack
+    assert "Human-facing list items are for human TODO" in pack
+    assert "Board tasks are" not in pack
     assert "xoxb-secret" not in pack
     assert "dev10:1.2" in pack
     assert len(pack.encode("utf-8")) <= 1_200

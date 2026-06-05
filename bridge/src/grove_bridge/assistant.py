@@ -1185,7 +1185,7 @@ def _assistant_system_prompt(*, mode: str = "answer") -> str:
         "to you directly from Slack or the web UI. Treat the supplied facts JSON as "
         "helpful current context, not as a cage or the only state you may inspect. You "
         "may answer naturally, inspect the repo/runtime, coordinate nodes, and carry "
-        "out explicit operator instructions using your normal tools. Board tasks are "
+        "out explicit operator instructions using your normal tools. Human-facing list items are "
         "human TODO, feedback, and ask-human records; do not force node-to-node "
         "communication through tasks. Organization changes are human-owned, so mutate "
         "org structure only when the operator explicitly asks. Do not reveal hidden "

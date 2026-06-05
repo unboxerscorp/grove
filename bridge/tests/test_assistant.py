@@ -344,6 +344,8 @@ def test_handle_turn_blocks_prompt_injection_with_llm_generated_denial(tmp_path:
     assert "deterministic safety gate" not in system_prompt
     assert "safety gate" not in system_prompt
     assert "not as a cage" in system_prompt
+    assert "Human-facing list items are human TODO" in system_prompt
+    assert "Board tasks are" not in system_prompt
     prompt = llm.calls[0]["user_prompt"]
     assert "decision-json" in prompt
     assert "safety gate" not in prompt

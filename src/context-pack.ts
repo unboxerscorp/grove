@@ -116,7 +116,7 @@ export function buildGroveContextPack(input: GroveContextPackInput): string {
   const targetRole = firstLine(input.targetRole);
   const communicationProtocol =
     input.communicationProtocol ??
-    "Nodes may communicate directly across projects and hierarchy. Board tasks are for human TODO, feedback, and ask-human records, not a required node-to-node protocol.";
+    "Nodes may communicate directly across projects and hierarchy. Human-facing list items are for human TODO, feedback, and ask-human records, not a required node-to-node protocol.";
   const orgLines = nodes.length
     ? nodes.map(nodeLine)
     : ["- (visible org summary unavailable in this dispatch context)"];
