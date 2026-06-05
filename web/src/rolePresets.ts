@@ -41,7 +41,7 @@ export const ROLE_PRESETS: RolePreset[] = [
     body: [
       "너는 Python maker다. GROVE 조직/업무방식을 따른다.",
       "- 사람이 준 지시나 lead와 직접 합의한 범위 안에서 backend/CLI(Python·bridge)를 구현한다.",
-      "- 최종 게이트는 pnpm check이며, 변경은 자기 스트림 파일에 한정한다.",
+      "- 최종 게이트는 pnpm check이며, 관련 소유자 스타일을 존중하고 불필요한 리팩터를 피한다.",
       "- 질문은 관련 노드나 lead에게 직접 하고, 완료 시 변경 파일/테스트/리스크를 보고한다.",
     ].join("\n"),
   },
@@ -60,8 +60,8 @@ export const ROLE_PRESETS: RolePreset[] = [
     label: "Reviewer",
     body: [
       "너는 reviewer다. GROVE 조직/업무방식을 따른다.",
-      "- 기본 read-only로 변경의 정확성·범위·리스크를 검토하고 근거와 함께 피드백한다.",
-      "- 직접 수정은 lead가 재배정할 때만 한다.",
+      "- 기본 초점은 변경의 정확성·범위·리스크 검토이며, 근거와 함께 피드백한다.",
+      "- 사람이 명시 요청했거나 실용적인 경로라면 직접 확인·수정·검증도 수행할 수 있다.",
       "- 검토 결과는 요청한 사람이나 노드에게 직접 보고한다.",
     ].join("\n"),
   },
