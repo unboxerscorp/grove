@@ -52,6 +52,7 @@ SLACK_SCOPES = (
     "mpim:history",
 )
 NODE_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_-])@(?P<node>[A-Za-z0-9_-]+)")
+SLACK_USER_MENTION_RE = re.compile(r"<@[^>]+>")
 SLACK_COMMAND_TASK_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 TMUX_TARGET_RE = re.compile(r"^(?P<session>[A-Za-z0-9_-]+):(?P<window>\d+)\.(?P<pane>\d+)$")
@@ -863,6 +864,8 @@ class SlackConnector:
         if not self._remember_event(event):
             return True
         thread_ts = event.thread_ts or event.ts
+        if self._assistant_priority_event(event):
+            return self._handle_assistant_turn(event, thread_ts=thread_ts)
         if event.thread_ts is not None and self._handle_human_reply(event, thread_ts=thread_ts):
             return True
         if self._handle_command(event, thread_ts=thread_ts):
@@ -872,6 +875,11 @@ class SlackConnector:
         if self._handle_intake(event, thread_ts=thread_ts):
             return True
         return self._handle_chat(event, thread_ts=thread_ts)
+
+    def _assistant_priority_event(self, event: SlackEvent) -> bool:
+        if not _assistant_mentioned(event, bot_user_id=self.bot_user_id):
+            return False
+        return not _explicit_reserved_command_text(event.text)
 
     def handle_interaction(self, payload: Mapping[str, object]) -> bool:
         action = _first_block_action(payload)
@@ -1169,7 +1177,7 @@ class SlackConnector:
         self._thread_contexts.pop(oldest_key, None)
 
     def _handle_command(self, event: SlackEvent, *, thread_ts: str) -> bool:
-        command_text = _normalize_slack_text(event.text)
+        command_text = _normalize_slack_command_text(event.text)
         parts = command_text.split()
         if not parts:
             return False
@@ -2491,6 +2499,32 @@ def _human_gate_text(task: Task) -> str:
 
 def _normalize_slack_text(text: str) -> str:
     return " ".join(part for part in text.split() if not part.startswith("<@"))
+
+
+def _normalize_slack_command_text(text: str) -> str:
+    normalized = _normalize_slack_text(text)
+    if not normalized.startswith("/"):
+        return normalized
+    command_text = normalized[1:].strip()
+    if command_text.lower().startswith("grove "):
+        return command_text[6:].strip()
+    return command_text
+
+
+def _assistant_mentioned(event: SlackEvent, *, bot_user_id: str | None) -> bool:
+    if event.event_type == "app_mention":
+        return True
+    if bot_user_id:
+        return f"<@{bot_user_id}>" in event.text
+    return SLACK_USER_MENTION_RE.search(event.text) is not None
+
+
+def _explicit_reserved_command_text(text: str) -> bool:
+    normalized = _normalize_slack_text(text)
+    if normalized.startswith("/"):
+        return True
+    first = normalized.split(maxsplit=1)[0].lower() if normalized.split() else ""
+    return first in {"status", "approve", "abort", "killswitch", "confirm", "digest"}
 
 
 def _slack_assistant_conversation_id(event: SlackEvent, *, thread_ts: str) -> str:

@@ -1074,6 +1074,7 @@ def slack_event(
     ts: str = "444.555",
     event_id: str | None = None,
     client_msg_id: str | None = None,
+    event_type: str = "message",
 ) -> SlackEvent:
     return SlackEvent(
         team="T1",
@@ -1082,7 +1083,7 @@ def slack_event(
         text=text,
         ts=ts,
         thread_ts=None,
-        event_type="app_mention",
+        event_type=event_type,
         event_id=event_id,
         client_msg_id=client_msg_id,
     )
@@ -1439,6 +1440,37 @@ def test_slack_intake_dedupes_event_before_preview_and_task_creation(tmp_path: P
     assert len(store.list_tasks(board="main")) == 1
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<@BOT> bug checkout crashes",
+        "<@BOT> feedback simplify setup",
+        "<@BOT> task add board export",
+    ],
+)
+def test_slack_mention_task_like_natural_language_uses_assistant_not_intake(
+    tmp_path: Path,
+    text: str,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    slack = FakeSlackClient()
+    assistant = FakeAssistantBroker("assistant handled task-like mention")
+    connector = command_connector(store, slack, intake_enabled=True, assistant_broker=assistant)
+
+    assert connector.handle_event(slack_event("UOP", text, event_type="app_mention"))
+
+    assert [call[0] for call in assistant.calls] == [
+        text.replace("<@BOT> ", ""),
+    ]
+    assert slack.posts == [
+        ("C123", "assistant handled task-like mention", "444.555"),
+    ]
+    assert slack.blocks[-1][1] is None
+    assert "Preview: create" not in slack.posts[-1][1]
+    assert "confirm " not in slack.posts[-1][1]
+    assert store.list_tasks(board="main") == []
+
+
 def test_slack_intake_block_button_confirm_uses_same_one_shot_gate(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
@@ -1628,7 +1660,7 @@ def test_slack_nl_thread_context_and_task_mutation_still_requires_confirm(tmp_pa
         text="details",
         ts="555.001",
         thread_ts="555.000",
-        event_type="app_mention",
+        event_type="message",
     )
     mutation = SlackEvent(
         team="T1",
@@ -1637,7 +1669,7 @@ def test_slack_nl_thread_context_and_task_mutation_still_requires_confirm(tmp_pa
         text="make a task for that",
         ts="555.002",
         thread_ts="555.000",
-        event_type="app_mention",
+        event_type="message",
     )
 
     assert connector.handle_event(root)
