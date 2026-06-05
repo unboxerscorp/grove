@@ -2809,8 +2809,8 @@ def _inbox_payload(
             "endpoint": "/api/tasks/{task_id}/answer",
             "method": "POST",
             "body": {"text": "human answer"},
-            "human_decision": "Slack thread replies use the same comment plus unblock flow",
-            "audit": "unblock is recorded through board events with the answer actor",
+            "human_decision": "Slack thread replies add the same human answer",
+            "audit": "answers are recorded with the answer actor",
         },
     }
 
@@ -2864,7 +2864,7 @@ def _inbox_item_payload(
             "endpoint": f"/api/tasks/{task.id}/answer",
             "method": "POST",
             "slack_thread_reply": bool(human_threads or notify_subs),
-            "note": "answer adds a comment and unblocks the task",
+            "note": "answer is recorded for this item",
         },
     }
 

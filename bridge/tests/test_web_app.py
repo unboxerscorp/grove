@@ -2730,8 +2730,16 @@ def test_inbox_returns_blocked_and_ask_human_items_with_cursor_and_redaction(
     assert human["slack"]["notify_subs"][0]["thread_id"] == "1700000000.000100"
     assert payload["answer"]["endpoint"] == "/api/tasks/{task_id}/answer"
     assert "comment_endpoint" not in payload["answer"]
+    assert payload["answer"]["human_decision"] == "Slack thread replies add the same human answer"
+    assert payload["answer"]["audit"] == "answers are recorded with the answer actor"
+    rendered_answer = json.dumps(payload["answer"])
+    assert "unblock" not in rendered_answer.lower()
+    assert "board events" not in rendered_answer.lower()
     assert human["answer"]["endpoint"] == f"/api/tasks/{human_task.id}/answer"
     assert human["answer"]["slack_thread_reply"] is True
+    assert human["answer"]["note"] == "answer is recorded for this item"
+    rendered_item_answer = json.dumps(human["answer"])
+    assert "unblock" not in rendered_item_answer.lower()
     blocked = by_task[normal.id]
     assert blocked["type"] == "blocked_task"
     assert blocked["sources"] == ["blocked_task"]

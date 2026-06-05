@@ -2,7 +2,7 @@
 // assert the built SPA mounts, lists nodes + board cards, opens the task drawer
 // (comments + runs), and streams terminal frames into xterm via the ws-ticket
 // flow. Writes mock/verify-screenshot.png.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +10,15 @@ import puppeteer from "puppeteer-core";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const htmlPath = path.join(root, "mock", "index.html");
+
+function assertNoInboxUnblockCopy() {
+  const source = readFileSync(path.join(root, "src", "i18n.tsx"), "utf8");
+  const bundle = existsSync(path.join(root, "dist", "app.js")) ? readFileSync(path.join(root, "dist", "app.js"), "utf8") : "";
+  const forbidden = /(작업을 해제|unblock the task|답변·해제|Answer · unblock)/i;
+  if (forbidden.test(`${source}\n${bundle}`)) {
+    throw new Error("inbox answer copy must describe answering the human-facing item, not unblocking a task");
+  }
+}
 
 function findChrome() {
   return [
@@ -25,6 +34,7 @@ function findChrome() {
 }
 
 async function coreMain() {
+  assertNoInboxUnblockCopy();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
   }
@@ -619,6 +629,8 @@ async function main() {
       hasHuman: !!document.querySelector(".inbox-type.is-human"),
       hasReason: !!document.querySelector(".inbox-item__reason"),
       hasAnswer: !!document.querySelector('[data-task="H-1"] .inbox-answer__input'),
+      placeholder: document.querySelector('[data-task="H-1"] .inbox-answer__input')?.getAttribute("placeholder") ?? "",
+      answerButton: (document.querySelector('[data-task="H-1"] .inbox-answer__submit')?.textContent ?? "").trim(),
     }));
     // Answer H-1 -> POST -> it drops out of the list.
     await page.type('[data-task="H-1"] .inbox-answer__input', "approved: ship Friday");
@@ -657,6 +669,9 @@ async function main() {
       inboxBefore.hasHuman &&
       inboxBefore.hasReason &&
       inboxBefore.hasAnswer &&
+      !/(작업을 해제|unblock the task|답변·해제|answer\s*·\s*unblock)/i.test(
+        `${inboxBefore.placeholder} ${inboxBefore.answerButton}`,
+      ) &&
       answered.task === "H-1" &&
       answered.text === "approved: ship Friday" &&
       answered.removed === 1 &&
