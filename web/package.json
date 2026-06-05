@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "verify": "node verify.mjs",
     "e2e": "node e2e/api.mjs",
+    "e2e:pw": "playwright test -c e2e/playwright/playwright.config.ts",
     "e2e:all": "npm run build && npm run verify && npm run e2e",
     "check": "npm run typecheck && npm run build && npm run verify"
   },
@@ -19,6 +20,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "esbuild": "^0.27.7",
