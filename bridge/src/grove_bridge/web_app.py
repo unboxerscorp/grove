@@ -8290,7 +8290,9 @@ def _node_connect_payload(
     }
     mode = "local_tmux_attach"
     label = "Local tmux attach"
-    ssh_host = _ssh_connect_host(node.get("connect_host", ""))
+    ssh_host = _ssh_connect_host(node.get("connect_host", "")) or _default_ssh_connect_host(
+        project.config
+    )
     if ssh_host is not None:
         remote = f"{select_pane} && {local_attach}"
         ssh_attach = f"ssh {shlex.quote(ssh_host)} {shlex.quote(remote)}"
@@ -8315,6 +8317,14 @@ def _ssh_connect_host(value: str) -> str | None:
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", host):
         return None
     return host
+
+
+def _default_ssh_connect_host(config: WebAppConfig) -> str | None:
+    for value in (*config.allowed_hosts, config.host):
+        host = _ssh_connect_host(value)
+        if host is not None:
+            return host
+    return None
 
 
 def _check_node_input_rate_limit(

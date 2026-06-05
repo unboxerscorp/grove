@@ -6788,6 +6788,40 @@ def test_node_connect_info_is_read_only_and_project_scoped(tmp_path: Path) -> No
     assert store.list_events_after(cursor=0, limit=100) == before_events
 
 
+def test_node_connect_info_uses_allowed_host_for_headless_ssh(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"lead": {"name": "lead", "agent": "claude", "tmux_pane": "dev10:0.0"}},
+    )
+    client = make_client(
+        tmp_path,
+        store,
+        host="0.0.0.0",
+        allowed_hosts=("100.100.90.87", "192.168.1.186"),
+    )
+
+    response = client.get("/api/nodes/lead/connect", headers=auth_headers(client))
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "project": "dev10",
+        "node": "lead",
+        "tmux_target": "dev10:0.0",
+        "mode": "ssh_tmux_attach",
+        "label": "SSH tmux attach (100.100.90.87)",
+        "commands": {
+            "attach": "ssh 100.100.90.87 'tmux select-pane -t dev10:0.0 && tmux attach -t dev10'",
+            "local_attach": "tmux attach -t dev10",
+            "select_pane": "tmux select-pane -t dev10:0.0",
+            "ssh_attach": (
+                "ssh 100.100.90.87 'tmux select-pane -t dev10:0.0 && tmux attach -t dev10'"
+            ),
+        },
+    }
+
+
 def test_node_autopickup_toggle_persists_and_audits(tmp_path: Path) -> None:
     db_path = tmp_path / "board.db"
     store = SQLiteBoardStore(db_path)
