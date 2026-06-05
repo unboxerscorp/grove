@@ -5,7 +5,8 @@
 // a browser drives the actual UI against a fully isolated backend. Seeds a board
 // (tasks across columns) + a registry (input-capable nodes) per the consensus
 // "temp port + throwaway board db + temp GROVE_HOME + fresh seed". Nothing here
-// touches ~/.grove, dev10, or any live agent.
+// touches ~/.grove, dev10, or any live agent; any disposable tmux session is
+// unique by default and removed during teardown.
 //
 // Roles: operator runs on the loopback local-token (operator-equivalent). viewer
 // /admin need TEAM_COOKIE sessions — scaffolded here, issued in a later round;
@@ -36,6 +37,15 @@ export const TEAM_MEMBERS = [
 function b64Url(buf) {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
+
+function defaultTier1Session() {
+  return `uie2e_${process.pid}_${Date.now().toString(36)}`;
+}
+
+function killTmuxSession(session) {
+  spawnSync("tmux", ["kill-session", "-t", `=${session}`], { stdio: "ignore" });
+}
+
 // Mirrors bridge team_auth.hash_secret (pbkdf2_sha256, salt=16x0x31, 200k iters).
 function teamSecretHash(secret) {
   const salt = Buffer.alloc(16, 0x31);
@@ -132,7 +142,7 @@ function writeRegistry(groveHome, session) {
  * Boot an isolated Tier-1 server serving the real SPA. Returns a context with
  * baseUrl, the operator token, seed ids, and an async teardown().
  */
-export async function bootTier1({ session = "uie2e", readyTimeoutMs = 25_000, teamAuth = false, members = TEAM_MEMBERS, features = ["handoff", "quotas", "shared-access"] } = {}) {
+export async function bootTier1({ session = defaultTier1Session(), readyTimeoutMs = 25_000, teamAuth = false, members = TEAM_MEMBERS, features = ["handoff", "quotas", "shared-access"] } = {}) {
   const tmp = mkdtempSync(path.join(tmpdir(), "grove-ui-e2e-"));
   const groveHome = path.join(tmp, "grove_home");
   const homeDir = path.join(tmp, "home");
@@ -195,6 +205,11 @@ export async function bootTier1({ session = "uie2e", readyTimeoutMs = 25_000, te
         while (!exited && Date.now() < grace) await sleep(50);
         if (!exited) child.kill("SIGKILL");
       }
+    } catch {
+      /* ignore */
+    }
+    try {
+      killTmuxSession(session);
     } catch {
       /* ignore */
     }

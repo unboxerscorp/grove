@@ -53,7 +53,7 @@ const ENUMERATE = (scopeSel) => {
 };
 
 async function main() {
-  const ctx = await bootTier1({ session: "uie2e" });
+  const ctx = await bootTier1();
   const executablePath = findChrome();
   if (!executablePath) throw new Error("no Chrome found; set PUPPETEER_EXECUTABLE_PATH");
   const browser = await puppeteer.launch({ executablePath, headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"], defaultViewport: { width: 1440, height: 1000 } });
@@ -105,7 +105,7 @@ async function main() {
   }));
   const enabled = withIds.filter((c) => !c.disabled && c.role !== "(unreachable)");
   const snapshot = {
-    generated_for: "uie2e (isolated Tier-1)",
+    generated_for: "isolated Tier-1",
     counts: { total: withIds.length, enabled: enabled.length, needs_stable_hook: withIds.filter((c) => c.needs_stable_hook).length },
     page_errors_during_crawl: pageErrors,
     controls: withIds,
