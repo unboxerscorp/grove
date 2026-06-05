@@ -15,8 +15,8 @@
   - advisor는 `dev10:3.0`의 Claude 노드이며 약 5분마다 `grove-master`를 점검한다. 사용자가 명시 중단하기 전까지 루프를 멈추지 않는다.
   - `/api/projects`는 `dev10` 하나만 반환해야 한다. `/api/boards`는 프로젝트 헤더가 없어도 현재 active project board만 반환해야 하며, 과거 `p2-test` 같은 stale board가 섞이면 회귀다. `/api/org`의 `default_assignee`와 `master_org.project_master.name`은 `grove-master`여야 하며 advisor가 default가 되면 회귀다.
   - `~/.grove/boards/board.db`의 stale `p2-test` board/task 찌꺼기는 삭제했다. 삭제 전 백업은 `~/.grove/boards/board.db.bak.pre-p2-cleanup-1780682270`이다. 이후 DB 전체 `tasks=0`, live `/api/boards/default/tasks=[]`, `/api/inbox.total=0`을 확인했다.
-  - 최신 product-code 커밋은 `23fca58 fix: describe delegate as human-facing item`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
-  - 최신 검증: `pnpm check` green, `web npm run e2e` 693/693 green, remote terminal ticket 200, Slack `socket_connected`, heartbeat fresh, tailnet browser terminal smoke green.
+  - 최신 product-code 커밋은 `6a23595 fix: keep inbox answer copy item-focused`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
+  - 최신 검증: `pnpm check` green, `web npm run build && npm run verify` green, remote terminal ticket/WS frame 200, Slack `socket_connected`, heartbeat fresh, tailnet browser terminal smoke green.
 - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
 - 앞으로 기본 운영은 `dev10` tmux 하나를 쓴다. 현재 서비스 창은 `dev10:1.0 web`, `dev10:2.0 slack`이다.
 - 프로젝트 ID와 host tmux 세션은 분리됐다. web 프로젝트 생성은 `grove new-project --tmux-session dev10`로 새 프로젝트 registry를 만들고 pane은 `dev10`에 둔다.
@@ -41,10 +41,11 @@
 - watchdog/executor OFF 유지(멀티리뷰+사용자 승인 전 실가동 금지).
 - 과거 handoff에는 lead가 통합만 맡는 운영 제한이 있었다. 현재 사용자는 필요하면 master가 직접 작업해도 된다고 정정했다.
 
-## 1. 현재 product-code = 23fca58 (트리 클린)
+## 1. 현재 product-code = 6a23595 (트리 클린)
 
 최근 완료된 안정화:
 
+- `6a23595 fix: keep inbox answer copy item-focused`: Decision inbox 답변 UI와 `/api/inbox.answer` metadata에서 `unblock task/board events` 중심 copy를 제거하고, 사람 판단 항목에 답변을 남기는 모델로 정리했다. web verify와 bridge pytest에 회귀 가드를 추가했고, live web 재배포 후 health 200, Slack heartbeat, dev10-only project/board, terminal WS frame 수신을 확인했다.
 - `23fca58 fix: describe delegate as human-facing item`: `grove delegate` CLI/help/error/warning/test copy를 node-to-node delegated task가 아니라 사람용 TODO/feedback item 생성으로 정렬했다. `pnpm check` green.
 - `33418d0 fix: remove read-only copy from Slack intake UI`: 기본 Slack integration 화면의 intake 안내에서 `읽기 전용/read-only` 표현을 제거하고 core verify에 회귀 가드를 추가했다. `pnpm check` green.
 - `29a2978 fix: allow master terminal input in web mock`: web terminal mock/verify를 v2 모델에 맞춰 root/master pane도 입력 가능하게 정렬하고, 터미널 라벨에서 `읽기 전용/read-only` 노출을 `실시간 미러/live mirror`로 교체했다. `npm run check`(web)와 `pnpm check` green.
