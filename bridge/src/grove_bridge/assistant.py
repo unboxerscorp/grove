@@ -99,7 +99,7 @@ INTERNAL_IMPLEMENTATION_TERM_RE = re.compile(
 )
 
 AssistantSurface = Literal["floating_web_chat", "slack", "api"]
-AssistantActionType = Literal["create_project", "spawn_node", "assign_task", "delegate_task"]
+AssistantActionType = Literal["create_project", "spawn_node", "assign_item"]
 
 
 class AssistantUnavailable(RuntimeError):
@@ -1209,7 +1209,7 @@ def _assistant_system_prompt(*, mode: str = "answer") -> str:
             f"{base} If a decision JSON is supplied, treat it as event context about an already "
             "handled, pending, or not-performed request, not as a substitute for natural dialogue. "
             "Write the user-facing Slack/web response for that situation. Preserve any "
-            "confirmation id, task id, or command syntax exactly if the user needs it. Do not "
+            "confirmation id, item id, or command syntax exactly if the user needs it. Do not "
             "claim that an action happened unless the decision JSON says it already completed. "
             "Do not expose raw internal labels, implementation details, or internal roadmap "
             "terms."
@@ -1233,15 +1233,15 @@ def _assistant_action_spec_system_prompt() -> str:
         "routing, or mutating anything; you are only describing the proposed action so a "
         "separate operator confirmation card can be shown. This JSON-only summary is allowed. "
         "Return no prose, no refusal, no explanation, and no markdown. Schema: "
-        '{"action_type":"create_project|spawn_node|assign_task|delegate_task",'
+        '{"action_type":"create_project|spawn_node|assign_item",'
         '"target":"string","params":{...}}. '
         "Use the user message and supplied facts as the bounded input for this JSON preview; "
-        "do not invent unavailable node or task identifiers. For create_project, target is the "
-        "new project name. For spawn_node, target is the new node name and params.project may "
-        "name the project. If the user asks for a reviewer node without a specific name, use "
-        'target "reviewer" and params {"role":"reviewer","group":"review"}. '
-        "For assign_task, target is an existing task id and params.assignee is the node. "
-        "For delegate_task, target is the node and params.task_id is the task id. If a "
+        "do not invent unavailable node or human-facing item identifiers. For create_project, "
+        "target is the new project name. For spawn_node, target is the new node name and "
+        "params.project may name the project. If the user asks for a reviewer node without a "
+        'specific name, use target "reviewer" and params {"role":"reviewer","group":"review"}. '
+        "For assign_item, target is an existing human-facing item id and params.assignee is the "
+        "node. params.reviewer may name a reviewer. If a "
         "field is unclear, still return the closest JSON object rather than prose; the "
         "bridge will validate it after you respond."
     )
@@ -1382,18 +1382,36 @@ def _parse_action_spec(raw: object) -> AssistantActionSpec:
     if not isinstance(raw_action_type, str) or not isinstance(raw_target, str):
         raise AssistantContentBlocked("assistant action spec missing required fields")
     action_type = raw_action_type.strip().lower()
-    if action_type not in {"create_project", "spawn_node", "assign_task", "delegate_task"}:
-        raise AssistantContentBlocked("assistant action spec has unsupported action type")
     if not isinstance(raw_params, Mapping):
         raise AssistantContentBlocked("assistant action spec params must be a mapping")
     target = _safe_public_text(raw_target)
+    params: Mapping[str, object] = _string_key_mapping(_redact_jsonable(raw_params))
+    action_type, target, params = _normalize_action_spec_alias(action_type, target, params)
+    if action_type not in {"create_project", "spawn_node", "assign_item"}:
+        raise AssistantContentBlocked("assistant action spec has unsupported action type")
     if not target:
         raise AssistantContentBlocked("assistant action spec target is empty")
     return AssistantActionSpec(
         action_type=cast(AssistantActionType, action_type),
         target=target,
-        params=_string_key_mapping(_redact_jsonable(raw_params)),
+        params=params,
     )
+
+
+def _normalize_action_spec_alias(
+    action_type: str,
+    target: str,
+    params: Mapping[str, object],
+) -> tuple[str, str, Mapping[str, object]]:
+    if action_type == "assign_task":
+        return "assign_item", target, params
+    if action_type != "delegate_task":
+        return action_type, target, params
+    task_id = _optional_param_text(params, "task_id") or ""
+    normalized_params = {key: value for key, value in params.items() if key != "task_id"}
+    if "assignee" not in normalized_params:
+        normalized_params["assignee"] = target
+    return "assign_item", task_id, normalized_params
 
 
 def _decode_json_object(text: str) -> Mapping[str, object]:
@@ -1432,7 +1450,7 @@ def _validate_action_spec(spec: AssistantActionSpec, *, context: AssistantContex
         if spec.target in node_names:
             return "node_already_exists"
         return None
-    if spec.action_type == "assign_task":
+    if spec.action_type == "assign_item":
         try:
             context.store.get_task(board=context.scope.board, task_id=spec.target)
         except KeyError:
@@ -1446,15 +1464,6 @@ def _validate_action_spec(spec: AssistantActionSpec, *, context: AssistantContex
         if reviewer is not None and reviewer not in node_names:
             return "reviewer_not_found"
         return None
-    task_id = _optional_param_text(spec.params, "task_id")
-    if task_id is None:
-        return "task_id_required"
-    try:
-        context.store.get_task(board=context.scope.board, task_id=task_id)
-    except KeyError:
-        return "task_not_found"
-    if spec.target not in node_names:
-        return "node_not_found"
     return None
 
 
@@ -1510,10 +1519,8 @@ def _action_target_project(spec: AssistantActionSpec, *, context: AssistantConte
 
 
 def _action_target_assignee(spec: AssistantActionSpec) -> str | None:
-    if spec.action_type == "assign_task":
+    if spec.action_type == "assign_item":
         return _optional_param_text(spec.params, "assignee")
-    if spec.action_type == "delegate_task":
-        return spec.target
     return None
 
 

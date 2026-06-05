@@ -17,6 +17,7 @@ from grove_bridge.assistant import (
     AssistantScope,
     AssistantTransportError,
     NodeRoutedAssistantClient,
+    _parse_action_spec,
     build_assistant_facts,
     create_default_assistant_client,
     requires_master_chat_action_gate,
@@ -381,6 +382,8 @@ def test_handle_notice_generates_user_visible_text_from_llm(tmp_path: Path) -> N
     assert "deterministic bridge layer" not in system_prompt
     assert "not as a cage" in system_prompt
     assert "implementation terms" in system_prompt
+    assert "item id" in system_prompt
+    assert "task id" not in system_prompt
     assert "operator role required" in user_prompt
 
 
@@ -414,9 +417,15 @@ def test_handle_turn_guides_action_requests_with_llm_without_internal_terms(
     assert response.requires_confirmation is True
     assert response.operator_gate is None
     assert len(llm.calls) == 2
-    system_prompt = llm.calls[1]["system_prompt"]
-    assert "proposed action" in system_prompt
-    assert "implementation terms" in system_prompt
+    spec_prompt = llm.calls[0]["system_prompt"]
+    assert "assign_item" in spec_prompt
+    assert "human-facing item" in spec_prompt
+    assert "assign_task" not in spec_prompt
+    assert "delegate_task" not in spec_prompt
+    assert "task id" not in spec_prompt.lower()
+    preview_prompt = llm.calls[1]["system_prompt"]
+    assert "proposed action" in preview_prompt
+    assert "implementation terms" in preview_prompt
     assert "PR1" not in response.answer.text
     assert "PR3" not in response.answer.text
     assert "handoff" not in response.answer.text.lower()
@@ -489,7 +498,7 @@ def test_handle_turn_action_rejects_hallucinated_node_with_llm_text(
     llm = SequenceLLMClient(
         json.dumps(
             {
-                "action_type": "assign_task",
+                "action_type": "assign_item",
                 "target": task.id,
                 "params": {"assignee": "ghost-node"},
             }
@@ -511,6 +520,38 @@ def test_handle_turn_action_rejects_hallucinated_node_with_llm_text(
     assert store.list_decision_proposals(board="dev10") == []
     assert len(llm.calls) == 2
     assert "decision-json" in llm.calls[1]["user_prompt"]
+
+
+def test_parse_action_spec_normalizes_legacy_assignment_aliases() -> None:
+    assign_spec = _parse_action_spec(
+        json.dumps(
+            {
+                "action_type": "assign_task",
+                "target": "item-123",
+                "params": {"assignee": "maker"},
+            }
+        )
+    )
+
+    assert assign_spec.action_type == "assign_item"
+    assert assign_spec.target == "item-123"
+    assert assign_spec.params["assignee"] == "maker"
+
+    delegate_spec = _parse_action_spec(
+        json.dumps(
+            {
+                "action_type": "delegate_task",
+                "target": "maker",
+                "params": {"task_id": "item-456", "reviewer": "rev-ui"},
+            }
+        )
+    )
+
+    assert delegate_spec.action_type == "assign_item"
+    assert delegate_spec.target == "item-456"
+    assert delegate_spec.params["assignee"] == "maker"
+    assert delegate_spec.params["reviewer"] == "rev-ui"
+    assert "task_id" not in delegate_spec.params
 
 
 def test_handle_turn_returns_llm_denial_when_preview_terms_survive_rewrite(
