@@ -1,6 +1,6 @@
 // Live browser e2e against the REAL grove web server.
 //
-// This intentionally targets the running cockpit at http://127.0.0.1:9131 and
+// This intentionally targets the running cockpit at http://127.0.0.1:8765 and
 // clicks the SPA like an operator. It creates only unique p2-live-* list items,
 // avoids existing tasks, and restores mutable GUI feature state in finally.
 
@@ -16,7 +16,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.resolve(here, "..");
 const artifactDir = path.join(webRoot, "e2e", "artifacts");
 
-const BASE_URL = process.env.GROVE_LIVE_URL ?? "http://127.0.0.1:9131";
+const BASE_URL = process.env.GROVE_LIVE_URL ?? "http://127.0.0.1:8765";
 const REAL_PROJECT = "dev10";
 const REAL_PROJECT_LABEL_RE = /grove-dev|dev10/i;
 const TEST_PROJECT = process.env.GROVE_LIVE_TEST_PROJECT ?? "p2-test";
@@ -598,7 +598,7 @@ async function main() {
   });
 
   // Tier-2 HARD-BLOCK (Slack-spam / live-pollution lesson): external + destructive
-  // mutations must NEVER reach the live :9131 server. Intercept and req.abort()
+  // mutations must NEVER reach the live cockpit server. Intercept and req.abort()
   // them; everything else (read-only/nav + the suite's bounded p2-test
   // state-changes) continues. Recorded in liveBlocked for the regression check.
   const liveBlocked = [];
@@ -646,8 +646,8 @@ async function main() {
       const me = await apiFetch(page, "/api/me", { project: TEST_PROJECT });
       assertCheck("/api/me returns 2xx", me.ok, `HTTP ${me.status} ${safeJson(me.json)}`);
       check("live role is operator-equivalent local-token", me.json?.auth_mode === "local-token" && me.json?.member === null, safeJson(me.json));
-      skip("viewer browser role", "live :9131 is local-token; /api/share is disabled, so no real viewer cookie fixture is available");
-      skip("admin browser role", "live :9131 is local-token; no real admin team session is exposed");
+      skip("viewer browser role", "live cockpit is local-token; /api/share is disabled, so no real viewer cookie fixture is available");
+      skip("admin browser role", "live cockpit is local-token; no real admin team session is exposed");
       const pollution = await dev10LiveFixtures(page);
       assertCheck("dev10 board has no p2-live fixtures before run", pollution.ok && pollution.items.length === 0, pollution.detail);
     });
@@ -655,7 +655,7 @@ async function main() {
     await runStep(page, "Tier-2 hard-block: external/destructive requests are aborted (no live egress)", async () => {
       const before = liveBlocked.length;
       // Deliberately attempt forbidden external/destructive mutations from page
-      // context; the interceptor must req.abort() each BEFORE it reaches :9131.
+      // context; the interceptor must req.abort() each BEFORE it reaches the live server.
       const probes = await page.evaluate(async () => {
         const targets = [
           ["nodeSend", "/api/nodes/worker/send", { text: "probe" }],
@@ -675,7 +675,7 @@ async function main() {
         return out;
       });
       check(
-        "external/destructive page requests are aborted before reaching :9131",
+        "external/destructive page requests are aborted before reaching the live server",
         Object.values(probes).every((v) => v === "aborted"),
         JSON.stringify(probes),
       );
@@ -893,7 +893,7 @@ async function main() {
       check("node connect command is rendered", (await textContent(page, ".dr-term__connect-code")).includes("tmux"));
 
       // SAFETY-BLOCK (BUG task_44c55f46756544ce98096fa50610812d): node send is an
-      // external-effect control — firing it on the LIVE :9131 server violates the
+      // external-effect control — firing it on the LIVE cockpit server violates the
       // agreed method (live = confirm-open/cancel only; real send success path is
       // Tier-1 mock/dry-run isolated-pane only). Assert the send UI is exposed,
       // type then CANCEL without submitting, and assert NO /api/nodes/*/send POST

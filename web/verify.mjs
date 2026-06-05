@@ -53,6 +53,16 @@ function assertNoLegacyProjectMasterE2eFixtures() {
   }
 }
 
+function assertLiveE2eDefaultsCurrentPort() {
+  const liveScripts = [
+    readFileSync(path.join(root, "e2e", "live.mjs"), "utf8"),
+    readFileSync(path.join(root, "e2e", "tier1", "runner.mjs"), "utf8"),
+  ].join("\n");
+  if (/127\.0\.0\.1:9131|:9131\b/.test(liveScripts)) {
+    throw new Error("live e2e defaults must target the current cockpit port 8765, not stale 9131");
+  }
+}
+
 function findChrome() {
   return [
     process.env.CHROME_PATH,
@@ -71,6 +81,7 @@ async function coreMain() {
   assertNoDelegateTaskCopy();
   assertNoLegacyProjectMasterMock();
   assertNoLegacyProjectMasterE2eFixtures();
+  assertLiveE2eDefaultsCurrentPort();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
   }

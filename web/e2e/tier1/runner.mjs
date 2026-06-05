@@ -1,7 +1,7 @@
 // UI interaction runner.
 //
 //   node web/e2e/tier1/runner.mjs           # Tier-1 isolated shard (default)
-//   node web/e2e/tier1/runner.mjs --live     # Tier-2 thin live-safe smoke (:9131)
+//   node web/e2e/tier1/runner.mjs --live     # Tier-2 thin live-safe smoke (:8765)
 //
 // Tier-1 (isolated, team-auth): the coverage-closure GATE (unmapped enabled =
 // FAIL), the 2-axis viewer role-denial oracle (UI hidden/disabled AND direct-API
@@ -19,7 +19,7 @@ import { bootTier1, roleSession } from "./fixtures.mjs";
 import { assertRoleDenied, coverageClosure, fillPath, loadRegistry } from "../registry/oracles.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const LIVE_URL = process.env.GROVE_LIVE_URL ?? "http://127.0.0.1:9131";
+const LIVE_URL = process.env.GROVE_LIVE_URL ?? "http://127.0.0.1:8765";
 
 const results = [];
 function check(label, ok, detail = "") {
@@ -163,7 +163,7 @@ async function tier2Live() {
   try {
     const page = await browser.newPage();
     await page.evaluateOnNewDocument(() => window.localStorage.setItem("grove.onboarded.v3", "1"));
-    // HARD fire-guard: any non-live_safe mutation toward :9131 is intercepted and
+    // HARD fire-guard: any non-live_safe mutation toward the live cockpit is intercepted and
     // ABORTED before egress (req.abort), not merely detected after dispatch — so a
     // forbidden external/state-change/destructive request can never reach the live
     // cockpit, pollute the real board, or spam Slack. Only live_safe GET/HEAD continue.
@@ -193,9 +193,9 @@ async function tier2Live() {
       await sleep(400);
     }
     check("live nav smoke: views switch without crash", true);
-    check("SAFETY: no non-live_safe mutation fired on :9131 during nav smoke (external/state-change/destructive blocked)", firedForbidden === "", firedForbidden);
+    check("SAFETY: no non-live_safe mutation fired during nav smoke (external/state-change/destructive blocked)", firedForbidden === "", firedForbidden);
     // Regression: deliberately attempt forbidden external + destructive requests and
-    // prove the guard ABORTS them (they never reach :9131). Every probe path is in
+    // prove the guard ABORTS them (they never reach the live cockpit). Every probe path is in
     // guardRe (verified) so it is intercepted; nonexistent ids make any miss a
     // harmless no-op rather than real pollution.
     const beforeProbe = blocked.length;
@@ -214,7 +214,7 @@ async function tier2Live() {
       await tryFetch("execKill", "/api/execution", { kill_switch: true });
       return out;
     }, LIVE_URL);
-    check("SAFETY regression: forbidden external/destructive requests are aborted before reaching :9131", probe.nodeSend === "aborted" && probe.slackTest === "aborted" && probe.execKill === "aborted", JSON.stringify(probe));
+    check("SAFETY regression: forbidden external/destructive requests are aborted before reaching the live cockpit", probe.nodeSend === "aborted" && probe.slackTest === "aborted" && probe.execKill === "aborted", JSON.stringify(probe));
     check("SAFETY regression: guard recorded the aborted forbidden requests (no live egress)", blocked.length >= beforeProbe + 3, `blocked=${blocked.length - beforeProbe}/3`);
   } finally {
     await browser.close();
