@@ -6,7 +6,7 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
-- 2026-06-06 04:32 KST 기준 최신 live 운영:
+- 2026-06-06 04:36 KST 기준 최신 live 운영:
   - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
   - 단일 tmux 세션 `dev10`만 사용한다. panes: `dev10:0.0 grove-master`, `dev10:1.0 web`, `dev10:2.0 slack`, `dev10:3.0 advisor`.
   - web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`로 실행한다. 명령은 `0.0.0.0:8765`, `--unsafe-bind`, `--enable-node-input`, `--enable-intake`, `--allow-host 100.100.90.87,192.168.1.186`를 포함한다.
@@ -15,8 +15,8 @@
   - advisor는 `dev10:3.0`의 Claude 노드이며 약 5분마다 `grove-master`를 점검한다. 사용자가 명시 중단하기 전까지 루프를 멈추지 않는다.
   - `/api/projects`는 `dev10` 하나만 반환해야 한다. `/api/boards`는 프로젝트 헤더가 없어도 현재 active project board만 반환해야 하며, 과거 `p2-test` 같은 stale board가 섞이면 회귀다. `/api/org`의 `default_assignee`와 `master_org.project_master.name`은 `grove-master`여야 하며 advisor가 default가 되면 회귀다.
   - `~/.grove/boards/board.db`의 stale `p2-test` board/task 찌꺼기는 삭제했다. 삭제 전 백업은 `~/.grove/boards/board.db.bak.pre-p2-cleanup-1780682270`이다. 이후 DB 전체 `tasks=0`, live `/api/boards/default/tasks=[]`, `/api/inbox.total=0`을 확인했다.
-  - 최신 product-code 커밋은 `5d7bd69 fix: count live nodes by pane availability`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
-  - 최신 검증: `pnpm check` green(TS/Vitest 54 files 286 tests, bridge pytest 443 passed), `web npm run build && npm run verify` green, live web 재배포 health 200. live Chrome smoke에서 sidebar `4/4 실시간`, active rows `활성/실행 중`, Team delayed `/api/org` 로딩 중 `노드 불러오는 중`, 완료 후 4 nodes/3 edges/3 groups 확인. `/api/projects=[dev10]`, `/api/boards=[dev10 task_count=0]`, `/api/inbox.total=0`, `grove org --json` nodes 4개 pane live, Slack `socket_connected`, heartbeat fresh.
+  - 최신 product-code 커밋은 `2faab47 fix: expose pane exists in web node payloads`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
+  - 최신 검증: `pnpm check` green(TS/Vitest 54 files 286 tests, bridge pytest 443 passed), `web npm run build && npm run verify` green, live web 재배포 health 200. live Chrome smoke에서 sidebar `4/4 실시간`, active rows `활성/실행 중`, Team delayed `/api/org` 로딩 중 `노드 불러오는 중`, 완료 후 4 nodes/3 edges/3 groups 확인. `/api/nodes`와 `/api/org` 모두 4개 노드 `pane_exists:true`, `/api/projects=[dev10]`, `/api/boards=[dev10 task_count=0]`, `/api/inbox.total=0`, `grove org --json` nodes 4개 pane live, Slack `socket_connected`, heartbeat fresh.
 - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
 - 앞으로 기본 운영은 `dev10` tmux 하나를 쓴다. 현재 서비스 창은 `dev10:1.0 web`, `dev10:2.0 slack`이다.
 - 프로젝트 ID와 host tmux 세션은 분리됐다. web 프로젝트 생성은 `grove new-project --tmux-session dev10`로 새 프로젝트 registry를 만들고 pane은 `dev10`에 둔다.
@@ -41,10 +41,11 @@
 - watchdog/executor OFF 유지(멀티리뷰+사용자 승인 전 실가동 금지).
 - 과거 handoff에는 lead가 통합만 맡는 운영 제한이 있었다. 현재 사용자는 필요하면 master가 직접 작업해도 된다고 정정했다.
 
-## 1. 현재 product-code = 5d7bd69 (트리 클린)
+## 1. 현재 product-code = 2faab47 (트리 클린)
 
 최근 완료된 안정화:
 
+- `2faab47 fix: expose pane exists in web node payloads`: CLI `grove org --json`와 동일하게 web API `/api/nodes`, `/api/org`, project creation `project_master` payload에도 `pane_exists`를 명시 노출한다. node-count/status만으로 pane 소실을 놓치지 않도록 외부/웹 소비자가 같은 liveness 신호를 쓸 수 있다. bridge tests와 web type을 갱신했고 `pnpm check`, live API smoke green.
 - `5d7bd69 fix: count live nodes by pane availability`: sidebar live count가 `status==="running"`만 세서 live dev10의 `active` 서비스 노드들을 누락하던 문제를 고쳤다. terminal pane이 있고 `dead/error/stale`가 아닌 노드를 live로 세며, `active` 상태 label/dot도 사용자-facing `활성/active`로 정렬했다. core verify에 `4/6` live count 회귀 가드를 추가했고, live web smoke에서 `4/4 실시간`을 확인했다.
 - `d8b021b fix: avoid empty org flash while loading`: Team 패널이 `/api/org` 응답 대기 중 초기 `nodes=[]`를 실제 빈 조직처럼 보여 `노드가 없습니다`/0-node로 오인되던 문제를 고쳤다. `OrgChart`에 loading 상태를 분리하고 `web/verify.mjs` 기본 core verify에 delayed org response 회귀 가드를 추가했다. `web npm run build && npm run verify`, `pnpm check`, live web 재배포, live delayed-org Chrome smoke green.
 - `2d63562 fix: align web item assignment copy`: web Team/Planner의 `위임/Delegate task/Assign task` 사용자 문구를 사람용 항목 생성·배정 copy로 정렬했다. `web/verify.mjs`에 해당 회귀 가드를 추가했고, `web npm run build && npm run verify`, `pnpm check`, live web 재배포 health 200을 확인했다.
