@@ -6,15 +6,16 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
-- 2026-06-06 02:07 KST 기준 최신 live 운영:
+- 2026-06-06 02:20 KST 기준 최신 live 운영:
   - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
   - 단일 tmux 세션 `dev10`만 사용한다. panes: `dev10:0.0 grove-master`, `dev10:1.0 web`, `dev10:2.0 slack`, `dev10:3.0 advisor`.
   - web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`로 실행한다. 명령은 `0.0.0.0:8765`, `--unsafe-bind`, `--enable-node-input`, `--enable-intake`, `--allow-host 100.100.90.87,192.168.1.186`를 포함한다.
-  - 원격 접속 URL은 tailnet `http://100.100.90.87:8765`, LAN `http://192.168.1.186:8765`이다. remote terminal은 tailnet URL에서 실제 Chrome smoke로 `.dr-conn is-live`와 xterm 렌더를 확인했다.
+  - 원격 접속 URL은 tailnet `http://100.100.90.87:8765`, LAN `http://192.168.1.186:8765`이다. remote terminal은 tailnet URL에서 실제 Chrome smoke로 `.dr-conn is-live`와 xterm 렌더를 확인했다. `~/.grove/dev10/web.json`도 `allowed_hosts`와 `remote_urls`를 노출한다.
   - Slack은 `dev10:2.0`에서 `/Users/chopin/.grove/dev10/run-slack-loop.sh`로 실행한다. `/api/slack/config/status`는 `socket_connected`, `~/.grove/dev10/slack-runtime.json` heartbeat가 갱신된다.
   - advisor는 `dev10:3.0`의 Claude 노드이며 약 5분마다 `grove-master`를 점검한다. 사용자가 명시 중단하기 전까지 루프를 멈추지 않는다.
   - `/api/projects`는 `dev10` 하나만 반환해야 한다. `/api/org`의 `default_assignee`와 `master_org.project_master.name`은 `grove-master`여야 하며 advisor가 default가 되면 회귀다.
-  - 최신 검증: `pnpm check` green, `web npm run check` green, tailnet browser terminal smoke green.
+  - 최신 main HEAD는 `5dec69d fix: expose remote web companion urls`이다.
+  - 최신 검증: `pnpm check` green, remote terminal ticket 200, Slack `socket_connected`, heartbeat fresh, tailnet browser terminal smoke green.
 - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
 - 앞으로 기본 운영은 `dev10` tmux 하나를 쓴다. 현재 서비스 창은 `dev10:1.0 web`, `dev10:2.0 slack`이다.
 - 프로젝트 ID와 host tmux 세션은 분리됐다. web 프로젝트 생성은 `grove new-project --tmux-session dev10`로 새 프로젝트 registry를 만들고 pane은 `dev10`에 둔다.
@@ -39,20 +40,27 @@
 - watchdog/executor OFF 유지(멀티리뷰+사용자 승인 전 실가동 금지).
 - 과거 handoff에는 lead가 통합만 맡는 운영 제한이 있었다. 현재 사용자는 필요하면 master가 직접 작업해도 된다고 정정했다.
 
-## 1. 현재 main = 4f3c804 (트리 클린)
+## 1. 현재 main = 5dec69d (트리 클린)
 
-머지 완료(스켈레톤 갭):
+최근 완료된 안정화:
+
+- `5dec69d fix: expose remote web companion urls`: `~/.grove/dev10/web.json`에 `allowed_hosts`와 `remote_urls`를 기록해 remote/headless 접속 정보를 노드가 직접 확인할 수 있게 했다.
+- `407c84e docs: refresh live dev10 handoff`: live dev10 운영 상태를 문서화했다.
+- `c5a037a fix: keep grove master as default assignee`: advisor가 생겨도 `/api/org` default assignee는 `grove-master`로 유지한다.
+- `3e9e739 fix: report live slack socket heartbeat`: Slack socket heartbeat를 runtime 파일로 기록하고 `/api/slack/config/status`에 반영한다.
+
+과거 스켈레톤 갭 완료 기록:
 
 - **PR-E 역할 프리셋**(2dfc8b2): `src/role-presets.ts`, spawn `--role-preset`, web NodeForm preset select.
 - 과거 **PR-F 조직/업무방식 context prepend**(2668c03): `src/context-pack.ts`+`bridge/.../context_pack.py`가 dispatch 전 context를 prepend했다. 현재는 보드 task 중심 통신 모델이 폐기됐고, context pack은 org/pane/cwd 인지 보조로만 해석한다.
 - **test coverage**(3518dd9): bridge API + core 단위 + Playwright e2e 스캐폴드. vitest를 `src/**/*.test.ts`로 스코핑(playwright .spec 오실행 해소).
-- **slack cold-channel fix**(4f3c804, cherry-pick): cold message.channels 게이팅. **단 아래 버그가 남아 재수정 중 — 이 커밋만으론 봇 켜면 안 됨.**
+- **slack cold-channel fix**(4f3c804, cherry-pick): cold message.channels 게이팅. 이후 engaged-thread 자동응답 제거와 Slack runtime heartbeat까지 추가됐고, 현재 Slack은 사용자 승인 후 `grove-master` 직통으로 켜져 있다.
 
 ## 2. 진행 중 (in-flight)
 
-- **slack 재수정 (긴급, 봇 OFF 유지)**: orch-slack(dev10:19, feat/slack worktree). 버그=`slack.py:790 _has_assistant_thread`+`:854 if is_assistant_thread:_handle_chat` → 봇이 한번 답한 스레드의 모든 후속 메시지(사람끼리 대화 포함)에 또 답함 = 기존 스레드 도배. 수정 지시=engaged-thread 자동응답 완전 제거, 멘션/human-gate/슬래시에서만 발화 + 회귀테스트(엔게이지 스레드 후속 멘션없음→post 0). pnpm check + 멀티리뷰 후에도 **재기동은 사용자 승인**.
-- **Wave 2 PR-A(계층 코어저장)+PR-B(cwd)**: orch-platform(dev10:18), `~/grove-worktrees/platform` (feat/platform, main 3518dd9 기준). 스펙=`docs/agents/skeleton-gap-implementation.md`. 완료 시 main에 rebase→pnpm check→FF.
-- 남은 갭(미발주): PR-C cross-project 통신, PR-D terminate 소유권, PR-G lead SSH, PR-H 가시노드 기본화. 스펙 동일 문서.
+- 현재 별도 worker in-flight는 없다. live 운영은 `grove-master`가 직접 관리하고, advisor가 5분마다 비차단 점검한다.
+- 계속할 작업은 장시간 steady-state 검증과 작은 회귀 제거다. 우선순위: web 재시작 루프 유지, Slack heartbeat/소켓 freshness 유지, remote terminal ticket 200 유지, `/api/projects` 단일 dev10 유지, `/api/org` default assignee `grove-master` 유지.
+- 새 프로젝트/노드 생성, 조직도 변경, 노드 종료는 사람이 명시 지시할 때만 operator 경로로 수행한다.
 
 ## 3. 통합 규율 (worktree)
 
