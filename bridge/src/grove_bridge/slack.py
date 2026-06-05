@@ -677,7 +677,7 @@ class SlackConnector:
                 team="",
                 channel=channel,
                 user="slack-human-gate",
-                text=f"human gate requested for task {task.id}",
+                text=_human_gate_notice_text(task),
                 ts=pending_thread_ts,
                 thread_ts=None,
                 event_type="message",

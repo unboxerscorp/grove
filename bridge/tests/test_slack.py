@@ -582,6 +582,11 @@ def test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply(tmp_path: Pa
     assert connector.poll_human_gates() == 1
     assert slack.posts[0] == ("C123", "LLM requested the needed human decision.", None)
     assert assistant.notice_calls[0]["decision"] == "human_gate"
+    notice_message = assistant.notice_calls[0]["message"]
+    assert isinstance(notice_message, str)
+    assert "human gate" not in notice_message.lower()
+    assert "Human decision needed" in notice_message
+    assert "Which branch?" in notice_message
     assert assistant.notice_calls[0]["metadata"] == {
         "task_id": task.id,
         "title": "Need human",
