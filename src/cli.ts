@@ -304,7 +304,7 @@ program
 
 program
   .command("init")
-  .description("scaffold a grove.yaml and delegation-protocol doc")
+  .description("scaffold grove.yaml and grove-context.md")
   .option("-s, --session <name>", "tmux session name (default: cwd basename)")
   .option("--force", "overwrite existing files")
   .action(run((opts: Record<string, unknown>) => cmdInit(opts)));

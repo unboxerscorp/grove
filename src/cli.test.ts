@@ -32,6 +32,13 @@ describe("CLI help text", () => {
     );
   });
 
+  test("init command describes direct-org scaffolding", () => {
+    const source = readFileSync(join(here, "cli.ts"), "utf8");
+
+    expect(source).toContain("scaffold grove.yaml and grove-context.md");
+    expect(source).not.toContain("delegation-protocol doc");
+  });
+
   test("project import/export commands are registered", () => {
     const source = readFileSync(join(here, "cli.ts"), "utf8");
 
