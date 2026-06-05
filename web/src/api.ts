@@ -881,13 +881,6 @@ export interface MasterChatFacts {
     inbox_endpoint?: string;
     answer_endpoint?: string;
   };
-  delegation?: {
-    default_assignee?: string;
-    create_task_endpoint?: string;
-    watch_endpoint?: string;
-    watch_ticket_endpoint?: string;
-    watch_ticket_kind?: string;
-  };
 }
 
 export interface MasterChatResponse {

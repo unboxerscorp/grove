@@ -5,7 +5,6 @@ import type { Project } from "./api";
 import { BoardView } from "./components/BoardView";
 import { NodeList } from "./components/NodeList";
 import { AuditDrawer } from "./components/AuditDrawer";
-import { ChainDrawer } from "./components/ChainDrawer";
 import { InboxDrawer } from "./components/InboxDrawer";
 import { PresenceIndicator } from "./components/PresenceIndicator";
 import { OnboardingWizard } from "./components/OnboardingWizard";
@@ -68,7 +67,7 @@ function scrubJoinFromUrl(): void {
 // but they no longer crowd the default UI.
 type NavItem =
   | { kind: "view"; view: View; labelKey: string; icon: string }
-  | { kind: "drawer"; drawer: "audit" | "chain" | "inbox"; labelKey: string; icon: string };
+  | { kind: "drawer"; drawer: "audit" | "inbox"; labelKey: string; icon: string };
 const NAV_GROUPS: { id: string; labelKey: string; items: NavItem[] }[] = [
   {
     id: "work",
@@ -99,9 +98,8 @@ const NAV_GROUPS: { id: string; labelKey: string; items: NavItem[] }[] = [
     items: [{ kind: "view", view: "auth", labelKey: "tab.auth", icon: "⛨" }],
   },
 ];
-const DRAWER_CLASS: Record<"audit" | "chain" | "inbox", string> = {
+const DRAWER_CLASS: Record<"audit" | "inbox", string> = {
   audit: "dr-audit-btn",
-  chain: "dr-chain-btn",
   inbox: "dr-inbox-btn",
 };
 
@@ -119,7 +117,6 @@ export function App() {
   const [isViewer, setIsViewer] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
-  const [chainOpen, setChainOpen] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [inboxCount, setInboxCount] = useState(0);
   const [liveTick, setLiveTick] = useState(0);
@@ -145,13 +142,11 @@ export function App() {
     fn();
     setNavOpen(false);
   };
-  const openDrawer = (d: "audit" | "chain" | "inbox") => {
+  const openDrawer = (d: "audit" | "inbox") => {
     if (d === "audit") setAuditOpen(true);
-    else if (d === "chain") setChainOpen(true);
     else setInboxOpen(true);
   };
-  const drawerOpen = (d: "audit" | "chain" | "inbox") =>
-    d === "audit" ? auditOpen : d === "chain" ? chainOpen : inboxOpen;
+  const drawerOpen = (d: "audit" | "inbox") => (d === "audit" ? auditOpen : inboxOpen);
 
   // Command palette (Cmd/Ctrl-K): navigation-only jump to any view/drawer.
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -600,7 +595,6 @@ export function App() {
         onClose={() => setOpenTaskId(null)}
       />
       <AuditDrawer open={auditOpen} projectTick={projectTick} onClose={() => setAuditOpen(false)} />
-      <ChainDrawer open={chainOpen} projectTick={projectTick} onClose={() => setChainOpen(false)} />
       <InboxDrawer
         open={inboxOpen}
         projectTick={projectTick}

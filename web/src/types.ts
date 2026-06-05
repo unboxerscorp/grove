@@ -68,10 +68,10 @@ export interface GroveNode {
   children?: string[];
   group?: string;
   description?: string;
-  // v1.28 backend-authoritative access flags (web_app.py NodeRecord). The lead
-  // pane (window.pane == 0.0) is terminal_allowed:true but input_allowed:false;
-  // meta / no-pane nodes are neither. Optional — older payloads omit them, so the
-  // FE treats `undefined`/`true` as allowed and only `=== false` as blocked.
+  // Backend-authoritative access flags (web_app.py NodeRecord). Meta / no-pane
+  // nodes are neither terminal-viewable nor input-addressable. Optional — older
+  // payloads omit them, so the FE treats `undefined`/`true` as allowed and only
+  // `=== false` as blocked.
   terminal_allowed?: boolean;
   input_allowed?: boolean;
   exposed?: boolean;
@@ -113,13 +113,6 @@ export interface MasterOrg {
     name: string;
     present: boolean;
     default_assignee: boolean;
-  };
-  delegation: {
-    default_assignee: string;
-    create_task_endpoint: string;
-    watch_endpoint: string;
-    watch_ticket_endpoint: string;
-    watch_ticket_kind: string;
   };
   human: {
     assignee_candidates: string[];
@@ -188,32 +181,6 @@ export interface ProjectLead {
   click_action?: { type?: string; project?: string };
   chat_target?: { endpoint?: string; origin_surface?: string; project?: string };
 }
-export interface DelegationEdge {
-  from: string;
-  to: string;
-  kind: string; // implementation | review_pool | review_claim
-  task_ids?: string[];
-  count?: number;
-  latest_assigned_at?: number;
-  oldest_open_updated_at?: number;
-  stale?: boolean;
-  label?: string;
-}
-export interface DelegationHistoryItem {
-  event_id?: string;
-  cursor?: number;
-  action?: string;
-  from?: string;
-  to?: string;
-  ts?: number;
-  label?: string;
-}
-export interface Delegations {
-  current: DelegationEdge[];
-  history: DelegationHistoryItem[];
-  mode_labels?: { current?: string; history?: string };
-}
-
 export interface Org {
   nodes: OrgNode[];
   roots: string[];
@@ -228,7 +195,6 @@ export interface Org {
   master?: MasterMeta;
   project_leads?: ProjectLead[];
   reviewer_candidates?: AssigneeCandidate[];
-  delegations?: Delegations;
 }
 
 export interface WsTicket {

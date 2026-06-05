@@ -4088,25 +4088,24 @@ async function run() {
   eq("send nonexistent node -> 404", (await req("POST", sendPath("ghost_node"), { token, project: ALPHA, body: { text: "hi" } })).status, 404);
   check("send error leaks no GROVE_HOME path", Boolean(sendWorker.text) && !sendWorker.text.includes(groveHome));
 
-  // --- /api/master/chat (deterministic answer/preview classifier + redaction)
+  // --- /api/master/chat
+  // Production default is node-routed through a real GROVE MASTER session. This
+  // isolated e2e server intentionally has no live master node, so it must fail
+  // closed with a redacted 503 rather than falling back to a rule-based answer.
   const masterPath = "/api/master/chat";
   eq("master-chat 401 without token", (await req("POST", masterPath, { body: { message: "hello" } })).status, 401);
   eq("master-chat 422 on a blank message", (await req("POST", masterPath, { token, project: ALPHA, body: { message: "   " } })).status, 422);
   const mAnswer = await req("POST", masterPath, { token, project: ALPHA, body: { message: "What is your capability?" } });
-  eq("master-chat capability question 200", mAnswer.status, 200);
+  eq("master-chat capability question unavailable without routed master", mAnswer.status, 503);
   check(
-    "master-chat response_type is one of answer|preview|denied",
-    ["answer", "preview", "denied"].includes(mAnswer.json && mAnswer.json.response_type),
-    mAnswer.json && mAnswer.json.response_type,
+    "master-chat unavailable detail is bounded",
+    mAnswer.json && mAnswer.json.detail === "master chat is unavailable",
+    mAnswer.text,
   );
-  eq("master-chat capability -> answer mode", mAnswer.json && mAnswer.json.response_type, "answer");
-  check("master-chat answer carries an answer body and needs no confirmation", Boolean(mAnswer.json) && mAnswer.json.answer && mAnswer.json.requires_confirmation === false);
   const mPreview = await req("POST", masterPath, { token, project: ALPHA, body: { message: "I want to report a bug: the board is broken" } });
-  eq("master-chat feedback message 200", mPreview.status, 200);
-  eq("master-chat feedback -> preview mode", mPreview.json && mPreview.json.response_type, "preview");
-  check("master-chat preview requires confirmation", Boolean(mPreview.json) && mPreview.json.requires_confirmation === true);
+  eq("master-chat action-like message unavailable without routed master", mPreview.status, 503);
   const mSecret = await req("POST", masterPath, { token, project: ALPHA, body: { message: "What is your capability? secret xoxb-deadbeefcafe1234567890" } });
-  eq("master-chat secret-bearing message 200", mSecret.status, 200);
+  eq("master-chat secret-bearing message unavailable without routed master", mSecret.status, 503);
   // Assert the SPECIFIC injected secret is scrubbed (the broad hasSecret() scan
   // false-positives on the response's legitimate long-hex ids, so match the
   // secret directly — the real contract is "the user's secret never echoes").

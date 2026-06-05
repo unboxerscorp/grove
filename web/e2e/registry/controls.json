@@ -160,23 +160,6 @@
       "needs_stable_hook": true
     },
     {
-      "id": "chrome.chainBtn",
-      "view": "chrome",
-      "match": {
-        "classContains": "dr-chain-btn"
-      },
-      "oracle_class": "nav",
-      "allowed_roles": {
-        "viewer": "allowed",
-        "operator": "allowed",
-        "admin": "allowed"
-      },
-      "expected_network": null,
-      "live_safe": true,
-      "reset": "close",
-      "needs_stable_hook": true
-    },
-    {
       "id": "chrome.inboxBtn",
       "view": "chrome",
       "match": {

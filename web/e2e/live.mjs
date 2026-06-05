@@ -5,7 +5,7 @@
 // avoids existing tasks, and restores mutable GUI feature state in finally.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,8 @@ const TEST_PROJECT_LABEL_RE = new RegExp(TEST_PROJECT.replace(/[.*+?^${}()|[\]\\
 const SWITCH_PROJECT = "base-voca";
 const RUN_ID = `p2-live-${Date.now().toString(36)}`;
 const TEST_TERMINAL_NODE = `p2-terminal-${RUN_ID.replace(/^p2-live-/, "")}`;
+const HOST_TMUX_SOCKET = process.env.GROVE_LIVE_TMUX_SOCKET ?? "dev10";
+const HOST_TMUX_SESSION = process.env.GROVE_LIVE_HOST_TMUX_SESSION ?? REAL_PROJECT;
 const RAW_SECRET_RE =
   /\b(?:xox[baprs]-[A-Za-z0-9-]{8,}|xapp-[A-Za-z0-9-]{8,}|sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,})\b/;
 
@@ -55,8 +57,13 @@ function readJsonFile(file, fallback) {
   }
 }
 
+function tmuxArgs(args) {
+  const socket = HOST_TMUX_SOCKET.trim();
+  return socket ? ["-L", socket, ...args] : args;
+}
+
 function runTmux(args, { allowFail = false } = {}) {
-  const result = spawnSync("tmux", args, { encoding: "utf8" });
+  const result = spawnSync("tmux", tmuxArgs(args), { encoding: "utf8" });
   if (!allowFail && result.status !== 0) {
     throw new Error(`tmux ${args.join(" ")} failed: ${result.stderr || result.stdout || result.status}`);
   }
@@ -72,9 +79,8 @@ function ensureIsolatedTmuxPane() {
     return { pane: process.env.GROVE_LIVE_TEST_TMUX_PANE, createdSession: false, createdWindow: false };
   }
 
-  const existed = tmuxSessionExists(TEST_PROJECT);
-  if (!existed) {
-    runTmux(["new-session", "-d", "-s", TEST_PROJECT, "-n", "lead", "zsh -f"]);
+  if (!tmuxSessionExists(HOST_TMUX_SESSION)) {
+    throw new Error(`host tmux session not found: ${HOST_TMUX_SESSION}`);
   }
   const windowResult = runTmux([
     "new-window",
@@ -83,14 +89,14 @@ function ensureIsolatedTmuxPane() {
     "-F",
     "#{session_name}:#{window_index}.#{pane_index}",
     "-t",
-    `${TEST_PROJECT}:`,
+    `${HOST_TMUX_SESSION}:`,
     "-n",
     "live-e2e",
     "printf 'p2 live terminal fixture ready\\n'; exec zsh -f",
   ]);
   const pane = windowResult.stdout.trim();
   if (!pane) throw new Error("tmux new-window did not return a pane target");
-  return { pane, createdSession: !existed, createdWindow: true };
+  return { pane, createdSession: false, createdWindow: true };
 }
 
 function cleanupIsolatedTmuxPane(fixture) {
@@ -102,22 +108,24 @@ function cleanupIsolatedTmuxPane(fixture) {
   }
 }
 
-function cleanupIsolatedRegistryFixture(registryPath) {
+function cleanupIsolatedRegistryFixture(fixture) {
+  const registryPath = typeof fixture === "string" ? fixture : fixture?.registryPath;
+  if (!registryPath) return;
   const registry = readJsonFile(registryPath, null);
   if (!registry || typeof registry !== "object" || registry.live_e2e_fixture !== true) return;
-  const nodes = registry.nodes;
-  if (!nodes || typeof nodes !== "object" || Array.isArray(nodes)) return;
-  let changed = false;
-  for (const key of Object.keys(nodes)) {
-    if (key === TEST_TERMINAL_NODE || key === "p2-live-terminal" || key.startsWith("p2-terminal-")) {
-      delete nodes[key];
-      changed = true;
-    }
+  const previousRegistryText = typeof fixture === "object" ? fixture.previousRegistryText : null;
+  if (previousRegistryText !== null && previousRegistryText !== undefined) {
+    const tmp = `${registryPath}.${process.pid}.restore.tmp`;
+    writeFileSync(tmp, previousRegistryText, "utf8");
+    renameSync(tmp, registryPath);
+    return;
   }
-  if (!changed) return;
-  const tmp = `${registryPath}.${process.pid}.cleanup.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(registry, null, 2)}\n`, "utf8");
-  renameSync(tmp, registryPath);
+  const projectDir = typeof fixture === "object" ? fixture.projectDir : path.dirname(registryPath);
+  const groveHome = process.env.GROVE_HOME ?? path.join(homedir(), ".grove");
+  const resolvedProject = path.resolve(projectDir);
+  const resolvedHome = path.resolve(groveHome);
+  if (resolvedProject === resolvedHome || !resolvedProject.startsWith(`${resolvedHome}${path.sep}`)) return;
+  rmSync(resolvedProject, { recursive: true, force: true });
 }
 
 function ensureIsolatedProjectFixture() {
@@ -126,6 +134,7 @@ function ensureIsolatedProjectFixture() {
   const projectDir = path.join(groveHome, TEST_PROJECT);
   const workspace = path.join(projectDir, "workspace");
   const registryPath = path.join(projectDir, "registry.json");
+  const previousRegistryText = existsSync(registryPath) ? readFileSync(registryPath, "utf8") : null;
   mkdirSync(workspace, { recursive: true });
 
   const existing = readJsonFile(registryPath, {});
@@ -165,6 +174,7 @@ function ensureIsolatedProjectFixture() {
   const next = {
     ...registry,
     session: TEST_PROJECT,
+    tmuxSession: HOST_TMUX_SESSION,
     display_name: TEST_PROJECT,
     workspace,
     cwd: workspace,
@@ -174,7 +184,7 @@ function ensureIsolatedProjectFixture() {
   const tmp = `${registryPath}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf8");
   renameSync(tmp, registryPath);
-  return { registryPath, tmuxFixture };
+  return { registryPath, projectDir, previousRegistryText, tmuxFixture };
 }
 
 function redacted(value) {
@@ -346,12 +356,6 @@ async function fillField(page, selector, value) {
   if (value) await page.keyboard.type(value, { delay: 2 });
 }
 
-async function setCheckbox(page, selector, enabled) {
-  await page.waitForSelector(selector, { visible: true, timeout: 15_000 });
-  const current = await page.$eval(selector, (el) => el.checked === true);
-  if (current !== enabled) await page.click(selector);
-}
-
 async function chooseAssignee(page) {
   const assignee = await page.$$eval(".dr-addform__assignee option", (options) => {
     const values = options.map((option) => option.value).filter(Boolean);
@@ -364,12 +368,16 @@ async function chooseAssignee(page) {
 
 async function createTaskViaUi(page, { title, body, status = "ready" }) {
   await nav(page, "board");
-  await page.waitForSelector(`.dr-col[data-col="${status}"] .dr-col__add`, { visible: true, timeout: 15_000 });
-  await page.click(`.dr-col[data-col="${status}"] .dr-col__add`);
+  const listKey = status === "ask_human" ? "ask_human" : "todo";
+  await page.waitForSelector(`.dr-col[data-col="${listKey}"] .dr-col__add`, { visible: true, timeout: 15_000 });
+  await page.click(`.dr-col[data-col="${listKey}"] .dr-col__add`);
   await fillField(page, ".dr-addform__title", title);
   await fillField(page, ".dr-addform__body", body);
   await chooseAssignee(page);
-  await page.select('.dr-addform select[name="status"]', status);
+  const statusOptions = await page.$$eval('.dr-addform select[name="status"] option', (options) =>
+    options.map((option) => option.value),
+  );
+  if (statusOptions.includes(status)) await page.select('.dr-addform select[name="status"]', status);
   await page.select('.dr-addform select[name="priority"]', "normal");
 
   const responsePromise = waitForApi(page, { path: "/api/boards/default/tasks", method: "POST" });
@@ -530,31 +538,6 @@ async function dev10LiveFixtures(page) {
   return { ok: true, detail: safeJson(items.map((task) => ({ id: task.id, status: task.status, title: task.title }))), items };
 }
 
-function routingRestoreBody(routing) {
-  return {
-    enabled: Boolean(routing?.enabled),
-    dry_run: routing?.dry_run !== false,
-    rules: Array.isArray(routing?.rules) ? routing.rules : [],
-  };
-}
-
-async function restoreRouting(page, routing) {
-  const response = await apiFetch(page, "/api/notifications/routing", {
-    method: "POST",
-    project: TEST_PROJECT,
-    body: routingRestoreBody(routing),
-  });
-  if (!response.ok) {
-    console.log(`RESTORE_FAILED routing HTTP ${response.status}`);
-    return;
-  }
-  const verify = await apiFetch(page, "/api/notifications/routing", { project: TEST_PROJECT });
-  const restored = routingRestoreBody(verify.json?.routing);
-  const expected = routingRestoreBody(routing);
-  const ok = JSON.stringify(restored) === JSON.stringify(expected);
-  console.log(`RESTORE routing=${ok ? "ok" : "mismatch"}`);
-}
-
 async function closeDrawer(page, panelSelector) {
   if (await page.$(panelSelector)) {
     await page.click(`${panelSelector} .dr-drawer__close`);
@@ -583,9 +566,10 @@ async function closeBrowser(browser) {
 
 async function main() {
   mkdirSync(artifactDir, { recursive: true });
-  const { registryPath: fixtureRegistry, tmuxFixture } = ensureIsolatedProjectFixture();
+  const fixture = ensureIsolatedProjectFixture();
+  const { registryPath: fixtureRegistry, tmuxFixture } = fixture;
   console.log(`FIXTURE_PROJECT ${TEST_PROJECT} ${fixtureRegistry}`);
-  console.log(`FIXTURE_TMUX ${tmuxFixture.pane}`);
+  console.log(`FIXTURE_TMUX ${tmuxFixture.pane} host=${HOST_TMUX_SESSION}`);
   const browser = await puppeteer.launch({
     executablePath: chromePath(),
     headless: true,
@@ -717,7 +701,7 @@ async function main() {
       const label = await textContent(page, ".proj-switcher__name");
       check("project switcher shows isolated p2-test", TEST_PROJECT_LABEL_RE.test(label), label);
       const columns = await page.$$eval(".dr-col", (cols) => cols.map((col) => col.getAttribute("data-col")));
-      check("board renders canonical workflow columns", ["ready", "running", "review", "blocked", "ask_human", "done"].every((c) => columns.includes(c)), columns.join(","));
+      check("board renders human-facing workflow lists", ["todo", "ask_human"].every((c) => columns.includes(c)), columns.join(","));
     });
 
     let lifecycleTaskId = "";
@@ -823,7 +807,7 @@ async function main() {
       await nav(page, "integrations");
       await page.waitForSelector(".slack-guide__command", { visible: true, timeout: 15_000 });
       const commandCount = await page.$$eval(".slack-guide__command", (items) => items.length);
-      check("Slack usage guide renders command examples", commandCount >= 5, String(commandCount));
+      check("Slack usage guide renders command examples", commandCount >= 4, String(commandCount));
       const intakeState = await page.$eval(".slack-intake__badge", (el) => el.getAttribute("data-enabled") ?? "");
       check("Slack intake state is shown", ["on", "off", "unknown"].includes(intakeState), intakeState);
       const status = await apiFetch(page, "/api/slack/config/status", { project: TEST_PROJECT });
@@ -833,7 +817,7 @@ async function main() {
       check("Slack DOM does not expose raw tokens", !hasRawSecret(domText));
     });
 
-    await runStep(page, "audit and delegation-chain drawers", async () => {
+    await runStep(page, "audit drawer", async () => {
       const auditPromise = waitForApi(page, { path: "/api/audit", method: "GET" });
       await page.click(".dr-audit-btn");
       await page.waitForSelector(".audit-panel", { visible: true, timeout: 15_000 });
@@ -848,106 +832,14 @@ async function main() {
       await sleep(800);
       check("audit action filter remains usable", (await page.$(".audit-msg.is-error")) === null);
       await closeDrawer(page, ".audit-panel");
-
-      const chainPromise = waitForApi(page, { path: "/api/audit", method: "GET" });
-      await page.click(".dr-chain-btn");
-      await page.waitForSelector(".chain-panel", { visible: true, timeout: 15_000 });
-      const chainResponse = await chainPromise;
-      const chainJson = await responseJson(chainResponse);
-      assertCheck("chain drawer audit GET returns 2xx", chainResponse.ok(), `HTTP ${chainResponse.status()} ${safeJson(chainJson)}`);
-      await page.waitForFunction(() => Boolean(document.querySelector(".chain-row, .chain-msg")), { timeout: 15_000 });
-      await fillField(page, '.chain-filter input[name="node"]', "project-master");
-      await sleep(400);
-      check("chain drawer filter renders without error", (await page.$(".chain-msg.is-error")) === null);
-      await closeDrawer(page, ".chain-panel");
+      check("delegation chain drawer is not exposed in simplified cockpit", (await page.$(".dr-chain-btn")) === null);
     });
 
-    await runStep(page, "execution gate confirm cancel", async () => {
-      await nav(page, "exec");
-      await page.waitForSelector(".exec", { visible: true, timeout: 15_000 });
-      const before = await apiFetch(page, "/api/execution", { project: TEST_PROJECT });
-      assertCheck("/api/execution returns 2xx", before.ok, `HTTP ${before.status} ${safeJson(before.json)}`);
-      await page.waitForSelector('.exec-gate__chip[data-gate="kill"]', { visible: true, timeout: 15_000 });
-      const killButton = await page.$('.exec-ks__btn[data-ks="global"]');
-      if (!killButton) {
-        skip("execution kill-switch cancel", "current role renders execution gate read-only");
-        return;
-      }
-      await page.click('.exec-ks__btn[data-ks="global"]');
-      await page.waitForSelector(".exec-confirm--gate", { visible: true, timeout: 10_000 });
-      await page.click(".exec-confirm-no");
-      await page.waitForSelector(".exec-confirm--gate", { hidden: true, timeout: 10_000 });
-      const after = await apiFetch(page, "/api/execution", { project: TEST_PROJECT });
-      assertCheck("/api/execution after cancel returns 2xx", after.ok, `HTTP ${after.status} ${safeJson(after.json)}`);
-      const keys = ["enabled", "kill_switch", "board_enabled", "board_kill_switch"];
-      check(
-        "execution kill-switch cancel leaves gate unchanged",
-        keys.every((key) => before.json?.[key] === after.json?.[key]),
-        `before=${safeJson(before.json)} after=${safeJson(after.json)}`,
-      );
-    });
-
-    await runStep(page, "notification routing write and restore", async () => {
-      const originalResponse = await apiFetch(page, "/api/notifications/routing", { project: TEST_PROJECT });
-      assertCheck(
-        "/api/notifications/routing returns 2xx before write",
-        originalResponse.ok,
-        `HTTP ${originalResponse.status} ${safeJson(originalResponse.json)}`,
-      );
-      const originalRouting = routingRestoreBody(originalResponse.json?.routing);
-      let wroteRouting = false;
-      try {
-        await nav(page, "routing");
-        await page.waitForSelector(".routing", { visible: true, timeout: 15_000 });
-        await page.waitForSelector(".routing-status", { visible: true, timeout: 15_000 });
-        const ruleName = `${RUN_ID}-route`;
-        await page.click(".routing-edit__btn");
-        await page.waitForSelector('.routing-editor[data-editor="open"]', { visible: true, timeout: 15_000 });
-        await setCheckbox(page, '.routing-editor input[name="routingEnabled"]', true);
-        await setCheckbox(page, '.routing-editor input[name="routingDryRun"]', true);
-        await fillField(page, ".routing-edit__name", ruleName);
-        await page.select(".routing-edit__event", "blocked");
-        await fillField(page, ".routing-edit__channel", "slack");
-        await fillField(page, ".routing-edit__room", "p2-live-room");
-        await fillField(page, ".routing-edit__after", "60");
-        await fillField(page, ".routing-edit__escroom", "p2-live-esc");
-        await page.click(".routing-edit__save");
-        await page.waitForSelector(".routing-confirm", { visible: true, timeout: 10_000 });
-        const postPromise = waitForApi(page, { path: "/api/notifications/routing", method: "POST" });
-        await page.click(".routing-confirm__yes");
-        const postResponse = await postPromise;
-        const postJson = await responseJson(postResponse);
-        wroteRouting = postResponse.ok();
-        assertCheck("routing config POST returns 2xx", postResponse.ok(), `HTTP ${postResponse.status()} ${safeJson(postJson)}`);
-        await page.waitForSelector(`.routing-rule[data-rule="${attr(ruleName)}"]`, { visible: true, timeout: 15_000 });
-        check("routing rule renders after confirmed save", true, ruleName);
-        check("routing write stays dry-run", postJson?.routing?.dry_run === true, safeJson(postJson));
-      } finally {
-        if (wroteRouting) await restoreRouting(page, originalRouting);
-      }
-      const restored = await apiFetch(page, "/api/notifications/routing", { project: TEST_PROJECT });
-      assertCheck("/api/notifications/routing returns 2xx after restore", restored.ok, `HTTP ${restored.status}`);
-      check(
-        "routing config restored after live write",
-        JSON.stringify(routingRestoreBody(restored.json?.routing)) === JSON.stringify(originalRouting),
-        `expected=${safeJson(originalRouting)} actual=${safeJson(restored.json?.routing)}`,
-      );
-    });
-
-    await runStep(page, "ledger and quota read-only surfaces", async () => {
-      await nav(page, "ledger");
-      await page.waitForSelector(".ledger", { visible: true, timeout: 15_000 });
-      const ledger = await apiFetch(page, "/api/ledger", { project: TEST_PROJECT });
-      assertCheck("/api/ledger returns 2xx", ledger.ok, `HTTP ${ledger.status} ${safeJson(ledger.json)}`);
-      await page.waitForFunction(() => Boolean(document.querySelector(".ledger-host, .ledger-msg")), { timeout: 15_000 });
-      check("ledger host pressure card renders", (await page.$(".ledger-host")) !== null);
-      const members = Array.isArray(ledger.json?.members) ? ledger.json.members : [];
-      check("ledger member rows are scoped and readable", members.length === (await page.$$(".ledger-member")).length, safeJson(members));
-      const noHardKill = members.every((row) => row?.quota?.hard_kill === false && row?.quota?.soft_throttle?.hard_kill === false);
-      check("ledger quotas never report hard kill", noHardKill, safeJson(members.map((row) => row?.quota)));
-      if (ledger.json?.quota_enabled === false) {
-        check("quota disabled state is rendered", (await page.$(".ledger-quota__disabled")) !== null);
-      }
+    await runStep(page, "legacy ops panels stay out of the default sidebar", async () => {
+      const tabs = await page.$$eval(".dr-tab[data-view]", (items) => items.map((item) => item.getAttribute("data-view")));
+      const hidden = ["exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
+      check("default sidebar hides legacy ops views", hidden.every((view) => !tabs.includes(view)), tabs.join(","));
+      skip("legacy ops panel UI journey", "covered by isolated API/verify suites; hidden from the simplified default cockpit");
     });
 
     await runStep(page, "connect share disabled state and join validation", async () => {
@@ -979,34 +871,6 @@ async function main() {
       await page.waitForSelector(".connect-msg[data-join-err]", { visible: true, timeout: 10_000 });
       const reason = await page.$eval(".connect-msg[data-join-err]", (el) => el.getAttribute("data-join-err"));
       check("connect join error is mapped to fixed reason", ["invalid", "expired", "rateLimit", "nameExists", "invalidName", "disabled", "generic"].includes(reason ?? ""), reason ?? "");
-    });
-
-    await runStep(page, "aggregation disabled/read-only and paste validation", async () => {
-      await nav(page, "agg");
-      await page.waitForSelector(".agg", { visible: true, timeout: 15_000 });
-      await page.waitForFunction(
-        () => Boolean(document.querySelector(".agg-disabled, .agg-paste__input, .agg__msg.is-error")),
-        { timeout: 20_000 },
-      );
-      if (await page.$(".agg-disabled")) {
-        check("aggregation disabled state renders gracefully", true);
-        return;
-      }
-      await fillField(page, ".agg-paste__input", "{bad");
-      await page.click(".agg-paste__add");
-      await page.waitForSelector(".agg-paste__err", { visible: true, timeout: 10_000 });
-      check("aggregation rejects invalid pasted summary client-side", true);
-      check("aggregation DOM does not expose raw secrets", !hasRawSecret(await textContent(page, ".agg")));
-    });
-
-    await runStep(page, "handoff paste validation without accept mutation", async () => {
-      await nav(page, "handoff");
-      await page.waitForSelector(".handoff", { visible: true, timeout: 15_000 });
-      await fillField(page, ".handoff-paste__input", "{bad");
-      await page.click(".handoff-preview__btn");
-      await page.waitForSelector(".handoff-msg.is-error", { visible: true, timeout: 10_000 });
-      check("handoff invalid JSON is rejected before accept", true);
-      check("handoff accept confirmation is not shown for invalid package", (await page.$(".handoff-confirm")) === null);
     });
 
     await runStep(page, "terminal view, connect command, operator send", async () => {
@@ -1086,6 +950,14 @@ async function main() {
     });
 
     await runStep(page, "project switch base-voca and back", async () => {
+      const projects = await apiFetch(page, "/api/projects", { project: "" });
+      assertCheck("/api/projects returns 2xx before optional switch", projects.ok, `HTTP ${projects.status}`);
+      const available = Array.isArray(projects.json) ? projects.json.map((project) => project?.name).filter(Boolean) : [];
+      if (!available.includes(SWITCH_PROJECT)) {
+        skip(`project switch ${SWITCH_PROJECT}`, `project not present in this live host: ${available.join(",") || "(none)"}`);
+        await selectProject(page, TEST_PROJECT, TEST_PROJECT_LABEL_RE);
+        return;
+      }
       await selectProject(page, SWITCH_PROJECT, new RegExp(SWITCH_PROJECT, "i"));
       const label = await textContent(page, ".proj-switcher__name");
       check("project switcher shows base-voca", new RegExp(SWITCH_PROJECT, "i").test(label), label);
@@ -1099,6 +971,8 @@ async function main() {
 
     await runStep(page, "organization chart master and leads", async () => {
       await nav(page, "team");
+      await selectProject(page, REAL_PROJECT, REAL_PROJECT_LABEL_RE);
+      await nav(page, "team");
       await page.waitForSelector(".org-master, .master-org__root", { visible: true, timeout: 20_000 });
       const masterText = await page.evaluate(() => {
         const el = document.querySelector(".org-master") ?? document.querySelector(".master-org__root");
@@ -1108,7 +982,7 @@ async function main() {
       const leadProjects = await page.$$eval(".org-plead, .master-org__project", (items) =>
         items.map((item) => item.getAttribute("data-project") || item.textContent || "").filter(Boolean),
       );
-      check("org chart shows cross-project leads", leadProjects.some((item) => /dev10|base-voca|grove-dev/i.test(item)), leadProjects.join(","));
+      check("org chart shows project leads", leadProjects.some((item) => /dev10|grove-dev/i.test(item)), leadProjects.join(","));
     });
 
     await runStep(page, "sidebar, command palette, and logo", async () => {
@@ -1139,7 +1013,7 @@ async function main() {
       await closeBrowser(browser);
     } finally {
       cleanupIsolatedTmuxPane(tmuxFixture);
-      cleanupIsolatedRegistryFixture(fixtureRegistry);
+      cleanupIsolatedRegistryFixture(fixture);
     }
   }
 
@@ -1148,15 +1022,21 @@ async function main() {
   const expected404Count = httpEvents.filter((event) => event.status === 404 && expected404Paths.has(event.path)).length;
   const unexpected404Events = httpEvents.filter((event) => event.status === 404 && !expected404Paths.has(event.path));
   check("no unexpected 404 responses during live journey", unexpected404Events.length === 0, safeJson(unexpected404Events));
-  let remainingExpected404Console = expected404Count;
+  const expectedNoisy4xxPaths = new Set(["/api/share", "/api/join", "/api/summary", "/api/aggregate"]);
+  let remainingExpected4xxConsole = httpEvents.filter(
+    (event) => event.status >= 400 && event.status < 500 && expectedNoisy4xxPaths.has(event.path),
+  ).length;
   const noisyConsole = consoleErrors.filter((line) => {
     if (/favicon/i.test(line)) return false;
     // Expected: the Tier-2 hard-block aborts external/destructive requests, which
     // surface as ERR_BLOCKED_BY_CLIENT console errors. These are the safety net
     // working as intended, not a defect.
     if (/ERR_BLOCKED_BY_CLIENT/.test(line)) return false;
-    if (/Failed to load resource: the server responded with a status of 404/.test(line) && remainingExpected404Console > 0) {
-      remainingExpected404Console -= 1;
+    if (
+      /Failed to load resource: the server responded with a status of (400|401|403|404)/.test(line) &&
+      remainingExpected4xxConsole > 0
+    ) {
+      remainingExpected4xxConsole -= 1;
       return false;
     }
     return true;

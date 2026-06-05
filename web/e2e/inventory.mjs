@@ -22,7 +22,6 @@ const VIEWS = ["board", "team", "terminal", "exec", "ledger", "trend", "insights
 const DRAWERS = [
   { id: "inbox", open: ".dr-inbox-btn", panel: ".inbox-drawer, .dr-drawer" },
   { id: "audit", open: ".dr-audit-btn", panel: ".audit-drawer" },
-  { id: "chain", open: ".dr-chain-btn", panel: ".chain-drawer" },
   { id: "master-chat", open: ".dr-mchat__fab", panel: ".dr-mchat__panel" },
   { id: "command-palette", open: ".cmdk-trigger", panel: ".cmdk" },
   { id: "project-switcher", open: ".proj-switcher__btn", panel: ".proj-menu" },

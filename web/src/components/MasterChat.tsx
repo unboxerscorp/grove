@@ -114,7 +114,7 @@ function MasterFacts({ facts }: { facts?: MasterChatFacts }) {
   const needsHuman = facts.human?.needs_human_count;
   const projects = facts.projects?.visible ?? [];
   const humans = facts.human?.assignee_candidates ?? [];
-  const defaultNode = facts.org?.project_master?.name ?? facts.delegation?.default_assignee;
+  const defaultNode = facts.org?.project_master?.name;
   const hasFacts =
     statusItems.length > 0 ||
     typeof reviewers === "number" ||

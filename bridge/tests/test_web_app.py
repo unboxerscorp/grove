@@ -2013,6 +2013,7 @@ def test_master_chat_returns_answer_and_records_redacted_audit(tmp_path: Path) -
     assert payload["classification"]["intent"] == "capability.explain"
     assert payload["answer"]["text"] == "LLM answer from facts. [fact:board.status_counts]"
     assert payload["answer"]["citations"] == ["fact:board.status_counts"]
+    assert "delegation" not in payload["answer"]["metadata"]["facts"]
     assert payload["proposal"] is None
     rendered = json.dumps(payload)
     assert secret not in rendered
@@ -5901,7 +5902,7 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
     assert nodes["lead-pane"]["parent"] == "lead@dev10"
     assert nodes["lead-pane"]["status"] == "idle"
     assert nodes["lead-pane"]["terminal_allowed"] is True
-    assert nodes["lead-pane"]["input_allowed"] is False
+    assert nodes["lead-pane"]["input_allowed"] is True
     assert nodes["lead-pane"]["unavailable_reason"] == ""
     assert nodes["qa"]["parent"] == "lead@dev10"
     assert nodes["worker"]["parent"] == "lead@dev10"
@@ -5924,7 +5925,7 @@ def test_org_returns_team_graph_from_registry(tmp_path: Path) -> None:
     ]
 
 
-def test_org_distinguishes_current_delegation_snapshot_from_history(
+def test_org_payload_does_not_publish_node_to_node_delegation_protocol(
     tmp_path: Path,
 ) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
@@ -5935,7 +5936,7 @@ def test_org_distinguishes_current_delegation_snapshot_from_history(
         assignee="worker",
         created_by="lead",
     )
-    done_task = store.create_task(
+    store.create_task(
         board="dev10",
         title="Build done",
         body=None,
@@ -5943,7 +5944,7 @@ def test_org_distinguishes_current_delegation_snapshot_from_history(
         status="done",
         created_by="lead",
     )
-    review_task = store.create_task(
+    store.create_task(
         board="dev10",
         title="Review active",
         body=None,
@@ -5976,20 +5977,8 @@ def test_org_distinguishes_current_delegation_snapshot_from_history(
     response = client.get("/api/org", headers=auth_headers(client))
 
     assert response.status_code == 200
-    delegations = response.json()["delegations"]
-    current = {(edge["from"], edge["to"], edge["kind"]): edge for edge in delegations["current"]}
-    assert current[("lead", "worker", "implementation")]["task_ids"] == [open_task.id]
-    assert done_task.id not in current[("lead", "worker", "implementation")]["task_ids"]
-    assert current[("lead", "maker", "implementation")]["task_ids"] == [review_task.id]
-    assert current[("maker", "reviewer", "review_pool")]["task_ids"] == [review_task.id]
-    assert delegations["mode_labels"] == {
-        "current": "Current delegation: open tasks only",
-        "history": "Delegation history: audit trail summary",
-    }
-    assert delegations["history"][0]["action"] == "assign"
-    assert delegations["history"][0]["to"] == "worker"
-    assert delegations["history"][0]["task_id"] == open_task.id
-    assert "Delegation history" in delegations["history"][0]["label"]
+    payload = response.json()
+    assert "delegations" not in payload
 
 
 def test_org_payload_includes_master_and_human_routing_support(
@@ -6061,13 +6050,6 @@ def test_org_payload_includes_master_and_human_routing_support(
             "name": "worker",
             "present": True,
             "default_assignee": True,
-        },
-        "delegation": {
-            "default_assignee": "worker",
-            "create_task_endpoint": "/api/boards/{board_id}/tasks",
-            "watch_endpoint": "/ws/board",
-            "watch_ticket_endpoint": "/api/ws-ticket",
-            "watch_ticket_kind": "board",
         },
         "human": {
             "assignee_candidates": ["human-reviewer"],
@@ -7654,6 +7636,18 @@ def test_ws_ticket_binds_project_from_request_header(tmp_path: Path) -> None:
     assert grant.pane_id is None
 
 
+def test_ws_ticket_rejects_foreign_origin(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post(
+        "/api/ws-ticket",
+        headers=auth_headers(client) | {"Origin": "http://evil.example"},
+        json={"kind": "board"},
+    )
+
+    assert response.status_code == 403
+
+
 def test_ws_ticket_requires_team_auth_without_csrf_or_operator_role(tmp_path: Path) -> None:
     write_registry(
         tmp_path,
@@ -7769,7 +7763,7 @@ def test_ws_ticket_rejects_kind_and_pane_mismatch(
     assert exc.value.code == 1008
 
 
-def test_terminal_allows_lead_pane_read_only_and_node_send_still_rejects(
+def test_terminal_allows_lead_pane_view_and_operator_node_send(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7804,7 +7798,7 @@ def test_terminal_allows_lead_pane_read_only_and_node_send_still_rejects(
     nodes = {node["name"]: node for node in nodes_response.json()}
     assert nodes["lead"]["exposed"] is True
     assert nodes["lead"]["terminal_allowed"] is True
-    assert nodes["lead"]["input_allowed"] is False
+    assert nodes["lead"]["input_allowed"] is True
     assert nodes["lead"]["unavailable_reason"] == ""
     assert ticket_response.status_code == 200
 
@@ -7816,7 +7810,7 @@ def test_terminal_allows_lead_pane_read_only_and_node_send_still_rejects(
     operator_send = client.post(
         "/api/nodes/lead/send",
         headers=auth_headers(client),
-        json={"text": "do not inject"},
+        json={"text": "operator can address lead"},
     )
     write_team_member(tmp_path, secret="viewer-secret", role="viewer")
     viewer_client = make_client(
@@ -7829,17 +7823,17 @@ def test_terminal_allows_lead_pane_read_only_and_node_send_still_rejects(
     viewer_send = viewer_client.post(
         "/api/nodes/lead/send",
         headers={CSRF_HEADER: str(login.json()["csrf"])},
-        json={"text": "viewer cannot inject"},
+        json={"text": "viewer cannot address lead"},
     )
 
     assert frame["pane_id"] == "dev10:0.0"
     assert base64.b64decode(frame["bytes_base64"]) == b"lead pane"
     assert captures == ["dev10:0.0"]
-    assert operator_send.status_code == 404
+    assert operator_send.status_code == 200
     assert viewer_send.status_code == 403
-    assert send_calls == []
+    assert send_calls == ["dev10:0.0"]
     assert web_app._pane_allowed("dev10:0.0", config=app_config(client))
-    assert not web_app._pane_input_allowed("dev10:0.0", config=app_config(client))
+    assert web_app._pane_input_allowed("dev10:0.0", config=app_config(client))
     assert web_app._pane_input_allowed("dev10:2.0", config=app_config(client))
 
 

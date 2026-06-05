@@ -404,7 +404,7 @@ function MasterOrgStrip(props: {
   const selected = masterOrg.selected_project;
   const otherProjects = masterOrg.visible_projects.filter((project) => project !== selected);
   const humanCount = masterOrg.human.assignee_candidates.length;
-  const defaultNode = masterOrg.project_master.name || masterOrg.delegation.default_assignee;
+  const defaultNode = masterOrg.project_master.name;
   return (
     <div className="master-org" data-master-org="true">
       <button type="button" className="master-org__root" onClick={onOpenMasterChat}>

@@ -149,7 +149,6 @@ WORKFLOW_ALIASES = {
 WORKFLOW_OPEN_STATUSES = frozenset(
     {"ready", "running", "in_progress", "claimed", "executing", "review", "blocked", "ask_human"}
 )
-WORKFLOW_DONE_STATUSES = frozenset({"done", "archived", "complete", "completed"})
 SUMMARY_RUN_STATUSES = frozenset({"running", "ok", "blocked", "failed", "released"})
 SUMMARY_NODE_STATUSES = frozenset({"running", "idle", "error", "blocked", "dead", "stale"})
 SUMMARY_NODE_AGENTS = frozenset({"codex", "claude", "antigravity", "agy"})
@@ -2384,6 +2383,7 @@ def create_app(
         pane_id: str | None = Query(default=None),
     ) -> dict[str, object]:
         _require_auth(request)
+        _require_allowed_origin(request)
         project = resolve_project(request)
         requested_kind, requested_pane = _ws_ticket_request_scope(
             payload,
@@ -6241,7 +6241,6 @@ def _master_chat_facts(
             "inbox_endpoint": "/api/inbox",
             "answer_endpoint": "/api/tasks/{task_id}/answer",
         },
-        "delegation": _master_delegation_payload(project.config),
     }
 
 
@@ -7906,154 +7905,6 @@ def _org_group_parent(parents: set[str]) -> str:
     return GROVE_MASTER_NODE_NAME
 
 
-def _delegation_payload(
-    store: SQLiteBoardStore | None,
-    *,
-    project: ProjectContext | None,
-) -> dict[str, object]:
-    if store is None or project is None:
-        return {"current": [], "history": [], "mode_labels": _delegation_mode_labels()}
-    return {
-        "current": _current_delegation_snapshot(store, project=project),
-        "history": _delegation_history_summary(store, project=project),
-        "mode_labels": _delegation_mode_labels(),
-    }
-
-
-def _delegation_mode_labels() -> dict[str, str]:
-    return {
-        "current": "Current delegation: open tasks only",
-        "history": "Delegation history: audit trail summary",
-    }
-
-
-def _current_delegation_snapshot(
-    store: SQLiteBoardStore,
-    *,
-    project: ProjectContext,
-) -> list[dict[str, object]]:
-    tasks = [
-        task
-        for task in store.list_tasks(board=project.board)
-        if _workflow_status_for_task(task) not in WORKFLOW_DONE_STATUSES
-    ]
-    edges: dict[tuple[str, str, str], dict[str, object]] = {}
-    for task in tasks:
-        if task.assignee is not None:
-            _add_current_delegation_edge(
-                edges,
-                from_id=task.created_by or LEAD_NODE_NAME,
-                to_id=task.assignee,
-                kind="implementation",
-                task=task,
-            )
-        if task.reviewer is not None:
-            _add_current_delegation_edge(
-                edges,
-                from_id=task.assignee or task.created_by or LEAD_NODE_NAME,
-                to_id=task.reviewer,
-                kind="review_pool",
-                task=task,
-            )
-    return sorted(edges.values(), key=lambda edge: (str(edge["from"]), str(edge["to"])))
-
-
-def _add_current_delegation_edge(
-    edges: dict[tuple[str, str, str], dict[str, object]],
-    *,
-    from_id: str,
-    to_id: str,
-    kind: str,
-    task: Task,
-) -> None:
-    key = (from_id, to_id, kind)
-    edge = edges.setdefault(
-        key,
-        {
-            "from": _safe_public_text(from_id),
-            "to": _safe_public_text(to_id),
-            "kind": kind,
-            "task_ids": [],
-            "count": 0,
-            "latest_assigned_at": task.created_at,
-            "oldest_open_updated_at": task.updated_at,
-            "stale": False,
-            "label": "Current delegation: open tasks",
-        },
-    )
-    task_ids = cast(list[str], edge["task_ids"])
-    task_ids.append(task.id)
-    edge["count"] = _edge_int(edge, "count") + 1
-    edge["latest_assigned_at"] = max(_edge_int(edge, "latest_assigned_at"), task.created_at)
-    edge["oldest_open_updated_at"] = min(_edge_int(edge, "oldest_open_updated_at"), task.updated_at)
-
-
-def _edge_int(edge: Mapping[str, object], key: str) -> int:
-    value = edge.get(key)
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
-
-
-def _delegation_history_summary(
-    store: SQLiteBoardStore,
-    *,
-    project: ProjectContext,
-) -> list[dict[str, object]]:
-    interesting_actions = {
-        "assign",
-        "delegate",
-        "reviewer-set",
-        "reviewer-change",
-        "reviewer-clear",
-        "status-transition",
-        "review-claim",
-        "review-complete",
-    }
-    history: list[dict[str, object]] = []
-    for event in store.list_audit_events(board=project.board, limit=100):
-        action = _mapping_string(event.payload, "action") or ""
-        if action not in interesting_actions:
-            continue
-        history.append(_delegation_history_event_payload(event, action=action))
-    return history
-
-
-def _delegation_history_event_payload(event: BoardEvent, *, action: str) -> dict[str, object]:
-    actor = event.payload.get("actor")
-    actor_map = _string_mapping(actor) if isinstance(actor, Mapping) else {}
-    target = event.payload.get("target")
-    target_map = _string_mapping(target) if isinstance(target, Mapping) else {}
-    to_value = (
-        _mapping_string(event.payload, "to_node")
-        or _mapping_string(event.payload, "to_reviewer")
-        or _mapping_string(target_map, "node")
-        or _mapping_string(target_map, "reviewer")
-        or _mapping_string(target_map, "id")
-    )
-    from_value = (
-        _mapping_string(event.payload, "from_node")
-        or _mapping_string(actor_map, "login")
-        or _mapping_string(actor_map, "id")
-        or LEAD_NODE_NAME
-    )
-    return {
-        "event_id": event.id,
-        "cursor": event.cursor,
-        "task_id": event.task_id,
-        "action": _safe_public_text(action),
-        "from": _safe_public_text(from_value),
-        "to": _safe_public_text(to_value or ""),
-        "ts": event.created_at,
-        "label": f"Delegation history: {_safe_public_text(action)}",
-    }
-
-
-def _workflow_status_for_task(task: Task) -> str:
-    raw_status = task.status.strip().lower().replace("-", "_")
-    if raw_status == "blocked" and bool(task.metadata.get("needs_human")):
-        return "ask_human"
-    return WORKFLOW_ALIASES.get(raw_status, raw_status)
-
-
 def _org_payload(
     config: WebAppConfig,
     *,
@@ -8129,7 +7980,6 @@ def _org_payload(
         "assignee_candidates": _assignee_candidates(config),
         "master_org": _master_org_payload(config),
         "reviewer_candidates": _reviewer_candidates(config),
-        "delegations": _delegation_payload(store, project=project) if store is not None else {},
     }
 
 
@@ -8141,23 +7991,12 @@ def _master_org_payload(config: WebAppConfig) -> dict[str, object]:
         "selected_project": config.registry_session,
         "visible_projects": _visible_project_names_for_config(config),
         "project_master": _default_assignee_summary(config),
-        "delegation": _master_delegation_payload(config),
         "human": {
             "assignee_candidates": human_candidates,
             "reviewers": _human_reviewer_names(config),
             "inbox_endpoint": "/api/inbox",
             "answer_endpoint": "/api/tasks/{task_id}/answer",
         },
-    }
-
-
-def _master_delegation_payload(config: WebAppConfig) -> dict[str, object]:
-    return {
-        "default_assignee": _default_assignee(config),
-        "create_task_endpoint": "/api/boards/{board_id}/tasks",
-        "watch_endpoint": "/ws/board",
-        "watch_ticket_endpoint": "/api/ws-ticket",
-        "watch_ticket_kind": "board",
     }
 
 
@@ -8231,7 +8070,7 @@ def _valid_exposed_tmux_pane(pane: str, *, config: WebAppConfig) -> bool:
 
 def _valid_input_tmux_pane(pane: str, *, config: WebAppConfig) -> bool:
     parts = _tmux_pane_parts(pane, config=config)
-    return parts is not None and parts != (0, 0) and _canonical_tmux_pane(pane, config=config)
+    return parts is not None and _canonical_tmux_pane(pane, config=config)
 
 
 def _canonical_tmux_pane(pane: str, *, config: WebAppConfig) -> bool:
