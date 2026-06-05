@@ -251,6 +251,7 @@ class WebAppConfig:
     retro_analytics_enabled: bool = False
     usage_trend_enabled: bool = False
     node_input_enabled: bool = False
+    tmux_pane_liveness_enabled: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dist_dir", self.dist_dir.expanduser())
@@ -7620,6 +7621,8 @@ def _node_unavailable_reason(pane: str, *, kind: str, config: WebAppConfig) -> s
         return "tmux_pane outside project tmux session"
     if not _canonical_tmux_pane(pane, config=config):
         return "tmux_pane invalid"
+    if config.tmux_pane_liveness_enabled and not _tmux_pane_exists(pane):
+        return "tmux pane missing"
     return ""
 
 
@@ -8130,6 +8133,19 @@ def _tmux_pane_parts(pane: str, *, config: WebAppConfig) -> tuple[int, int] | No
     if match is None:
         return None
     return int(match.group("window")), int(match.group("pane"))
+
+
+def _tmux_pane_exists(pane: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", pane, "-p", "#{pane_id}"],
+            capture_output=True,
+            timeout=TMUX_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 def _tmux_capture(pane: str) -> bytes:

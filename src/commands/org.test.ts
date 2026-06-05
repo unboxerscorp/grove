@@ -4,7 +4,7 @@ import type { AgentAdapter } from "../adapters/types.js";
 import { GroveConfigSchema, type ResolvedNode, resolveNodes } from "../config.js";
 import type { Context, NodeCtx } from "../context.js";
 import type { NodeRuntime } from "../registry.js";
-import { buildOrg, renderOrgJson, renderOrgText } from "./org.js";
+import { annotateOrgPaneStatus, buildOrg, renderOrgJson, renderOrgText } from "./org.js";
 
 function adapter(agent: ResolvedNode["agent"]): AgentAdapter {
   return {
@@ -315,6 +315,57 @@ describe("org rendering", () => {
     expect(text).toContain("cwd: /repo/dev10");
     expect(text).toContain("pane: dev10:1.1");
     expect(text).toContain("cwd: /repo/dev10/packages/app");
+  });
+
+  test("marks registry nodes with missing tmux panes as pane-missing", async () => {
+    const ctx = makeContext({
+      lead: {
+        agent: "claude",
+        children: ["maker"],
+        cwd: "/repo/dev10",
+        group: "core",
+        name: "lead",
+        role: "Lead",
+        status: "active",
+        tmux_pane: "dev10:1.0",
+      },
+      maker: {
+        agent: "codex",
+        children: [],
+        cwd: "/repo/dev10",
+        group: "core",
+        name: "maker",
+        parent: "lead",
+        role: "Builder",
+        status: "active",
+        tmux_pane: "dev10:2.0",
+      },
+    });
+
+    const org = await annotateOrgPaneStatus(
+      buildOrg(ctx, null),
+      async (pane) => pane !== "dev10:2.0",
+    );
+    const nodes = new Map(org.nodes.map((node) => [node.name, node]));
+    const text = renderOrgText(org);
+
+    expect(nodes.get("lead")).toEqual(
+      expect.objectContaining({
+        pane_exists: true,
+        status: "active",
+        unavailable_reason: "",
+      }),
+    );
+    expect(nodes.get("maker")).toEqual(
+      expect.objectContaining({
+        pane_exists: false,
+        status: "pane-missing",
+        unavailable_reason: "tmux pane missing",
+      }),
+    );
+    expect(text).toContain("status: pane-missing");
+    expect(text).toContain("pane_exists: false");
+    expect(text).toContain("unavailable_reason: tmux pane missing");
   });
 });
 

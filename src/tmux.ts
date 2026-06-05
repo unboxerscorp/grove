@@ -149,6 +149,10 @@ export async function paneTarget(addr: string): Promise<string> {
   return (await tmux(["display-message", "-t", addr, "-p", PANE_INDEX_TARGET_FORMAT])).trim();
 }
 
+export async function paneExists(addr: string): Promise<boolean> {
+  return tmuxOk(["display-message", "-t", addr, "-p", PANE_INDEX_TARGET_FORMAT]);
+}
+
 async function paneIndexTarget(session: string, paneId: string): Promise<string> {
   const windowPane = (
     await tmux(["display-message", "-t", paneId, "-p", WINDOW_PANE_INDEX_FORMAT])

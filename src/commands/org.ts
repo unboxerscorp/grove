@@ -7,7 +7,7 @@ import {
   type Registry,
   sharedMasterRuntime,
 } from "../registry.js";
-import { target } from "../tmux.js";
+import { paneExists, target } from "../tmux.js";
 import { MASTER_REGISTRY_SESSION } from "../util/paths.js";
 
 export interface OrgNode {
@@ -22,6 +22,8 @@ export interface OrgNode {
   tmux_pane: string;
   session_id: string;
   status: string;
+  pane_exists?: boolean;
+  unavailable_reason?: string;
 }
 
 export interface OrgJson {
@@ -135,6 +137,32 @@ export function buildOrg(
   return { groups, nodes, roots, session: ctx.config.session };
 }
 
+export async function annotateOrgPaneStatus(
+  org: OrgJson,
+  paneExistsFn: (pane: string) => Promise<boolean> = paneExists,
+): Promise<OrgJson> {
+  const nodes = await Promise.all(
+    org.nodes.map(async (node) => {
+      if (!node.tmux_pane) return node;
+      const exists = await paneExistsFn(node.tmux_pane);
+      if (exists) {
+        return {
+          ...node,
+          pane_exists: true,
+          unavailable_reason: node.unavailable_reason ?? "",
+        };
+      }
+      return {
+        ...node,
+        pane_exists: false,
+        status: "pane-missing",
+        unavailable_reason: "tmux pane missing",
+      };
+    }),
+  );
+  return { ...org, nodes };
+}
+
 function roleSuffix(role?: string): string {
   const label = role?.replace(/\s+/g, " ").trim();
   return label ? ` ${label}` : "";
@@ -149,9 +177,14 @@ function metadataLines(node: OrgNode, depth: number): string[] {
   const indent = "  ".repeat(depth + 1);
   const lines: string[] = [];
   if (node.tmux_pane) lines.push(`${indent}pane: ${node.tmux_pane}`);
+  if (typeof node.pane_exists === "boolean") {
+    lines.push(`${indent}pane_exists: ${String(node.pane_exists)}`);
+  }
   if (node.cwd) lines.push(`${indent}cwd: ${node.cwd}`);
   if (node.session_id) lines.push(`${indent}session_id: ${node.session_id}`);
   if (node.status) lines.push(`${indent}status: ${node.status}`);
+  if (node.unavailable_reason)
+    lines.push(`${indent}unavailable_reason: ${node.unavailable_reason}`);
   return lines;
 }
 
@@ -190,6 +223,6 @@ export function renderOrgJson(org: OrgJson): string {
 
 export async function cmdOrg(opts: { config?: string; json?: boolean }): Promise<void> {
   const ctx = loadContext(opts.config);
-  const org = buildOrg(ctx);
+  const org = await annotateOrgPaneStatus(buildOrg(ctx));
   process.stdout.write(`${opts.json ? renderOrgJson(org) : renderOrgText(org)}\n`);
 }

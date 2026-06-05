@@ -5944,6 +5944,59 @@ def test_nodes_expose_all_registry_nodes_with_precise_availability(
     assert nodes["lead"]["unavailable_reason"] == "meta node has no pane"
 
 
+def test_nodes_mark_missing_tmux_panes_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "web": {
+                "name": "web",
+                "agent": "codex",
+                "status": "active",
+                "tmux_pane": "dev10:1.0",
+            },
+            "slack": {
+                "name": "slack",
+                "agent": "codex",
+                "status": "active",
+                "tmux_pane": "dev10:2.0",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        web_app,
+        "_tmux_pane_exists",
+        lambda pane: pane != "dev10:2.0",
+    )
+    client = make_client(
+        tmp_path,
+        SQLiteBoardStore(tmp_path / "board.db"),
+        tmux_pane_liveness_enabled=True,
+    )
+
+    nodes_response = client.get("/api/nodes", headers=auth_headers(client))
+    org_response = client.get("/api/org", headers=auth_headers(client))
+
+    assert nodes_response.status_code == 200
+    assert org_response.status_code == 200
+    nodes = {node["name"]: node for node in nodes_response.json()}
+    org_nodes = {node["name"]: node for node in org_response.json()["nodes"]}
+    assert nodes["web"]["status"] == "active"
+    assert nodes["web"]["terminal_allowed"] is True
+    assert nodes["web"]["input_allowed"] is True
+    assert nodes["web"]["unavailable_reason"] == ""
+    assert nodes["slack"]["status"] == "dead"
+    assert nodes["slack"]["terminal_allowed"] is False
+    assert nodes["slack"]["input_allowed"] is False
+    assert nodes["slack"]["unavailable_reason"] == "tmux pane missing"
+    assert org_nodes["slack"]["status"] == "dead"
+    assert org_nodes["slack"]["terminal_allowed"] is False
+    assert org_nodes["slack"]["unavailable_reason"] == "tmux pane missing"
+
+
 def test_nodes_reread_registry_on_each_request_and_include_meta(tmp_path: Path) -> None:
     write_registry(
         tmp_path,
@@ -8445,6 +8498,7 @@ def make_client(
     retro_analytics_enabled: bool = False,
     usage_trend_enabled: bool = False,
     node_input_enabled: bool = False,
+    tmux_pane_liveness_enabled: bool = False,
     assistant_client: AssistantLLMClient | None = None,
 ) -> TestClient:
     dist = tmp_path / "dist"
@@ -8478,6 +8532,7 @@ def make_client(
         retro_analytics_enabled=retro_analytics_enabled,
         usage_trend_enabled=usage_trend_enabled,
         node_input_enabled=node_input_enabled,
+        tmux_pane_liveness_enabled=tmux_pane_liveness_enabled,
     )
     app = create_app(
         config=config,
