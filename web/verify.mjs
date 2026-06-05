@@ -77,6 +77,170 @@ function findChrome() {
     .find((p) => existsSync(p));
 }
 
+async function verifyRetiredLegacySurfaces(browser) {
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1320, height: 860, deviceScaleFactor: 2 });
+
+  const errors = [];
+  page.on("pageerror", (e) => errors.push("pageerror: " + String(e)));
+  page.on("console", (m) => {
+    if (m.type() !== "error") return;
+    const t = m.text();
+    if (/Failed to load resource|net::|fonts\.googleapis/.test(t)) return;
+    errors.push("console: " + t);
+  });
+
+  await page.goto("file://" + htmlPath, { waitUntil: "load" });
+  await page.waitForSelector(".devroom .dr-brand", { timeout: 8000 });
+  await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
+  await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+
+  const hiddenViews = ["connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
+  const visibleViews = ["board", "team", "terminal", "integrations", "auth"];
+  const defaultSurface = await page.evaluate(
+    ({ hiddenViews, visibleViews }) => {
+      const inSidebar = (selector) => !!document.querySelector(`.dr-sidebar ${selector}`);
+      return {
+        visibleViewsOk: visibleViews.every((v) => inSidebar(`.dr-tab[data-view="${v}"]`)),
+        hiddenViewsAbsent: hiddenViews.every((v) => !inSidebar(`.dr-tab[data-view="${v}"]`)),
+        hiddenViewsPresent: hiddenViews.filter((v) => inSidebar(`.dr-tab[data-view="${v}"]`)),
+        chainAbsent: !inSidebar(".dr-chain-btn"),
+        drawersOk: inSidebar(".dr-audit-btn") && inSidebar(".dr-inbox-btn"),
+      };
+    },
+    { hiddenViews, visibleViews },
+  );
+
+  await page.keyboard.down("Control");
+  await page.keyboard.press("KeyK");
+  await page.keyboard.up("Control");
+  await page.waitForSelector(".cmdk__panel", { timeout: 6000 });
+  const palette = await page.evaluate(
+    ({ hiddenViews, visibleViews }) => {
+      const cmds = Array.from(document.querySelectorAll(".cmdk__item[role='option']")).map(
+        (el) => el.getAttribute("data-cmd") ?? "",
+      );
+      return {
+        options: cmds.length,
+        visibleViewsOk: visibleViews.every((v) => cmds.includes(`view:${v}`)),
+        drawersOk: cmds.includes("drawer:audit") && cmds.includes("drawer:inbox") && !cmds.includes("drawer:chain"),
+        hiddenCommands: hiddenViews.filter((v) => cmds.includes(`view:${v}`)),
+      };
+    },
+    { hiddenViews, visibleViews },
+  );
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".cmdk__panel"), { timeout: 5000 });
+
+  const SHARE_DEMO_CODE = "grove-demo-join-0001";
+  const page2 = await browser.newPage();
+  await page2.setViewport({ width: 1100, height: 800, deviceScaleFactor: 1 });
+  const joinErrors = [];
+  page2.on("pageerror", (e) => joinErrors.push("pageerror: " + String(e)));
+  page2.on("console", (m) => {
+    if (m.type() !== "error") return;
+    const t = m.text();
+    if (/Failed to load resource|net::|fonts\.googleapis/.test(t)) return;
+    joinErrors.push("console: " + t);
+  });
+  await page2.evaluateOnNewDocument(() => {
+    try {
+      localStorage.setItem("grove.onboarded.v3", "1");
+    } catch {
+      /* ignore */
+    }
+  });
+  await page2.goto("file://" + htmlPath + "?join=" + SHARE_DEMO_CODE, { waitUntil: "load" });
+  await page2.waitForSelector('.connect-join[data-card="join"]', { timeout: 8000 });
+  await page2.waitForFunction(() => !window.location.href.includes("join="), { timeout: 8000 });
+  const joinPrefill = await page2.evaluate(() => ({
+    connectVisible: !!document.querySelector(".connect"),
+    connectTabHidden: !document.querySelector('.dr-sidebar .dr-tab[data-view="connect"]'),
+    code: document.querySelector(".connect-join__code")?.value ?? "",
+    urlScrubbed: !/[?&]join=/.test(window.location.search) && !window.location.href.includes("grove-demo-join-0001"),
+  }));
+  await page2.$eval(".connect-join__code", (el) => {
+    const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+    d.set.call(el, "totally-wrong-code");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page2.type(".connect-join__name", "legacy-peer");
+  await page2.click(".connect-join__btn");
+  await page2.waitForSelector("[data-join-err]", { timeout: 8000 });
+  const joinBad = await page2.evaluate(() => ({
+    err: document.querySelector("[data-join-err]")?.getAttribute("data-join-err") ?? "",
+    joined: window.__MOCK__?.joined ?? null,
+  }));
+  await page2.$eval(
+    ".connect-join__code",
+    (el, value) => {
+      const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+      d.set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    },
+    SHARE_DEMO_CODE,
+  );
+  await page2.click(".connect-join__btn");
+  await page2.waitForSelector('.connect-joined[data-join="ok"]', { timeout: 8000 });
+  const joinOk = await page2.evaluate(() => ({
+    member: document.querySelector(".connect-joined__member .connect-chip")?.textContent?.trim() ?? "",
+    role: (document.querySelector(".connect-joined__role")?.textContent ?? "").trim(),
+    joined: window.__MOCK__?.joined ?? null,
+  }));
+  await page2.close();
+
+  const ok =
+    defaultSurface.visibleViewsOk &&
+    defaultSurface.hiddenViewsAbsent &&
+    defaultSurface.chainAbsent &&
+    defaultSurface.drawersOk &&
+    palette.options === 7 &&
+    palette.visibleViewsOk &&
+    palette.drawersOk &&
+    palette.hiddenCommands.length === 0 &&
+    joinPrefill.connectVisible &&
+    joinPrefill.connectTabHidden &&
+    joinPrefill.code === SHARE_DEMO_CODE &&
+    joinPrefill.urlScrubbed &&
+    joinBad.err === "invalid" &&
+    joinBad.joined === null &&
+    joinOk.member.includes("legacy-peer") &&
+    joinOk.role === "operator" &&
+    joinOk.joined?.name === "legacy-peer" &&
+    errors.length === 0 &&
+    joinErrors.length === 0;
+
+  if (!ok) {
+    await page.screenshot({ path: path.join(root, "mock", "verify-legacy-hidden-screenshot.png"), fullPage: true });
+    await page.close();
+    throw new Error(
+      JSON.stringify(
+        {
+          defaultSurface,
+          palette,
+          joinPrefill,
+          joinBad,
+          joinOk,
+          errors,
+          joinErrors,
+        },
+        null,
+        2,
+      ),
+    );
+  }
+  await page.close();
+  console.log(
+    "VERIFY OK",
+    JSON.stringify({
+      mode: "legacy-hidden",
+      defaultSurface,
+      palette,
+      join: { prefilled: joinPrefill.code === SHARE_DEMO_CODE, member: joinOk.member, role: joinOk.role },
+    }),
+  );
+}
+
 async function coreMain() {
   assertNoInboxUnblockCopy();
   assertNoDelegateTaskCopy();
@@ -325,6 +489,17 @@ async function main() {
       if (/Failed to load resource|net::|fonts\.googleapis/.test(t)) return;
       errors.push("console: " + t);
     });
+
+    assertNoInboxUnblockCopy();
+    assertNoDelegateTaskCopy();
+    assertNoLegacyProjectMasterMock();
+    assertNoLegacyProjectMasterE2eFixtures();
+    assertLiveE2eDefaultsCurrentPort();
+    await verifyRetiredLegacySurfaces(browser);
+    // The historical full-panel script below is intentionally archived. It
+    // assumes the old all-surfaces sidebar and is no longer the default
+    // legacy-full contract after the cockpit simplification.
+    if (process.env.GROVE_VERIFY_ARCHIVED_FULL !== "1") return;
 
     await page.goto("file://" + htmlPath, { waitUntil: "load" });
 

@@ -35,7 +35,7 @@
 - 터미널 탭은 선택 pane이 없으면 첫 viewable pane에 자동 연결한다. 2026-06-05 23:19 KST 장애 원인=첫 방문 onboarding overlay가 실제 클릭을 가로막음. 수정=onboarding은 수동 튜토리얼 버튼으로만 열림. live 검증: 실제 Chrome 클릭으로 `터미널` 탭 진입, `/api/ws-ticket` terminal ticket 200, `/ws/terminal` frame 수신, xterm text 렌더 확인.
 - `build_assistant_facts`는 현재 `dev10` registry 기준 live nodes를 반환한다. facts는 참고 컨텍스트이며 응답의 유일한 상태 소스가 아니다.
 - Slack/web master 응답 프롬프트와 사용자-facing 차단 사유에서 내부 구현어가 새지 않도록 정리했다. facts/decision JSON은 이벤트 컨텍스트일 뿐이며 자연 대화와 직접 런타임 확인을 막지 않는다. 2026-06-05 23:35 KST live 반영됨(PID web 51497, slack 50643 확인).
-- 검증: `npm run build`, `npm run verify`(core UI), `GROVE_VERIFY_FULL=1 npm run verify`(현재 core로 수렴), `pnpm check` green. 과거 전체 패널 검증은 `GROVE_VERIFY_FULL=1 GROVE_VERIFY_LEGACY_FULL=1 npm run verify`로만 실행한다.
+- 검증: `npm run build`, `npm run verify`(core UI), `GROVE_VERIFY_FULL=1 npm run verify`(현재 core로 수렴), `pnpm check` green. `GROVE_VERIFY_FULL=1 GROVE_VERIFY_LEGACY_FULL=1 npm run verify`는 과거 전체 패널 nav를 되살리지 않고, 은퇴한 구형 표면이 기본 sidebar/command palette에 없고 `?join=` 딥링크만 유지되는지 검증한다.
 
 ## 0. 과거 사고 기록 (현재 운영 규칙 아님)
 
