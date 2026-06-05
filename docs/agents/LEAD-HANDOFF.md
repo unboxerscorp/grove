@@ -14,8 +14,8 @@
   - Slack은 `dev10:2.0`에서 `/Users/chopin/.grove/dev10/run-slack-loop.sh`로 실행한다. `/api/slack/config/status`는 `socket_connected`, `~/.grove/dev10/slack-runtime.json` heartbeat가 갱신된다.
   - advisor는 `dev10:3.0`의 Claude 노드이며 약 5분마다 `grove-master`를 점검한다. 사용자가 명시 중단하기 전까지 루프를 멈추지 않는다.
   - `/api/projects`는 `dev10` 하나만 반환해야 한다. `/api/org`의 `default_assignee`와 `master_org.project_master.name`은 `grove-master`여야 하며 advisor가 default가 되면 회귀다.
-  - 최신 product-code 커밋은 `7100279 fix: prefer master terminal by default`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
-  - 최신 검증: `pnpm check` green, remote terminal ticket 200, Slack `socket_connected`, heartbeat fresh, tailnet browser terminal smoke green.
+  - 최신 product-code 커밋은 `e042622 fix: guard node-routed master chat`이다. 이후 docs-only handoff 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD를 확인한다.
+  - 최신 검증: `pnpm check` green, `web npm run e2e` 693/693 green, remote terminal ticket 200, Slack `socket_connected`, heartbeat fresh, tailnet browser terminal smoke green.
 - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
 - 앞으로 기본 운영은 `dev10` tmux 하나를 쓴다. 현재 서비스 창은 `dev10:1.0 web`, `dev10:2.0 slack`이다.
 - 프로젝트 ID와 host tmux 세션은 분리됐다. web 프로젝트 생성은 `grove new-project --tmux-session dev10`로 새 프로젝트 registry를 만들고 pane은 `dev10`에 둔다.
@@ -44,6 +44,7 @@
 
 최근 완료된 안정화:
 
+- `e042622 fix: guard node-routed master chat`: isolated e2e/temp server가 실제 `grove-master` pane으로 `grove ask`를 보내지 않도록, node-routed master chat은 target node가 현재 `GROVE_HOME` registry에 terminal-viewable로 있을 때만 CLI를 호출한다.
 - `5dec69d fix: expose remote web companion urls`: `~/.grove/dev10/web.json`에 `allowed_hosts`와 `remote_urls`를 기록해 remote/headless 접속 정보를 노드가 직접 확인할 수 있게 했다.
 - `7100279 fix: prefer master terminal by default`: terminal view 첫 진입 시 raw node 배열 순서가 아니라 `grove-master`/lead/root 우선순위로 기본 pane을 선택한다.
 - `407c84e docs: refresh live dev10 handoff`: live dev10 운영 상태를 문서화했다.
