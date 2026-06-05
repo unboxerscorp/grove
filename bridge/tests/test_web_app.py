@@ -1853,6 +1853,66 @@ def test_task_create_validates_assignee_candidates_and_lead_filter(
     assert [task["id"] for task in lead_inbox.json()] == [lead.json()["id"]]
 
 
+def test_task_create_accepts_project_qualified_assignee_from_existing_project(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"local": {"name": "local", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {
+            "worker": {
+                "name": "worker",
+                "agent": "claude",
+                "role": "Remote project maker token=xoxb-secret",
+                "tmux_pane": "dev11:1.0",
+            },
+        },
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client) | {"X-Grove-Project": "dev10"}
+
+    created = client.post(
+        "/api/boards/main/tasks",
+        headers=headers,
+        json={
+            "title": "Remote task",
+            "body": "Do remote work",
+            "assignee": "dev11:worker",
+        },
+    )
+    queried = client.get(
+        "/api/boards/main/tasks?assignee=dev11%3Aworker",
+        headers=headers,
+    )
+    lane = client.post(
+        "/api/boards/main/tasks",
+        headers=headers,
+        json={"title": "Missing remote", "assignee": "missing:worker"},
+    )
+
+    assert created.status_code == 200
+    task = created.json()
+    assert task["assignee"] == "dev11:worker"
+    assert "Project: dev10" in task["body"]
+    assert "Target node: dev11:worker" in task["body"]
+    assert "Target role: Remote project maker" in task["body"]
+    assert "xoxb-secret" not in task["body"]
+    assert "Original message:\nDo remote work" in task["body"]
+    assert [item["id"] for item in queried.json()] == [task["id"]]
+    assert lane.status_code == 200
+    assert "assignee" not in lane.json()
+    audits = store.list_audit_events(board="dev10", action="assign", node="dev11:worker")
+    assert len(audits) == 1
+    assert audits[0].payload["project"] == "dev10"
+    assert audits[0].payload["to_node"] == "dev11:worker"
+
+
 def test_audit_endpoint_returns_assigned_task_events_with_actor(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     write_registry(
@@ -6045,6 +6105,64 @@ def test_node_send_uses_literal_tmux_argv_audits_redacts_and_rate_limits(
     assert "alice@example.com" not in rendered
     assert "[path]" in rendered
     assert "[pii]" in rendered
+
+
+def test_node_send_target_project_header_sends_to_target_and_audits_caller_board(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"caller": {"name": "caller", "agent": "codex", "tmux_pane": "dev10:1.0"}},
+    )
+    write_registry(
+        tmp_path,
+        "dev11",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev11:2.0"}},
+    )
+    client = make_client(tmp_path, store, node_input_enabled=True)
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        _ = (capture_output, text, timeout, check)
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+
+    response = client.post(
+        "/api/nodes/worker/send",
+        headers=auth_headers(client)
+        | {"X-Grove-Project": "dev10", "X-Grove-Target-Project": "dev11"},
+        json={"text": "hello remote"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "project": "dev10",
+        "target_project": "dev11",
+        "node": "worker",
+        "tmux_pane": "dev11:2.0",
+    }
+    assert calls == [
+        ["tmux", "send-keys", "-t", "dev11:2.0", "-l", "--", "hello remote"],
+        ["tmux", "send-keys", "-t", "dev11:2.0", "Enter"],
+    ]
+    caller_audits = store.list_audit_events(board="dev10", action="node-send", node="worker")
+    assert len(caller_audits) == 1
+    assert caller_audits[0].payload["project"] == "dev10"
+    assert caller_audits[0].payload["target_project"] == "dev11"
+    assert store.list_audit_events(board="dev11", action="node-send", node="worker") == []
 
 
 def test_node_send_rejects_viewer_and_other_project_pane(

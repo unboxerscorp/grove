@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { Context, NodeCtx } from "../context.js";
 import { loadContext, nodeOf } from "../context.js";
 import { ask } from "../ops.js";
+import { resolveProjectNodeTarget } from "../project-address.js";
 import { cmdAsk } from "./ask.js";
 
 vi.mock("../context.js", () => ({
@@ -12,6 +13,10 @@ vi.mock("../context.js", () => ({
 
 vi.mock("../ops.js", () => ({
   ask: vi.fn(),
+}));
+
+vi.mock("../project-address.js", () => ({
+  resolveProjectNodeTarget: vi.fn(),
 }));
 
 afterEach(() => {
@@ -65,5 +70,40 @@ describe("cmdAsk", () => {
 
     expect(writes).toEqual([]);
     expect(process.exitCode).toBe(1);
+  });
+
+  test("asks a node in another project with caller context preserved for dispatch", async () => {
+    const { ctx, nc, writes } = harness();
+    const targetCtx: Context = {
+      ...ctx,
+      config: { ...ctx.config, session: "dev11" },
+    };
+    const targetNc: NodeCtx = {
+      ...nc,
+      addr: "dev11:1.0",
+    };
+    vi.mocked(resolveProjectNodeTarget).mockReturnValue({
+      callerCtx: ctx,
+      crossProject: true,
+      label: "dev11:maker",
+      nc: targetNc,
+      node: "maker",
+      project: "dev11",
+      targetCtx,
+    });
+    vi.mocked(ask).mockResolvedValue("remote answer");
+
+    await cmdAsk("maker", "hello", { project: "dev11", timeout: "2s" });
+
+    expect(resolveProjectNodeTarget).toHaveBeenCalledWith(
+      ctx,
+      "maker",
+      expect.objectContaining({ project: "dev11" }),
+    );
+    expect(ask).toHaveBeenCalledWith(targetCtx, targetNc, "hello", 2000, {
+      submissionContext: ctx,
+      submissionProject: "dev10",
+    });
+    expect(writes).toEqual(["remote answer\n"]);
   });
 });

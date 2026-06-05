@@ -196,6 +196,7 @@ taskTransitionCommand("ask-human", "mark a board task as waiting for human input
 program
   .command("send <node> <message...>")
   .description("give a node a task (non-blocking)")
+  .option("--project <project>", "target grove project/session for the addressed node")
   .option("-c, --config <file>", "path to grove.yaml")
   .action(
     run((node: string, message: string[], opts: Record<string, unknown>) =>
@@ -219,6 +220,7 @@ program
 program
   .command("ask <node> <message...>")
   .description("send a task and wait for the result (send + wait)")
+  .option("--project <project>", "target grove project/session for the addressed node")
   .option("-c, --config <file>", "path to grove.yaml")
   .option("-t, --timeout <dur>", "max wait, e.g. 30s 20m 1h", "30m")
   .action(
@@ -245,6 +247,7 @@ program
 program
   .command("gather <nodes...>")
   .description("wait --all alias with a human summary, or machine JSON via --json")
+  .option("--project <project>", "target grove project/session for all addressed nodes")
   .option("-c, --config <file>", "path to grove.yaml")
   .option("-t, --timeout <dur>", "max wait, e.g. 30s 20m 1h", "30m")
   .option("--json", "print the fixed fan-in result schema as JSON")

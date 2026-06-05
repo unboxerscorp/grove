@@ -25,6 +25,10 @@ Check:
 
 If the current node has children, do not take leaf implementation work by default. Coordinate through child nodes and board tasks.
 
+The org hierarchy is ownership and reporting metadata, not a communication restriction.
+For short direct communication, nodes may address reachable nodes in any project with
+`project:node` or command `--project`.
+
 If the target node does not exist, use `grove:spawn-node` before assigning durable work.
 
 If the work needs tracking, review, verification, or implementation, use a board task rather than an untracked chat. Use direct conversation only for short questions or clarification.

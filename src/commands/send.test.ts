@@ -12,6 +12,7 @@ import {
   resolveTranscript,
   submitMessage,
 } from "../ops.js";
+import { resolveProjectNodeTarget } from "../project-address.js";
 import type * as RegistryModule from "../registry.js";
 import type { Registry } from "../registry.js";
 import { info, warn } from "../util/log.js";
@@ -33,6 +34,10 @@ vi.mock("../ops.js", () => ({
   recordProvisionalPending: vi.fn(),
   resolveTranscript: vi.fn(),
   submitMessage: vi.fn(),
+}));
+
+vi.mock("../project-address.js", () => ({
+  resolveProjectNodeTarget: vi.fn(),
 }));
 
 vi.mock("../events.js", async (importOriginal) => {
@@ -61,7 +66,61 @@ describe("cmdSend", () => {
     vi.mocked(warn).mockReset();
     vi.mocked(loadContext).mockReset();
     vi.mocked(nodeOf).mockReset();
+    vi.mocked(resolveProjectNodeTarget).mockReset();
     vi.mocked(eventLogSize).mockReturnValue(0);
+  });
+
+  test("sends to a target project node while preserving caller context for dispatch", async () => {
+    const callerCtx = {
+      config: { session: "dev10" },
+      registry: { nodes: {} },
+    };
+    const targetCtx = {
+      config: { session: "dev11" },
+      registry: { nodes: {} },
+    };
+    const targetNc = {
+      node: { agent: "codex", cwd: "/tmp/dev11", name: "worker" },
+      adapter: {
+        detectNew: vi.fn(() => null),
+        size: vi.fn(() => 100),
+        snapshot: vi.fn(() => new Map<string, number>()),
+      },
+    };
+    vi.mocked(loadContext).mockReturnValue(callerCtx as never);
+    vi.mocked(resolveProjectNodeTarget).mockReturnValue({
+      callerCtx: callerCtx as never,
+      crossProject: true,
+      label: "dev11:worker",
+      nc: targetNc as never,
+      node: "worker",
+      project: "dev11",
+      targetCtx: targetCtx as never,
+    });
+    vi.mocked(resolveTranscript).mockReturnValue("/tmp/dev11/current.jsonl");
+    vi.mocked(submitMessage).mockResolvedValue();
+
+    const pending = cmdSend("worker", "hello", { project: "dev11" });
+    await vi.runAllTimersAsync();
+    await pending;
+
+    expect(resolveProjectNodeTarget).toHaveBeenCalledWith(
+      callerCtx,
+      "worker",
+      expect.objectContaining({ project: "dev11" }),
+    );
+    expect(recordPending).toHaveBeenCalledWith(
+      targetCtx,
+      targetNc,
+      "/tmp/dev11/current.jsonl",
+      100,
+      expect.objectContaining({ eventLogOffset: 0 }),
+    );
+    expect(submitMessage).toHaveBeenCalledWith(targetNc, "hello", {
+      callerNode: "grove send CLI",
+      context: callerCtx,
+      project: "dev10",
+    });
   });
 
   test("records pending when submission is not confirmed before the probe times out", async () => {

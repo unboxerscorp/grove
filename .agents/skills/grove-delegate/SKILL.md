@@ -11,6 +11,7 @@ Use `ask` for short, single-turn conversation:
 
 ```bash
 grove ask <node> "<question>"
+grove ask <project:node> "<question>"
 ```
 
 Use `send` plus `wait` for an interactive exchange that does not need durable tracking:
@@ -20,10 +21,14 @@ grove send <node> "<message>"
 grove wait <node>
 ```
 
+The org tree records ownership and reporting structure. It is not a communication boundary;
+nodes may talk across siblings or projects, using `project:node` or `--project` for remote
+project targets.
+
 Use a board task for implementation, verification, review, multi-step work, or anything that must survive restarts:
 
 ```text
-create_task(board=<board>, assignee=<child>, ...)
+create_task(board=<board>, assignee=<node-or-project:node>, ...)
 claim -> complete
 claim -> block
 ```

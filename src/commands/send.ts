@@ -7,6 +7,7 @@ import {
   resolveTranscript,
   submitMessage,
 } from "../ops.js";
+import { resolveProjectNodeTarget } from "../project-address.js";
 import { color, info, warn } from "../util/log.js";
 import { eventsDir } from "../util/paths.js";
 import { poll } from "../util/time.js";
@@ -23,10 +24,14 @@ interface PendingSubmission {
 export async function cmdSend(
   name: string,
   message: string,
-  opts: { config?: string },
+  opts: { config?: string; project?: string },
 ): Promise<void> {
-  const ctx = loadContext(opts.config);
-  const nc = nodeOf(ctx, name);
+  const callerCtx = loadContext(opts.config);
+  const target =
+    opts.project || name.includes(":") ? resolveProjectNodeTarget(callerCtx, name, opts) : null;
+  const ctx = target?.targetCtx ?? callerCtx;
+  const nc = target?.nc ?? nodeOf(ctx, name);
+  const label = target?.label ?? name;
   // Capture the baseline before the response lands so a later `grove wait`
   // scans from here, not from wait-time.
   const before = nc.adapter.snapshot(nc.node.cwd);
@@ -50,7 +55,13 @@ export async function cmdSend(
       snapshot: before,
     });
   }
-  await submitMessage(nc, message, { callerNode: "grove send CLI", context: ctx });
+  await (target
+    ? submitMessage(nc, message, {
+        callerNode: "grove send CLI",
+        context: target.callerCtx,
+        project: target.callerCtx.config.session,
+      })
+    : submitMessage(nc, message, { callerNode: "grove send CLI", context: ctx }));
 
   const submitted = await poll(
     () => {
@@ -86,7 +97,7 @@ export async function cmdSend(
   const pending: PendingSubmission | null =
     submitted.value ?? (transcript ? { transcript, fromOffset } : null);
   if (!pending) {
-    warn(`${name}: submission unconfirmed; provisional pending recorded`);
+    warn(`${label}: submission unconfirmed; provisional pending recorded`);
     return;
   }
 
@@ -98,7 +109,7 @@ export async function cmdSend(
     });
   }
   if (!submitted.value) {
-    info(`${name}: submission unconfirmed; pending recorded`);
+    info(`${label}: submission unconfirmed; pending recorded`);
   }
-  info(`sent → ${color.bold(name)}`);
+  info(`sent → ${color.bold(label)}`);
 }

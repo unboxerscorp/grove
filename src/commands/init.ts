@@ -20,8 +20,9 @@ nodes:
     agent: claude
     role: |
       You are the lead of this grove. Break work down and delegate to your
-      children with \`grove send <node> "<task>"\`, then collect results with
-      \`grove wait <node>\`. See grove-protocol.md.
+      team with \`grove send <node> "<task>"\`, then collect results with
+      \`grove wait <node>\`. The tree records ownership, not who may talk to
+      whom. See grove-protocol.md.
     children: [maker-1, maker-2, reviewer]
 
   maker-1:
@@ -39,25 +40,28 @@ nodes:
 const PROTOCOL = `# grove delegation protocol
 
 You are a node in a *grove* — a tree of AI agents, each running in its own tmux
-pane. You can delegate work to your children and collect their results with the
-\`grove\` CLI.
+pane. The tree records ownership and reporting structure; it is not a
+communication boundary. You can send or ask any reachable node, including nodes
+in another project with \`project:node\` or \`--project <project>\`.
 
 ## Commands you can run
 
 - \`grove status\` — see every node in the tree and what it last did.
-- \`grove send <node> "<task>"\` — hand a child a task (returns immediately).
-- \`grove wait <node>\` — block until that child finishes its current turn and
+- \`grove send <node> "<task>"\` — hand a node a task (returns immediately).
+- \`grove wait <node>\` — block until that node finishes its current turn and
   print what it produced.
 - \`grove ask <node> "<task>"\` — \`send\` + \`wait\` in one call (use this for
   request/response delegation).
+- \`grove ask <project:node> "<task>"\` — direct request/response to another
+  project.
 
 ## How to delegate well
 
 1. Give each child a *self-contained* task: what to do, which files, how to
    verify, and what to report back.
 2. Prefer \`grove ask\` when you need the result before continuing.
-3. Fan out with \`grove send\` to multiple children, then \`grove wait\` each one
-   when you need to join.
+3. Fan out with \`grove send\` to multiple nodes, then \`grove wait\` or
+   \`grove gather\` when you need to join.
 4. Children are themselves full agents — they can have their own children. Keep
    tasks at the altitude of the node you're addressing.
 

@@ -339,7 +339,7 @@ export async function ask(
   nc: NodeCtx,
   message: string,
   timeoutMs: number,
-  opts: { eventLogDir?: string } = {},
+  opts: { eventLogDir?: string; submissionContext?: Context; submissionProject?: string } = {},
 ): Promise<string | null> {
   const transcript = resolveTranscript(ctx, nc);
   const haveBaseline = Boolean(transcript) && nc.adapter.size(transcript) > 0;
@@ -352,7 +352,11 @@ export async function ask(
       eventLogOffset,
     });
   }
-  await submitMessage(nc, message, { callerNode: "grove ask CLI", context: ctx });
+  await submitMessage(nc, message, {
+    callerNode: "grove ask CLI",
+    context: opts.submissionContext ?? ctx,
+    project: opts.submissionProject,
+  });
   const res = await waitForCompletion(ctx, nc, {
     timeoutMs,
     fromOffset,

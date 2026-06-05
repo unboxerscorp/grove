@@ -93,6 +93,7 @@ from grove_bridge.team_auth import (
 
 SESSION_HEADER = "X-Grove-Session-Token"
 PROJECT_HEADER = "X-Grove-Project"
+TARGET_PROJECT_HEADER = "X-Grove-Target-Project"
 DEFAULT_SESSION = "dev10"
 LOGGER = logging.getLogger(__name__)
 try:
@@ -2071,17 +2072,22 @@ def create_app(
             detail="node input requires operator role",
         )
         project = resolve_project(request)
+        target_project = resolve_target_project(request, caller_project=project)
         _require_gui_feature_enabled(
             _store(request),
-            project=project,
+            project=target_project,
             feature="node-input",
             detail="node input is not enabled",
         )
-        node_record = _node_record_in_project(node, config=project.config)
+        node_record = _node_record_in_project(node, config=target_project.config)
         pane = node_record["tmux_pane"]
-        if not _pane_input_allowed(pane, config=project.config):
+        if not _pane_input_allowed(pane, config=target_project.config):
             raise HTTPException(status_code=404, detail="node not found")
-        _check_node_input_rate_limit(request, project=project, node=node_record["name"])
+        _check_node_input_rate_limit(
+            request,
+            project=target_project,
+            node=node_record["name"],
+        )
         try:
             _tmux_send_text(pane, payload.text)
         except RuntimeError as exc:
@@ -2098,23 +2104,30 @@ def create_app(
             target={"type": "node", "id": node_record["name"], "node": node_record["name"]},
             payload={
                 "project": project.name,
+                "target_project": target_project.name,
                 "node": node_record["name"],
                 "text": safe_text,
                 "length": len(payload.text),
             },
             summary=safe_text,
         )
-        return {
+        response = {
             "ok": True,
             "project": project.name,
             "node": node_record["name"],
             "tmux_pane": pane,
         }
+        if target_project.name != project.name:
+            response["target_project"] = target_project.name
+        return response
 
     @app.get("/api/nodes/{node}/connect")
     def node_connect_endpoint(request: Request, node: str) -> dict[str, object]:
         _require_auth(request)
-        project = resolve_project(request)
+        project = resolve_target_project(
+            request,
+            caller_project=resolve_project(request),
+        )
         node_record = _node_record_in_project(node, config=project.config)
         return _node_connect_payload(node_record, project=project)
 
@@ -6868,6 +6881,29 @@ def resolve_project(source: Request | WebSocket) -> ProjectContext:
     )
 
 
+def resolve_target_project(
+    source: Request | WebSocket,
+    *,
+    caller_project: ProjectContext,
+) -> ProjectContext:
+    raw_project = source.headers.get(TARGET_PROJECT_HEADER)
+    if raw_project is None or not raw_project.strip():
+        return caller_project
+    name = raw_project.strip()
+    if PROJECT_NAME_RE.fullmatch(name) is None:
+        raise HTTPException(status_code=400, detail="invalid target project")
+    base_config = _config(source)
+    project_config = replace(base_config, registry_session=name)
+    if not _registry_path(project_config).is_file():
+        raise HTTPException(status_code=404, detail="target project not found")
+    return ProjectContext(
+        config=project_config,
+        name=name,
+        board=name,
+        from_header=True,
+    )
+
+
 def _resolve_board_id(board_id: str, *, project: ProjectContext) -> str:
     clean = board_id.strip()
     if not clean:
@@ -6903,7 +6939,11 @@ def _task_body_with_grove_context(
         project=project.name,
         project_lead=LEAD_NODE_NAME,
         target_node=assignee,
-        target_role=_context_pack_target_role(nodes, assignee),
+        target_role=_context_pack_target_role_for_assignee(
+            nodes,
+            assignee,
+            project=project,
+        ),
     )
 
 
@@ -6930,6 +6970,23 @@ def _context_pack_target_role(
         if node.name == target_node:
             return node.role
     return None
+
+
+def _context_pack_target_role_for_assignee(
+    nodes: Sequence[ContextPackNode],
+    assignee: str | None,
+    *,
+    project: ProjectContext,
+) -> str | None:
+    qualified = _project_qualified_node_ref(assignee or "")
+    if qualified is None:
+        return _context_pack_target_role(nodes, assignee)
+    target_project, target_node = qualified
+    target_config = replace(project.config, registry_session=target_project)
+    if not _registry_path(target_config).is_file():
+        return None
+    target_nodes = _context_pack_nodes_for_project(target_config)
+    return _context_pack_target_role(target_nodes, target_node)
 
 
 def _validated_ticket_scope(
@@ -7548,6 +7605,16 @@ def _validated_task_assignee(value: str | None, *, project: ProjectContext) -> s
     assignee = value.strip()
     if not assignee:
         return None
+    qualified = _project_qualified_node_ref(assignee)
+    if qualified is not None:
+        target_project, target_node = qualified
+        target_config = replace(project.config, registry_session=target_project)
+        if not _registry_path(target_config).is_file():
+            return None
+        allowed = {str(candidate["name"]) for candidate in _assignee_candidates(target_config)}
+        if target_node not in allowed:
+            return None
+        return f"{target_project}:{target_node}"
     if NODE_NAME_RE.fullmatch(assignee) is None:
         return None
     allowed = {str(candidate["name"]) for candidate in _assignee_candidates(project.config)}
@@ -7568,6 +7635,28 @@ def _validated_task_reviewer(value: str | None, *, project: ProjectContext) -> s
     if reviewer not in allowed:
         raise HTTPException(status_code=400, detail="reviewer is not in project")
     return reviewer
+
+
+def _project_qualified_node_ref(value: str) -> tuple[str, str] | None:
+    clean = value.strip()
+    if ":" not in clean:
+        return None
+    raw_project, raw_node = clean.split(":", 1)
+    project = raw_project.strip()
+    node = raw_node.strip()
+    if PROJECT_NAME_RE.fullmatch(project) is None:
+        return None
+    if NODE_NAME_RE.fullmatch(node) is None:
+        return None
+    return project, node
+
+
+def _validated_execution_node_ref(value: str, *, field_name: str) -> str:
+    clean = value.strip()
+    qualified = _project_qualified_node_ref(clean)
+    if qualified is not None:
+        return f"{qualified[0]}:{qualified[1]}"
+    return _validated_node_ref(clean, field_name=field_name)
 
 
 def _manual_task_status(value: str) -> str:
@@ -8355,9 +8444,9 @@ def _execution_node_for_task(
     execution = store.task_execution_state(board=project.board, task_id=task.id)
     raw_node = execution.get("node")
     if isinstance(raw_node, str) and raw_node.strip():
-        return _validated_node_ref(raw_node, field_name="node")
+        return _validated_execution_node_ref(raw_node, field_name="node")
     if task.assignee is not None and task.assignee.strip():
-        return _validated_node_ref(task.assignee, field_name="node")
+        return _validated_execution_node_ref(task.assignee, field_name="node")
     raise HTTPException(status_code=409, detail="task has no execution node")
 
 
