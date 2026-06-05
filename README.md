@@ -2,20 +2,22 @@
 
 **A standalone, self-contained dev-room / team-OS for real CLI agents.**
 
-grove runs a tree of `codex`, `claude`, and `agy` CLI sessions in tmux, then gives the
-team one web cockpit: a kanban board, channels, live terminal panes, decision inbox,
-audit lane, usage reporting, and safety controls. Every agent you see is a real,
-viewable, talk-to-able terminal session, not an invisible runtime.
+grove runs a visible org of `codex`, `claude`, and `agy` CLI sessions in tmux, then
+gives the operator one web cockpit: human-facing lists, live terminals, org
+inspection, Slack/web chat to the GROVE MASTER, audit, setup, and remote access. Every
+agent you see is a real, viewable, talk-to-able terminal session, not an invisible
+runtime.
 
 ```bash
 grove up                         # start the org chart in tmux
+grove org --json                  # inspect nodes, roles, panes, cwd, and hierarchy
 grove-web --port 8765            # open the dev-room web SPA + dashboard APIs
 grove-web --enable-node-input     # optional: operator-gated web input to node panes
 grove serve --port 8787          # optional local OpenAI-compatible chat facade
-grove delegate maker-1 "Fix auth retry handling" --body "Add tests and report risks."
-grove task start task_123 --from-status ready
-grove watchdog --json            # dry-run node health and recovery plan
+grove send maker-1 "Please inspect the auth retry path and report risks."
 grove ask reviewer "Review the current diff"
+grove task ask-human task_123 --comment "Which branch should this use?"
+grove watchdog --json            # dry-run node health and recovery plan
 grove repair --all
 ```
 
@@ -23,19 +25,17 @@ grove repair --all
 
 - **Real tmux agent tree** - bring up an org chart of `codex`, `claude`, and `agy`
   nodes; each node is a live tmux pane with adapter-specific turn detection.
-- **Web dev-room SPA** - `grove-web` serves the board, org chart, live terminal
-  viewer, project switcher, login/setup panels, Slack configuration UX, audit
-  drawer, cost/usage views, execution timeline, aggregation, handoff surfaces,
-  tutorial, and the floating MasterChat widget.
+- **Web dev-room SPA** - `grove-web` serves human-facing lists, org chart, live
+  terminal viewer, project switcher, login/setup panels, Slack configuration UX, audit
+  drawer, setup/connect surfaces, tutorial, and the floating MasterChat widget.
 - **Grouped sidebar navigation** - v1.24 moved the crowded top nav into a grouped,
   collapsible left sidebar from user UI feedback. It keeps every panel reachable and
   collapses into a responsive drawer on narrow screens; it is a layout change, not a
   new backend or safety surface.
 - **Command palette** - v1.25 adds Cmd-K quick navigation across all shipped views
   and drawers, with fuzzy filtering, keyboard navigation, focus/ARIA handling, and
-  responsive behavior. It is navigation-only: commands open views/drawers or route to
-  existing gated UI, and do not create tasks, change config, or perform hidden
-  mutations.
+  responsive behavior. It is navigation-only: commands open views/drawers and do not
+  create tasks, change config, or perform hidden mutations.
 - **GUI-for-all polish** - v1.30 moves more operator workflows into the dashboard:
   Setup can toggle flag-gated features such as intake, quotas, and node input; batch
   UI polish adds node-list indentation, org task-count badges, per-column "+" add
@@ -45,56 +45,59 @@ grove repair --all
   dashboard server.
 - **Org-chart spawn/up** - create nodes from the CLI or dashboard with role, parent,
   group, agent type, workspace, and model metadata.
-- **Board-based delegation** - `grove delegate <node> "<title>"` creates an assigned
-  board task; the pull executor claims it and runs it in the target real session.
+- **Direct node communication** - use `grove send`, `grove ask`, tmux capture, or tmux
+  input to talk to any visible node across the org. The hierarchy records ownership and
+  reporting; it is not a communication firewall.
+- **Human-facing lists** - board/task records are for operator TODOs, feedback, and
+  human decisions. They are not the required protocol for node-to-node implementation,
+  review, or blocker traffic.
 - **Task self-status CLI** - v1.31 adds `grove task start|review|done|block|ask-human`
-  so a node can durably report its own board status, reviewer handoff, block reason, or
-  human question through the same project-scoped board API.
+  for updating an existing human-facing item when durable operator-visible state is
+  useful.
 - **Project room model** - v1.27 makes the dashboard use one active project, one tmux
   session, and one project board. The old board selector is gone; the `"default"` board
   alias resolves to the active project's board. New projects get a `project-master`
-  node, and new task creation uses a required assignee dropdown that defaults to it.
+  node, and new human-facing item creation uses a required assignee dropdown that
+  defaults to it.
   v1.30 adds dashboard project creation, GitHub import through `new-project --clone`,
   and display names such as showing project `dev10` as `grove-dev`.
-- **Board query and saved views** - v1.26 adds read-only status/assignee/label
-  filters, full-text search over task title/body, pagination, and live board results.
+- **Board query and saved views** - v1.26 adds status/assignee/label filters,
+  full-text search over task title/body, pagination, and live board results.
   Operators can save named board views; results are project-scoped, role-aware, and
   redacted.
 - **Immortal task board** - v1.29 makes the board render every registered task:
   canonical workflow columns `ready`, `running`, `review`, `blocked`, `ask_human`, and
   `done` are always visible, unknown statuses fall into a catch-all
   column, and completed work remains on the board instead of vanishing.
-- **Status discipline and review** - tasks move through ready/start, running, review,
-  and done, with blocked/ask-human as explicit side states. v1.31 standardizes
-  the stored running status as `running` while keeping `in_progress`, `claimed`, and
-  `executing` as aliases. Manual status changes and reviewer changes use the board as
-  source of truth; each task can carry an assignee plus a per-task reviewer so reviewers
-  can pull from the review column.
+- **Human item status discipline** - human-facing items can move through ready/start,
+  running, review, and done, with blocked/ask-human as explicit side states. v1.31
+  standardizes the stored running status as `running` while keeping `in_progress`,
+  `claimed`, and `executing` as aliases for old data.
 - **GROVE MASTER chat and org** - v1.30 makes `POST /api/master/chat` produce real
-  read-only answers from scoped project, org, and board facts while keeping action
-  proposals as gated previews. The org view adds a cross-project GROVE MASTER root
-  that opens chat, project lead nodes that switch projects, and human-as-node
-  assignment that routes human-owned work through inbox/comments.
+  answers from scoped project, org, board, and runtime facts. The org view adds a
+  cross-project GROVE MASTER root that opens chat, project lead nodes that switch
+  projects, and human-as-node assignment for human-owned work.
 - **Web-to-node input** - v1.27 can send a prompt or command from a node's terminal
   panel to that node's tmux pane when `grove-web --enable-node-input` is set. It is
   operator-gated, project/pane allowlisted, rate-limited, sent as literal tmux input,
   and audited with redaction. Backend node flags decide whether a pane is viewable or
   input-capable.
 - **Node connect copy** - each terminal panel can fetch `GET /api/nodes/{node}/connect`
-  and copy a read-only tmux attach/select-pane command for that node. It exposes
-  connection strings only for nodes in the current project scope.
+  and copy tmux attach/select-pane commands for that node. It exposes connection
+  strings only for nodes in the current project scope.
 - **Perfect node sync** - v1.28 makes `/api/nodes` and the org chart surface every
   registry/meta node, including `lead` and `project-master`. Nodes without a usable
   pane are shown as unavailable with a reason instead of silently disappearing. v1.29
   adds a tmux/registry reconciler so orphan panes are adopted and dead panes are marked
   rather than hidden.
 - **Lead as a real node** - the project lead is a project-scoped real node, such as
-  `dev10:0.0`, not a synthetic placeholder. Its terminal can be viewed read-only when
-  allowed, while web-to-node input to the lead/orchestrator pane stays blocked.
+  `dev10:0.0`, not a synthetic placeholder. Its terminal can be viewed and, when
+  node input is enabled for the operator, addressed like any other live pane.
 - **Board card clarity** - board cards show task titles as primary text with long
   titles/summaries wrapping instead of widening columns.
-- **Channels and ask-human** - Slack integration and web/chat paths route work and
-  human decisions through grove tasks, comments, and unblock flows.
+- **Channels and ask-human** - Slack and web chat route to the GROVE MASTER. Human
+  decisions can be recorded as ask-human items, but ordinary node communication stays
+  direct.
 - **Slack bot human channel** - v1.30 improves the Slack panel with usage guidance,
   available commands, intake flow, and Block Kit previews/buttons. Humans can file
   bugs, feedback, tasks, or questions from Slack; task creation stays gated/audited,
@@ -123,40 +126,38 @@ grove repair --all
   blocked, ask-human, and anomaly notifications. New routing is default OFF and dry-run
   by default; configuration is operator-gated, audited, and redacted to avoid surprise
   outbound sends or secret/PII leaks.
-- **Routing planner** - read-only `/api/plan` recommends candidate nodes using role,
-  capability, load, and cost signals. It never claims, delegates, or spawns by itself.
+- **Routing planner** - `/api/plan` recommends candidate nodes using role, capability,
+  load, and cost signals. It never claims, assigns, or spawns by itself.
 - **Guarded autonomy** - autonomous pickup and the guarded execution loop are shipped
   but default OFF. Execution requires both gates, an approval step, concurrency 1,
   multi-level kill-switch checks, and prepared dispatch lease validation. v1.29
-  supports enabling autopickup across nodes through the global and per-node gates, so
-  assigned ready work can be picked up and answered on the board when the operator
-  opts in.
+  supports enabling autopickup across nodes through the global and per-node controls
+  when the operator opts in.
 - **Slack safety commands** - Slack `status`, `approve`, `abort`, and `killswitch`
   are default OFF, role-gated, preview-then-confirm, one-shot, audited, and redacted.
 - **Slack intelligent intake** - v1.20 `--enable-intake` is default OFF. A deterministic,
-  no-LLM classifier triages Slack messages into bug, feedback, task request, question,
-  or command. Bug/feedback/task messages produce Block Kit previews and only create
-  board tasks after same-member confirm through the role-gated, audited task-create
-  path; questions stay on the read-only answer path. Injection-like text falls back to
-  question/no task, and the live triage announcement is upserted in place with
+  no-LLM classifier triages Slack messages into bug, feedback, human-list request,
+  question, or command. Bug/feedback/list-item messages produce Block Kit previews and
+  only create human-facing items after same-member confirm through the role-gated,
+  audited create path; questions route to the GROVE MASTER. Injection-like text falls
+  back to question/no task, and the live triage announcement is upserted in place with
   `chat.update`.
-- **Slack read-only assistant** - v1.21 keeps bounded thread context and answers
-  deterministic, no-LLM natural-language status questions with Block Kit messages.
-  It can summarize the board, blocked tasks, running tasks, node status, and usage
-  from read-only board/run data. Usage and ledger answers require operator/admin role;
-  viewer scope is denied instead of leaked. Thread follow-ups cannot smuggle task,
-  comment, or unblock mutations.
+- **Slack assistant routing** - v1.21 keeps bounded thread context and answers
+  natural-language status questions with Block Kit messages. It can summarize the
+  board, blocked items, running items, node status, and usage from project data. Usage
+  and ledger answers require operator/admin role; viewer scope is denied instead of
+  leaked. Thread follow-ups cannot smuggle task, comment, or unblock mutations.
 - **Slack digest and reminders** - v1.25 `--enable-digest` and `--enable-reminders`
   are default OFF. The connector can publish a scheduled board/status digest by
   reusing persisted message timestamps with `chat.update`, and can remind on stale
-  blocked or ask-human work. Digest/reminder is read-only/notify-only, dry-run by
-  default unless `--digest-live` is set, operator-gated, audited, and redacted.
+  blocked or ask-human work. Digest/reminder is notify-only, dry-run by default unless
+  `--digest-live` is set, operator-gated, audited, and redacted.
 - **Retro analytics insights** - v1.22 `--enable-retro-analytics` is default OFF. The
-  self-retro lane and completed task/run history feed read-only advisory cards for
-  throughput, allowlisted retro themes, blocked/slow patterns, and neutral node/role
-  outcomes. It creates zero actions, tasks, or config changes; operator-only access,
-  project scope, redaction, low-confidence labels for small samples, and agy cost
-  unknown are part of the contract.
+  self-retro lane and completed task/run history feed advisory cards for throughput,
+  allowlisted retro themes, blocked/slow patterns, and neutral node/role outcomes. It
+  creates zero actions, tasks, or config changes; operator-only access, project scope,
+  redaction, low-confidence labels for small samples, and agy cost unknown are part of
+  the contract.
 - **Usage trend and anomaly signals** - v1.23 `--enable-usage-trend` is default OFF.
   It rolls measured usage/cost over 7d/14d/30d windows, shows node/day trends,
   deterministic anomaly flags, and a forecast labeled "not a prediction". Signals are
@@ -166,9 +167,9 @@ grove repair --all
 - **Usage and timeline** - `/api/usage` reports run usage by node/day with source and
   warnings; agy cost/credit is reported as unknown when no local source exists, never
   fabricated. Execution timeline shows step and Gantt-style durations from audit data.
-- **Signed read-only aggregation** - default OFF multi-machine summaries use HMAC
-  signatures, trusted `key_id`s, freshness checks, count allowlists, and no raw task
-  bodies, comments, transcripts, paths, tokens, or member PII.
+- **Signed aggregation** - default OFF multi-machine summaries use HMAC signatures,
+  trusted `key_id`s, freshness checks, count allowlists, and no raw task bodies,
+  comments, transcripts, paths, tokens, or member PII.
 - **Signed cross-room handoff** - default OFF handoff exports signed, privacy-allowlisted
   task packages. The receiver verifies and explicitly accepts locally; the sender never
   creates or executes work remotely.
@@ -182,7 +183,7 @@ grove repair --all
   show when local capacity is saturated. agy cost stays unknown when no local source exists.
 - **Stable Loop release hardening** - v1.31 adds a 2-tier exhaustive verification
   harness: inventory plus oracle registry, isolated seed checks, and thin live
-  read-only smoke. The stabilization pass fixed 14 safety/runtime bugs across
+  non-mutating smoke. The stabilization pass fixed 14 safety/runtime bugs across
   path-traversal and flag-injection guards, CSRF, WebSocket scope/lifecycle,
   registry clobbering, viewer permissions, Tier-2 live guards, and board status drift.
 
@@ -193,18 +194,18 @@ grove.yaml / project scaffold
   |
   +-- node: one tmux pane running one agent CLI (codex | claude | agy)
   +-- human node: an assignable person/inbox endpoint for human-owned decisions
-  +-- board task: the delegation protocol between humans, leads, and nodes
-  +-- run: a claimed task executed in a real session
-  +-- comment: task discussion, human answers, and execution notes
+  +-- human-facing item: operator TODO, feedback, or ask-human record
+  +-- run: execution evidence when an item is deliberately run through an executor
+  +-- comment: human answers and durable notes on a human-facing item
   +-- audit event: actor + action + target + timestamp for important mutations
 ```
 
-The board is the source of truth for delegated work. Orchestrators assign by creating
-tasks; executors claim, heartbeat, complete, block, unblock, and comment. The dashboard
-is a cockpit over that same state, plus live terminals for the actual sessions. The
-default workflow is ready -> running -> review -> done, with blocked and ask-human
-surfaced explicitly; legacy `in_progress`/claimed/executing and complete-style aliases
-are normalized for display so old tasks still render.
+The org chart and live panes are the source for who exists, where each node runs, and
+how to talk to it. Nodes communicate directly with `grove send`, `grove ask`, tmux
+capture, or tmux input. Human-facing list items are durable operator records for TODOs,
+feedback, and decisions; a human may reference an item number when instructing the
+MASTER or a project lead. Old task statuses still normalize for display so historical
+data remains readable.
 
 ## Quick start
 
@@ -260,8 +261,8 @@ mypy strict, and pytest. Python checks use `uv`.
 | `grove status`                           | show node state, liveness, and recent activity |
 | `grove watchdog [--execute]`             | inspect health and optionally run one recovery |
 | `grove spawn <node>`                     | create a persistent node                       |
-| `grove delegate <node> "<title>"`        | create an assigned board task                  |
-| `grove task start/review/done ...`       | update an existing board task status           |
+| `grove delegate <node> "<title>"`        | legacy alias: create a human-facing item       |
+| `grove task start/review/done ...`       | update an existing human-facing item           |
 | `grove send <node> "<msg>"`              | send a non-blocking message to a node          |
 | `grove wait <node>`                      | wait for the node's current turn to finish     |
 | `grove ask <node> "<msg>"`               | send and wait in one command                   |
@@ -290,8 +291,8 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
 - Triumvirate decisions use the board decision-ledger with 2/3 quorum, authenticated
   voter identity, idempotency keys, and dispatch locks so a repeated request cannot
   impersonate a voter or double-dispatch.
-- Stable Loop live checks are guarded and read-only where they touch a real room. The
-  v1.31 two-tier harness keeps isolated seed tests separate from thin live smoke so
+- Stable Loop live checks are guarded and non-mutating where they touch a real room.
+  The v1.31 two-tier harness keeps isolated seed tests separate from thin live smoke so
   exhaustive verification does not mutate an operator's active project by accident.
 - The v1.24 left sidebar is a layout-only navigation change; the responsive drawer does
   not add a backend mutation or safety surface.
@@ -302,15 +303,13 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   flag-gated features. They do not bypass the underlying backend gates, make
   default-off integrations live without explicit enablement, or grant viewer users
   operator powers.
-- GROVE MASTER chat is deterministic, no-LLM, project-scoped, role-aware, and audited
-  with message hashes and redacted metadata. Read-only answers can use scoped
-  project/org/board facts; mutating intents only render operator-gated action proposal
-  previews and still do not execute commands, create tasks, spawn nodes, or change
-  config from the chat path.
-- Board query/search is read-only, deterministic, paginated, project-scoped,
-  role-aware, and redacted. Missing boards or saved views return clear 404s; dev-room
-  board access stays inside the owning project and rejects cross-project board IDs.
-  Saving or deleting named views is the operator-gated, audited exception.
+- GROVE MASTER chat is project-scoped, role-aware, and audited with message hashes and
+  redacted metadata. It can answer from scoped project/org/board/runtime facts and can
+  act when the operator explicitly instructs it through the appropriate path.
+- Board query/search is deterministic, paginated, project-scoped, role-aware, and
+  redacted. Missing boards or saved views return clear 404s; dev-room board access
+  stays inside the owning project and rejects cross-project board IDs. Saving or
+  deleting named views is the audited exception.
 - The v1.29 board model is "registered tasks do not disappear." Every status renders
   into a canonical column or catch-all, `done` stays visible, and terminal task buckets
   are limited to done/deleted/cancelled/deferred in the product model. Deletion is
@@ -323,8 +322,9 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   trail as other dashboard mutations; virtual states such as `ask_human` are display
   states, not hidden alternate stores.
 - `grove task` status updates use the local `grove-web` board API and should be treated
-  as durable board mutations. Use `--from-status` and `--idempotency-key` for stale or
-  repeated executor updates; non-loopback dashboard URLs require explicit remote opt-in.
+  as durable human-facing item mutations. Use `--from-status` and `--idempotency-key`
+  for stale or repeated updates; non-loopback dashboard URLs require explicit remote
+  opt-in.
 - The dashboard follows a 1:1:1 project model: one project, one tmux session, one
   board. The `"default"` alias resolves to the active project board, not a global
   board picker. New task forms require choosing an assignee from project candidates;
@@ -336,11 +336,11 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
 - Web-to-node input is default OFF (`--enable-node-input`). When enabled, sends require
   operator/admin role, project-scoped pane allowlisting, rate limiting, literal tmux
   input (`send-keys -l`), and audit/redaction; viewers can still watch terminals but
-  cannot send. The lead/orchestrator pane is view-only when exposed: terminal capture is
-  allowed, node-send is blocked.
-- Node connect commands are read-only and project-scoped. `GET /api/nodes/{node}/connect`
-  returns attach/select-pane strings for an authorized node; it does not expose tokens
-  or grant extra tmux privileges.
+  cannot send. MASTER/lead panes are live panes and can be addressed when input is
+  enabled and authorized.
+- Node connect commands are project-scoped. `GET /api/nodes/{node}/connect` returns
+  attach/select-pane strings for an authorized node; it does not expose tokens or grant
+  extra tmux privileges.
 - Node lists do not hide failures. `/api/nodes` and the org chart include unexposed
   nodes with `exposed=false` and an unavailable reason, while omitting token, key, and
   raw path fields.
@@ -355,31 +355,30 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   real-send upgrade lands.
 - Slack intelligent intake is default OFF (`--enable-intake`) and no-LLM. It can propose
   bug/feedback/task previews, but confirmed task creation is role-gated and audited;
-  viewer or unmapped users cannot create tasks. Question handling is read-only, and
-  injection-like text falls back to no task.
-- Slack read-only assistant also requires `--enable-intake`. Natural-language answers are
-  deterministic, project-scoped, redacted, and read-only; usage/ledger detail is denied
-  unless the Slack member is operator/admin, and bounded thread context cannot create
-  hidden mutations.
+  viewer or unmapped users cannot create tasks. Questions route to the GROVE MASTER,
+  and injection-like text falls back to no task.
+- Slack assistant routing also requires `--enable-intake`. Natural-language answers are
+  project-scoped and redacted; usage/ledger detail is denied unless the Slack member is
+  operator/admin, and bounded thread context cannot create hidden mutations.
 - Slack digest/reminder is default OFF (`--enable-digest` / `--enable-reminders`) and
   dry-run by default. Live posting requires explicit `--digest-live`; config is
-  operator-gated, audited, redacted, and notify-only/read-only.
+  operator-gated, audited, redacted, and notify-only.
 - Retro analytics is default OFF (`--enable-retro-analytics`), operator-only,
   project-scoped, redacted, and advisory-only. It reads retros and completed work but
   performs no action, task creation, or config change; small samples are low-confidence
   and agy cost remains unknown unless locally sourced.
 - Usage trend/anomaly is default OFF (`--enable-usage-trend`), operator-only,
-  project-scoped, redacted, read-only, and advisory-only. Anomaly and forecast signals
-  never throttle, abort, kill, change quota, or call execution enforcement; the forecast
-  is labeled not a prediction, thin data is low-confidence, and agy cost stays unknown
+  project-scoped, redacted, and advisory-only. Anomaly and forecast signals never
+  throttle, abort, kill, change quota, or call execution enforcement; the forecast is
+  labeled not a prediction, thin data is low-confidence, and agy cost stays unknown
   instead of becoming a cost anomaly.
-- Multi-machine aggregation is read-only and default OFF.
+- Multi-machine aggregation is non-mutating and default OFF.
 - Cross-room handoff is data transfer only and default OFF; receiver-local accept is
   required before any task is created.
 - Cost numbers are source-tagged. agy credit/cost is unknown unless locally available;
   grove does not invent estimates.
 - Per-user resource ledgers and quotas are default OFF, project-scoped, role-gated,
-  and audited. Operators/admins configure quotas; viewers remain read-only. Quota
+  and audited. Operators/admins configure quotas; viewers are observer-only. Quota
   pressure is soft by default: warn, queue, or slow new work, but do not kill running tasks.
 - The dashboard and APIs are served by `grove-web`, not `grove serve`. Tailnet
   shared-access belongs to `grove-web --shared-access --allow-host <host>`.
