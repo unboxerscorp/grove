@@ -18,8 +18,16 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
+from grove_bridge.assistant import (
+    AssistantActor,
+    AssistantBroker,
+    AssistantContext,
+    AssistantScope,
+    AssistantUnavailable,
+)
 from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.config import default_board_db_path
+from grove_bridge.master import MasterChatResponse
 from grove_bridge.store import SlackThread, SQLiteBoardStore, Task
 
 LOGGER = logging.getLogger(__name__)
@@ -140,6 +148,10 @@ class SocketResponseFactory(Protocol):
 
 class SlackIntentClassifier(Protocol):
     def classify(self, text: str) -> SlackIntentClassification: ...
+
+
+class AssistantBrokerProtocol(Protocol):
+    def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse: ...
 
 
 @dataclass(frozen=True)
@@ -671,11 +683,13 @@ class SlackConnector:
         digest_config: SlackDigestConfig | None = None,
         confirmation_store: SlackConfirmationStore | None = None,
         intent_classifier: SlackIntentClassifier | None = None,
+        assistant_broker: AssistantBrokerProtocol | None = None,
         bot_user_id: str | None = None,
     ) -> None:
         self.store = store
         self.slack_client = slack_client
         self.chat_facade = chat_facade
+        self.assistant_broker = assistant_broker or AssistantBroker()
         self.human_gate = human_gate
         self.chat_route = chat_route
         self.command_config = command_config
@@ -1081,15 +1095,18 @@ class SlackConnector:
         if config is None or not config.intake_enabled:
             return False
         actor = config.members.get(event.user)
-        if actor is None:
-            return False
         context_key = _thread_context_key(event, thread_ts=thread_ts)
         context = self._thread_context(context_key)
         query = _parse_read_only_query(event.text, context=context)
         if query is None:
             return False
-        actor_payload = _slack_member_actor(event.user, actor)
-        if query.name == "usage" and actor.role not in {"admin", "operator"}:
+        actor_payload = (
+            _slack_member_actor(event.user, actor)
+            if actor is not None
+            else _slack_actor(event.user, role="read-only")
+        )
+        actor_role = actor.role if actor is not None else "none"
+        if query.name == "usage" and actor_role not in {"admin", "operator"}:
             self._audit_slack_command(
                 command="nl_status",
                 event=event,
@@ -1178,6 +1195,24 @@ class SlackConnector:
             )
             return True
         actor = config.members.get(event.user)
+        if command == "status":
+            self._audit_slack_command(
+                command="status",
+                event=event,
+                actor=(
+                    _slack_member_actor(event.user, actor)
+                    if actor is not None
+                    else _slack_actor(event.user, role="read-only")
+                ),
+                status="ok",
+                summary="status",
+            )
+            self.slack_client.post_message(
+                channel=event.channel,
+                text=self._command_status_text(config.board),
+                thread_ts=thread_ts,
+            )
+            return True
         if actor is None:
             self._audit_slack_command(
                 command=command,
@@ -1189,20 +1224,6 @@ class SlackConnector:
             self.slack_client.post_message(
                 channel=event.channel,
                 text="Denied: this Slack identity is not mapped to a grove member.",
-                thread_ts=thread_ts,
-            )
-            return True
-        if command == "status":
-            self._audit_slack_command(
-                command="status",
-                event=event,
-                actor=_slack_member_actor(event.user, actor),
-                status="ok",
-                summary="status",
-            )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text=self._command_status_text(config.board),
                 thread_ts=thread_ts,
             )
             return True
@@ -1397,15 +1418,7 @@ class SlackConnector:
                     "reason": _safe_slack_text(classification.reason),
                 },
             )
-            self.slack_client.post_message(
-                channel=event.channel,
-                text=(
-                    "I treated this as a question or clarification; no task was created. "
-                    "Use `bug`, `feedback`, or `task` for an explicit intake preview."
-                ),
-                thread_ts=thread_ts,
-            )
-            return True
+            return self._handle_assistant_turn(event, thread_ts=thread_ts)
         actor = config.members.get(event.user)
         if actor is None:
             self._audit_slack_command(
@@ -1920,28 +1933,50 @@ class SlackConnector:
             )
         return True
 
-    def _handle_chat(self, event: SlackEvent, *, thread_ts: str) -> bool:
-        node = _select_chat_node(event, self.chat_route)
-        session_id = f"slack:{event.team}:{event.channel}:{thread_ts}"
+    def _handle_assistant_turn(self, event: SlackEvent, *, thread_ts: str) -> bool:
+        session_id = _slack_assistant_conversation_id(event, thread_ts=thread_ts)
         text = _normalize_slack_text(event.text)
+        context = self._assistant_context(event, thread_ts=thread_ts)
         lock = self._locks.setdefault(session_id, threading.Lock())
         try:
             with lock:
-                response = self.chat_facade.send(session_id=session_id, node=node, text=text)
+                response = self.assistant_broker.handle_turn(text, context)
+        except AssistantUnavailable as exc:
+            LOGGER.warning("Slack assistant transport failed: %s", _safe_log_error(exc))
+            response_text = "비서 잠시 바쁨. 잠시 후 다시 재시도해 주세요."
+            self._audit_slack_command(
+                command="assistant",
+                event=event,
+                actor=self._assistant_actor_payload(event),
+                status="unavailable",
+                summary=response_text,
+            )
         except Exception as exc:
-            LOGGER.warning("Slack chat facade failed: %s", _safe_log_error(exc))
-            try:
-                self.slack_client.post_message(
-                    channel=event.channel,
-                    text="I could not complete that request safely. Check grove logs for details.",
-                    thread_ts=thread_ts,
-                )
-            except Exception as post_exc:
-                LOGGER.warning(
-                    "Slack failure notice could not be posted: %s",
-                    _safe_log_error(post_exc),
-                )
-            return True
+            LOGGER.warning("Slack assistant broker failed: %s", _safe_log_error(exc))
+            response_text = (
+                "I could not complete that request safely. Check grove logs for details."
+            )
+            self._audit_slack_command(
+                command="assistant",
+                event=event,
+                actor=self._assistant_actor_payload(event),
+                status="failed",
+                summary=response_text,
+            )
+        else:
+            response_text = _assistant_response_text(response)
+            self._audit_slack_command(
+                command="assistant",
+                event=event,
+                actor=self._assistant_actor_payload(event),
+                status=response.response_type,
+                summary=response_text,
+                payload={
+                    "conversation_id": _safe_slack_text(response.conversation_id),
+                    "request_id": _safe_slack_text(response.request_id),
+                    "classification": response.classification.kind,
+                },
+            )
         self.store.upsert_slack_thread(
             board=self.human_gate.board,
             task_id=None,
@@ -1949,10 +1984,65 @@ class SlackConnector:
             channel_id=event.channel,
             thread_ts=thread_ts,
             mode="chat",
-            node=node,
+            node="assistant",
         )
-        self.slack_client.post_message(channel=event.channel, text=response, thread_ts=thread_ts)
+        try:
+            self.slack_client.post_message(
+                channel=event.channel,
+                text=response_text,
+                thread_ts=thread_ts,
+            )
+        except Exception as exc:
+            LOGGER.warning("Slack assistant response could not be posted: %s", _safe_log_error(exc))
         return True
+
+    def _assistant_context(self, event: SlackEvent, *, thread_ts: str) -> AssistantContext:
+        board = self._assistant_board()
+        actor = self._assistant_member(event.user)
+        actor_role = actor.role if actor is not None else "slack-unmapped"
+        return AssistantContext(
+            conversation_id=_slack_assistant_conversation_id(event, thread_ts=thread_ts),
+            request_id=_slack_assistant_request_id(event),
+            actor=AssistantActor(
+                id=f"slack:{_safe_slack_text(event.user)}",
+                role=actor_role,
+                is_operator=actor_role in {"admin", "operator"},
+                display_name=actor.name if actor is not None else None,
+            ),
+            scope=AssistantScope(
+                selected_project=board,
+                board=board,
+                visible_projects=(board,),
+                origin_surface="slack",
+                origin_page=(
+                    f"slack://{_safe_slack_text(event.team)}/"
+                    f"{_safe_slack_text(event.channel)}/{_safe_slack_text(thread_ts)}"
+                ),
+            ),
+            store=self.store,
+            workspace_path=_assistant_workspace_path(),
+        )
+
+    def _assistant_member(self, user: str) -> SlackCommandMember | None:
+        if self.command_config is None:
+            return None
+        return self.command_config.members.get(user)
+
+    def _assistant_actor_payload(self, event: SlackEvent) -> Mapping[str, object]:
+        actor = self._assistant_member(event.user)
+        if actor is not None:
+            return _slack_member_actor(event.user, actor)
+        return _slack_actor(event.user, role="read-only")
+
+    def _assistant_board(self) -> str:
+        if self.command_config is not None:
+            return self.command_config.board
+        if self.digest_config is not None:
+            return self.digest_config.board
+        return self.human_gate.board
+
+    def _handle_chat(self, event: SlackEvent, *, thread_ts: str) -> bool:
+        return self._handle_assistant_turn(event, thread_ts=thread_ts)
 
 
 def slack_manifest() -> dict[str, object]:
@@ -2223,6 +2313,8 @@ def _event_from_socket_payload(
     user = event.get("user")
     text = event.get("text")
     ts = event.get("ts")
+    if not isinstance(ts, str):
+        ts = event.get("event_ts")
     if bot_user_id is not None and user == bot_user_id:
         return None
     if not all(isinstance(value, str) for value in (team, channel, user, text, ts)):
@@ -2399,6 +2491,30 @@ def _human_gate_text(task: Task) -> str:
 
 def _normalize_slack_text(text: str) -> str:
     return " ".join(part for part in text.split() if not part.startswith("<@"))
+
+
+def _slack_assistant_conversation_id(event: SlackEvent, *, thread_ts: str) -> str:
+    return (
+        f"slack:{_safe_slack_text(event.team)}:"
+        f"{_safe_slack_text(event.channel)}:{_safe_slack_text(thread_ts)}"
+    )
+
+
+def _slack_assistant_request_id(event: SlackEvent) -> str:
+    request_id = event.event_id or event.client_msg_id or event.ts
+    return f"slack:{_safe_slack_text(request_id)}"
+
+
+def _assistant_response_text(response: MasterChatResponse) -> str:
+    if response.answer is not None and response.answer.text.strip():
+        return _safe_slack_text(response.answer.text)
+    if response.operator_gate is not None and response.operator_gate.reason.strip():
+        return _safe_slack_text(response.operator_gate.reason)
+    return "I could not complete that request safely. Check grove logs for details."
+
+
+def _assistant_workspace_path() -> Path:
+    return Path(__file__).resolve().parents[3]
 
 
 def _select_chat_node(event: SlackEvent, route: ChatRouteConfig) -> str:

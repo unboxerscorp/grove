@@ -6,11 +6,13 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Protocol, cast
 
 import pytest
 
 import grove_bridge.slack as slack_module
+from grove_bridge.assistant import AssistantContext
+from grove_bridge.master import MasterAnswer, MasterChatResponse, classify_master_message
 from grove_bridge.slack import (
     GROVE_CHAT_TIMEOUT_SECONDS,
     ChatRouteConfig,
@@ -109,6 +111,41 @@ class FailingChatFacade:
 
     def send(self, *, session_id: str, node: str, text: str) -> str:
         self.calls.append((session_id, node, text))
+        raise RuntimeError(self.message)
+
+
+class FakeAssistantBroker:
+    def __init__(self, text: str = "assistant reply") -> None:
+        self.text = text
+        self.calls: list[tuple[str, AssistantContext]] = []
+
+    def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse:
+        self.calls.append((message, context))
+        return MasterChatResponse(
+            conversation_id=context.conversation_id,
+            request_id=context.request_id,
+            response_type="answer",
+            classification=classify_master_message(message),
+            answer=MasterAnswer(text=self.text, citations=(), metadata={}),
+            proposal=None,
+            feedback_route=None,
+            operator_gate=None,
+            requires_confirmation=False,
+            audit_events=(),
+        )
+
+
+class AssistantBrokerLike(Protocol):
+    def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse: ...
+
+
+class FailingAssistantBroker:
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.calls: list[tuple[str, AssistantContext]] = []
+
+    def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse:
+        self.calls.append((message, context))
         raise RuntimeError(self.message)
 
 
@@ -743,6 +780,7 @@ def test_slack_sdk_client_rejects_missing_post_ts_and_bad_history() -> None:
 def test_chat_routing_uses_thread_session_and_posts_response(tmp_path: Path) -> None:
     slack = FakeSlackClient()
     chat = FakeChatFacade()
+    assistant = FakeAssistantBroker("assistant says status")
     connector = SlackConnector(
         store=SQLiteBoardStore(tmp_path / "board.db"),
         slack_client=slack,
@@ -752,6 +790,7 @@ def test_chat_routing_uses_thread_session_and_posts_response(tmp_path: Path) -> 
             default_node="chat-node",
             channel_nodes={"C123": "channel-node"},
         ),
+        assistant_broker=assistant,
     )
 
     handled = connector.handle_event(
@@ -767,21 +806,30 @@ def test_chat_routing_uses_thread_session_and_posts_response(tmp_path: Path) -> 
     )
 
     assert handled is True
-    assert chat.calls == [
-        ("slack:T1:C123:111.222", "channel-node", "summarize status"),
-    ]
-    assert slack.posts == [("C123", "grove reply", "111.222")]
+    assert chat.calls == []
+    assert len(assistant.calls) == 1
+    message, context = assistant.calls[0]
+    assert message == "summarize status"
+    assert context.conversation_id == "slack:T1:C123:111.222"
+    assert context.request_id == "slack:111.222"
+    assert context.actor.id == "slack:U2"
+    assert context.scope.board == "main"
+    assert context.scope.origin_surface == "slack"
+    assert context.scope.origin_page == "slack://T1/C123/111.222"
+    assert slack.posts == [("C123", "assistant says status", "111.222")]
 
 
 def test_chat_routing_dedupes_slack_event_id_and_client_msg_id(tmp_path: Path) -> None:
     slack = FakeSlackClient()
     chat = FakeChatFacade()
+    assistant = FakeAssistantBroker()
     connector = SlackConnector(
         store=SQLiteBoardStore(tmp_path / "board.db"),
         slack_client=slack,
         chat_facade=chat,
         human_gate=HumanGateConfig(board="main", channel="C123"),
         chat_route=ChatRouteConfig(default_node="chat-node", channel_nodes={"C123": "chat-node"}),
+        assistant_broker=assistant,
     )
     duplicate_event_id = SlackEvent(
         team="T1",
@@ -811,25 +859,25 @@ def test_chat_routing_dedupes_slack_event_id_and_client_msg_id(tmp_path: Path) -
     assert connector.handle_event(duplicate_client_msg_id)
     assert connector.handle_event(duplicate_client_msg_id)
 
-    assert chat.calls == [
-        ("slack:T1:C123:111.222", "chat-node", "summarize status"),
-        ("slack:T1:C123:111.333", "chat-node", "summarize status"),
-    ]
+    assert chat.calls == []
+    assert [call[0] for call in assistant.calls] == ["summarize status", "summarize status"]
     assert slack.posts == [
-        ("C123", "grove reply", "111.222"),
-        ("C123", "grove reply", "111.333"),
+        ("C123", "assistant reply", "111.222"),
+        ("C123", "assistant reply", "111.333"),
     ]
 
 
 def test_chat_routing_dedupes_cross_delivery_by_client_msg_id(tmp_path: Path) -> None:
     slack = FakeSlackClient()
     chat = FakeChatFacade()
+    assistant = FakeAssistantBroker()
     connector = SlackConnector(
         store=SQLiteBoardStore(tmp_path / "board.db"),
         slack_client=slack,
         chat_facade=chat,
         human_gate=HumanGateConfig(board="main", channel="C123"),
         chat_route=ChatRouteConfig(default_node="chat-node", channel_nodes={"C123": "chat-node"}),
+        assistant_broker=assistant,
     )
     app_mention_delivery = SlackEvent(
         team="T1",
@@ -857,13 +905,15 @@ def test_chat_routing_dedupes_cross_delivery_by_client_msg_id(tmp_path: Path) ->
     assert connector.handle_event(app_mention_delivery)
     assert connector.handle_event(message_delivery)
 
-    assert chat.calls == [("slack:T1:C123:111.222", "chat-node", "summarize status")]
-    assert slack.posts == [("C123", "grove reply", "111.222")]
+    assert chat.calls == []
+    assert [call[0] for call in assistant.calls] == ["summarize status"]
+    assert slack.posts == [("C123", "assistant reply", "111.222")]
 
 
 def test_chat_routing_uses_mentioned_node_when_channel_has_no_route(tmp_path: Path) -> None:
     slack = FakeSlackClient()
     chat = FakeChatFacade()
+    assistant = FakeAssistantBroker("assistant saw qa mention")
     connector = SlackConnector(
         store=SQLiteBoardStore(tmp_path / "board.db"),
         slack_client=slack,
@@ -873,6 +923,7 @@ def test_chat_routing_uses_mentioned_node_when_channel_has_no_route(tmp_path: Pa
             default_node="chat-node",
             mention_nodes={"qa": "grove-qa"},
         ),
+        assistant_broker=assistant,
     )
 
     handled = connector.handle_event(
@@ -888,15 +939,17 @@ def test_chat_routing_uses_mentioned_node_when_channel_has_no_route(tmp_path: Pa
     )
 
     assert handled is True
-    assert chat.calls == [("slack:T1:C999:222.333", "grove-qa", "@qa check this")]
-    assert slack.posts == [("C999", "grove reply", "222.333")]
+    assert chat.calls == []
+    assert [call[0] for call in assistant.calls] == ["@qa check this"]
+    assert slack.posts == [("C999", "assistant saw qa mention", "222.333")]
 
 
 def test_chat_route_handles_facade_failure_and_post_failure_without_crashing(
     tmp_path: Path,
 ) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
-    chat = FailingChatFacade("failure at /Users/chopin/secret xoxb-" + ("d" * 44))
+    chat = FailingChatFacade("chat facade must not be used")
+    assistant = FailingAssistantBroker("failure at /Users/chopin/secret xoxb-" + ("d" * 44))
     slack = FakeSlackClient()
     connector = SlackConnector(
         store=store,
@@ -904,6 +957,7 @@ def test_chat_route_handles_facade_failure_and_post_failure_without_crashing(
         chat_facade=chat,
         human_gate=HumanGateConfig(board="main", channel="C123"),
         chat_route=ChatRouteConfig(default_node="chat-node"),
+        assistant_broker=assistant,
     )
 
     assert connector.handle_event(
@@ -917,7 +971,8 @@ def test_chat_route_handles_facade_failure_and_post_failure_without_crashing(
             event_type="message",
         )
     )
-    assert chat.calls == [("slack:T1:C123:333.444", "chat-node", "please help")]
+    assert chat.calls == []
+    assert [call[0] for call in assistant.calls] == ["please help"]
     assert slack.posts == [
         (
             "C123",
@@ -929,9 +984,10 @@ def test_chat_route_handles_facade_failure_and_post_failure_without_crashing(
     failing_notice_connector = SlackConnector(
         store=store,
         slack_client=FailingPostSlackClient(),
-        chat_facade=FailingChatFacade("safe failure"),
+        chat_facade=FakeChatFacade(),
         human_gate=HumanGateConfig(board="main", channel="C123"),
         chat_route=ChatRouteConfig(default_node="chat-node"),
+        assistant_broker=FakeAssistantBroker(),
     )
     assert failing_notice_connector.handle_event(
         SlackEvent(
@@ -982,6 +1038,7 @@ def command_connector(
     gui_intake_enabled: bool | None = None,
     intake_assignee: str | None = None,
     digest_config: SlackDigestConfig | None = None,
+    assistant_broker: AssistantBrokerLike | None = None,
 ) -> SlackConnector:
     command_clock = clock or MutableClock()
     if gui_intake_enabled is not None:
@@ -1006,6 +1063,7 @@ def command_connector(
             intake_assignee=intake_assignee,
         ),
         digest_config=digest_config,
+        assistant_broker=assistant_broker or FakeAssistantBroker(),
     )
 
 
@@ -1090,6 +1148,27 @@ def test_slack_command_role_gate_and_unmapped_identity(tmp_path: Path) -> None:
     assert store.task_execution_state(board="main", task_id=task.id)["state"] == "approval-pending"
     audits = store.list_audit_events(board="main", action="approve")
     assert audits[0].payload["status"] == "denied"
+
+
+def test_slack_unmapped_identity_can_read_status_and_chat(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(board="main", title="Ready item", body=None, assignee=None)
+    slack = FakeSlackClient()
+    assistant = FakeAssistantBroker("안녕하세요. grove 비서입니다.")
+    connector = command_connector(
+        store,
+        slack,
+        intake_enabled=True,
+        assistant_broker=assistant,
+    )
+
+    assert connector.handle_event(slack_event("UNKNOWN", "status"))
+    assert connector.handle_event(slack_event("UNKNOWN", "안녕", ts="444.556"))
+
+    assert "Status: board=main ready=1" in slack.posts[0][1]
+    assert slack.posts[1][1] == "안녕하세요. grove 비서입니다."
+    assert "not mapped" not in "\n".join(post[1] for post in slack.posts)
+    assert [call[0] for call in assistant.calls] == ["안녕"]
 
 
 def test_slack_command_preview_confirm_approve_and_replay_denied(tmp_path: Path) -> None:
@@ -1412,7 +1491,8 @@ def test_slack_intake_block_answer_only_button_consumes_without_task(tmp_path: P
 def test_slack_intake_role_gate_and_prompt_injection_no_task(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
-    connector = command_connector(store, slack, intake_enabled=True)
+    assistant = FakeAssistantBroker()
+    connector = command_connector(store, slack, intake_enabled=True, assistant_broker=assistant)
 
     assert connector.handle_event(slack_event("UVIEW", "bug: checkout crashes"))
     assert connector.handle_event(slack_event("UNKNOWN", "feedback: add admin mode", ts="444.566"))
@@ -1426,7 +1506,8 @@ def test_slack_intake_role_gate_and_prompt_injection_no_task(tmp_path: Path) -> 
 
     assert "operator or admin" in slack.posts[0][1]
     assert "not mapped" in slack.posts[1][1]
-    assert "no task was created" in slack.posts[2][1]
+    assert "Which read-only status" in slack.posts[2][1]
+    assert assistant.calls == []
     assert all("confirm " not in post[1] for post in slack.posts)
     assert store.list_tasks(board="main") == []
 
@@ -1434,11 +1515,13 @@ def test_slack_intake_role_gate_and_prompt_injection_no_task(tmp_path: Path) -> 
 def test_slack_intake_ambiguous_message_uses_answer_path(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
-    connector = command_connector(store, slack, intake_enabled=True)
+    assistant = FakeAssistantBroker("assistant answer for ambiguous intake")
+    connector = command_connector(store, slack, intake_enabled=True, assistant_broker=assistant)
 
     assert connector.handle_event(slack_event("UOP", "maybe we should revisit this later"))
 
-    assert "no task was created" in slack.posts[-1][1]
+    assert slack.posts[-1][1] == "assistant answer for ambiguous intake"
+    assert [call[0] for call in assistant.calls] == ["maybe we should revisit this later"]
     assert "confirm " not in slack.posts[-1][1]
     assert store.list_tasks(board="main") == []
     audits = store.list_audit_events(board="main", action="intake")
@@ -1452,7 +1535,7 @@ def test_slack_nl_status_summary_is_default_off(tmp_path: Path) -> None:
 
     assert connector.handle_event(slack_event("UOP", "what is the board status?"))
 
-    assert slack.posts[-1][1] == "grove reply"
+    assert slack.posts[-1][1] == "assistant reply"
 
 
 def test_slack_nl_status_summary_is_read_only_and_scoped(tmp_path: Path) -> None:
@@ -1984,6 +2067,28 @@ def test_socket_payload_ignores_bot_self_and_subtype_messages() -> None:
         )
         is None
     )
+
+
+def test_socket_payload_uses_event_ts_when_message_ts_is_absent() -> None:
+    event = slack_module._event_from_socket_payload(
+        {
+            "team_id": "T1",
+            "event_id": "Ev123",
+            "event": {
+                "type": "app_mention",
+                "channel": "C123",
+                "user": "U2",
+                "text": "<@BOT> 안녕",
+                "event_ts": "111.222",
+            },
+        },
+        bot_user_id="UBOT",
+    )
+
+    assert event is not None
+    assert event.ts == "111.222"
+    assert event.thread_ts is None
+    assert event.event_id == "Ev123"
 
 
 def test_socket_mode_listener_acks_before_event_handler(
