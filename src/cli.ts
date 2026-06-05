@@ -119,6 +119,7 @@ program
   .requiredOption("--name <name>", "new node name")
   .requiredOption("--agent <agent>", "agent adapter: codex, claude, or antigravity")
   .option("--role <role>", "role / initial prompt for the new node")
+  .option("--role-preset <type>", "role preset to expand into the initial prompt")
   .option("--description <text>", "short human-readable note for the new node")
   .option("--parent <node>", "parent node name")
   .option("--group <group>", "team group")

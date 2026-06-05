@@ -87,6 +87,9 @@ export interface NewNode {
   name: string;
   agent: string;
   role?: string;
+  // Preset key (e.g. "maker-fe"); the backend re-expands it server-side and
+  // passes `--role-preset`. Sent on the wire as snake_case `role_preset`.
+  rolePreset?: string;
   parent?: string;
   group?: string;
   description?: string;
@@ -1051,11 +1054,15 @@ export const api = {
   getNodeConnect: (node: string) => getJSON<NodeConnect>(`/api/nodes/${enc(node)}/connect`),
 
   async createNode(payload: NewNode): Promise<OrgNode> {
+    // Map the camelCase TS field to the backend's snake_case JSON contract
+    // (g-py: `role_preset`); only emit it when a preset was chosen.
+    const { rolePreset, ...rest } = payload;
+    const wire = rolePreset ? { ...rest, role_preset: rolePreset } : rest;
     const res = await fetch("/api/nodes", {
       method: "POST",
       headers: headers({ "Content-Type": "application/json" }),
       credentials: "same-origin",
-      body: JSON.stringify(payload),
+      body: JSON.stringify(wire),
     });
     if (!res.ok) {
       let detail = `HTTP ${res.status}`;

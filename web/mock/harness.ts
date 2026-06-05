@@ -2396,6 +2396,11 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       ORG_NODES.push(node);
       diag.createdNode = name;
       diag.createdNodeDesc = node.description;
+      // PR-E: surface the role-preset passthrough + free role override so the
+      // verifier can assert the snake_case wire contract (g-py: `role_preset`).
+      const raw = (init?.body ? JSON.parse(init.body as string) : {}) as Record<string, unknown>;
+      diag.createdNodeRolePreset = typeof raw.role_preset === "string" ? raw.role_preset : "";
+      diag.createdNodeRole = typeof raw.role === "string" ? raw.role : "";
       return Promise.resolve(json({ ...node, children: [] }));
     }
     const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"];

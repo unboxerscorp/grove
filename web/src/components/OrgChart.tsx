@@ -7,6 +7,7 @@ import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
 import type { Delegations, MasterMeta, MasterOrg, NodeHealth, OrgNode, ProjectLead } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
+import { ROLE_PRESETS, rolePresetBody } from "../rolePresets";
 import { GroveMark } from "./GroveMark";
 import { NodeHealthBadge } from "./NodeHealthBadge";
 
@@ -152,12 +153,28 @@ function NodeForm(props: {
   const { t } = useI18n();
   const [name, setName] = useState("");
   const [agent, setAgent] = useState<string>("claude");
+  // Role preset key + the editable persona body. Picking a preset fills the body
+  // (and clears the "dirty" flag); any manual edit marks it dirty so it travels
+  // as a free `role` override. When a preset is selected and left untouched, the
+  // body is omitted so the backend's canonical expansion of `role_preset` wins.
+  const [rolePreset, setRolePreset] = useState("");
   const [role, setRole] = useState("");
+  const [roleDirty, setRoleDirty] = useState(false);
   const [description, setDescription] = useState("");
   const [parent, setParent] = useState(presetParent ?? "");
   const [group, setGroup] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const applyPreset = (key: string) => {
+    setRolePreset(key);
+    if (key) {
+      setRole(rolePresetBody(key));
+      setRoleDirty(false);
+    }
+  };
+
+  const presetBody = rolePresetBody(rolePreset);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -167,6 +184,9 @@ function NodeForm(props: {
       return;
     }
     const eff = presetParent ?? parent;
+    // Override the canonical preset body only when the operator edited it (or
+    // typed a custom role with no preset selected); otherwise send the key alone.
+    const roleOverride = rolePreset && !roleDirty ? "" : role.trim();
     setBusy(true);
     setError(null);
     onCreating({ name: nm, parent: eff || undefined });
@@ -174,7 +194,8 @@ function NodeForm(props: {
       .createNode({
         name: nm,
         agent,
-        role: role.trim() || undefined,
+        role: roleOverride || undefined,
+        rolePreset: rolePreset || undefined,
         description: description.trim() || undefined,
         parent: eff || undefined,
         group: group.trim() || undefined,
@@ -222,15 +243,40 @@ function NodeForm(props: {
           ))}
         </select>
       </div>
-      <input
-        className="dr-input"
-        name="role"
-        type="text"
-        placeholder={t("node.role")}
-        value={role}
-        spellCheck={false}
-        onChange={(e) => setRole(e.target.value)}
-      />
+      <div className="node-form__rolepreset">
+        <select
+          className="dr-select node-form__role-preset"
+          name="rolePreset"
+          value={rolePreset}
+          aria-label={t("node.rolePreset")}
+          onChange={(e) => applyPreset(e.target.value)}
+        >
+          <option value="">{t("node.rolePreset.none")}</option>
+          {ROLE_PRESETS.map((p) => (
+            <option key={p.key} value={p.key}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+        {rolePreset && presetBody && (
+          <div className="node-form__role-preview" aria-label={t("node.rolePreview")}>
+            <span className="node-form__role-preview-label">{t("node.rolePreview")}</span>
+            <pre className="node-form__role-preview-body">{presetBody}</pre>
+          </div>
+        )}
+        <textarea
+          className="dr-input node-form__role"
+          name="role"
+          rows={rolePreset ? 5 : 2}
+          placeholder={t("node.role")}
+          value={role}
+          spellCheck={false}
+          onChange={(e) => {
+            setRole(e.target.value);
+            setRoleDirty(true);
+          }}
+        />
+      </div>
       <input
         className="dr-input"
         name="description"

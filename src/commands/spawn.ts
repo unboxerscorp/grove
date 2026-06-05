@@ -7,6 +7,7 @@ import { type AgentType, AgentTypeSchema, type ResolvedNode } from "../config.js
 import { type Context, loadContext, type NodeCtx } from "../context.js";
 import { launchNode } from "../ops.js";
 import { loadOrInit, type NodeRuntime, saveRegistry } from "../registry.js";
+import { expandRolePreset } from "../role-presets.js";
 import {
   createDetachedPane,
   type CreateDetachedPaneRequest,
@@ -19,6 +20,7 @@ export interface SpawnInput {
   name?: string;
   agent?: string;
   role?: string;
+  rolePreset?: string;
   description?: string;
   parent?: string;
   group?: string;
@@ -32,6 +34,8 @@ interface SpawnRequest {
   name: string;
   agent: AgentType;
   role: string;
+  rolePreset?: string;
+  rolePresetVersion?: string;
   description?: string;
   parent?: string;
   group?: string;
@@ -45,6 +49,8 @@ export interface SpawnResult {
   name: string;
   agent: AgentType;
   role: string;
+  rolePreset?: string;
+  rolePresetVersion?: string;
   description?: string;
   session: string;
   pane: string;
@@ -149,6 +155,8 @@ function parseSpawnRequest(ctx: Context, input: SpawnInput): SpawnRequest {
   const agent = parseAgent(required(input.agent, "--agent"));
   const group = trimmed(input.group);
   const parent = trimmed(input.parent);
+  const rolePresetKey = trimmed(input.rolePreset);
+  const rolePreset = rolePresetKey ? expandRolePreset(rolePresetKey) : undefined;
   const session = trimmed(input.session) ?? ctx.config.session;
   const window = trimmed(input.window);
   return {
@@ -159,7 +167,9 @@ function parseSpawnRequest(ctx: Context, input: SpawnInput): SpawnRequest {
     name,
     parent: parent ? validateGroveName(parent, "--parent") : undefined,
     resume: trimmed(input.resume),
-    role: trimmed(input.role) ?? "",
+    role: trimmed(input.role) ?? rolePreset?.body ?? "",
+    rolePreset: rolePreset?.id,
+    rolePresetVersion: rolePreset?.version,
     session: validateGroveName(session, "--session"),
     window: window ? validateGroveName(window, "--window") : undefined,
   };
@@ -239,6 +249,8 @@ export async function spawnNode(
       parent: parsed.parent,
       resume: parsed.resume,
       role: parsed.role,
+      rolePreset: parsed.rolePreset,
+      rolePresetVersion: parsed.rolePresetVersion,
     };
     const nc: NodeCtx = {
       addr: pane,
@@ -262,6 +274,8 @@ export async function spawnNode(
       name: parsed.name,
       parent: parsed.parent,
       role: parsed.role,
+      rolePreset: parsed.rolePreset,
+      rolePresetVersion: parsed.rolePresetVersion,
       tmux_pane: pane,
     };
     addParentChild(ctx, parsed.parent, parsed.name);
@@ -278,6 +292,8 @@ export async function spawnNode(
       parent: parsed.parent,
       rebindHint: transcriptDetected ? undefined : rebindHint(parsed),
       role: parsed.role,
+      rolePreset: parsed.rolePreset,
+      rolePresetVersion: parsed.rolePresetVersion,
       session: parsed.session,
       sessionId: saved.sessionId,
       transcript: saved.transcript,
@@ -288,6 +304,7 @@ export async function spawnNode(
 
 export function renderSpawnText(result: SpawnResult): string {
   const lines = [`${result.name} [${result.agent}]`, `role: ${result.role}`];
+  if (result.rolePreset) lines.push(`rolePreset: ${result.rolePreset}`);
   if (result.description) lines.push(`description: ${result.description}`);
   lines.push(`pane: ${result.pane}`);
   if (result.parent) lines.push(`parent: ${result.parent}`);

@@ -53,6 +53,8 @@ export interface ResolvedNode {
   agent: AgentType;
   model?: string;
   role?: string;
+  rolePreset?: string;
+  rolePresetVersion?: string;
   description?: string;
   cwd: string;
   resume?: string;

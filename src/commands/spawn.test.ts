@@ -11,6 +11,7 @@ import type { AgentAdapter } from "../adapters/types.js";
 import type { AgentType, ResolvedNode } from "../config.js";
 import type { Context, NodeCtx } from "../context.js";
 import type { Registry } from "../registry.js";
+import { ROLE_PRESET_VERSION } from "../role-presets.js";
 import { cmdSpawn, renderSpawnJson, renderSpawnText, type SpawnDeps, spawnNode } from "./spawn.js";
 
 const cwdStack: string[] = [];
@@ -219,6 +220,78 @@ describe("spawnNode", () => {
 
     expect(state.launched[0]?.node.role).toBe("");
     expect(result.role).toBe("");
+  });
+
+  test("expands role presets into the launch prompt and persists preset metadata", async () => {
+    const ctx = makeContext(registry());
+    const state = deps({ bindTranscript: true });
+
+    const result = await spawnNode(
+      ctx,
+      {
+        agent: "codex",
+        name: "py-maker",
+        parent: "lead",
+        rolePreset: "maker-py",
+      },
+      state.deps,
+    );
+
+    expect(state.launched[0]?.node.role).toContain(
+      "너는 Python/backend maker이며 GROVE 조직/업무방식을 따른다",
+    );
+    expect(state.launched[0]?.node.role).toContain("보드 task 중심");
+    const runtime = ctx.registry.nodes["py-maker"];
+    expect(runtime?.role).toContain("너는 Python/backend maker이며");
+    expect(runtime?.rolePreset).toBe("maker-py");
+    expect(runtime?.rolePresetVersion).toBe(ROLE_PRESET_VERSION);
+    expect(result.role).toContain("너는 Python/backend maker이며");
+    expect(result.rolePreset).toBe("maker-py");
+    expect(result.rolePresetVersion).toBe(ROLE_PRESET_VERSION);
+  });
+
+  test("allows explicit role text to override a selected preset body", async () => {
+    const ctx = makeContext(registry());
+    const state = deps({ bindTranscript: true });
+
+    const result = await spawnNode(
+      ctx,
+      {
+        agent: "codex",
+        name: "custom-maker",
+        role: "Custom role text",
+        rolePreset: "maker-py",
+      },
+      state.deps,
+    );
+
+    expect(state.launched[0]?.node.role).toBe("Custom role text");
+    const runtime = ctx.registry.nodes["custom-maker"];
+    expect(runtime?.role).toBe("Custom role text");
+    expect(runtime?.rolePreset).toBe("maker-py");
+    expect(runtime?.rolePresetVersion).toBe(ROLE_PRESET_VERSION);
+    expect(result.role).toBe("Custom role text");
+    expect(result.rolePreset).toBe("maker-py");
+  });
+
+  test("rejects unknown role preset ids before launching a pane", async () => {
+    const ctx = makeContext(registry());
+    const state = deps({ bindTranscript: true });
+
+    await expect(
+      spawnNode(
+        ctx,
+        {
+          agent: "codex",
+          name: "bad-preset",
+          rolePreset: "unknown",
+        },
+        state.deps,
+      ),
+    ).rejects.toThrow('unsupported role preset "unknown"');
+
+    expect(state.paneRequests).toEqual([]);
+    expect(state.launched).toEqual([]);
   });
 
   test("creates a detached pane, launches with role, and registers team fields", async () => {

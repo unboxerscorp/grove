@@ -14,6 +14,8 @@ export interface NodeRuntime {
   name: string;
   agent: AgentType;
   role?: string;
+  rolePreset?: string;
+  rolePresetVersion?: string;
   description?: string;
   parent?: string;
   children?: string[];

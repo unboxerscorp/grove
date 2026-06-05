@@ -1352,6 +1352,69 @@ async function main() {
     const plusDesc = await page.evaluate(() => window.__MOCK__?.createdNodeDesc ?? "");
     await settle();
 
+    // PR-E role preset: the toolbar "+ add node" form exposes a role-preset
+    // select + a read-only persona PREVIEW + an EDITABLE role body. Picking a
+    // preset fills both; the wire carries `role_preset` (snake_case) and, when
+    // the body is edited, a free `role` override.
+    const PRESET_NODE = "preset-fe";
+    const PRESET_KEY = "maker-fe";
+    const ROLE_OVERRIDE = "너는 maker-fe다. override-xyz GROVE";
+    await page.click(".org__tools .org-addbtn");
+    await page.waitForSelector(".node-form .node-form__role-preset", { timeout: 5000 });
+    await page.type('.node-form input[name="name"]', PRESET_NODE);
+    await page.select(".node-form__role-preset", PRESET_KEY);
+    await page.waitForFunction(
+      () => {
+        const ta = document.querySelector(".node-form__role");
+        return ta && ta.value.includes("GROVE");
+      },
+      { timeout: 5000 },
+    );
+    const presetApplied = await page.evaluate(() => {
+      const prev = document.querySelector(".node-form__role-preview-body");
+      const ta = document.querySelector(".node-form__role");
+      return {
+        previewLen: (prev?.textContent ?? "").length,
+        previewHasGrove: /GROVE/.test(prev?.textContent ?? ""),
+        taLen: (ta?.value ?? "").length,
+        taHasGrove: /GROVE/.test(ta?.value ?? ""),
+      };
+    });
+    // Edit the editable role body (React-controlled: native setter + input event)
+    // so the override travels as `role` alongside the preset key.
+    await page.evaluate((txt) => {
+      const ta = document.querySelector(".node-form__role");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      setter.call(ta, txt);
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    }, ROLE_OVERRIDE);
+    const previewAfterEdit = await page.evaluate(
+      () => document.querySelector(".node-form__role-preview-body")?.textContent ?? "",
+    );
+    await page.click(".node-form .node-form__submit");
+    await page.waitForFunction(
+      (nm) => window.__MOCK__?.createdNode === nm,
+      { timeout: 8000 },
+      PRESET_NODE,
+    );
+    const presetCreate = await page.evaluate(() => ({
+      node: window.__MOCK__?.createdNode ?? "",
+      rolePreset: window.__MOCK__?.createdNodeRolePreset ?? "",
+      role: window.__MOCK__?.createdNodeRole ?? "",
+    }));
+    const nodeFormPresetOk =
+      presetApplied.previewLen > 20 &&
+      presetApplied.previewHasGrove &&
+      presetApplied.taLen > 20 &&
+      presetApplied.taHasGrove &&
+      // preview stays the canonical preset body after the editable diverges
+      previewAfterEdit.includes("GROVE") &&
+      !previewAfterEdit.includes("override-xyz") &&
+      presetCreate.node === PRESET_NODE &&
+      presetCreate.rolePreset === PRESET_KEY &&
+      presetCreate.role.includes("override-xyz");
+    await settle();
+
     // V5-W2 dashboard delegate: node action -> small form (title + optional body)
     // -> POST /api/boards/{board}/tasks with assignee=<node>, status="ready"
     // (web equivalent of `grove delegate`).
@@ -3411,6 +3474,7 @@ async function main() {
       groupExit === "backend:null" &&
       plusCreated === PLUS_NODE &&
       plusDesc === "qa-desc" &&
+      nodeFormPresetOk &&
       orgView.descs >= 1 &&
       nodeDrawer.facts >= 1 &&
       nodeDrawer.assignForm;
@@ -3493,6 +3557,8 @@ async function main() {
       patchedGroup,
       groupExit,
       plusCreated,
+      nodeFormPresetOk,
+      nodeFormPreset: { ...presetApplied, ...presetCreate },
       facts: nodeDrawer.facts,
       i18n,
       batchUiOk,

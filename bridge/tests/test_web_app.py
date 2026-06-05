@@ -6616,6 +6616,71 @@ def test_create_node_invokes_spawn_with_literal_argv(
     }
 
 
+def test_create_node_passes_role_preset_to_spawn_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "name": "worker-py",
+                    "agent": "codex",
+                    "rolePreset": "maker-py",
+                    "rolePresetVersion": "1",
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post(
+        "/api/nodes",
+        headers=auth_headers(client),
+        json={
+            "name": "worker-py",
+            "agent": "codex",
+            "role_preset": "maker-py",
+            "role": "customized role",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["role_preset"] == "maker-py"
+    assert response.json()["role_preset_version"] == "1"
+    assert calls == [
+        [
+            "grove",
+            "spawn",
+            "--name",
+            "worker-py",
+            "--agent",
+            "codex",
+            "--role",
+            "customized role",
+            "--role-preset",
+            "maker-py",
+            "--session",
+            "dev10",
+            "--json",
+        ]
+    ]
+
+
 @pytest.mark.parametrize(
     "stderr",
     [

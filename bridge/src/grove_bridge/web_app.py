@@ -462,6 +462,7 @@ class NodeCreatePayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     agent: str = Field(min_length=1, max_length=50)
     role: str | None = Field(default=None, max_length=200)
+    role_preset: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=1000)
     parent: str | None = Field(default=None, max_length=100)
     group: str | None = Field(default=None, max_length=100)
@@ -8022,12 +8023,15 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
     if agent not in NODE_AGENTS:
         raise HTTPException(status_code=400, detail="agent must be codex, claude, or antigravity")
     role = _optional_text(payload.role, field_name="role", max_length=200)
+    role_preset = _optional_text(payload.role_preset, field_name="role_preset", max_length=100)
     description = _optional_text(payload.description, field_name="description", max_length=1000)
     parent = _optional_node_ref(payload.parent, field_name="parent")
     group = _optional_node_ref(payload.group, field_name="group")
     args = ["grove", "spawn", "--name", name, "--agent", agent]
     if role is not None:
         args.extend(["--role", role])
+    if role_preset is not None:
+        args.extend(["--role-preset", role_preset])
     if description is not None:
         args.extend(["--description", description])
     if parent is not None:
@@ -8060,7 +8064,12 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
         raise HTTPException(status_code=400, detail="grove spawn returned invalid json") from exc
     if not isinstance(loaded, dict):
         raise HTTPException(status_code=400, detail="grove spawn returned invalid json")
-    return {str(key): value for key, value in loaded.items()}
+    result = {str(key): value for key, value in loaded.items()}
+    if "rolePreset" in result:
+        result["role_preset"] = result.pop("rolePreset")
+    if "rolePresetVersion" in result:
+        result["role_preset_version"] = result.pop("rolePresetVersion")
+    return result
 
 
 def _node_name_from_spawn_result(payload: Mapping[str, object], *, fallback: str) -> str:
