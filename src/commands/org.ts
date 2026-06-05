@@ -1,6 +1,13 @@
 import type { AgentType, ResolvedNode } from "../config.js";
 import { type Context, loadContext } from "../context.js";
-import type { NodeRuntime } from "../registry.js";
+import {
+  GROVE_MASTER_NODE_NAME,
+  loadRegistry,
+  type NodeRuntime,
+  type Registry,
+  sharedMasterRuntime,
+} from "../registry.js";
+import { MASTER_REGISTRY_SESSION } from "../util/paths.js";
 
 export interface OrgNode {
   name: string;
@@ -44,6 +51,36 @@ function orgNode(name: string, runtime: NodeRuntime, configured?: ResolvedNode):
   };
 }
 
+function masterOrgNode(masterRegistry: Registry | null): OrgNode {
+  return orgNode(
+    GROVE_MASTER_NODE_NAME,
+    masterRegistry?.nodes[GROVE_MASTER_NODE_NAME] ?? sharedMasterRuntime(),
+  );
+}
+
+function projectLeadName(nodes: OrgNode[]): string | undefined {
+  if (nodes.some((node) => node.name === "lead")) return "lead";
+  return nodes.find((node) => node.name !== GROVE_MASTER_NODE_NAME && node.parent === "")?.name;
+}
+
+function applyMasterHierarchy(nodes: OrgNode[]): void {
+  const byName = new Map(nodes.map((node) => [node.name, node]));
+  const leadName = projectLeadName(nodes);
+  for (const node of nodes) {
+    if (node.name === GROVE_MASTER_NODE_NAME) {
+      node.parent = "";
+      continue;
+    }
+    if (leadName && node.name === leadName) {
+      node.parent = GROVE_MASTER_NODE_NAME;
+      continue;
+    }
+    if (!node.parent || !byName.has(node.parent)) {
+      node.parent = leadName ?? GROVE_MASTER_NODE_NAME;
+    }
+  }
+}
+
 function deriveChildren(nodes: OrgNode[]): void {
   const byName = new Map(nodes.map((node) => [node.name, node]));
   const children = new Map(nodes.map((node) => [node.name, new Set(node.children)]));
@@ -56,11 +93,18 @@ function deriveChildren(nodes: OrgNode[]): void {
   }
 }
 
-export function buildOrg(ctx: Context): OrgJson {
+export function buildOrg(
+  ctx: Context,
+  masterRegistry: Registry | null = loadRegistry(MASTER_REGISTRY_SESSION),
+): OrgJson {
   const configured = configuredByName(ctx);
   const nodes = runtimeNames(ctx).map((name) =>
     orgNode(name, ctx.registry.nodes[name]!, configured.get(name)),
   );
+  if (!nodes.some((node) => node.name === GROVE_MASTER_NODE_NAME)) {
+    nodes.unshift(masterOrgNode(masterRegistry));
+  }
+  applyMasterHierarchy(nodes);
   deriveChildren(nodes);
 
   const byName = new Map(nodes.map((node) => [node.name, node]));

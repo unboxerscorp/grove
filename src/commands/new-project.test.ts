@@ -14,6 +14,7 @@ import type { SpawnInput, SpawnResult } from "./spawn.js";
 function spawnResult(input: SpawnInput): SpawnResult {
   return {
     agent: input.agent === "claude" || input.agent === "antigravity" ? input.agent : "codex",
+    cwd: input.cwd ?? "",
     group: input.group,
     name: input.name ?? "node",
     pane: `${input.session ?? "alpha"}:${input.name ?? "node"}.0`,
@@ -26,6 +27,7 @@ function spawnResult(input: SpawnInput): SpawnResult {
 
 function deps(opts: { ghAuthed?: boolean; sessionExists?: boolean; template?: string } = {}): {
   deps: NewProjectDeps;
+  masterWrites: string[];
   ghArgs: string[][];
   mkdirs: string[];
   newSessions: { cwd: string; name: string; windowName: string }[];
@@ -34,6 +36,7 @@ function deps(opts: { ghAuthed?: boolean; sessionExists?: boolean; template?: st
   writes: { file: string; text: string }[];
 } {
   const ghArgs: string[][] = [];
+  const masterWrites: string[] = [];
   const mkdirs: string[] = [];
   const newSessions: { cwd: string; name: string; windowName: string }[] = [];
   const readPaths: string[] = [];
@@ -63,8 +66,25 @@ function deps(opts: { ghAuthed?: boolean; sessionExists?: boolean; template?: st
         if (args.join(" ") === "auth status") return { ok: opts.ghAuthed ?? false };
         return { ok: true };
       },
+      ensureSharedMasterRegistry: (cwd) => {
+        masterWrites.push(cwd);
+      },
+      saveRegistry: (registry) => {
+        writes.push({ file: `registry:${registry.session}`, text: JSON.stringify(registry) });
+      },
       spawnNode: async (_ctx: Context, input: SpawnInput) => {
         spawnInputs.push(input);
+        _ctx.registry.nodes[input.name ?? "node"] = {
+          agent: input.agent === "claude" || input.agent === "antigravity" ? input.agent : "codex",
+          children: [],
+          cwd: input.cwd,
+          description: input.description,
+          group: input.group,
+          name: input.name ?? "node",
+          parent: input.parent,
+          role: input.role,
+          sessionId: `session-${input.name ?? "node"}`,
+        };
         return { ...spawnResult(input), sessionId: `session-${input.name ?? "node"}` };
       },
       writeFile: async (file, text) => {
@@ -72,6 +92,7 @@ function deps(opts: { ghAuthed?: boolean; sessionExists?: boolean; template?: st
       },
     },
     ghArgs,
+    masterWrites,
     mkdirs,
     newSessions,
     readPaths,
@@ -81,7 +102,7 @@ function deps(opts: { ghAuthed?: boolean; sessionExists?: boolean; template?: st
 }
 
 describe("createNewProject", () => {
-  test("creates a detached session, default workspace, board, and project master", async () => {
+  test("creates a detached session, default workspace, board, and project lead", async () => {
     const state = deps();
 
     const result = await createNewProject("alpha", {}, state.deps);
@@ -99,7 +120,8 @@ describe("createNewProject", () => {
         agent: "claude",
         cwd: "/home/tester/grove-projects/alpha",
         group: "core",
-        name: "project-master",
+        name: "lead",
+        parent: "",
         session: "alpha",
       }),
     ]);
@@ -111,10 +133,22 @@ describe("createNewProject", () => {
         session: "alpha",
       }),
     );
+    expect(state.masterWrites).toEqual(["/home/tester/grove-projects/alpha"]);
     expect(state.writes.map((write) => write.file)).toEqual([
+      "registry:alpha",
       "/home/tester/grove-projects/alpha/grove.project.json",
     ]);
-    expect(JSON.parse(state.writes[0]!.text)).toEqual({
+    const savedRegistry = JSON.parse(state.writes[0]!.text) as {
+      nodes: Record<string, Record<string, unknown>>;
+    };
+    expect(savedRegistry.nodes["lead"]).toEqual(
+      expect.objectContaining({
+        cwd: "/home/tester/grove-projects/alpha",
+        name: "lead",
+        parent: "",
+      }),
+    );
+    expect(JSON.parse(state.writes[1]!.text)).toEqual({
       created_at: "2026-06-03T00:00:00.000Z",
       name: "alpha",
       board: { slug: "alpha" },
@@ -122,9 +156,9 @@ describe("createNewProject", () => {
         {
           agent: "claude",
           group: "core",
-          name: "project-master",
-          role: "Project master for alpha. Coordinate the project board and team.",
-          session_id: "session-project-master",
+          name: "lead",
+          role: "Project lead for alpha. Coordinate the project board and team.",
+          session_id: "session-lead",
         },
       ],
       updated_at: "2026-06-03T00:00:00.000Z",
@@ -163,22 +197,13 @@ describe("createNewProject", () => {
     await createNewProject("alpha", { template: "team" }, state.deps);
 
     expect(state.readPaths).toEqual(["/home/tester/.grove/templates/team.yaml"]);
-    expect(state.spawnInputs.map((input) => input.name)).toEqual([
-      "project-master",
-      "lead",
-      "maker",
-    ]);
+    expect(state.spawnInputs.map((input) => input.name)).toEqual(["lead", "maker"]);
     expect(state.spawnInputs).toEqual([
-      expect.objectContaining({
-        agent: "claude",
-        group: "core",
-        name: "project-master",
-        role: "Project master for alpha. Coordinate the project board and team.",
-      }),
       expect.objectContaining({
         agent: "claude",
         description: "Coordinates handoffs",
         name: "lead",
+        parent: "",
         role: "Lead",
       }),
       expect.objectContaining({
@@ -189,12 +214,8 @@ describe("createNewProject", () => {
         role: "Maker",
       }),
     ]);
-    const projectFile = GroveProjectFileSchema.parse(JSON.parse(state.writes[0]!.text));
+    const projectFile = GroveProjectFileSchema.parse(JSON.parse(state.writes[1]!.text));
     expect(projectFile.nodes).toEqual([
-      expect.objectContaining({
-        name: "project-master",
-        session_id: "session-project-master",
-      }),
       expect.objectContaining({
         description: "Coordinates handoffs",
         name: "lead",

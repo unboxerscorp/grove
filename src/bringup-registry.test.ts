@@ -5,7 +5,7 @@ import type { ResolvedNode } from "./config.js";
 import type { Context, NodeCtx } from "./context.js";
 import { bringUp } from "./ops.js";
 import { saveRegistry } from "./registry.js";
-import { paneCommand, paneTarget, sendLiteral, sendText } from "./tmux.js";
+import { paneCommand, paneCurrentPath, paneTarget, sendLiteral, sendText } from "./tmux.js";
 
 vi.mock("./registry.js", () => {
   return {
@@ -21,6 +21,7 @@ vi.mock("./tmux.js", () => ({
   newSession: vi.fn(async () => undefined),
   newWindow: vi.fn(async () => undefined),
   paneCommand: vi.fn(async () => "zsh"),
+  paneCurrentPath: vi.fn(async () => "/tmp/grove"),
   paneTarget: vi.fn(async (addr: string) => addr),
   sendEnter: vi.fn(async () => undefined),
   sendLiteral: vi.fn(async () => undefined),
@@ -88,13 +89,13 @@ function makeContext(nodes: ResolvedNode[]): Context {
 function node(
   name: string,
   opts: Partial<
-    Pick<ResolvedNode, "children" | "description" | "group" | "parent" | "role" | "tmux">
+    Pick<ResolvedNode, "children" | "cwd" | "description" | "group" | "parent" | "role" | "tmux">
   > = {},
 ): ResolvedNode {
   return {
     agent: "codex",
     children: opts.children ?? [],
-    cwd: "/tmp/grove",
+    cwd: opts.cwd ?? "/tmp/grove",
     description: opts.description,
     group: opts.group,
     name,
@@ -109,6 +110,8 @@ describe("bringUp registry tmux pane metadata", () => {
     vi.mocked(saveRegistry).mockClear();
     vi.mocked(paneCommand).mockReset();
     vi.mocked(paneCommand).mockResolvedValue("zsh");
+    vi.mocked(paneCurrentPath).mockReset();
+    vi.mocked(paneCurrentPath).mockResolvedValue("/tmp/grove");
     vi.mocked(paneTarget).mockClear();
     vi.mocked(sendLiteral).mockClear();
     vi.mocked(sendText).mockClear();
@@ -161,6 +164,7 @@ describe("bringUp registry tmux pane metadata", () => {
     const ctx = makeContext([
       node("lead", {
         children: ["maker"],
+        cwd: "/tmp/grove",
         description: "Coordinates handoffs",
         group: "core",
         role: "Lead",
@@ -188,6 +192,7 @@ describe("bringUp registry tmux pane metadata", () => {
     expect(ctx.registry.nodes.maker).toEqual(
       expect.objectContaining({
         children: [],
+        cwd: "/tmp/grove",
         description: "Builds TypeScript changes",
         group: "core",
         parent: "lead",
@@ -242,9 +247,20 @@ describe("bringUp registry tmux pane metadata", () => {
       expect.objectContaining({
         description: "Runtime note",
         group: "runtime",
+        cwd: "/tmp/grove",
         role: "Runtime role",
         tmux_pane: "dev10:1.1",
       }),
     );
+  });
+
+  test("rejects adoption when the pane cwd does not match the expected node cwd", async () => {
+    vi.mocked(paneCommand).mockResolvedValue("codex");
+    vi.mocked(paneCurrentPath).mockResolvedValue("/tmp/other-project");
+    const ctx = makeContext([node("viewer", { tmux: "1.2" })]);
+
+    await expect(bringUp(ctx)).rejects.toThrow("pane cwd mismatch for adoption");
+
+    expect(ctx.registry.nodes.viewer).toBeUndefined();
   });
 });

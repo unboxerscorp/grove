@@ -10,7 +10,12 @@ import { z } from "zod";
 import { type AgentType, AgentTypeSchema } from "../config.js";
 import type { Context } from "../context.js";
 import { type GroveProjectFile, PROJECT_FILE_NAME } from "../project-file.js";
-import { emptyRegistry } from "../registry.js";
+import {
+  emptyRegistry,
+  ensureSharedMasterRegistry,
+  type Registry,
+  saveRegistry,
+} from "../registry.js";
 import { hasSession, newSession } from "../tmux.js";
 import { writeFileAtomic } from "../util/atomic.js";
 import { validateGroveName } from "../util/names.js";
@@ -65,6 +70,8 @@ export interface NewProjectDeps {
   now(): string;
   readFile(file: string): Promise<string>;
   runGh(args: string[]): Promise<GhResult>;
+  ensureSharedMasterRegistry(cwd: string): void;
+  saveRegistry(registry: Registry): void;
   spawnNode(ctx: Context, input: SpawnInput): Promise<SpawnResult>;
   writeFile(file: string, text: string): Promise<void>;
 }
@@ -89,6 +96,10 @@ const defaultDeps: NewProjectDeps = {
       };
     }
   },
+  ensureSharedMasterRegistry: (cwd) => {
+    ensureSharedMasterRegistry(cwd);
+  },
+  saveRegistry,
   spawnNode,
   writeFile: async (file, text) => writeFileAtomic(file, text),
 };
@@ -112,7 +123,7 @@ const TemplateSchema = z
   })
   .strict();
 
-const PROJECT_MASTER_NODE_NAME = "project-master";
+const PROJECT_LEAD_NODE_NAME = "lead";
 
 function required(value: string, label: string): string {
   const trimmed = value.trim();
@@ -134,14 +145,19 @@ function defaultNodes(project: string): ProjectNodeSpec[] {
     {
       agent: "claude",
       group: "core",
-      name: PROJECT_MASTER_NODE_NAME,
-      role: `Project master for ${project}. Coordinate the project board and team.`,
+      name: PROJECT_LEAD_NODE_NAME,
+      parent: "",
+      role: `Project lead for ${project}. Coordinate the project board and team.`,
     },
   ];
 }
 
-function ensureProjectMaster(project: string, nodes: ProjectNodeSpec[]): ProjectNodeSpec[] {
-  if (nodes.some((node) => node.name === PROJECT_MASTER_NODE_NAME)) return nodes;
+function ensureProjectLead(project: string, nodes: ProjectNodeSpec[]): ProjectNodeSpec[] {
+  if (nodes.some((node) => node.name === PROJECT_LEAD_NODE_NAME)) {
+    return nodes.map((node) =>
+      node.name === PROJECT_LEAD_NODE_NAME ? { ...node, parent: "" } : node,
+    );
+  }
   return [...defaultNodes(project), ...nodes];
 }
 
@@ -248,12 +264,43 @@ function projectFileFromNodes(
       description: spec.description,
       group: spec.group,
       name: spec.name,
-      parent: spec.parent,
+      parent: spec.parent || undefined,
       role: spec.role,
       session_id: nodes[index]?.sessionId,
     })),
     updated_at: now,
     workspace: ".",
+  };
+}
+
+function childNamesFor(specs: ProjectNodeSpec[], parent: string): string[] {
+  return specs.filter((spec) => spec.parent === parent).map((spec) => spec.name);
+}
+
+function persistProjectLead(
+  ctx: Context,
+  dir: string,
+  specs: ProjectNodeSpec[],
+  results: SpawnResult[],
+): void {
+  const leadIndex = specs.findIndex((spec) => spec.name === PROJECT_LEAD_NODE_NAME);
+  if (leadIndex < 0) return;
+  const leadSpec = specs[leadIndex]!;
+  const spawned = results[leadIndex];
+  const previous = ctx.registry.nodes[PROJECT_LEAD_NODE_NAME];
+  ctx.registry.nodes[PROJECT_LEAD_NODE_NAME] = {
+    ...previous,
+    agent: leadSpec.agent,
+    children: childNamesFor(specs, PROJECT_LEAD_NODE_NAME),
+    cwd: dir,
+    description: leadSpec.description,
+    group: leadSpec.group,
+    name: PROJECT_LEAD_NODE_NAME,
+    parent: "",
+    role: leadSpec.role,
+    sessionId: previous?.sessionId ?? spawned?.sessionId,
+    transcript: previous?.transcript ?? spawned?.transcript,
+    tmux_pane: previous?.tmux_pane ?? spawned?.pane,
   };
 }
 
@@ -272,7 +319,7 @@ export async function createNewProject(
 
   const templateNodes = await loadTemplate(opts.template?.trim() || undefined, deps);
   const specs = orderNodes(
-    templateNodes.length > 0 ? ensureProjectMaster(name, templateNodes) : defaultNodes(name),
+    templateNodes.length > 0 ? ensureProjectLead(name, templateNodes) : defaultNodes(name),
   );
   const ctx = contextForProject(name, dir);
   const nodes: SpawnResult[] = [];
@@ -290,6 +337,9 @@ export async function createNewProject(
       }),
     );
   }
+  persistProjectLead(ctx, dir, specs, nodes);
+  deps.saveRegistry(ctx.registry);
+  deps.ensureSharedMasterRegistry(dir);
   const now = deps.now();
   await deps.writeFile(
     path.join(dir, PROJECT_FILE_NAME),

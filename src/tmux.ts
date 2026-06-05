@@ -228,6 +228,14 @@ export async function paneCommand(addr: string): Promise<string> {
   }
 }
 
+export async function paneCurrentPath(addr: string): Promise<string> {
+  try {
+    return (await tmux(["display-message", "-t", addr, "-p", "#{pane_current_path}"])).trim();
+  } catch {
+    return "";
+  }
+}
+
 export async function killSession(name: string): Promise<void> {
   await tmuxOk(["kill-session", "-t", `=${name}`]);
 }

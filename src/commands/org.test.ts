@@ -172,16 +172,18 @@ describe("org rendering", () => {
       },
     });
 
-    expect(renderOrgText(buildOrg(ctx))).toBe(
+    expect(renderOrgText(buildOrg(ctx, null))).toBe(
       [
         "dev10",
-        "lead [claude] Lead",
-        "  description: Coordinates the team",
-        "  maker [codex] Builder",
-        "    description: Builds TypeScript changes",
-        "viewer [antigravity] Viewer",
+        "grove-master [codex] GROVE MASTER — governs all projects; project leads are children",
+        "  lead [claude] Lead",
+        "    description: Coordinates the team",
+        "    maker [codex] Builder",
+        "      description: Builds TypeScript changes",
+        "    viewer [antigravity] Viewer",
         "",
         "groups",
+        "master: grove-master",
         "core: lead, maker",
         "observability: viewer",
       ].join("\n"),
@@ -209,17 +211,26 @@ describe("org rendering", () => {
       },
     });
 
-    const org = buildOrg(ctx);
+    const org = buildOrg(ctx, null);
 
     expect(JSON.parse(renderOrgJson(org))).toEqual({
-      groups: { core: ["lead", "maker"] },
+      groups: { master: ["grove-master"], core: ["lead", "maker"] },
       nodes: [
+        {
+          agent: "codex",
+          children: ["lead"],
+          group: "master",
+          name: "grove-master",
+          parent: "",
+          role: "GROVE MASTER — governs all projects; project leads are children",
+        },
         {
           agent: "claude",
           children: ["maker"],
           description: "Coordinates the team",
           group: "core",
           name: "lead",
+          parent: "grove-master",
           role: "Lead",
         },
         {
@@ -232,7 +243,7 @@ describe("org rendering", () => {
           role: "Builder",
         },
       ],
-      roots: ["lead"],
+      roots: ["grove-master"],
       session: "dev10",
     });
   });

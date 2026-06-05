@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { getAdapter } from "../adapters/index.js";
@@ -56,6 +55,7 @@ export interface SpawnResult {
   pane: string;
   parent?: string;
   group?: string;
+  cwd: string;
   sessionId?: string;
   transcript?: string;
   transcriptDetected: boolean;
@@ -98,55 +98,52 @@ function parseAgent(value: string): AgentType {
   return parsed.data;
 }
 
-function packageName(dir: string): string | null {
-  const packagePath = path.join(dir, "package.json");
-  if (!existsSync(packagePath)) return null;
-  try {
-    const parsed = JSON.parse(readFileSync(packagePath, "utf8")) as { name?: unknown };
-    return typeof parsed.name === "string" ? parsed.name : null;
-  } catch {
-    return null;
-  }
+function normalizeCwd(cwd: string): string {
+  return path.resolve(expandHome(cwd));
 }
 
-function findGroveRoot(start: string): string | null {
-  let dir = path.resolve(start);
-  for (;;) {
-    if (packageName(dir) === "grove") return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
+function explicitCwd(input?: string): string | undefined {
+  const cwd = trimmed(input);
+  return cwd ? normalizeCwd(cwd) : undefined;
 }
 
-function defaultSpawnCwd(input?: string): string {
-  if (input?.trim()) return path.resolve(expandHome(input.trim()));
-  return findGroveRoot(process.cwd()) ?? process.cwd();
+function defaultSpawnCwd(ctx: Context, input?: string): string {
+  return explicitCwd(input) ?? normalizeCwd(ctx.registry.cwd || ctx.config.cwd || process.cwd());
 }
 
 function configFreeContext(input: SpawnInput): Context {
   const session = trimmed(input.session) ?? DEFAULT_SPAWN_SESSION;
-  const cwd = defaultSpawnCwd(input.cwd);
+  const cwd = explicitCwd(input.cwd) ?? normalizeCwd(process.cwd());
+  const registry = loadOrInit(session, cwd);
+  const configCwd = normalizeCwd(registry.cwd || cwd);
   return {
     byName: new Map(),
     config: {
-      cwd,
+      cwd: configCwd,
       defaults: { agent: "codex" },
       nodes: {},
       session,
     },
     configPath: "",
     nodes: [],
-    registry: loadOrInit(session, cwd),
+    registry,
   };
 }
 
 function sessionContext(ctx: Context, session: string): Context {
-  if (session === ctx.registry.session) return ctx;
+  if (session === ctx.registry.session) {
+    const cwd = normalizeCwd(ctx.registry.cwd || ctx.config.cwd || process.cwd());
+    return {
+      ...ctx,
+      config: { ...ctx.config, cwd },
+    };
+  }
+  const registry = loadOrInit(session, ctx.registry.cwd || ctx.config.cwd || process.cwd());
+  const cwd = normalizeCwd(registry.cwd || ctx.registry.cwd || ctx.config.cwd || process.cwd());
   return {
     ...ctx,
-    config: { ...ctx.config, session },
-    registry: loadOrInit(session, ctx.config.cwd),
+    config: { ...ctx.config, cwd, session },
+    registry,
   };
 }
 
@@ -161,7 +158,7 @@ function parseSpawnRequest(ctx: Context, input: SpawnInput): SpawnRequest {
   const window = trimmed(input.window);
   return {
     agent,
-    cwd: defaultSpawnCwd(input.cwd ?? ctx.config.cwd),
+    cwd: defaultSpawnCwd(ctx, input.cwd),
     description: trimmed(input.description),
     group: group ? validateGroveName(group, "--group") : undefined,
     name,
@@ -183,6 +180,7 @@ function runtimeFromConfigured(node: ResolvedNode): NodeRuntime {
   return {
     agent: node.agent,
     children: [...node.children],
+    cwd: node.cwd,
     description: node.description,
     group: node.group,
     name: node.name,
@@ -228,8 +226,9 @@ export async function spawnNode(
   input: SpawnInput,
   deps: SpawnDeps = defaultDeps,
 ): Promise<SpawnResult> {
-  const parsed = parseSpawnRequest(baseCtx, input);
-  const ctx = sessionContext(baseCtx, parsed.session);
+  const session = validateGroveName(trimmed(input.session) ?? baseCtx.config.session, "--session");
+  const ctx = sessionContext(baseCtx, session);
+  const parsed = parseSpawnRequest(ctx, { ...input, session });
   ensureSpawnable(ctx, parsed);
 
   return deps.preserveActiveWindow(parsed.session, async () => {
@@ -269,6 +268,7 @@ export async function spawnNode(
       ...runtime,
       agent: parsed.agent,
       children: runtime.children ?? [],
+      cwd: parsed.cwd,
       description: parsed.description,
       group: parsed.group,
       name: parsed.name,
@@ -285,6 +285,7 @@ export async function spawnNode(
     const transcriptDetected = Boolean(saved.sessionId && saved.transcript);
     return {
       agent: parsed.agent,
+      cwd: parsed.cwd,
       description: parsed.description,
       group: parsed.group,
       name: parsed.name,
@@ -306,6 +307,7 @@ export function renderSpawnText(result: SpawnResult): string {
   const lines = [`${result.name} [${result.agent}]`, `role: ${result.role}`];
   if (result.rolePreset) lines.push(`rolePreset: ${result.rolePreset}`);
   if (result.description) lines.push(`description: ${result.description}`);
+  lines.push(`cwd: ${result.cwd}`);
   lines.push(`pane: ${result.pane}`);
   if (result.parent) lines.push(`parent: ${result.parent}`);
   if (result.group) lines.push(`group: ${result.group}`);

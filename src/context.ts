@@ -24,10 +24,11 @@ function nodeFromRuntime(
   runtime: NodeRuntime,
   ctx: { config: GroveConfig; registry: Registry },
 ): ResolvedNode {
+  const cwd = runtime.cwd || ctx.registry.cwd || ctx.config.cwd;
   return {
     agent: runtime.agent,
     children: [...(runtime.children ?? [])],
-    cwd: expandHome(ctx.registry.cwd || ctx.config.cwd),
+    cwd: expandHome(cwd),
     description: runtime.description,
     group: runtime.group,
     name,

@@ -6,6 +6,7 @@ import { validateGroveName } from "./names.js";
 
 /** Root for grove's runtime state. Override with $GROVE_HOME. */
 export const GROVE_HOME = path.resolve(process.env.GROVE_HOME ?? path.join(os.homedir(), ".grove"));
+export const MASTER_REGISTRY_SESSION = ".master";
 
 function insideGroveHome(candidate: string): boolean {
   const rel = path.relative(GROVE_HOME, candidate);
@@ -44,7 +45,10 @@ function assertRealPathInsideGroveHome(candidate: string, session: string): void
 }
 
 export function sessionDir(session: string): string {
-  const safeSession = validateGroveName(session, "session");
+  const safeSession =
+    session === MASTER_REGISTRY_SESSION
+      ? MASTER_REGISTRY_SESSION
+      : validateGroveName(session, "session");
   const dir = path.resolve(GROVE_HOME, safeSession);
   if (!insideGroveHome(dir)) {
     throw new Error(`session path escaped GROVE_HOME: ${session}`);

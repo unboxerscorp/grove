@@ -2,13 +2,14 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync } 
 
 import type { AgentType } from "./config.js";
 import { writeFileAtomicSync } from "./util/atomic.js";
-import { registryPath, sessionDir } from "./util/paths.js";
+import { MASTER_REGISTRY_SESSION, registryPath, sessionDir } from "./util/paths.js";
 
 const REGISTRY_LOCK_WAIT_MS = 5_000;
 const REGISTRY_LOCK_RETRY_MS = 25;
 const heldLocks = new Map<string, number>();
 const sleepBuffer = new SharedArrayBuffer(4);
 const sleepView = new Int32Array(sleepBuffer);
+export const GROVE_MASTER_NODE_NAME = "grove-master";
 
 export interface NodeRuntime {
   name: string;
@@ -20,6 +21,8 @@ export interface NodeRuntime {
   parent?: string;
   children?: string[];
   group?: string;
+  /** Working directory this node was launched/adopted in. */
+  cwd?: string;
   /** agent-native session id (codex/claude UUID), once detected */
   sessionId?: string;
   /** resolved transcript path, once detected */
@@ -163,4 +166,31 @@ export function updateRegistryNode(
 
 export function loadOrInit(session: string, cwd: string): Registry {
   return loadRegistry(session) ?? emptyRegistry(session, cwd);
+}
+
+export function sharedMasterRuntime(): NodeRuntime {
+  return {
+    agent: "codex",
+    children: [],
+    cwd: "",
+    group: "master",
+    name: GROVE_MASTER_NODE_NAME,
+    parent: "",
+    role: "GROVE MASTER — governs all projects; project leads are children",
+  };
+}
+
+export function ensureSharedMasterRegistry(cwd: string): Registry {
+  const reg = loadOrInit(MASTER_REGISTRY_SESSION, cwd);
+  const existing = reg.nodes[GROVE_MASTER_NODE_NAME];
+  reg.nodes[GROVE_MASTER_NODE_NAME] = {
+    ...sharedMasterRuntime(),
+    ...existing,
+    children: existing?.children ?? [],
+    cwd: existing?.cwd ?? cwd,
+    name: GROVE_MASTER_NODE_NAME,
+    parent: "",
+  };
+  saveRegistry(reg);
+  return reg;
 }

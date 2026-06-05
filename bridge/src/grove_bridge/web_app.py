@@ -464,6 +464,7 @@ class NodeCreatePayload(BaseModel):
     agent: str = Field(min_length=1, max_length=50)
     role: str | None = Field(default=None, max_length=200)
     role_preset: str | None = Field(default=None, max_length=100)
+    cwd: str | None = Field(default=None, max_length=2000)
     description: str | None = Field(default=None, max_length=1000)
     parent: str | None = Field(default=None, max_length=100)
     group: str | None = Field(default=None, max_length=100)
@@ -7210,7 +7211,6 @@ def _ensure_project_master_node(
             "agent": "claude",
             "role": "orchestrator",
             "status": "external",
-            "parent": LEAD_NODE_NAME,
             "description": "Project master/orchestrator.",
         }
     _write_registry_atomic(path, registry)
@@ -7949,7 +7949,7 @@ def _project_master_node(config: WebAppConfig) -> NodeRecord:
         session_id="",
         status="external",
         role="orchestrator",
-        parent=LEAD_NODE_NAME,
+        parent="",
         group="",
         description="Project master/orchestrator.",
         kind="meta",
@@ -7971,20 +7971,6 @@ def _external_lead_node(config: WebAppConfig) -> NodeRecord:
         kind="meta",
         config=config,
     )
-
-
-def _org_parent(node: NodeRecord, *, names: set[str]) -> str:
-    name = node["name"]
-    parent = node["parent"]
-    if parent in names:
-        return parent
-    if name == GROVE_MASTER_NODE_NAME:
-        return ""
-    if name == LEAD_NODE_NAME and GROVE_MASTER_NODE_NAME in names:
-        return GROVE_MASTER_NODE_NAME
-    if not parent and name != LEAD_NODE_NAME and LEAD_NODE_NAME in names:
-        return LEAD_NODE_NAME
-    return ""
 
 
 def _node_status(node: Mapping[str, object]) -> str:
@@ -8080,6 +8066,7 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
         raise HTTPException(status_code=400, detail="agent must be codex, claude, or antigravity")
     role = _optional_text(payload.role, field_name="role", max_length=200)
     role_preset = _optional_text(payload.role_preset, field_name="role_preset", max_length=100)
+    cwd = _spawn_node_cwd(payload, config=config)
     description = _optional_text(payload.description, field_name="description", max_length=1000)
     parent = _optional_node_ref(payload.parent, field_name="parent")
     group = _optional_node_ref(payload.group, field_name="group")
@@ -8088,6 +8075,8 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
         args.extend(["--role", role])
     if role_preset is not None:
         args.extend(["--role-preset", role_preset])
+    if cwd is not None:
+        args.extend(["--cwd", cwd])
     if description is not None:
         args.extend(["--description", description])
     if parent is not None:
@@ -8126,6 +8115,15 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
     if "rolePresetVersion" in result:
         result["role_preset_version"] = result.pop("rolePresetVersion")
     return result
+
+
+def _spawn_node_cwd(payload: NodeCreatePayload, *, config: WebAppConfig) -> str | None:
+    explicit = _optional_text(payload.cwd, field_name="cwd", max_length=2000)
+    if explicit is not None:
+        return explicit
+    registry = _load_registry(config)
+    workspace = _project_workspace(_registry_path(config).parent, registry)
+    return workspace or None
 
 
 def _node_name_from_spawn_result(payload: Mapping[str, object], *, fallback: str) -> str:

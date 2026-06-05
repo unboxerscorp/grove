@@ -13,6 +13,7 @@ import type { SpawnInput, SpawnResult } from "./spawn.js";
 function spawnResult(input: SpawnInput): SpawnResult {
   return {
     agent: input.agent === "claude" || input.agent === "antigravity" ? input.agent : "codex",
+    cwd: input.cwd ?? "",
     name: input.name ?? "node",
     pane: `${input.session ?? "alpha"}:${input.name ?? "node"}.0`,
     parent: input.parent,

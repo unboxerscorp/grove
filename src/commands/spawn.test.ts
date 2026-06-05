@@ -112,6 +112,7 @@ function deps(opts: { bindTranscript?: boolean } = {}): {
         ctx.registry.nodes[nc.node.name] = {
           agent: nc.node.agent,
           children: [],
+          cwd: nc.node.cwd,
           description: nc.node.description,
           group: nc.node.group,
           name: nc.node.name,
@@ -179,7 +180,7 @@ describe("spawnNode", () => {
           json: true,
           name: "probe",
           role: "x",
-          session: "dev10",
+          session: "spawn-no-config",
         },
         state.deps,
       ),
@@ -189,7 +190,7 @@ describe("spawnNode", () => {
       {
         cwd,
         name: "probe",
-        session: "dev10",
+        session: "spawn-no-config",
         window: undefined,
       },
     ]);
@@ -199,7 +200,7 @@ describe("spawnNode", () => {
         name: "probe",
         pane: "dev10:2.0",
         role: "x",
-        session: "dev10",
+        session: "spawn-no-config",
       }),
     );
     rmSync(temp, { force: true, recursive: true });
@@ -220,6 +221,53 @@ describe("spawnNode", () => {
 
     expect(state.launched[0]?.node.role).toBe("");
     expect(result.role).toBe("");
+  });
+
+  test("uses the target registry cwd when --cwd is omitted", async () => {
+    const reg = registry();
+    reg.cwd = "/project/workspace";
+    const ctx = makeContext(reg);
+    const state = deps();
+
+    const result = await spawnNode(
+      ctx,
+      {
+        agent: "codex",
+        name: "workspace-maker",
+      },
+      state.deps,
+    );
+
+    expect(state.paneRequests[0]?.cwd).toBe("/project/workspace");
+    expect(state.launched[0]?.node.cwd).toBe("/project/workspace");
+    expect(ctx.registry.nodes["workspace-maker"]?.cwd).toBe("/project/workspace");
+    expect(result.cwd).toBe("/project/workspace");
+  });
+
+  test("uses explicit --cwd before registry cwd while preserving role preset expansion", async () => {
+    const reg = registry();
+    reg.cwd = "/project/workspace";
+    const ctx = makeContext(reg);
+    const state = deps({ bindTranscript: true });
+
+    const result = await spawnNode(
+      ctx,
+      {
+        agent: "codex",
+        cwd: "/other/workspace",
+        name: "explicit-maker",
+        rolePreset: "maker-py",
+      },
+      state.deps,
+    );
+
+    expect(state.paneRequests[0]?.cwd).toBe("/other/workspace");
+    expect(state.launched[0]?.node.cwd).toBe("/other/workspace");
+    expect(state.launched[0]?.node.role).toContain("너는 Python/backend maker이며");
+    expect(ctx.registry.nodes["explicit-maker"]?.cwd).toBe("/other/workspace");
+    expect(ctx.registry.nodes["explicit-maker"]?.rolePreset).toBe("maker-py");
+    expect(result.cwd).toBe("/other/workspace");
+    expect(result.rolePreset).toBe("maker-py");
   });
 
   test("expands role presets into the launch prompt and persists preset metadata", async () => {
@@ -339,6 +387,7 @@ describe("spawnNode", () => {
         name: "maker",
         parent: "lead",
         role: "Builder",
+        cwd: "/repo",
         sessionId: "session-new",
         tmux_pane: "dev10:2.0",
         transcript: "/repo/transcript.jsonl",
@@ -349,6 +398,7 @@ describe("spawnNode", () => {
     expect(result).toEqual(
       expect.objectContaining({
         agent: "codex",
+        cwd: "/repo",
         description: "Owns implementation tasks",
         name: "maker",
         pane: "dev10:2.0",
@@ -385,6 +435,7 @@ describe("spawnNode", () => {
       expect.objectContaining({
         agent: "antigravity",
         children: [],
+        cwd: "/repo",
         name: "viewer",
         role: "Viewer",
         tmux_pane: "dev10:2.0",
@@ -397,6 +448,7 @@ describe("spawnNode", () => {
   test("renders text and JSON summaries", () => {
     const result = {
       agent: "codex" as const,
+      cwd: "/repo",
       description: "Owns implementation tasks",
       group: "core",
       name: "maker",

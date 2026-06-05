@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import path from "node:path";
 
 import type { Context, NodeCtx } from "./context.js";
 import { prependNodeContextPack } from "./context-pack.js";
@@ -12,6 +13,7 @@ import {
   newSession,
   newWindow,
   paneCommand,
+  paneCurrentPath,
   paneTarget,
   sendEnter,
   sendLiteral,
@@ -388,9 +390,13 @@ async function tmuxPaneRuntime(nc: NodeCtx): Promise<{ tmux_pane?: string }> {
 
 function teamRuntime(
   nc: NodeCtx,
-): Pick<NodeRuntime, "children" | "description" | "group" | "parent" | "role"> {
-  const runtime: Pick<NodeRuntime, "children" | "description" | "group" | "parent" | "role"> = {
+): Pick<NodeRuntime, "children" | "cwd" | "description" | "group" | "parent" | "role"> {
+  const runtime: Pick<
+    NodeRuntime,
+    "children" | "cwd" | "description" | "group" | "parent" | "role"
+  > = {
     children: [...nc.node.children],
+    cwd: nc.node.cwd,
   };
   if (nc.node.role) runtime.role = nc.node.role;
   if (nc.node.description) runtime.description = nc.node.description;
@@ -453,11 +459,29 @@ export async function launchNode(ctx: Context, nc: NodeCtx): Promise<void> {
     ...ctx.registry.nodes[node.name],
     name: node.name,
     agent: node.agent,
+    cwd: node.cwd,
     sessionId,
     transcript: transcript || undefined,
     ...teamRuntime(nc),
     ...tmuxRuntime,
   };
+}
+
+async function validateAdoptCwd(nc: NodeCtx): Promise<void> {
+  if (!nc.node.cwd) {
+    warn(`${nc.node.name}: expected cwd missing; skipping adoption cwd verification`);
+    return;
+  }
+  const actual = await paneCurrentPath(nc.addr);
+  if (!actual) {
+    warn(`${nc.node.name}: could not verify pane cwd for adoption`);
+    return;
+  }
+  if (path.resolve(actual) !== path.resolve(nc.node.cwd)) {
+    throw new Error(
+      `${nc.node.name}: pane cwd mismatch for adoption (expected ${nc.node.cwd}, got ${actual})`,
+    );
+  }
 }
 
 export interface BringUpResult {
@@ -491,6 +515,7 @@ export async function bringUp(ctx: Context): Promise<BringUpResult> {
       const running = await paneCommand(nc.addr);
       if (running && !SHELLS.has(running)) {
         step(`adopt ${color.bold(node.name)} ${color.dim(`(${nc.adapter.label}) @ ${node.tmux}`)}`);
+        await validateAdoptCwd(nc);
         await registerExisting(ctx, nc);
         result.adopted.push(node.name);
         continue;
@@ -505,6 +530,7 @@ export async function bringUp(ctx: Context): Promise<BringUpResult> {
 
     if (existingWindows.includes(node.name)) {
       step(`adopt ${color.bold(node.name)} ${color.dim(`(${nc.adapter.label})`)}`);
+      await validateAdoptCwd(nc);
       await registerExisting(ctx, nc);
       result.adopted.push(node.name);
       continue;

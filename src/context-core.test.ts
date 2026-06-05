@@ -67,6 +67,7 @@ describe("Context Resolution", () => {
         "reg-only": {
           name: "reg-only",
           agent: "claude",
+          cwd: "/test/node/cwd",
           role: "reviewer",
           parent: "conf-node",
           tmux_pane: "test-session:custom.pane",
@@ -86,7 +87,7 @@ describe("Context Resolution", () => {
     expect(regCtx.node.name).toBe("reg-only");
     expect(regCtx.addr).toBe("test-session:custom.pane"); // tmux_pane from registry
     expect(regCtx.node.parent).toBe("conf-node");
-    expect(regCtx.node.cwd).toBe("/test/registry/cwd"); // Uses registry.cwd if registry node
+    expect(regCtx.node.cwd).toBe("/test/node/cwd"); // Uses runtime cwd before registry cwd
   });
 
   test("registry node properties override or supplement config default tmux_pane", () => {

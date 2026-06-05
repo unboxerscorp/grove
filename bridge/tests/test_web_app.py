@@ -5387,7 +5387,7 @@ def test_create_project_invokes_new_project_with_literal_argv(
             "session_id": "",
             "status": "external",
             "role": "orchestrator",
-            "parent": "lead",
+            "parent": "",
             "group": "",
             "description": "Project master/orchestrator.",
             "kind": "meta",
@@ -5404,7 +5404,6 @@ def test_create_project_invokes_new_project_with_literal_argv(
         "agent": "claude",
         "role": "orchestrator",
         "status": "external",
-        "parent": "lead",
         "description": "Project master/orchestrator.",
     }
     org = client.get(
@@ -5883,6 +5882,8 @@ def test_org_payload_includes_master_and_human_routing_support(
     payload = response.json()
     nodes = {node["name"]: node for node in payload["nodes"]}
     candidates = {candidate["name"]: candidate for candidate in payload["assignee_candidates"]}
+    assert nodes["project-master"]["parent"] == "lead@dev10"
+    assert nodes["worker"]["parent"] == "project-master"
     assert nodes["human-reviewer"]["kind"] == "human"
     assert nodes["human-reviewer"]["status"] == "external"
     assert candidates["human-reviewer"]["human"] is True
@@ -6678,6 +6679,7 @@ def test_create_node_passes_role_preset_to_spawn_cli(
         )
 
     monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    write_registry(tmp_path, "dev10", {}, workspace="/repo/dev10")
     client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
 
     response = client.post(
@@ -6706,6 +6708,8 @@ def test_create_node_passes_role_preset_to_spawn_cli(
             "customized role",
             "--role-preset",
             "maker-py",
+            "--cwd",
+            "/repo/dev10",
             "--session",
             "dev10",
             "--json",
@@ -6764,6 +6768,7 @@ def test_create_node_uses_project_header_session(
         tmp_path,
         "dev11",
         {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev11:1.0"}},
+        workspace="/repo/dev11",
     )
     calls: list[list[str]] = []
 
@@ -6801,8 +6806,60 @@ def test_create_node_uses_project_header_session(
             "new-worker",
             "--agent",
             "codex",
+            "--cwd",
+            "/repo/dev11",
             "--session",
             "dev11",
+            "--json",
+        ]
+    ]
+
+
+def test_create_node_payload_cwd_overrides_project_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_registry(tmp_path, "dev10", {}, workspace="/repo/dev10")
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps({"name": "worker-cwd", "agent": "codex"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post(
+        "/api/nodes",
+        headers=auth_headers(client),
+        json={"name": "worker-cwd", "agent": "codex", "cwd": " /repo/override "},
+    )
+
+    assert response.status_code == 200
+    assert calls == [
+        [
+            "grove",
+            "spawn",
+            "--name",
+            "worker-cwd",
+            "--agent",
+            "codex",
+            "--cwd",
+            "/repo/override",
+            "--session",
+            "dev10",
             "--json",
         ]
     ]

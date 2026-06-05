@@ -57,6 +57,7 @@ describe("Registry Load/Save", () => {
         agent: "claude",
         parent: "parent-node",
         group: "reviewers",
+        cwd: "/test/child-cwd",
         tmux_pane: "session:1.0",
         pending: {
           fromOffset: 0,
@@ -70,6 +71,7 @@ describe("Registry Load/Save", () => {
     expect(loaded?.nodes["parent-node"]!.children).toEqual(["child-node"]);
     expect(loaded?.nodes["child-node"]!.parent).toBe("parent-node");
     expect(loaded?.nodes["child-node"]!.group).toBe("reviewers");
+    expect(loaded?.nodes["child-node"]!.cwd).toBe("/test/child-cwd");
     expect(loaded?.nodes["child-node"]!.pending?.submittedAt).toBe("2026-06-05T00:00:00Z");
   });
 });

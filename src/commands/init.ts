@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import { ensureSharedMasterRegistry, loadOrInit, saveRegistry } from "../registry.js";
 import { color, info, warn } from "../util/log.js";
 
 function template(session: string, cwd: string): string {
@@ -68,6 +69,26 @@ auth.test.ts and report pass/fail plus the commit hash."
 \`\`\`
 `;
 
+const INIT_CHILDREN = ["maker-1", "maker-2", "reviewer"];
+
+function seedRegistry(session: string, cwd: string): void {
+  const registry = loadOrInit(session, cwd);
+  const existing = registry.nodes.lead;
+  registry.nodes.lead = {
+    ...existing,
+    agent: existing?.agent ?? "claude",
+    children: existing?.children ?? INIT_CHILDREN,
+    cwd,
+    name: "lead",
+    parent: "",
+    role:
+      existing?.role ??
+      "Project lead for this grove. Coordinate the project board and delegate to child nodes.",
+  };
+  saveRegistry(registry);
+  ensureSharedMasterRegistry(cwd);
+}
+
 export async function cmdInit(opts: {
   config?: string;
   session?: string;
@@ -92,5 +113,6 @@ export async function cmdInit(opts: {
     info(`wrote ${color.bold("grove-protocol.md")}`);
   }
 
+  seedRegistry(session, cwd);
   info(`next: edit grove.yaml, then run ${color.cyan("grove up")}`);
 }
