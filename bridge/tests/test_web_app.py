@@ -8,8 +8,10 @@ import logging
 import os
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
+import types
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -6343,6 +6345,38 @@ def test_web_app_does_not_synthesize_legacy_project_master_node() -> None:
     assert "PROJECT_MASTER_NODE_NAME" not in source
     assert "_project_master_exists" not in source
     assert "_project_master_node" not in source
+
+
+def test_web_main_bounds_uvicorn_graceful_shutdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(app: FastAPI, **kwargs: object) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=fake_run))
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path / "home"))
+
+    result = web_app.main(
+        [
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9999",
+            "--session",
+            "dev10",
+            "--dist-dir",
+            str(tmp_path),
+            "--board-db-path",
+            str(tmp_path / "board.db"),
+        ]
+    )
+
+    assert result == 0
+    assert calls
+    assert calls[0]["timeout_graceful_shutdown"] == 5
 
 
 def test_org_adds_external_lead_for_grouped_workers(tmp_path: Path) -> None:

@@ -206,6 +206,7 @@ DELEGATE_BOARD_ALIASES = frozenset({"dev-room"})
 DELEGATE_BOARD_OWNER_PROJECT = "dev10"
 LEAD_NODE_NAME = "lead"
 GROVE_MASTER_NODE_NAME = "grove-master"
+WEB_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 5
 GUI_FEATURES = (
     "quota",
     "intake",
@@ -9318,7 +9319,12 @@ def main(argv: list[str] | None = None) -> int:
     started_at = cast(int, app.state.started_at)
     _print_startup_connect_hint(config)
     try:
-        uvicorn.run(app, host=config.host, port=config.port)
+        uvicorn.run(
+            app,
+            host=config.host,
+            port=config.port,
+            timeout_graceful_shutdown=WEB_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
+        )
     finally:
         _remove_web_companion(config, started_at=started_at)
     return 0
