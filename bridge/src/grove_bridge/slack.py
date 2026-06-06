@@ -663,16 +663,19 @@ class SlackConnector:
         self._node_chat_queue_lock = threading.Lock()
         self._seen_event_keys: set[str] = set()
         self._seen_event_order: deque[str] = deque()
-        # Bridge-native chat runtime (Stage0): constructed ONLY when the operator
-        # has enabled the flag (default OFF). When None, the existing chat path is
-        # byte-identical — no new component, no guarded branch taken.
+        # Bridge-native chat runtime (Stage0): constructed only when the operator
+        # has enabled the flag (default OFF). The feature/provider state is also
+        # refreshed at queue-drain time so Setup changes take effect without a
+        # Slack restart.
         _chat_bridge_on = chat_bridge_runtime_enabled(self.store, board=self.human_gate.board)
-        _chat_bridge_provider = load_gemini_provider_config(
+        self._chat_bridge_provider_path = (
             Path("~/.grove").expanduser() / self.human_gate.board / "chat-provider.json"
         )
+        _chat_bridge_provider = load_gemini_provider_config(self._chat_bridge_provider_path)
         self._chat_bridge_runtime: ChatWorkerPool | None = (
             ChatWorkerPool() if _chat_bridge_on else None
         )
+        self._chat_bridge_provider_signature: tuple[str, str] | None = None
         self._chat_bridge_adapter: ChatProviderAdapter | None = (
             RedactingProviderAdapter(
                 inner=GeminiChatProviderAdapter(
@@ -683,6 +686,11 @@ class SlackConnector:
             if _chat_bridge_on and _chat_bridge_provider["api_key"]
             else None
         )
+        if self._chat_bridge_adapter is not None:
+            self._chat_bridge_provider_signature = (
+                _chat_bridge_provider["api_key"],
+                _chat_bridge_provider["model"],
+            )
 
     def poll_human_gates(self) -> int:
         channel = self.human_gate.channel
@@ -2298,11 +2306,11 @@ class SlackConnector:
         return self.store.slack_chat_queue_summary(board=self.human_gate.board, now=now)
 
     def _process_node_chat_queue_item(self, item: SlackChatQueueItem, *, now: int) -> None:
-        if self._chat_bridge_runtime is not None:
+        if self._chat_bridge_runtime_ready():
             # Flag ON only: bridge-native runtime may take the turn. Never entered
-            # when the flag is OFF (self._chat_bridge_runtime is None) → the
-            # existing path below is byte-identical. If provider config is absent
-            # or generation fails, the existing node-routed path remains fallback.
+            # when the flag is OFF or provider config is absent → the existing
+            # path below remains fallback. Setup key/flag changes are picked up
+            # without a Slack restart.
             if self._process_chat_bridge_runtime_item(item, now=now):
                 return
         item = self.store.mark_slack_chat_message_running(item.id, now=now)
@@ -2366,6 +2374,31 @@ class SlackConnector:
             )
             return
         self.store.complete_slack_chat_message(item.id, now=now)
+
+    def _chat_bridge_runtime_ready(self) -> bool:
+        if not chat_bridge_runtime_enabled(self.store, board=self.human_gate.board):
+            self._chat_bridge_runtime = None
+            self._chat_bridge_adapter = None
+            self._chat_bridge_provider_signature = None
+            return False
+        if self._chat_bridge_runtime is None:
+            self._chat_bridge_runtime = ChatWorkerPool()
+        # Tests may inject a deterministic adapter without a provider config.
+        if self._chat_bridge_adapter is not None and self._chat_bridge_provider_signature is None:
+            return True
+        provider = load_gemini_provider_config(self._chat_bridge_provider_path)
+        api_key = provider["api_key"]
+        if not api_key:
+            self._chat_bridge_adapter = None
+            self._chat_bridge_provider_signature = None
+            return False
+        signature = (api_key, provider["model"])
+        if signature != self._chat_bridge_provider_signature:
+            self._chat_bridge_adapter = RedactingProviderAdapter(
+                inner=GeminiChatProviderAdapter(api_key=api_key, model=provider["model"])
+            )
+            self._chat_bridge_provider_signature = signature
+        return self._chat_bridge_adapter is not None
 
     def _process_chat_bridge_runtime_item(self, item: SlackChatQueueItem, *, now: int) -> bool:
         """Bridge-native Slack runtime entry — flag-gated; reached only

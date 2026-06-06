@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+import grove_bridge.slack as slack_module
 from grove_bridge.chat_runtime import ProviderRequest
 from grove_bridge.slack import ChatRouteConfig, HumanGateConfig, SlackConnector
 from grove_bridge.store import SQLiteBoardStore
@@ -128,3 +131,37 @@ def test_flag_on_gemini_runtime_generates_and_publishes_without_cli_node(tmp_pat
         board="dev10", now=9_999_999_999, running_stale_before=9_999_999_999, limit=10
     )
     assert due == []
+
+
+def test_runtime_flag_and_provider_refresh_without_slack_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    slack, facade = _FakeSlack(), _FakeFacade()
+    conn = _connector(store, slack, facade)
+    assert conn._chat_bridge_runtime is None
+
+    provider_dir = tmp_path / ".grove" / "dev10"
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "chat-provider.json").write_text(
+        '{"provider":"gemini","model":"gemini-test","api_key":"AIza-test-key"}',
+        encoding="utf-8",
+    )
+
+    class _FakeGeminiAdapter:
+        def __init__(self, *, api_key: str, model: str) -> None:
+            self.api_key = api_key
+            self.model = model
+
+        def generate(self, request: ProviderRequest) -> str:
+            return f"runtime answer: {request.user_text}"
+
+    monkeypatch.setattr(slack_module, "GeminiChatProviderAdapter", _FakeGeminiAdapter)
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+
+    _enqueue(store)
+    conn.poll_node_chat_queue()
+
+    assert facade.calls == []
+    assert slack.posts == [("C1", "runtime answer: hi")]
