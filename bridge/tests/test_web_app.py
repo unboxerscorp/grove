@@ -7326,6 +7326,60 @@ def test_node_connect_info_is_read_only_and_project_scoped(tmp_path: Path) -> No
     assert store.list_events_after(cursor=0, limit=100) == before_events
 
 
+def test_node_connect_info_accepts_visible_foreign_project_lead(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"lead": {"name": "lead", "agent": "claude", "tmux_pane": "dev10:2.0"}},
+        workspace="/repo/dev10",
+    )
+    write_registry(
+        tmp_path,
+        "base-voca",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "claude",
+                "tmux_pane": "dev10:3.0",
+            },
+            "maker": {
+                "name": "maker",
+                "agent": "claude",
+                "parent": "lead",
+                "tmux_pane": "dev10:3.1",
+            },
+        },
+        workspace="/repo/base-voca",
+        tmux_session="dev10",
+    )
+    client = make_client(tmp_path, store)
+
+    response = client.get(
+        "/api/nodes/lead%40base-voca/connect",
+        headers=auth_headers(client),
+    )
+    hidden_child = client.get(
+        "/api/nodes/maker%40base-voca/connect",
+        headers=auth_headers(client),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "project": "base-voca",
+        "node": "lead@base-voca",
+        "tmux_target": "dev10:3.0",
+        "mode": "local_tmux_attach",
+        "label": "Local tmux attach",
+        "commands": {
+            "attach": "tmux -L dev10 attach -t dev10",
+            "local_attach": "tmux -L dev10 attach -t dev10",
+            "select_pane": "tmux -L dev10 select-pane -t dev10:3.0",
+        },
+    }
+    assert hidden_child.status_code == 404
+
+
 def test_node_connect_info_uses_allowed_host_for_headless_ssh(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     write_registry(

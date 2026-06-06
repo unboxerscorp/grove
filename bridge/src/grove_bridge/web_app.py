@@ -171,6 +171,7 @@ SUMMARY_NODE_STATUSES = frozenset({"running", "idle", "error", "blocked", "dead"
 SUMMARY_NODE_AGENTS = frozenset({"codex", "claude", "antigravity", "agy"})
 TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?P<pane>[0-9]+)$")
 NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+NODE_LOOKUP_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@-]*$")
 PROJECT_NAME_RE = NODE_NAME_RE
 HANDOFF_ID_RE = re.compile(r"^handoff_[A-Za-z0-9_-]{16,}$")
 JOIN_MEMBER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$")
@@ -2309,7 +2310,7 @@ def create_app(
             request,
             caller_project=resolve_project(request),
         )
-        node_record = _node_record_in_project(node, config=project.config)
+        node_record, project = _node_connect_target(node, project=project)
         if not node_record["input_allowed"]:
             _require_operator_access(auth, detail="lead terminal connect requires operator role")
         return _node_connect_payload(node_record, project=project)
@@ -8765,6 +8766,34 @@ def _node_record_in_project(name: str, *, config: WebAppConfig) -> NodeRecord:
     raise HTTPException(status_code=404, detail="node not found")
 
 
+def _node_connect_target(
+    name: str, *, project: ProjectContext
+) -> tuple[NodeRecord, ProjectContext]:
+    try:
+        return _node_record_in_project(name, config=project.config), project
+    except HTTPException as exc:
+        if exc.status_code not in {400, 404}:
+            raise
+
+    node_name = _validated_node_lookup_ref(name, field_name="node")
+    for node in _org_graph_records(project.config):
+        if node["name"] != node_name:
+            continue
+        node_project = str(node["project"])
+        if node_project and node_project != project.name:
+            return (
+                node,
+                ProjectContext(
+                    config=replace(project.config, registry_session=node_project),
+                    name=node_project,
+                    board=node_project,
+                    from_header=project.from_header,
+                ),
+            )
+        return node, project
+    raise HTTPException(status_code=404, detail="node not found")
+
+
 def _node_connect_payload(
     node: NodeRecord,
     *,
@@ -9270,6 +9299,19 @@ def _validated_node_ref(value: str, *, field_name: str) -> str:
         raise HTTPException(
             status_code=400,
             detail=f"{field_name} must contain only letters, digits, hyphen, or underscore",
+        )
+    return stripped
+
+
+def _validated_node_lookup_ref(value: str, *, field_name: str) -> str:
+    stripped = value.strip()
+    if NODE_LOOKUP_RE.fullmatch(stripped) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{field_name} must contain only letters, digits, dot, at-sign, "
+                "hyphen, or underscore"
+            ),
         )
     return stripped
 
