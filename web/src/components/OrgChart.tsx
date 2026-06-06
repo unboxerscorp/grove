@@ -746,6 +746,14 @@ export function OrgChart(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [structSig]);
 
+  const parentCandidatesFor = useCallback(
+    (node: OrgNode): OrgNode[] => {
+      const descendants = descendantsOf(node.name, childrenOf);
+      return nodes.filter((candidate) => candidate.name !== node.name && candidate.name !== node.parent && !descendants.has(candidate.name));
+    },
+    [childrenOf, nodes],
+  );
+
   const stopPD = (e: React.PointerEvent) => e.stopPropagation();
 
   // What will happen if the user drops right now — drives the floating badge
@@ -897,6 +905,7 @@ export function OrgChart(props: {
             const isDrag = drag?.name === node.name;
             const isOver = drag?.over === node.name;
             const isGroup = drag?.group === node.name;
+            const parentCandidates = parentCandidatesFor(node);
             return (
               <div
                 key={node.name}
@@ -962,6 +971,28 @@ export function OrgChart(props: {
                     >
                       {t("org.detach")}
                     </button>
+                  )}
+                  {parentCandidates.length > 0 && (
+                    <label className="org-keyboard-parent-wrap" onPointerDown={stopPD}>
+                      <span className="org-keyboard-parent__label">{t("org.keyboardParent")}</span>
+                      <select
+                        className="dr-select org-keyboard-parent"
+                        aria-label={t("org.keyboardParentFor", { node: node.name })}
+                        value=""
+                        onPointerDown={stopPD}
+                        onChange={(e) => {
+                          const parent = e.target.value;
+                          if (parent) applyPatch(node.name, { parent });
+                        }}
+                      >
+                        <option value="">{t("org.keyboardParentChoose")}</option>
+                        {parentCandidates.map((candidate) => (
+                          <option key={candidate.name} value={candidate.name}>
+                            {candidate.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   )}
                 </div>
 

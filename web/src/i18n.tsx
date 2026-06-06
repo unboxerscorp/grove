@@ -198,6 +198,9 @@ const KO: Dict = {
   "drag.invalid": "여기엔 놓을 수 없음",
   "org.cutParent": "부모 연결 끊기",
   "org.detach": "부모 끊기",
+  "org.keyboardParent": "부모",
+  "org.keyboardParentFor": "{node} 부모 선택",
+  "org.keyboardParentChoose": "부모 선택…",
 
   "delegate.action": "항목 만들기",
   "delegate.heading": "사람용 항목 만들기",
@@ -953,6 +956,9 @@ const EN: Dict = {
   "drag.invalid": "can't drop here",
   "org.cutParent": "detach from parent",
   "org.detach": "detach",
+  "org.keyboardParent": "Parent",
+  "org.keyboardParentFor": "Choose parent for {node}",
+  "org.keyboardParentChoose": "Choose parent…",
 
   "delegate.action": "create item",
   "delegate.heading": "Create human-facing item",

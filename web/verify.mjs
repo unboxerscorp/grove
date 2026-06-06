@@ -485,11 +485,20 @@ async function coreMain() {
       // action buttons have names, and edge-cut controls are keyboard reachable.
       const nodes = Array.from(document.querySelectorAll(".org-node"));
       const visibleActions = Array.from(document.querySelectorAll(".org-node__actions button"));
+      const parentSelects = Array.from(document.querySelectorAll(".org-keyboard-parent"));
       return {
         nodeCount: nodes.length,
         nodeGroups: nodes.every((n) => n.getAttribute("role") === "group"),
         nodeNames: nodes.every((n) => (n.getAttribute("aria-label") ?? "").includes(n.getAttribute("data-name") ?? "")),
         actionButtonsNamed: visibleActions.every((b) => (b.textContent ?? "").trim().length > 0),
+        keyboardParentSelects:
+          parentSelects.length >= 1 &&
+          parentSelects.every(
+            (s) =>
+              s instanceof HTMLSelectElement &&
+              s.options.length >= 2 &&
+              /\S/.test(s.getAttribute("aria-label") ?? ""),
+          ),
         plusButtonsNamed: Array.from(document.querySelectorAll(".org-node__plus")).every((b) =>
           /\S/.test(b.getAttribute("aria-label") ?? ""),
         ),
@@ -594,6 +603,7 @@ async function coreMain() {
       orgA11y.nodeGroups &&
       orgA11y.nodeNames &&
       orgA11y.actionButtonsNamed &&
+      orgA11y.keyboardParentSelects &&
       orgA11y.plusButtonsNamed &&
       orgA11y.edgeCutKeyboard &&
       terminal.name === "root" &&

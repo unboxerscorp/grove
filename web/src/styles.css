@@ -1338,6 +1338,27 @@ button {
   transform: translateY(0);
 }
 
+.org-keyboard-parent-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.org-keyboard-parent__label {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--faint);
+}
+
+.org-keyboard-parent {
+  width: 94px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 22px 0 7px;
+  font-size: 10px;
+}
+
 /* hover "+" to add a child — BELOW the node (children grow downward) */
 .org-node__plus {
   position: absolute;

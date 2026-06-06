@@ -187,7 +187,7 @@
 | -------------- | --------------- | ----------------------------------- | ------------------------------------------------- | ------- |
 | 언어 토글      | 헤더 KO/EN      | 토글 시 라벨 전환, 새로고침 후 유지 | `web/verify.mjs` `#N7 full-label i18n snapshot`   | covered |
 | 전체 라벨 전환 | 탭/패널/폼 전반 | 브랜드 외 모든 라벨도 전환 검증     | `web/verify.mjs` `#N7 full-label i18n snapshot`   | covered |
-| 키보드 접근성  | 조직도/드로어   | 드래그 대안·포커스·ARIA             | `web/verify.mjs` `#N8 org accessibility snapshot` | partial |
+| 키보드 접근성  | 조직도/드로어   | 드래그 대안·포커스·ARIA             | `web/verify.mjs` `#N8 org accessibility snapshot` | covered |
 
 ---
 
@@ -233,7 +233,7 @@
 | N5  | 터미널 상태 전이        | connecting→live→reconnecting→error UI 라벨/LED 전이                                               | `web/verify.mjs` `#N5 terminal connection-state transitions`                                     | P2   | covered |
 | N6  | stale 후속 액션         | 무결성 stale 노드에 대한 rebind 진입점(제품화 후 테스트)                                          | `web/verify.mjs` `#N6 stale rebind entrypoint`, `src/rebind.test.ts`                             | P2   | covered |
 | N7  | 전체 i18n               | 브랜드 외 탭/패널/폼 라벨까지 KO/EN 전환 스냅샷                                                   | `web/verify.mjs` `#N7 full-label i18n snapshot`                                                  | P2   | covered |
-| N8  | 접근성                  | 드래그 키보드 대안·포커스 순서·ARIA(다음 패스)                                                    | `web/verify.mjs` `#N8 org accessibility snapshot`                                                | P3   | partial |
+| N8  | 접근성                  | 연결선 detach와 부모 선택 select로 드래그 키보드 대안 제공, 포커스·ARIA 스냅샷 검증               | `web/verify.mjs` `#N8 org accessibility snapshot`                                                | P3   | covered |
 | N9  | 읽기 전용 터미널        | xterm 입력 비전달 보장(키 입력→무전송)                                                            | `web/verify.mjs` `#N9 xterm stdin disabled`                                                      | P3   | covered |
 | N10 | 그룹 일괄 작업          | 보드 그룹 필터는 커버, 그룹 단위 일괄 배정은 제품화 후 보완                                       | `web/verify.mjs` `#N10 board group filter`                                                       | P3   | partial |
 
