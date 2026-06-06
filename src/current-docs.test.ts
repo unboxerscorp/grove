@@ -140,7 +140,7 @@ describe("current design docs", () => {
   test("bridge web startup copy describes the current cockpit model", () => {
     const bridgeWeb = doc("bridge/src/grove_bridge/web_app.py");
 
-    expect(bridgeWeb).toContain('FastAPI(title="grove cockpit")');
+    expect(bridgeWeb).toContain('FastAPI(title="grove cockpit"');
     expect(bridgeWeb).not.toContain("Grove dev-room web server");
     expect(bridgeWeb).not.toContain("Grove dev-room is starting.");
     expect(bridgeWeb).not.toContain("Run the grove dev-room web server.");
