@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import importlib
@@ -18,6 +19,7 @@ import secrets
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from _thread import LockType
@@ -67,6 +69,12 @@ from grove_bridge.chat_runtime import (
 )
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
+from grove_bridge.pane_stream import (
+    PaneStreamManager,
+    PipeUnavailableError,
+    StreamCapacityError,
+    make_tmux_pipe_io,
+)
 from grove_bridge.slack import (
     HUMAN_GATE_MODE,
     HUMAN_GATE_PENDING_MODE,
@@ -128,6 +136,9 @@ TICKET_TTL_SECONDS = 30
 POLL_INTERVAL_SECONDS = 1.0
 TMUX_TIMEOUT_SECONDS = 5.0
 NODE_INPUT_RATE_LIMIT_SECONDS = 1.0
+# WS close code sent when the concurrent terminal-stream cap is reached (mirrors
+# HTTP 429; the web client renders "at capacity" + backs off). Agreed with the FE.
+TERMINAL_AT_CAPACITY_CODE = 4429
 GROVE_SPAWN_TIMEOUT_SECONDS = 30.0
 GROVE_DESPAWN_TIMEOUT_SECONDS = 30.0
 GROVE_PROJECT_TIMEOUT_SECONDS = 30.0
@@ -798,6 +809,15 @@ def create_app(
     app.state.team_join_code_store = TeamJoinCodeStore()
     app.state.node_input_rate_limit = {}
     app.state.started_at = int(time.time())
+    _pane_capture, _pane_start_pipe = make_tmux_pipe_io(
+        tmux_argv=_tmux_argv,
+        capture=_tmux_capture,
+        fifo_dir=Path(tempfile.gettempdir()) / "grove-pane-streams",
+    )
+    app.state.pane_stream_manager = PaneStreamManager(
+        capture=_pane_capture,
+        start_pipe=_pane_start_pipe,
+    )
     _write_web_companion(app_config, started_at=cast(int, app.state.started_at))
 
     @app.middleware("http")
@@ -2631,53 +2651,66 @@ def create_app(
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
         await websocket.accept()
-        seq = 0
-        last_payload: bytes | None = None
-        try:
-            while True:
-                if not _pane_allowed(pane_id, config=project.config):
-                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-                    return
-                try:
-                    payload = await asyncio.to_thread(_tmux_capture, pane_id)
-                except subprocess.TimeoutExpired:
-                    await websocket.send_json(
-                        {
-                            "type": "error",
-                            "code": "tmux_capture_timeout",
-                            "pane_id": pane_id,
-                            "message": "tmux capture timed out",
-                            "ts": int(time.time()),
-                        }
-                    )
-                    await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
-                    return
-                except OSError:
-                    await websocket.send_json(
-                        {
-                            "type": "error",
-                            "code": "tmux_capture_unavailable",
-                            "pane_id": pane_id,
-                            "message": "tmux capture unavailable",
-                            "ts": int(time.time()),
-                        }
-                    )
-                    await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
-                    return
-                if seq == 0 or payload != last_payload:
-                    seq += 1
-                    last_payload = payload
-                    await websocket.send_json(
-                        {
-                            "seq": seq,
-                            "pane_id": pane_id,
-                            "bytes_base64": base64.b64encode(payload).decode("ascii"),
-                            "ts": int(time.time()),
-                        }
-                    )
-                await asyncio.sleep(POLL_INTERVAL_SECONDS)
-        except Exception:
+        if not _terminal_stream_enabled():
+            await _terminal_capture_fallback(websocket, pane_id, project=project)
             return
+        manager = _pane_stream_manager(websocket)
+        try:
+            snapshot, queue = await manager.subscribe(pane_id)
+        except StreamCapacityError:
+            await websocket.close(code=TERMINAL_AT_CAPACITY_CODE)
+            return
+        except PipeUnavailableError:
+            await _terminal_capture_fallback(websocket, pane_id, project=project)
+            return
+        except Exception:
+            with contextlib.suppress(Exception):
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "tmux_stream_unavailable",
+                        "pane_id": pane_id,
+                        "message": "tmux stream unavailable",
+                        "ts": int(time.time()),
+                    }
+                )
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+            return
+        seq = 0
+        try:
+            seq += 1
+            await websocket.send_json(
+                {
+                    "type": "snapshot",
+                    "seq": seq,
+                    "pane_id": pane_id,
+                    "bytes_base64": base64.b64encode(snapshot).decode("ascii"),
+                    "ts": int(time.time()),
+                }
+            )
+            while True:
+                data = await queue.get()
+                if data is None:
+                    break
+                seq += 1
+                await websocket.send_json(
+                    {
+                        "type": "chunk",
+                        "seq": seq,
+                        "pane_id": pane_id,
+                        "bytes_base64": base64.b64encode(data).decode("ascii"),
+                        "ts": int(time.time()),
+                    }
+                )
+        except Exception:
+            pass
+        finally:
+            # Per-connection teardown covers every exit path incl. graceful
+            # server shutdown: asyncio cancels this handler -> finally runs ->
+            # last release stops pipe-pane + removes the FIFO (leak-free).
+            await manager.unsubscribe(pane_id, queue)
+            with contextlib.suppress(Exception):
+                await websocket.close()
 
     @app.websocket("/ws/board")
     async def board_ws(
@@ -6453,7 +6486,7 @@ def _handle_chat_bridge_runtime_web_request(
     except Exception as exc:
         LOGGER.warning("event=chat_bridge_web_error error=%s", _safe_log_text(exc))
         raise HTTPException(status_code=500, detail="chat provider failed") from exc
-    rendered: dict[str, object] = {
+    answer_rendered: dict[str, object] = {
         "conversation_id": conversation_id,
         "request_id": request_id,
         "response_type": "answer",
@@ -6491,8 +6524,8 @@ def _handle_chat_bridge_runtime_web_request(
         },
         summary=_safe_public_text(payload.message),
     )
-    _persist_master_chat_turn(_store(request), payload, rendered, project=project)
-    return rendered
+    _persist_master_chat_turn(_store(request), payload, answer_rendered, project=project)
+    return answer_rendered
 
 
 def _chat_bridge_web_user_text(
@@ -8889,6 +8922,77 @@ def _tmux_pane_exists(pane: str) -> bool:
     if result.returncode != 0:
         return False
     return pane in result.stdout.decode("utf-8", errors="replace").splitlines()
+
+
+def _pane_stream_manager(source: WebSocket) -> PaneStreamManager:
+    return cast(PaneStreamManager, source.app.state.pane_stream_manager)
+
+
+def _terminal_stream_enabled() -> bool:
+    """Operator opt-in for the interactive pipe-pane stream. Default OFF so the
+    proven read-only capture mirror stays the default (stability first / zero
+    regression); set GROVE_TERMINAL_STREAM=1 to enable the live stream."""
+    return os.environ.get("GROVE_TERMINAL_STREAM", "0").strip().lower() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }
+
+
+async def _terminal_capture_fallback(
+    websocket: WebSocket, pane_id: str, *, project: ProjectContext
+) -> None:
+    """Read-only capture-poll mirror — the no-regression fallback used when the
+    pipe-pane stream is disabled or unavailable. Emits full-screen snapshots
+    (legacy frame shape) that the web client renders as CLEAR+write."""
+    seq = 0
+    last_payload: bytes | None = None
+    try:
+        while True:
+            if not _pane_allowed(pane_id, config=project.config):
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
+            try:
+                payload = await asyncio.to_thread(_tmux_capture, pane_id)
+            except subprocess.TimeoutExpired:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "tmux_capture_timeout",
+                        "pane_id": pane_id,
+                        "message": "tmux capture timed out",
+                        "ts": int(time.time()),
+                    }
+                )
+                await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+                return
+            except OSError:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "code": "tmux_capture_unavailable",
+                        "pane_id": pane_id,
+                        "message": "tmux capture unavailable",
+                        "ts": int(time.time()),
+                    }
+                )
+                await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+                return
+            if seq == 0 or payload != last_payload:
+                seq += 1
+                last_payload = payload
+                await websocket.send_json(
+                    {
+                        "seq": seq,
+                        "pane_id": pane_id,
+                        "bytes_base64": base64.b64encode(payload).decode("ascii"),
+                        "ts": int(time.time()),
+                    }
+                )
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+    except Exception:
+        return
 
 
 def _tmux_capture(pane: str) -> bytes:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -31,6 +32,7 @@ from grove_bridge.assistant import (
 )
 from grove_bridge.auth_status import ToolAuthStatus
 from grove_bridge.chat_runtime import ChatTool, ProviderRequest
+from grove_bridge.pane_stream import StreamCapacityError
 from grove_bridge.store import BoardEvent, SQLiteBoardStore
 from grove_bridge.team_auth import (
     CSRF_HEADER,
@@ -9358,6 +9360,86 @@ def test_terminal_streams_worker_pane_frame(
     assert frame["pane_id"] == "dev10:2.0"
     assert base64.b64decode(frame["bytes_base64"]) == b"pane text"
     assert captures == ["dev10:2.0"]
+
+
+class _FakeStreamManager:
+    """Drives the /ws/terminal streaming path without a real tmux pipe."""
+
+    def __init__(
+        self, *, snapshot: bytes = b"", chunks: tuple[bytes, ...] = (), capacity: bool = False
+    ) -> None:
+        self._snapshot = snapshot
+        self._chunks = chunks
+        self._capacity = capacity
+        self.unsubscribed = 0
+
+    async def subscribe(self, pane_id: str) -> tuple[bytes, asyncio.Queue[bytes | None]]:
+        if self._capacity:
+            raise StreamCapacityError("at capacity")
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        for chunk in self._chunks:
+            queue.put_nowait(chunk)
+        queue.put_nowait(None)  # close after the seeded chunks
+        return self._snapshot, queue
+
+    async def unsubscribe(self, pane_id: str, queue: asyncio.Queue[bytes | None]) -> None:
+        self.unsubscribed += 1
+
+
+def test_terminal_streams_snapshot_then_chunks_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"}},
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    monkeypatch.setenv("GROVE_TERMINAL_STREAM", "1")
+    fake = _FakeStreamManager(snapshot=b"SEED", chunks=(b"abc", b"def"))
+    fastapi_app(client).state.pane_stream_manager = fake
+    ticket = terminal_ticket(client, "dev10:2.0")
+
+    with client.websocket_connect(f"/ws/terminal?ticket={ticket}&pane_id=dev10:2.0") as ws:
+        snapshot = ws.receive_json()
+        chunk1 = ws.receive_json()
+        chunk2 = ws.receive_json()
+
+    assert snapshot["type"] == "snapshot"
+    assert snapshot["seq"] == 1
+    assert base64.b64decode(snapshot["bytes_base64"]) == b"SEED"
+    assert chunk1 == {
+        "type": "chunk",
+        "seq": 2,
+        "pane_id": "dev10:2.0",
+        "bytes_base64": base64.b64encode(b"abc").decode("ascii"),
+        "ts": chunk1["ts"],
+    }
+    assert chunk2["type"] == "chunk"
+    assert base64.b64decode(chunk2["bytes_base64"]) == b"def"
+    assert fake.unsubscribed == 1
+
+
+def test_terminal_closes_at_capacity_when_streaming(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"worker": {"name": "worker", "agent": "codex", "tmux_pane": "dev10:2.0"}},
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    monkeypatch.setenv("GROVE_TERMINAL_STREAM", "1")
+    fastapi_app(client).state.pane_stream_manager = _FakeStreamManager(capacity=True)
+    ticket = terminal_ticket(client, "dev10:2.0")
+
+    with pytest.raises(WebSocketDisconnect) as exc:  # noqa: PT012
+        with client.websocket_connect(f"/ws/terminal?ticket={ticket}&pane_id=dev10:2.0") as ws:
+            ws.receive_json()
+
+    assert exc.value.code == 4429
 
 
 def test_terminal_uses_project_header_for_pane_allowlist(
