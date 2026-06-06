@@ -134,7 +134,7 @@ export function App() {
   }, [loadProjects]);
 
   // Role for control-gating (project create + share). Re-confirmed on navigation
-  // and after a join (liveTick) so a freshly-joined member's role takes effect.
+  // and live updates so role changes take effect without a full page reload.
   useEffect(() => {
     let alive = true;
     api
@@ -372,7 +372,7 @@ export function App() {
               project's single board; context switching is per-project. */}
         </div>
 
-        {/* Minimal top bar: command palette / presence / health / auth / language. */}
+        {/* Minimal top bar: presence / health / auth / language. */}
         <div className="dr-top__right">
           <PresenceIndicator liveTick={liveTick} projectTick={projectTick} />
           <HealthDot />
@@ -442,9 +442,7 @@ export function App() {
                 </div>
               );
             })}
-            {/* Decision inbox: the answer flow for ask-human / feedback items. A
-                discoverable, keyboard-reachable entry (the only other trigger is a
-                hidden compat hook) with a live pending-count badge. */}
+            {/* Decision inbox: the answer flow for ask-human / feedback items. */}
             <button
               type="button"
               className="dr-navitem dr-tab dr-navitem--inbox"
