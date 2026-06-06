@@ -1,5 +1,5 @@
 // Headless render check: drive the system Chrome against the mock harness and
-// assert the built SPA mounts, lists nodes + board cards, opens the task drawer
+// assert the built SPA mounts, lists nodes + board cards, opens the item drawer
 // (comments + runs), and streams terminal frames into xterm via the ws-ticket
 // flow. Writes mock/verify-screenshot.png.
 import { existsSync, readFileSync } from "node:fs";
@@ -38,6 +38,22 @@ function assertNoLegacyProjectMasterMock() {
     : "";
   if (/project-master/i.test(`${source}\n${bundle}`)) {
     throw new Error("web mock must not expose legacy project-master defaults");
+  }
+}
+
+function assertNoStaleMockItemTitleCopy() {
+  const source = readFileSync(path.join(root, "mock", "harness.ts"), "utf8");
+  const verify = readFileSync(path.join(root, "verify.mjs"), "utf8");
+  const bundle = existsSync(path.join(root, "mock", "harness.js"))
+    ? readFileSync(path.join(root, "mock", "harness.js"), "utf8")
+    : "";
+  const staleTitle = new RegExp(
+    `title:\\s*"(?:${[`Task ${"drawer"}`, `Board ${"event-tail"}`, `solo ${"task"}`].join("|")})`,
+    "i",
+  );
+  const staleVerifyWait = new RegExp(`includes\\(["']${`solo ${"task"}`}["']\\)`, "i");
+  if (staleTitle.test(`${source}\n${bundle}`) || staleVerifyWait.test(verify)) {
+    throw new Error("web mock item titles must use item/list wording, not task/board title copy");
   }
 }
 
@@ -276,6 +292,7 @@ async function coreMain() {
   assertNoInboxUnblockCopy();
   assertNoDelegateTaskCopy();
   assertNoLegacyProjectMasterMock();
+  assertNoStaleMockItemTitleCopy();
   assertNoLegacyProjectMasterE2eFixtures();
   assertLiveE2eDefaultsCurrentPort();
   assertLiveE2eAvoidsReentrantMasterChatPost();
@@ -584,7 +601,8 @@ async function coreMain() {
       boardGroupFilter.values.includes("build") &&
       boardGroupFilter.initial > boardGroupFilter.filtered &&
       boardGroupFilter.filtered > 0;
-    const mockItemTitlesOk = board.titles.every((title) => !/Task drawer|Board event-tail/i.test(title));
+    const staleMockTitle = new RegExp([`Task ${"drawer"}`, `Board ${"event-tail"}`].join("|"), "i");
+    const mockItemTitlesOk = board.titles.every((title) => !staleMockTitle.test(title));
 
     // #N10 group bulk assignment: the add form offers group targets and creates
     // one human-facing item per current member of the selected org group.
@@ -792,6 +810,7 @@ async function main() {
     assertNoInboxUnblockCopy();
     assertNoDelegateTaskCopy();
     assertNoLegacyProjectMasterMock();
+    assertNoStaleMockItemTitleCopy();
     assertNoLegacyProjectMasterE2eFixtures();
     assertLiveE2eDefaultsCurrentPort();
     assertLiveE2eAvoidsReentrantMasterChatPost();
@@ -3541,10 +3560,10 @@ async function main() {
       nodes: document.querySelectorAll(".org-node").length,
       hasRoot: !!document.querySelector('[data-name="root"]'),
     }));
-    // board re-scoped: the solo task shows, none of the default project's G- cards.
+    // board re-scoped: the solo item shows, none of the default project's G- cards.
     await page.$eval('.dr-tab[data-view="board"]', (el) => el.click());
     await page.waitForFunction(
-      () => Array.from(document.querySelectorAll(".dr-card__title")).some((e) => (e.textContent ?? "").includes("solo task")),
+      () => Array.from(document.querySelectorAll(".dr-card__title")).some((e) => (e.textContent ?? "").includes("solo item")),
       { timeout: 8000 },
     );
     const soloBoard = await page.evaluate(() => ({
