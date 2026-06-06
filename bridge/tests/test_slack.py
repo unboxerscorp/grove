@@ -1277,13 +1277,7 @@ def test_chat_routing_can_forward_addressed_turn_to_node(tmp_path: Path) -> None
     assert handled is True
     assert assistant.calls == []
     assert chat.calls == []
-    assert slack.posts == [
-        (
-            "C123",
-            "접수했습니다. channel-node 전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.",
-            "111.222",
-        ),
-    ]
+    assert slack.posts == []
     assert connector.poll_node_chat_queue() == 1
     assert chat.calls == [("slack:T1:C123:111.222", "channel-node", "summarize status")]
     assert slack.posts[-1] == ("C123", "grove reply", "111.222")
@@ -1323,17 +1317,11 @@ def test_chat_routing_task_like_message_posts_intake_confirm_before_node_route(
     )
 
     assert handled is True
-    assert slack.posts == [
-        (
-            "C123",
-            "접수했습니다. grove-master 전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.",
-            "111.222",
-        ),
-    ]
+    assert slack.posts == []
 
     assert connector.poll_node_chat_queue() == 1
     assert chat.calls == []
-    assert len(slack.posts) == 2
+    assert len(slack.posts) == 1
     preview = slack.posts[-1][1]
     assert preview.startswith("preview: create task_request item title=board export")
     confirm = _extract_confirm_from_reason(preview)
@@ -1395,13 +1383,7 @@ def test_chat_routing_defers_busy_prompt_guard_and_retries(tmp_path: Path) -> No
 
     assert handled is True
     assert chat.calls == []
-    assert slack.posts == [
-        (
-            "C123",
-            "접수했습니다. grove-master 전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.",
-            "111.222",
-        ),
-    ]
+    assert slack.posts == []
     queued = store.list_due_slack_chat_messages(
         board="main",
         now=9999999999,
@@ -1479,19 +1461,7 @@ def test_chat_routing_posts_waiting_notice_for_long_busy_prompt(tmp_path: Path) 
     assert chat.calls == [
         ("slack:T1:C123:111.222", "grove-master", "summarize status") for _ in range(6)
     ]
-    assert slack.posts == [
-        (
-            "C123",
-            "접수했습니다. grove-master 전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.",
-            "111.222",
-        ),
-        (
-            "C123",
-            "아직 grove-master 입력창에 작성 중인 내용이 있어 대기열에서 기다리고 있습니다. "
-            "메시지가 섞이지 않도록 계속 재시도합니다.",
-            "111.222",
-        ),
-    ]
+    assert slack.posts == []
     queued = store.list_due_slack_chat_messages(
         board="main",
         now=9999999999,
@@ -1544,19 +1514,7 @@ def test_chat_routing_defers_timeout_and_retries(tmp_path: Path) -> None:
     assert len(queued) == 1
     assert queued[0].status == "pending"
     assert queued[0].attempts == 1
-    assert slack.posts == [
-        (
-            "C123",
-            "접수했습니다. grove-master 전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.",
-            "111.222",
-        ),
-        (
-            "C123",
-            "아직 grove-master 응답을 기다리고 있어 대기열에서 계속 재시도합니다. "
-            "완료되면 이 스레드에 답변합니다.",
-            "111.222",
-        ),
-    ]
+    assert slack.posts == []
 
     assert connector.poll_node_chat_queue() == 1
     assert chat.calls == [
@@ -1758,13 +1716,7 @@ def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
 
     assert handled is True
     assert chat.calls == []
-    assert slack.posts == [
-        (
-            "C123",
-            "접수했습니다. grove-master 전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.",
-            "111.222",
-        ),
-    ]
+    assert slack.posts == []
     assert connector.poll_node_chat_queue() == 1
     assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "summarize status")]
     assert slack.posts[-1] == ("C123", "grove reply", "111.222")
