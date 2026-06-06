@@ -198,14 +198,14 @@ function assertLiveE2eChecksMasterSshConnect() {
   }
 }
 
-function assertLiveE2eChecksSlackMasterRoute() {
+function assertLiveE2eChecksSlackChatMasterRoute() {
   const live = readFileSync(path.join(root, "e2e", "live.mjs"), "utf8");
   if (
     !/Slack status reports socket connection/.test(live) ||
     !/status\.json\?\.status\s*===\s*["']socket_connected["']/.test(live) ||
-    !/status\.json\?\.tokens\?\.default_node\s*===\s*["']grove-master["']/.test(live)
+    !/status\.json\?\.tokens\?\.default_node\s*===\s*["']chat-master["']/.test(live)
   ) {
-    throw new Error("live e2e must verify Slack is socket-connected and routes to grove-master");
+    throw new Error("live e2e must verify Slack is socket-connected and routes to chat-master");
   }
 }
 
@@ -268,8 +268,8 @@ async function verifyRetiredLegacySurfaces(browser) {
   await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
   await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
 
-  const hiddenViews = ["integrations", "auth", "connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
-  const visibleViews = ["board", "team", "terminal"];
+  const hiddenViews = ["integrations", "connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
+  const visibleViews = ["board", "team", "terminal", "auth"];
   const defaultSurface = await page.evaluate(
     ({ hiddenViews, visibleViews }) => {
       const inSidebar = (selector) => !!document.querySelector(`.dr-sidebar ${selector}`);
@@ -278,110 +278,22 @@ async function verifyRetiredLegacySurfaces(browser) {
         hiddenViewsAbsent: hiddenViews.every((v) => !inSidebar(`.dr-tab[data-view="${v}"]`)),
         hiddenViewsPresent: hiddenViews.filter((v) => inSidebar(`.dr-tab[data-view="${v}"]`)),
         chainAbsent: !inSidebar(".dr-chain-btn"),
-        drawersAbsent: !inSidebar(".dr-audit-btn") && !inSidebar(".dr-inbox-btn"),
+        auditAbsent: !inSidebar(".dr-audit-btn"),
+        commandPaletteAbsent: !document.querySelector(".cmdk-trigger") && !document.querySelector(".cmdk__panel"),
+        inboxPresent: inSidebar(".dr-navitem--inbox"),
       };
     },
     { hiddenViews, visibleViews },
   );
-
-  await page.keyboard.down("Control");
-  await page.keyboard.press("KeyK");
-  await page.keyboard.up("Control");
-  await page.waitForSelector(".cmdk__panel", { timeout: 6000 });
-  const palette = await page.evaluate(
-    ({ hiddenViews, visibleViews }) => {
-      const cmds = Array.from(document.querySelectorAll(".cmdk__item[role='option']")).map(
-        (el) => el.getAttribute("data-cmd") ?? "",
-      );
-      return {
-        options: cmds.length,
-        visibleViewsOk: visibleViews.every((v) => cmds.includes(`view:${v}`)),
-        drawersAbsent: !cmds.includes("drawer:audit") && !cmds.includes("drawer:inbox") && !cmds.includes("drawer:chain"),
-        hiddenCommands: hiddenViews.filter((v) => cmds.includes(`view:${v}`)),
-      };
-    },
-    { hiddenViews, visibleViews },
-  );
-  await page.keyboard.press("Escape");
-  await page.waitForFunction(() => !document.querySelector(".cmdk__panel"), { timeout: 5000 });
-
-  const SHARE_DEMO_CODE = "grove-demo-join-0001";
-  const page2 = await browser.newPage();
-  await page2.setViewport({ width: 1100, height: 800, deviceScaleFactor: 1 });
-  const joinErrors = [];
-  page2.on("pageerror", (e) => joinErrors.push("pageerror: " + String(e)));
-  page2.on("console", (m) => {
-    if (m.type() !== "error") return;
-    const t = m.text();
-    if (/Failed to load resource|net::|fonts\.googleapis/.test(t)) return;
-    joinErrors.push("console: " + t);
-  });
-  await page2.evaluateOnNewDocument(() => {
-    try {
-      localStorage.setItem("grove.onboarded.v3", "1");
-    } catch {
-      /* ignore */
-    }
-  });
-  await page2.goto("file://" + htmlPath + "?join=" + SHARE_DEMO_CODE, { waitUntil: "load" });
-  await page2.waitForSelector('.connect-join[data-card="join"]', { timeout: 8000 });
-  await page2.waitForFunction(() => !window.location.href.includes("join="), { timeout: 8000 });
-  const joinPrefill = await page2.evaluate(() => ({
-    connectVisible: !!document.querySelector(".connect"),
-    connectTabHidden: !document.querySelector('.dr-sidebar .dr-tab[data-view="connect"]'),
-    code: document.querySelector(".connect-join__code")?.value ?? "",
-    urlScrubbed: !/[?&]join=/.test(window.location.search) && !window.location.href.includes("grove-demo-join-0001"),
-  }));
-  await page2.$eval(".connect-join__code", (el) => {
-    const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
-    d.set.call(el, "totally-wrong-code");
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  await page2.type(".connect-join__name", "legacy-peer");
-  await page2.click(".connect-join__btn");
-  await page2.waitForSelector("[data-join-err]", { timeout: 8000 });
-  const joinBad = await page2.evaluate(() => ({
-    err: document.querySelector("[data-join-err]")?.getAttribute("data-join-err") ?? "",
-    joined: window.__MOCK__?.joined ?? null,
-  }));
-  await page2.$eval(
-    ".connect-join__code",
-    (el, value) => {
-      const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
-      d.set.call(el, value);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-    },
-    SHARE_DEMO_CODE,
-  );
-  await page2.click(".connect-join__btn");
-  await page2.waitForSelector('.connect-joined[data-join="ok"]', { timeout: 8000 });
-  const joinOk = await page2.evaluate(() => ({
-    member: document.querySelector(".connect-joined__member .connect-chip")?.textContent?.trim() ?? "",
-    role: (document.querySelector(".connect-joined__role")?.textContent ?? "").trim(),
-    joined: window.__MOCK__?.joined ?? null,
-  }));
-  await page2.close();
 
   const ok =
     defaultSurface.visibleViewsOk &&
     defaultSurface.hiddenViewsAbsent &&
     defaultSurface.chainAbsent &&
-    defaultSurface.drawersAbsent &&
-    palette.options === 3 &&
-    palette.visibleViewsOk &&
-    palette.drawersAbsent &&
-    palette.hiddenCommands.length === 0 &&
-    joinPrefill.connectVisible &&
-    joinPrefill.connectTabHidden &&
-    joinPrefill.code === SHARE_DEMO_CODE &&
-    joinPrefill.urlScrubbed &&
-    joinBad.err === "invalid" &&
-    joinBad.joined === null &&
-    joinOk.member.includes("legacy-peer") &&
-    joinOk.role === "operator" &&
-    joinOk.joined?.name === "legacy-peer" &&
-    errors.length === 0 &&
-    joinErrors.length === 0;
+    defaultSurface.auditAbsent &&
+    defaultSurface.commandPaletteAbsent &&
+    defaultSurface.inboxPresent &&
+    errors.length === 0;
 
   if (!ok) {
     await page.screenshot({ path: path.join(root, "mock", "verify-legacy-hidden-screenshot.png"), fullPage: true });
@@ -390,12 +302,7 @@ async function verifyRetiredLegacySurfaces(browser) {
       JSON.stringify(
         {
           defaultSurface,
-          palette,
-          joinPrefill,
-          joinBad,
-          joinOk,
           errors,
-          joinErrors,
         },
         null,
         2,
@@ -408,8 +315,6 @@ async function verifyRetiredLegacySurfaces(browser) {
     JSON.stringify({
       mode: "legacy-hidden",
       defaultSurface,
-      palette,
-      join: { prefilled: joinPrefill.code === SHARE_DEMO_CODE, member: joinOk.member, role: joinOk.role },
     }),
   );
 }
@@ -426,7 +331,7 @@ async function coreMain() {
   assertLiveE2eAvoidsReentrantMasterChatPost();
   assertLiveE2eCleansOwnBoardFixtures();
   assertLiveE2eChecksMasterSshConnect();
-  assertLiveE2eChecksSlackMasterRoute();
+  assertLiveE2eChecksSlackChatMasterRoute();
   assertLiveE2eChecksOrgMetadata();
   assertTerminalPaneDisablesXtermStdin();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
@@ -477,13 +382,15 @@ async function coreMain() {
       const groups = Array.from(document.querySelectorAll(".dr-sidebar .dr-navgroup")).map((g) =>
         g.getAttribute("data-group"),
       );
-      const visibleViews = ["board", "team", "terminal"];
-      const hiddenViews = ["integrations", "auth", "connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
+      const visibleViews = ["board", "team", "terminal", "auth"];
+      const hiddenViews = ["integrations", "connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
       return {
         groups,
         visibleViewsOk: visibleViews.every((v) => inSidebar(`.dr-tab[data-view="${v}"]`)),
         hiddenViewsAbsent: hiddenViews.every((v) => !inSidebar(`.dr-tab[data-view="${v}"]`)),
-        drawersAbsent: !inSidebar(".dr-audit-btn") && !inSidebar(".dr-inbox-btn") && !inSidebar(".dr-chain-btn"),
+        drawersAbsent: !inSidebar(".dr-audit-btn") && !inSidebar(".dr-chain-btn"),
+        inboxPresent: inSidebar(".dr-navitem--inbox"),
+        commandPaletteAbsent: !document.querySelector(".cmdk-trigger") && !document.querySelector(".cmdk__panel"),
         liveStat: (document.querySelector(".dr-stat__n")?.textContent ?? "").trim(),
         liveMeta: (document.querySelector(".dr-rail__meta")?.textContent ?? "").replace(/\s+/g, " ").trim(),
       };
@@ -537,18 +444,20 @@ async function coreMain() {
       // #N7 full-label i18n snapshot: core tabs, board panels, and add-item form
       // switch language immediately and persist through reload.
       i18nKo.htmlLang === "ko" &&
-      JSON.stringify(i18nKo.navGroups) === JSON.stringify(["작업"]) &&
+      JSON.stringify(i18nKo.navGroups) === JSON.stringify(["작업", "설정"]) &&
       i18nKo.tabs.some((t) => /목록/.test(t)) &&
       i18nKo.tabs.some((t) => /팀/.test(t)) &&
       i18nKo.tabs.some((t) => /터미널/.test(t)) &&
+      i18nKo.tabs.some((t) => /설정/.test(t)) &&
       i18nKo.boardTitle === "사람용 목록" &&
       i18nKo.boardLists.join("|").includes("피드백 및 할 일") &&
       i18nEn.htmlLang === "en" &&
       i18nEn.stored === "en" &&
-      JSON.stringify(i18nEn.navGroups) === JSON.stringify(["Work"]) &&
+      JSON.stringify(i18nEn.navGroups) === JSON.stringify(["Work", "Setup"]) &&
       i18nEn.tabs.some((t) => /Lists/.test(t)) &&
       i18nEn.tabs.some((t) => /Team/.test(t)) &&
       i18nEn.tabs.some((t) => /Terminal/.test(t)) &&
+      i18nEn.tabs.some((t) => /Setup/.test(t)) &&
       i18nEn.boardTitle === "Human lists" &&
       i18nEn.boardLists.join("|").includes("Feedback and to-dos") &&
       i18nEn.addButton === "+ Add" &&
@@ -685,15 +594,11 @@ async function coreMain() {
       modeLabel: (document.querySelector(".dr-term__ro")?.textContent ?? "").trim(),
     }));
 
-    await page.$eval('.dr-tab[data-view="integrations"]', (el) => el.click());
-    await page.waitForSelector(".slack-guide", { timeout: 8000 });
     const slackGuide = await page.evaluate(() => {
-      const text = document.querySelector(".slack")?.textContent ?? "";
+      const tabs = Array.from(document.querySelectorAll(".dr-tab[data-view]")).map((item) => item.getAttribute("data-view") ?? "");
       return {
-        hasFreeChat: /자유 대화|free-form|GROVE MASTER/.test(text),
-        hasFeedback: /feedback|피드백/.test(text),
-        noOldTaskPreview: !/bug: <|task: <|task preview|board task|role checks|gates/i.test(text),
-        noReadOnlyCopy: !/(read-only|읽기 전용)/i.test(text),
+        hiddenFromMvp: !tabs.includes("integrations"),
+        noLegacySlackPanel: !document.querySelector(".slack, .slack-guide"),
       };
     });
 
@@ -803,10 +708,12 @@ async function coreMain() {
       n2Drawer.threadMeta.includes("1780700000.123456");
 
     const ok =
-      JSON.stringify(sidebar.groups) === JSON.stringify(["work"]) &&
+      JSON.stringify(sidebar.groups) === JSON.stringify(["work", "setup"]) &&
       sidebar.visibleViewsOk &&
       sidebar.hiddenViewsAbsent &&
       sidebar.drawersAbsent &&
+      sidebar.inboxPresent &&
+      sidebar.commandPaletteAbsent &&
       sidebar.liveStat === "4" &&
       /4\/6/.test(sidebar.liveMeta) &&
       statusActiveAliasOk &&
@@ -833,10 +740,8 @@ async function coreMain() {
       terminal.sendBox === 1 &&
       terminal.viewOnly === 0 &&
       !/(read-only|읽기 전용)/i.test(terminal.modeLabel) &&
-      slackGuide.hasFreeChat &&
-      slackGuide.hasFeedback &&
-      slackGuide.noOldTaskPreview &&
-      slackGuide.noReadOnlyCopy &&
+      slackGuide.hiddenFromMvp &&
+      slackGuide.noLegacySlackPanel &&
       /사람용|Human/i.test(board.title) &&
       board.lists.length === 2 &&
       boardGroupFilterOk &&
@@ -949,7 +854,7 @@ async function main() {
     assertLiveE2eAvoidsReentrantMasterChatPost();
     assertLiveE2eCleansOwnBoardFixtures();
     assertLiveE2eChecksMasterSshConnect();
-    assertLiveE2eChecksSlackMasterRoute();
+    assertLiveE2eChecksSlackChatMasterRoute();
     assertLiveE2eChecksOrgMetadata();
     assertTerminalPaneDisablesXtermStdin();
     await verifyRetiredLegacySurfaces(browser);

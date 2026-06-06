@@ -788,7 +788,7 @@ async function main() {
       const inbox = await apiFetch(page, "/api/inbox", { project: TEST_PROJECT });
       assertCheck("/api/inbox returns blocked task", inbox.ok && Array.isArray(inbox.json?.items), safeJson(inbox.json));
       check("blocked task appears in inbox API", inbox.json.items.some((item) => item.task_id === task.id), safeJson(inbox.json.items));
-      await page.click(".dr-inbox-btn");
+      await page.click(".dr-navitem--inbox");
       await page.waitForSelector(`.inbox-item[data-task="${attr(task.id)}"]`, { visible: true, timeout: 15_000 });
       await fillField(page, `.inbox-item[data-task="${attr(task.id)}"] .inbox-answer__input`, "Answer from live browser e2e.");
       const responsePromise = waitForApi(page, { path: `/api/tasks/${encodeURIComponent(task.id)}/answer`, method: "POST" });
@@ -838,65 +838,35 @@ async function main() {
       await page.waitForSelector(".dr-mchat__panel", { hidden: true, timeout: 10_000 });
     });
 
-    await runStep(page, "Slack settings panel and secret redaction", async () => {
+    await runStep(page, "Slack status and secret redaction", async () => {
       await selectProject(page, REAL_PROJECT, REAL_PROJECT_LABEL_RE);
-      await nav(page, "integrations");
-      await page.waitForSelector(".slack-guide__command", { visible: true, timeout: 15_000 });
-      const commandCount = await page.$$eval(".slack-guide__command", (items) => items.length);
-      check("Slack usage guide renders command examples", commandCount >= 4, String(commandCount));
-      const intakeState = await page.$eval(".slack-intake__badge", (el) => el.getAttribute("data-enabled") ?? "");
-      check("Slack intake state is shown", ["on", "off", "unknown"].includes(intakeState), intakeState);
       const status = await apiFetch(page, "/api/slack/config/status", { project: REAL_PROJECT });
       assertCheck("/api/slack/config/status returns 2xx", status.ok, `HTTP ${status.status}`);
       check("Slack status reports socket connection", status.json?.status === "socket_connected", safeJson(status.json));
-      check("Slack routes direct chat to grove-master", status.json?.tokens?.default_node === "grove-master", safeJson(status.json));
+      check("Slack routes direct chat to chat-master", status.json?.tokens?.default_node === "chat-master", safeJson(status.json));
       check("Slack status network payload does not expose raw tokens", !hasRawSecret(status.json), "raw token pattern present in /api/slack/config/status");
-      const domText = await textContent(page, ".slack");
-      check("Slack DOM does not expose raw tokens", !hasRawSecret(domText));
+      check("Slack settings panel is not exposed in MVP sidebar", (await page.$('.dr-tab[data-view="integrations"]')) === null);
     });
 
-    await runStep(page, "audit drawer", async () => {
-      const auditPromise = waitForApi(page, { path: "/api/audit", method: "GET" });
-      await page.click(".dr-audit-btn");
-      await page.waitForSelector(".audit-panel", { visible: true, timeout: 15_000 });
-      const auditResponse = await auditPromise;
-      const auditJson = await responseJson(auditResponse);
-      assertCheck("audit drawer GET returns 2xx", auditResponse.ok(), `HTTP ${auditResponse.status()} ${safeJson(auditJson)}`);
-      assertCheck("audit drawer payload is a list", Array.isArray(auditJson?.items), safeJson(auditJson));
-      await page.waitForFunction(() => Boolean(document.querySelector(".audit-event, .audit-msg")), { timeout: 15_000 });
-      const auditError = await page.$(".audit-msg.is-error");
-      check("audit drawer renders without error", auditError === null);
-      await fillField(page, '.audit-filter input[name="action"]', "assign");
-      await sleep(800);
-      check("audit action filter remains usable", (await page.$(".audit-msg.is-error")) === null);
-      await closeDrawer(page, ".audit-panel");
+    await runStep(page, "audit API remains healthy while drawer is hidden", async () => {
+      const audit = await apiFetch(page, "/api/audit", { project: REAL_PROJECT });
+      assertCheck("/api/audit returns 2xx", audit.ok, `HTTP ${audit.status} ${safeJson(audit.json)}`);
+      assertCheck("/api/audit payload is a list", Array.isArray(audit.json?.items), safeJson(audit.json));
+      check("audit drawer is not exposed in simplified cockpit", (await page.$(".dr-audit-btn")) === null);
       check("delegation chain drawer is not exposed in simplified cockpit", (await page.$(".dr-chain-btn")) === null);
     });
 
     await runStep(page, "legacy ops panels stay out of the default sidebar", async () => {
       const tabs = await page.$$eval(".dr-tab[data-view]", (items) => items.map((item) => item.getAttribute("data-view")));
-      const hidden = ["connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
+      const hidden = ["integrations", "connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
       check("default sidebar hides legacy ops views", hidden.every((view) => !tabs.includes(view)), tabs.join(","));
       skip("legacy ops panel UI journey", "covered by isolated API/verify suites; hidden from the simplified default cockpit");
     });
 
-    await runStep(page, "connect stays hidden while join deep-link validates", async () => {
+    await runStep(page, "connect stays hidden from MVP surface", async () => {
       const tabs = await page.$$eval(".dr-tab[data-view]", (items) => items.map((item) => item.getAttribute("data-view")));
       check("connect is hidden from the default sidebar", !tabs.includes("connect"), tabs.join(","));
-      await page.goto(`${BASE_URL}/?join=${encodeURIComponent(`${RUN_ID}-bad-code`)}`, { waitUntil: "domcontentloaded", timeout: 30_000 });
-      await page.waitForSelector(".connect", { visible: true, timeout: 15_000 });
-      await page.waitForSelector(".connect-join__code", { visible: true, timeout: 15_000 });
-      await page.waitForFunction(() => !window.location.href.includes("join="), { timeout: 10_000 });
-      await fillField(page, ".connect-join__name", "P2 Live Join");
-      const joinPromise = waitForApi(page, { path: "/api/join", method: "POST" });
-      await page.click(".connect-join__btn");
-      const joinResponse = await joinPromise;
-      const joinJson = await responseJson(joinResponse);
-      check("connect invalid join returns non-2xx", !joinResponse.ok(), `HTTP ${joinResponse.status()} ${safeJson(joinJson)}`);
-      await page.waitForSelector(".connect-msg[data-join-err]", { visible: true, timeout: 10_000 });
-      const reason = await page.$eval(".connect-msg[data-join-err]", (el) => el.getAttribute("data-join-err"));
-      check("connect join error is mapped to fixed reason", ["invalid", "expired", "rateLimit", "nameExists", "invalidName", "disabled", "generic"].includes(reason ?? ""), reason ?? "");
-      await nav(page, "board");
+      check("connect panel markup is absent on the MVP dashboard", (await page.$(".connect")) === null);
     });
 
     await runStep(page, "terminal view, connect command, operator send", async () => {
@@ -1050,17 +1020,13 @@ async function main() {
       check("org chart shows project leads", leadProjects.some((item) => /dev10|grove-dev/i.test(item)), leadProjects.join(","));
     });
 
-    await runStep(page, "sidebar, command palette, and logo", async () => {
+    await runStep(page, "sidebar and logo", async () => {
       const tabs = await page.$$eval(".dr-tab[data-view]", (items) => items.map((item) => item.getAttribute("data-view")));
-      check("sidebar exposes expected cockpit views", ["board", "team", "terminal", "integrations", "auth"].every((view) => tabs.includes(view)), tabs.join(","));
-      check("sidebar does not expose connect by default", !tabs.includes("connect"), tabs.join(","));
-      await page.click(".cmdk-trigger");
-      await page.waitForSelector(".cmdk .cmdk__input", { visible: true, timeout: 10_000 });
-      await fillField(page, ".cmdk__input", "terminal");
-      await page.waitForSelector('.cmdk__item[data-cmd="view:terminal"]', { visible: true, timeout: 10_000 });
-      await page.click('.cmdk__item[data-cmd="view:terminal"]');
-      await page.waitForSelector(".cmdk", { hidden: true, timeout: 10_000 }).catch(() => {});
-      check("command palette routes to terminal view", await page.$(".dr-term") !== null);
+      check("sidebar exposes MVP cockpit views", ["board", "team", "terminal", "auth"].every((view) => tabs.includes(view)), tabs.join(","));
+      check("sidebar hides retired ops views", ["integrations", "connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"].every((view) => !tabs.includes(view)), tabs.join(","));
+      check("command palette trigger is not exposed", (await page.$(".cmdk-trigger")) === null);
+      check("audit drawer trigger is not exposed", (await page.$(".dr-audit-btn")) === null);
+      check("inbox remains exposed for ask-human answers", (await page.$(".dr-navitem--inbox")) !== null);
       const logoLoaded = await page.$eval(".dr-brand .dr-mark__img", (img) => img.complete && img.naturalWidth > 0);
       check("Grove logo image loads", logoLoaded);
     });
