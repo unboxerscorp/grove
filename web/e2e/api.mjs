@@ -2502,7 +2502,7 @@ async function run() {
     eq("handoff reaccept same id 200", duplicateAccept.status, 200);
     eq("handoff reaccept returns existing", duplicateAccept.json && duplicateAccept.json.status, "existing");
     eq("handoff reaccept created false", duplicateAccept.json && duplicateAccept.json.created, false);
-    eq("handoff reaccept returns same local task id", duplicateAccept.json && duplicateAccept.json.task && duplicateAccept.json.task.id, acceptedHandoff.json && acceptedHandoff.json.task && acceptedHandoff.json.task.id);
+    eq("handoff reaccept returns same local item id", duplicateAccept.json && duplicateAccept.json.task && duplicateAccept.json.task.id, acceptedHandoff.json && acceptedHandoff.json.task && acceptedHandoff.json.task.id);
     const receiverTasksAfterDuplicate = await reqAt(handoffBaseUrl, "GET", `/api/boards/${HANDOFF_RECEIVER}/tasks`, {
       token: handoffReceiverToken,
       project: HANDOFF_RECEIVER,
