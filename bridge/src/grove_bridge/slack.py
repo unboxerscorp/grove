@@ -2289,9 +2289,9 @@ class SlackConnector:
         if self._chat_bridge_runtime is not None:
             # Flag ON only: bridge-native runtime takes the turn. Never entered
             # when the flag is OFF (self._chat_bridge_runtime is None) → the
-            # existing path below is byte-identical.
+            # existing path below is byte-identical. Stage1 SHADOW is
+            # observational only: it must not claim/complete/defer the live item.
             self._process_chat_bridge_runtime_item(item, now=now)
-            return
         item = self.store.mark_slack_chat_message_running(item.id, now=now)
         if self._process_node_chat_task_intake(item, now=now):
             return
@@ -2360,27 +2360,21 @@ class SlackConnector:
         With the flag OFF this is never called → the existing path is byte-identical.
 
         SHADOW: generate the turn via the provider adapter and LOG a redacted
-        preview for comparison, but **publish nothing** (user-facing 0). On
-        generation failure → durable defer + log; never a fabricated answer
-        (design §4). Real publish/cutover is a later, separately-approved stage.
+        preview for comparison, but **publish nothing and do not mutate the live
+        queue item**. The existing node-routed answer path still runs. On
+        generation failure → log only; never a fabricated answer and never a
+        dropped/deferred live turn (design §4). Real publish/cutover is a later,
+        separately-approved stage.
         """
         runtime = self._chat_bridge_runtime
         adapter = self._chat_bridge_adapter
         if runtime is None or adapter is None:  # defensive; caller already guards
             return
         conversation_id = _slack_chat_queue_conversation_id(item)
-        stale_before = now - SLACK_NODE_CHAT_RUNNING_STALE_SECONDS
-        if (
-            self.store.claim_slack_chat_message(item.id, now=now, running_stale_before=stale_before)
-            is None
-        ):
-            return  # another worker already claimed this item (per-item claim)
         if not runtime.try_acquire_session(conversation_id):
-            self.store.defer_slack_chat_message(
-                item.id,
-                error="chat_bridge_runtime:session_busy",
-                next_attempt_at=now + self.node_chat_retry_delay_seconds,
-                now=now,
+            LOGGER.info(
+                "chat bridge SHADOW skipped conv=%s reason=session_busy",
+                conversation_id,
             )
             return
         try:
@@ -2393,12 +2387,6 @@ class SlackConnector:
                     "chat bridge shadow generation failed (not published): %s",
                     _safe_log_error(exc),
                 )
-                self.store.defer_slack_chat_message(
-                    item.id,
-                    error="chat_bridge_runtime:shadow_generate_failed",
-                    next_attempt_at=now + self.node_chat_retry_delay_seconds,
-                    now=now,
-                )
                 return
             # SHADOW: log a redacted, bounded preview for comparison — DO NOT publish.
             LOGGER.info(
@@ -2407,7 +2395,6 @@ class SlackConnector:
                 len(generated),
                 redact_secret_text(generated)[:160],
             )
-            self.store.complete_slack_chat_message(item.id, now=now)
         finally:
             runtime.release_session(conversation_id)
 
