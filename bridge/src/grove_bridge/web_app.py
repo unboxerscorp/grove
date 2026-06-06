@@ -1540,8 +1540,6 @@ def create_app(
         project = resolve_project(request)
         boards = _store(request).list_boards()
         allowed_boards = {project.board}
-        if project.from_header and project.name == DELEGATE_BOARD_OWNER_PROJECT:
-            allowed_boards.update(DELEGATE_BOARD_ALIASES)
         boards = [board for board in boards if board.id in allowed_boards]
         return [_board_payload(board) for board in boards]
 

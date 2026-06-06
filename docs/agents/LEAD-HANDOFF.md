@@ -108,7 +108,7 @@
 - `49564c2 fix: keep master fallback copy user-facing`: MASTER deterministic fallback/feedback preview 문구에서 `read-only`, future route, internal module name 같은 구현 중심 표현이 사용자에게 새지 않도록 정리하고 회귀 테스트를 추가했다. `pnpm check` green.
 - `cc0ec74 fix: align role preset copy with v2 org model`: web 노드 생성 role preset preview에서 reviewer/QA/maker 능력을 제한처럼 보이게 하던 copy를 제거하고, v2의 자유 작업/직접 검증 모델에 맞췄다. live web 재배포 후 health 200, org/board/Slack 정상 확인.
 - `defeb46 fix: keep Slack human-decision notice user-facing`: Slack의 사람 판단 필요 알림이 assistant notice에 내부 `human gate requested...` 문구를 넘기지 않고, 사용자-facing `Human decision needed...` 문구를 넘기도록 했다. live Slack은 재시작 후 `socket_connected`와 heartbeat를 확인했다.
-- `137d66f fix: scope board listing to active project`: 기본 세션 `/api/boards`도 현재 project board로 스코프를 걸어 과거/다른 프로젝트 board가 UI 선택지에 섞이지 않게 했다. 명시적 `dev10` project header에서만 기존 `dev-room` 별칭 목록을 유지한다.
+- `137d66f fix: scope board listing to active project`: 기본 세션 `/api/boards`도 현재 project board로 스코프를 걸어 과거/다른 프로젝트 board가 UI 선택지에 섞이지 않게 했다. 이후 `dev-room` legacy compatibility endpoint는 직접 접근만 유지하고 `/api/boards` 목록에는 active project board만 노출하도록 정렬했다.
 - `e042622 fix: guard node-routed master chat`: isolated e2e/temp server가 실제 `grove-master` pane으로 `grove ask`를 보내지 않도록, node-routed master chat은 target node가 현재 `GROVE_HOME` registry에 terminal-viewable로 있을 때만 CLI를 호출한다.
 - `5dec69d fix: expose remote web companion urls`: `~/.grove/dev10/web.json`에 `allowed_hosts`와 `remote_urls`를 기록해 remote/headless 접속 정보를 노드가 직접 확인할 수 있게 했다.
 - `7100279 fix: prefer master terminal by default`: terminal view 첫 진입 시 raw node 배열 순서가 아니라 `grove-master`/lead/root 우선순위로 기본 pane을 선택한다.

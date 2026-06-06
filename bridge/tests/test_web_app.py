@@ -3958,6 +3958,7 @@ def test_board_query_respects_project_scope(tmp_path: Path) -> None:
 
 def test_delegate_project_header_can_create_dev_room_item(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
+    store.create_task(board="dev10", title="active project item", body=None, assignee=None)
     write_registry(
         tmp_path,
         "dev10",
@@ -3978,7 +3979,7 @@ def test_delegate_project_header_can_create_dev_room_item(tmp_path: Path) -> Non
     assert created.json()["title"] == "human-facing item"
     assert listed.status_code == 200
     assert [task["id"] for task in listed.json()] == [created.json()["id"]]
-    assert {board["id"] for board in boards.json()} == {"dev-room"}
+    assert [board["id"] for board in boards.json()] == ["dev10"]
 
 
 def test_dev_room_board_is_owned_by_dev10_project_only(tmp_path: Path) -> None:
