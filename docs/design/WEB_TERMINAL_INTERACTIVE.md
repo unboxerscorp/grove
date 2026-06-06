@@ -1,5 +1,25 @@
 # Interactive Web Terminal — grouped-session PTY embed
 
+> **STATUS (2026-06-07): NOT BUILT — web terminal stays the read-only `capture-pane` mirror.**
+> Two approaches were tried and dropped:
+>
+> 1. **Interactive PTY/attach (this doc's body): ABANDONED.** Stage-0 gate proved tmux
+>    grouped sessions share one window size + active pane, so independent per-client web
+>    sizing of a shared node-window is impossible.
+> 2. **Read-only pipe-pane fan-out stream (`pipe-pane 'cat>FIFO'` → ws snapshot/chunk):
+>    implemented then DROPPED.** Root cause: a FIFO that isn't drained (slow/dead/hung
+>    reader, multi-client, partial disconnect) backpressures `cat` → tmux stalls the pane
+>    PTY → **the operator's pane freezes**. No visual benefit over the capture mirror, and
+>    the operator declined a pipe-streaming dependency. Recovery for a stuck pane:
+>    `tmux -L <socket> pipe-pane -t <pane>` (toggle off).
+>
+> **BACKLOG — efficient streaming, only if revisited:** option **A = file-sink** —
+> `pipe-pane` appends to a regular file; the reader offset-tails it. Regular-file writes
+> never block, so tmux is never backpressured and the pane cannot freeze. Requires bounded
+> size (truncate/rotate) + cleanup on disconnect. This (or an equivalent non-blocking
+> redesign) is the mandatory gate before re-introducing any live stream. The task-master
+> event-wakeup feature is unrelated and unaffected by this drop.
+
 Replace the read-only `capture-pane` mirror with a **real interactive terminal**: each
 web client gets a PTY attached to a per-client **grouped tmux session** (independent
 sizing), streamed bidirectionally over the websocket and rendered in the existing
