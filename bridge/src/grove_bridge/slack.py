@@ -64,6 +64,7 @@ SLACK_NODE_CHAT_TIMEOUT_NOTICE = (
 )
 SLACK_NODE_CHAT_RUNNING_STALE_SECONDS = 300
 SLACK_NODE_CHAT_QUEUE_LIMIT = 5
+SLACK_SOCKET_DISCONNECTED_RESTART_SECONDS = 60.0
 SLACK_SCOPES = (
     "app_mentions:read",
     "channels:history",
@@ -2637,19 +2638,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             daemon=True,
         )
         node_chat_queue_thread.start()
+    socket_disconnected_since: float | None = None
     try:
         while True:
             last_error: str | None = None
-            if not _socket_is_connected(socket_client):
+            socket_connected = _socket_is_connected(socket_client)
+            if socket_connected:
+                socket_disconnected_since = None
+            else:
+                now_monotonic = time.monotonic()
+                if socket_disconnected_since is None:
+                    socket_disconnected_since = now_monotonic
+                disconnected_for = now_monotonic - socket_disconnected_since
+                if disconnected_for >= SLACK_SOCKET_DISCONNECTED_RESTART_SECONDS:
+                    LOGGER.error(
+                        "Slack socket wedged >%.0fs; exiting for fresh restart",
+                        SLACK_SOCKET_DISCONNECTED_RESTART_SECONDS,
+                    )
+                    raise RuntimeError(
+                        "Slack socket disconnected for "
+                        f"{disconnected_for:.1f}s; exiting for fresh restart"
+                    )
                 LOGGER.warning("Slack socket disconnected; reconnecting")
                 try:
                     socket_client.connect()
                 except Exception as exc:
                     last_error = _safe_log_error(exc)
                     LOGGER.warning("Slack socket reconnect failed: %s", last_error)
+                socket_connected = _socket_is_connected(socket_client)
+                if socket_connected:
+                    socket_disconnected_since = None
             _write_slack_runtime_status(
                 runtime_status_path,
-                socket_connected=_socket_is_connected(socket_client),
+                socket_connected=socket_connected,
                 last_error=last_error,
             )
             connector.poll_human_gates()

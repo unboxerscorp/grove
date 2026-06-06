@@ -3812,6 +3812,92 @@ def test_slack_main_reconnects_disconnected_socket(
     assert socket.closed is True
 
 
+def test_slack_main_exits_after_sustained_disconnected_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "slack.json"
+    board_db_path = tmp_path / "board.db"
+    runtime_status_path = tmp_path / "slack-runtime.json"
+    SlackConfigStore(config_path).save(
+        SlackConfig(
+            app_token="xapp-main",
+            bot_token="xoxb-main",
+            default_channel="C123",
+            default_node="chat-node",
+        )
+    )
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.socket_mode_request_listeners: list[object] = []
+            self.connect_count = 0
+            self.closed = False
+
+        def connect(self) -> None:
+            self.connect_count += 1
+
+        def close(self) -> None:
+            self.closed = True
+
+        def is_connected(self) -> bool:
+            return False
+
+        def send_socket_mode_response(self, response: object) -> None:
+            _ = response
+
+    socket = FakeSocket()
+    monotonic = 0.0
+
+    def fake_slack_sdk_client(*, bot_token: str) -> FakeSlackClient:
+        assert bot_token == "xoxb-main"
+        return FakeSlackClient()
+
+    def fake_chat_facade() -> FakeChatFacade:
+        return FakeChatFacade()
+
+    def fake_build_socket_client(
+        *,
+        config: SlackConfig,
+        connector: SlackConnector,
+    ) -> FakeSocket:
+        assert config.app_token == "xapp-main"
+        assert connector.human_gate.channel == "C123"
+        return socket
+
+    def fake_monotonic() -> float:
+        return monotonic
+
+    def advance_past_restart_threshold(seconds: float) -> None:
+        nonlocal monotonic
+        assert seconds == 0.1
+        monotonic += 61.0
+
+    monkeypatch.setattr(slack_module, "SlackSdkClient", fake_slack_sdk_client)
+    monkeypatch.setattr(slack_module, "GroveServeChatFacade", fake_chat_facade)
+    monkeypatch.setattr(slack_module, "_build_socket_client", fake_build_socket_client)
+    monkeypatch.setattr("grove_bridge.slack.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("grove_bridge.slack.time.sleep", advance_past_restart_threshold)
+
+    with pytest.raises(RuntimeError, match="Slack socket disconnected"):
+        slack_module.main(
+            [
+                "--config-path",
+                str(config_path),
+                "--board-db-path",
+                str(board_db_path),
+                "--runtime-status-path",
+                str(runtime_status_path),
+                "--poll-interval",
+                "0.1",
+            ]
+        )
+
+    assert socket.connect_count == 2
+    assert socket.closed is True
+    assert json.loads(runtime_status_path.read_text(encoding="utf-8"))["socket_connected"] is False
+
+
 def test_slack_main_wires_command_config_when_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
