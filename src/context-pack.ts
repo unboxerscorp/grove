@@ -4,6 +4,11 @@ import type { Registry } from "./registry.js";
 export const GROVE_CONTEXT_PACK_HEADER = "GROVE CONTEXT PACK";
 const DEFAULT_MAX_BYTES = 8_000;
 const MAX_NODE_LINES = 40;
+// Caps for the advisory work-instructions field so a pathologically long value
+// cannot bloat every dispatch. The full top-level line gets a generous cap; the
+// per-node org-summary entry stays compact. Mirror these in the Python renderer.
+const WORK_INSTRUCTIONS_FULL_MAX_CHARS = 500;
+const WORK_INSTRUCTIONS_SUMMARY_MAX_CHARS = 120;
 
 export interface ContextPackNode {
   name: string;
@@ -12,6 +17,7 @@ export interface ContextPackNode {
   parent?: string;
   group?: string;
   role?: string;
+  workInstructions?: string;
   tmuxPane?: string;
 }
 
@@ -24,6 +30,7 @@ export interface GroveContextPackInput {
   projectLead?: string;
   targetNode?: string;
   targetRole?: string;
+  targetWorkInstructions?: string;
 }
 
 function clean(value: string | undefined, fallback = "(unknown)"): string {
@@ -33,6 +40,27 @@ function clean(value: string | undefined, fallback = "(unknown)"): string {
 
 function firstLine(value: string | undefined): string {
   return clean(value, "").split("\n")[0]?.trim() ?? "";
+}
+
+/** Cap by Unicode code points (matching Python str slicing) so the TS and
+ *  Python context-pack renderers stay byte-for-byte identical. */
+function capCodePoints(value: string, maxChars: number): string {
+  const chars = [...value];
+  if (chars.length <= maxChars) return value;
+  return `${chars.slice(0, maxChars).join("")}…`;
+}
+
+/** Full advisory work-instructions text: whitespace collapsed to one line, then
+ *  capped. Empty when unset, so dispatches without it are byte-identical. */
+function workInstructionsFull(value: string | undefined): string {
+  return capCodePoints(clean(value, ""), WORK_INSTRUCTIONS_FULL_MAX_CHARS);
+}
+
+/** Compact work-instructions summary for an org-summary node line: first raw
+ *  line only, whitespace collapsed, then capped short. */
+function workInstructionsSummary(value: string | undefined): string {
+  const firstRawLine = (value ?? "").split(/\r?\n/)[0] ?? "";
+  return capCodePoints(clean(firstRawLine, ""), WORK_INSTRUCTIONS_SUMMARY_MAX_CHARS);
 }
 
 export function redactGroveContextText(value: string): string {
@@ -72,6 +100,8 @@ function nodeLine(node: ContextPackNode): string {
   if (node.cwd?.trim()) parts.push(`cwd=${clean(node.cwd)}`);
   const role = firstLine(node.role);
   if (role) parts.push(`role=${role}`);
+  const workInstructions = workInstructionsSummary(node.workInstructions);
+  if (workInstructions) parts.push(`work_instructions=${workInstructions}`);
   return `- ${parent} -> ${clean(node.name)} (${parts.join("; ")})`;
 }
 
@@ -84,6 +114,7 @@ export function contextPackNodesFromRegistry(registry: Registry): ContextPackNod
       name: node.name || key,
       parent: node.parent,
       role: node.role,
+      workInstructions: node.work_instructions,
       tmuxPane: node.tmux_pane,
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -100,6 +131,7 @@ export function contextPackNodesFromContext(ctx: Context): ContextPackNode[] {
       name: node.name,
       parent: runtime?.parent ?? node.parent,
       role: runtime?.role ?? node.role,
+      workInstructions: runtime?.work_instructions ?? node.work_instructions,
       tmuxPane: runtime?.tmux_pane,
     });
   }
@@ -114,6 +146,7 @@ export function buildGroveContextPack(input: GroveContextPackInput): string {
   const lead = projectLead(nodes, input.projectLead);
   const targetNode = input.targetNode?.trim();
   const targetRole = firstLine(input.targetRole);
+  const targetWorkInstructions = workInstructionsFull(input.targetWorkInstructions);
   const communicationProtocol =
     input.communicationProtocol ??
     "Nodes may communicate directly across projects and hierarchy. Human-facing list items are for human TODO, feedback, and ask-human records, not a required node-to-node protocol.";
@@ -127,6 +160,9 @@ export function buildGroveContextPack(input: GroveContextPackInput): string {
     `Project lead: ${clean(lead)}`,
     targetNode ? `Target node: ${targetNode}` : "Target node: (none)",
     targetRole ? `Target role: ${targetRole}` : "Target role: (not recorded)",
+    ...(targetWorkInstructions
+      ? [`Target work instructions (advisory): ${targetWorkInstructions}`]
+      : []),
     `Communication protocol: ${communicationProtocol}`,
     "Visible org summary:",
     ...orgLines,
@@ -160,6 +196,7 @@ export function buildNodeContextPack(
     project,
     targetNode: nc.node.name,
     targetRole: nc.node.role,
+    targetWorkInstructions: nc.node.work_instructions,
   });
 }
 

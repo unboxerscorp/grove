@@ -94,6 +94,9 @@ export interface NewNode {
   parent?: string;
   group?: string;
   description?: string;
+  // Advisory work instructions (작업지침); sent verbatim as snake_case
+  // `work_instructions` on the wire (web_app.py NodeCreatePayload).
+  work_instructions?: string;
   window?: number;
 }
 

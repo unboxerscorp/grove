@@ -5883,6 +5883,7 @@ def test_create_project_invokes_new_project_with_literal_argv(
             "parent": "",
             "group": "core",
             "description": "",
+            "work_instructions": "",
             "kind": "registry",
             "exposed": True,
             "terminal_allowed": True,
@@ -7870,6 +7871,96 @@ def test_update_node_reparents_and_preserves_runtime_fields(tmp_path: Path) -> N
     assert nodes["worker"]["tmux_pane"] == "dev10:1.1"
     assert nodes["worker"]["sessionId"] == "worker-session"
     assert nodes["worker"]["transcript_path"] == "/tmp/transcript.log"
+
+
+def test_create_node_passes_work_instructions_to_spawn_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        captured.append(args)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps({"name": "worker-1", "agent": "codex"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post(
+        "/api/nodes",
+        headers=auth_headers(client),
+        json={
+            "name": "worker-1",
+            "agent": "codex",
+            "description": "Builds API features.",
+            "work_instructions": "PR 머지 전 reviewer 승인 필수",
+        },
+    )
+
+    assert response.status_code == 200
+    args = captured[0]
+    assert "--work-instructions" in args
+    assert args[args.index("--work-instructions") + 1] == "PR 머지 전 reviewer 승인 필수"
+    # the advisory work-instructions flag is emitted after --description
+    assert args.index("--work-instructions") > args.index("--description")
+
+
+def test_update_node_can_patch_and_clear_work_instructions(tmp_path: Path) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "codex",
+                "children": ["worker"],
+                "tmux_pane": "dev10:1.0",
+            },
+            "worker": {
+                "name": "worker",
+                "agent": "claude",
+                "parent": "lead",
+                "children": [],
+                "group": "core",
+                "tmux_pane": "dev10:1.1",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.patch(
+        "/api/nodes/worker",
+        headers=auth_headers(client),
+        json={"work_instructions": "배포 전 advisor 상담"},
+    )
+
+    assert response.status_code == 200
+    worker_payload = next(node for node in response.json()["nodes"] if node["name"] == "worker")
+    assert worker_payload["work_instructions"] == "배포 전 advisor 상담"
+    nodes = cast(dict[str, dict[str, object]], read_registry(tmp_path, "dev10")["nodes"])
+    assert nodes["worker"]["work_instructions"] == "배포 전 advisor 상담"
+
+    cleared = client.patch(
+        "/api/nodes/worker",
+        headers=auth_headers(client),
+        json={"work_instructions": ""},
+    )
+
+    assert cleared.status_code == 200
+    nodes_after = cast(dict[str, dict[str, object]], read_registry(tmp_path, "dev10")["nodes"])
+    assert "work_instructions" not in nodes_after["worker"]
 
 
 def test_update_node_can_clear_parent_and_group(tmp_path: Path) -> None:

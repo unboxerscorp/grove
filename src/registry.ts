@@ -18,6 +18,9 @@ export interface NodeRuntime {
   rolePreset?: string;
   rolePresetVersion?: string;
   description?: string;
+  /** Optional operator-set work instructions (작업지침). Advisory context only:
+   *  surfaced in the grove context pack and org payload, never enforced. */
+  work_instructions?: string;
   parent?: string;
   children?: string[];
   group?: string;

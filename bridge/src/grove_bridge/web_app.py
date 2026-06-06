@@ -381,6 +381,7 @@ class NodeRecord(TypedDict):
     parent: str
     group: str
     description: str
+    work_instructions: str
     kind: str
     exposed: bool
     terminal_allowed: bool
@@ -486,6 +487,7 @@ class NodeCreatePayload(BaseModel):
     role_preset: str | None = Field(default=None, max_length=100)
     cwd: str | None = Field(default=None, max_length=2000)
     description: str | None = Field(default=None, max_length=1000)
+    work_instructions: str | None = Field(default=None, max_length=1000)
     parent: str | None = Field(default=None, max_length=100)
     group: str | None = Field(default=None, max_length=100)
     window: int | None = Field(default=None, ge=0)
@@ -495,6 +497,7 @@ class NodeUpdatePayload(BaseModel):
     parent: str | None = Field(default=None, max_length=100)
     group: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=1000)
+    work_instructions: str | None = Field(default=None, max_length=1000)
 
 
 class NodeTerminatePayload(BaseModel):
@@ -7490,6 +7493,7 @@ def _registry_nodes(config: WebAppConfig) -> list[dict[str, object]]:
             "session_id": node["session_id"],
             "status": node["status"],
             "description": node["description"],
+            "work_instructions": node["work_instructions"],
             "role": node["role"],
             "parent": node["parent"],
             "group": node["group"],
@@ -7549,6 +7553,7 @@ def _registry_node_records(config: WebAppConfig) -> list[NodeRecord]:
                 group=_mapping_string(node, "group") or "",
                 cwd=_mapping_string(node, "cwd") or "",
                 description=_mapping_string(node, "description") or "",
+                work_instructions=_mapping_string(node, "work_instructions") or "",
                 kind=_node_kind_for_registry(node),
                 config=config,
                 connect_host=_node_connect_host_from_registry(node),
@@ -7569,6 +7574,7 @@ def _node_record(
     group: str,
     cwd: str = "",
     description: str,
+    work_instructions: str = "",
     kind: str,
     config: WebAppConfig,
     connect_host: str = "",
@@ -7592,6 +7598,7 @@ def _node_record(
         "parent": parent,
         "group": group,
         "description": description,
+        "work_instructions": work_instructions,
         "kind": kind,
         "exposed": exposed,
         "terminal_allowed": exposed,
@@ -7996,6 +8003,7 @@ def _org_payload(
                 "session_id": node["session_id"],
                 "status": node["status"],
                 "description": node["description"],
+                "work_instructions": node["work_instructions"],
                 "kind": node["kind"],
                 "exposed": node["exposed"],
                 "terminal_allowed": node["terminal_allowed"],
@@ -8214,6 +8222,9 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
     role_preset = _optional_text(payload.role_preset, field_name="role_preset", max_length=100)
     cwd = _spawn_node_cwd(payload, config=config)
     description = _optional_text(payload.description, field_name="description", max_length=1000)
+    work_instructions = _optional_text(
+        payload.work_instructions, field_name="work_instructions", max_length=1000
+    )
     parent = _optional_node_ref(payload.parent, field_name="parent")
     group = _optional_node_ref(payload.group, field_name="group")
     args = ["grove", "spawn", "--operator", "--name", name, "--agent", agent]
@@ -8225,6 +8236,8 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
         args.extend(["--cwd", cwd])
     if description is not None:
         args.extend(["--description", description])
+    if work_instructions is not None:
+        args.extend(["--work-instructions", work_instructions])
     if parent is not None:
         args.extend(["--parent", parent])
     if group is not None:
@@ -8528,6 +8541,17 @@ def _update_node_relationships(
             target.pop("description", None)
         else:
             target["description"] = new_description
+
+    if "work_instructions" in payload.model_fields_set:
+        new_work_instructions = _optional_text(
+            payload.work_instructions,
+            field_name="work_instructions",
+            max_length=1000,
+        )
+        if new_work_instructions is None:
+            target.pop("work_instructions", None)
+        else:
+            target["work_instructions"] = new_work_instructions
 
     _write_registry_atomic(registry_path, registry)
     return _org_payload(config)

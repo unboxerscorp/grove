@@ -21,6 +21,7 @@ export interface SpawnInput {
   role?: string;
   rolePreset?: string;
   description?: string;
+  workInstructions?: string;
   parent?: string;
   group?: string;
   session?: string;
@@ -38,6 +39,7 @@ interface SpawnRequest {
   rolePreset?: string;
   rolePresetVersion?: string;
   description?: string;
+  workInstructions?: string;
   parent?: string;
   group?: string;
   session: string;
@@ -54,6 +56,7 @@ export interface SpawnResult {
   rolePreset?: string;
   rolePresetVersion?: string;
   description?: string;
+  workInstructions?: string;
   session: string;
   tmuxSession?: string;
   pane: string;
@@ -165,6 +168,7 @@ function parseSpawnRequest(ctx: Context, input: SpawnInput): SpawnRequest {
     agent,
     cwd: defaultSpawnCwd(ctx, input.cwd),
     description: trimmed(input.description),
+    workInstructions: trimmed(input.workInstructions),
     group: group ? validateGroveName(group, "--group") : undefined,
     name,
     parent: parent ? validateGroveName(parent, "--parent") : undefined,
@@ -188,6 +192,7 @@ function runtimeFromConfigured(node: ResolvedNode): NodeRuntime {
     children: [...node.children],
     cwd: node.cwd,
     description: node.description,
+    work_instructions: node.work_instructions,
     group: node.group,
     name: node.name,
     parent: node.parent,
@@ -258,6 +263,7 @@ export async function spawnNode(
       children: [],
       cwd: parsed.cwd,
       description: parsed.description,
+      work_instructions: parsed.workInstructions,
       group: parsed.group,
       name: parsed.name,
       parent: parsed.parent,
@@ -285,6 +291,7 @@ export async function spawnNode(
       children: runtime.children ?? [],
       cwd: parsed.cwd,
       description: parsed.description,
+      work_instructions: parsed.workInstructions,
       group: parsed.group,
       name: parsed.name,
       parent: parsed.parent,
@@ -302,6 +309,7 @@ export async function spawnNode(
       agent: parsed.agent,
       cwd: parsed.cwd,
       description: parsed.description,
+      workInstructions: parsed.workInstructions,
       group: parsed.group,
       name: parsed.name,
       pane,
@@ -323,6 +331,7 @@ export function renderSpawnText(result: SpawnResult): string {
   const lines = [`${result.name} [${result.agent}]`, `role: ${result.role}`];
   if (result.rolePreset) lines.push(`rolePreset: ${result.rolePreset}`);
   if (result.description) lines.push(`description: ${result.description}`);
+  if (result.workInstructions) lines.push(`work_instructions: ${result.workInstructions}`);
   lines.push(`cwd: ${result.cwd}`);
   lines.push(`pane: ${result.pane}`);
   if (result.parent) lines.push(`parent: ${result.parent}`);

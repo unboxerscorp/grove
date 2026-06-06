@@ -77,6 +77,9 @@ export interface GroveNode {
   children?: string[];
   group?: string;
   description?: string;
+  // Optional advisory work instructions (작업지침). Surfaced as node context;
+  // never system-enforced. snake_case to match the web_app.py NodeRecord wire.
+  work_instructions?: string;
   // Backend-authoritative access flags (web_app.py NodeRecord). Meta / no-pane
   // nodes are neither terminal-viewable nor input-addressable. Optional — older
   // payloads omit them, so the FE treats `undefined`/`true` as allowed and only
@@ -95,6 +98,7 @@ export interface OrgNode extends GroveNode {
   children?: string[];
   group?: string;
   description?: string;
+  work_instructions?: string;
 }
 
 // One selectable task assignee (web_app.py _assignee_candidate_payload): a

@@ -7,6 +7,10 @@ from dataclasses import dataclass
 GROVE_CONTEXT_PACK_HEADER = "GROVE CONTEXT PACK"
 DEFAULT_MAX_BYTES = 8_000
 MAX_NODE_LINES = 40
+# Caps for the advisory work-instructions field so a pathologically long value
+# cannot bloat every dispatch. Mirror of the TypeScript renderer (context-pack.ts).
+WORK_INSTRUCTIONS_FULL_MAX_CHARS = 500
+WORK_INSTRUCTIONS_SUMMARY_MAX_CHARS = 120
 
 
 @dataclass(frozen=True)
@@ -17,6 +21,7 @@ class ContextPackNode:
     parent: str = ""
     group: str = ""
     role: str = ""
+    work_instructions: str = ""
     tmux_pane: str = ""
 
 
@@ -41,6 +46,23 @@ def _first_line(value: str | None) -> str:
     if not cleaned:
         return ""
     return cleaned.splitlines()[0].strip()
+
+
+def _cap_code_points(value: str, max_chars: int) -> str:
+    """Cap by Unicode code points (mirror of the TypeScript renderer) so both
+    renderers emit byte-for-byte identical output for the same input."""
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars] + "…"
+
+
+def _work_instructions_full(value: str | None) -> str:
+    return _cap_code_points(_clean(value, ""), WORK_INSTRUCTIONS_FULL_MAX_CHARS)
+
+
+def _work_instructions_summary(value: str | None) -> str:
+    first_raw_line = re.split(r"\r?\n", value or "", maxsplit=1)[0]
+    return _cap_code_points(_clean(first_raw_line, ""), WORK_INSTRUCTIONS_SUMMARY_MAX_CHARS)
 
 
 def _truncate_utf8(value: str, max_bytes: int) -> str:
@@ -78,6 +100,9 @@ def _node_line(node: ContextPackNode) -> str:
     role = _first_line(node.role)
     if role:
         parts.append(f"role={role}")
+    work_instructions = _work_instructions_summary(node.work_instructions)
+    if work_instructions:
+        parts.append(f"work_instructions={work_instructions}")
     return f"- {parent} -> {_clean(node.name)} ({'; '.join(parts)})"
 
 
@@ -91,11 +116,13 @@ def build_grove_context_pack(
     project_lead: str | None = None,
     target_node: str | None = None,
     target_role: str | None = None,
+    target_work_instructions: str | None = None,
 ) -> str:
     visible_nodes = tuple(nodes[:MAX_NODE_LINES])
     lead = _project_lead(visible_nodes, project_lead)
     target = target_node.strip() if target_node is not None and target_node.strip() else "(none)"
     role = _first_line(target_role)
+    work_instructions = _work_instructions_full(target_work_instructions)
     communication = (
         communication_protocol
         or "Nodes may communicate directly across projects and hierarchy. "
@@ -114,6 +141,11 @@ def build_grove_context_pack(
         f"Project lead: {_clean(lead)}",
         f"Target node: {target}",
         f"Target role: {role or '(not recorded)'}",
+        *(
+            [f"Target work instructions (advisory): {work_instructions}"]
+            if work_instructions
+            else []
+        ),
         f"Communication protocol: {communication}",
         "Visible org summary:",
         *org_lines,
@@ -132,6 +164,7 @@ def prepend_grove_context_pack(
     project_lead: str | None = None,
     target_node: str | None = None,
     target_role: str | None = None,
+    target_work_instructions: str | None = None,
 ) -> str:
     body = message if message is not None and message.strip() else "(no body)"
     if body.lstrip().startswith(GROVE_CONTEXT_PACK_HEADER):
@@ -145,6 +178,7 @@ def prepend_grove_context_pack(
         project_lead=project_lead,
         target_node=target_node,
         target_role=target_role,
+        target_work_instructions=target_work_instructions,
     )
     return f"{pack}\n\nOriginal message:\n{body}"
 
@@ -165,6 +199,7 @@ def context_pack_nodes_from_registry(
                 parent=str(raw_node.get("parent") or ""),
                 group=str(raw_node.get("group") or ""),
                 role=str(raw_node.get("role") or ""),
+                work_instructions=str(raw_node.get("work_instructions") or ""),
                 tmux_pane=str(raw_node.get("tmux_pane") or ""),
             )
         )

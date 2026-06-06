@@ -180,6 +180,7 @@ const KO: Dict = {
   "node.terminateError": "노드를 종료하지 못했습니다",
 
   "node.fact.role": "역할",
+  "node.fact.workInstructions": "작업지침",
   "node.fact.group": "그룹",
   "node.fact.agent": "에이전트",
   "node.fact.pane": "페인",
@@ -346,6 +347,7 @@ const KO: Dict = {
   "setup.feature.retro.note": "회고 인사이트",
 
   "node.description": "설명 (선택)",
+  "node.workInstructions": "작업지침 (선택 · 자율 주입 컨텍스트, 강제 아님)",
 
   "status.nodes": "노드 상태",
   "status.stale": "멈춤",
@@ -940,6 +942,7 @@ const EN: Dict = {
   "node.terminateError": "failed to terminate node",
 
   "node.fact.role": "role",
+  "node.fact.workInstructions": "work instructions",
   "node.fact.group": "group",
   "node.fact.agent": "agent",
   "node.fact.pane": "pane",
@@ -1106,6 +1109,7 @@ const EN: Dict = {
   "setup.feature.retro.note": "retro insights",
 
   "node.description": "Description (optional)",
+  "node.workInstructions": "Work instructions (optional · advisory context, not enforced)",
 
   "status.nodes": "Node status",
   "status.stale": "stale",

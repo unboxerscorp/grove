@@ -123,6 +123,7 @@ function NodeForm(props: {
   const [role, setRole] = useState("");
   const [roleDirty, setRoleDirty] = useState(false);
   const [description, setDescription] = useState("");
+  const [workInstructions, setWorkInstructions] = useState("");
   const [parent, setParent] = useState(presetParent ?? "");
   const [group, setGroup] = useState("");
   const [busy, setBusy] = useState(false);
@@ -159,6 +160,7 @@ function NodeForm(props: {
         role: roleOverride || undefined,
         rolePreset: rolePreset || undefined,
         description: description.trim() || undefined,
+        work_instructions: workInstructions.trim() || undefined,
         parent: eff || undefined,
         group: group.trim() || undefined,
       })
@@ -247,6 +249,15 @@ function NodeForm(props: {
         value={description}
         spellCheck={false}
         onChange={(e) => setDescription(e.target.value)}
+      />
+      <textarea
+        className="dr-input node-form__work-instructions"
+        name="workInstructions"
+        rows={2}
+        placeholder={t("node.workInstructions")}
+        value={workInstructions}
+        spellCheck={false}
+        onChange={(e) => setWorkInstructions(e.target.value)}
       />
       {!presetParent && (
         <div className="node-form__row">
@@ -353,6 +364,7 @@ function NodeDrawer(props: {
         <div className="dr-drawer__scroll">
           <div className="dr-drawer__facts">
             {fact(t("node.fact.role"), node.role)}
+            {fact(t("node.fact.workInstructions"), node.work_instructions)}
             {fact(t("node.fact.group"), node.group)}
             {fact(t("node.fact.agent"), node.agent)}
             {fact(t("node.fact.parent"), node.parent ?? undefined)}

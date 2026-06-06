@@ -122,6 +122,10 @@ program
   .option("--role <role>", "role / initial prompt for the new node")
   .option("--role-preset <type>", "role preset to expand into the initial prompt")
   .option("--description <text>", "short human-readable note for the new node")
+  .option(
+    "--work-instructions <text>",
+    "optional advisory work instructions (작업지침) surfaced as node context",
+  )
   .option("--parent <node>", "parent node name")
   .option("--group <group>", "team group")
   .option("--session <session>", "target grove project/registry session")
