@@ -142,6 +142,10 @@ export function AuthPanel() {
   const requestFeature = (key: GuiFeatureKey) => {
     const current = features?.[key];
     if (!current || featureBusy) return;
+    if (key === "chat_bridge_runtime" && !chatProvider?.configured) {
+      setFeatureError(tRef.current("setup.features.chatRuntimeNeedsProvider"));
+      return;
+    }
     const next = !current.enabled;
     if (next && RISK_FEATURES.has(key)) {
       setFeatureError(null);
@@ -257,6 +261,8 @@ export function AuthPanel() {
               const state = features?.[item.key];
               const enabled = state?.enabled === true;
               const busy = featureBusy === item.key;
+              const blocked =
+                item.key === "chat_bridge_runtime" && !enabled && !chatProvider?.configured;
               return (
                 <div
                   key={item.key}
@@ -266,7 +272,9 @@ export function AuthPanel() {
                 >
                   <div className="setup-feature__copy">
                     <span className="setup-feature__label">{t(item.labelKey)}</span>
-                    <span className="setup-feature__note">{t(item.noteKey)}</span>
+                    <span className="setup-feature__note">
+                      {blocked ? t("setup.features.chatRuntimeNeedsProvider") : t(item.noteKey)}
+                    </span>
                   </div>
                   {armed === item.key ? (
                     // P1 risk-enable confirm: arming POSTs nothing; confirm = one
@@ -296,7 +304,7 @@ export function AuthPanel() {
                       aria-checked={enabled}
                       data-enabled={enabled ? "1" : "0"}
                       data-risk={RISK_FEATURES.has(item.key) ? "1" : undefined}
-                      disabled={featuresLoading || busy || isViewer || !state}
+                      disabled={featuresLoading || busy || isViewer || !state || blocked}
                       onClick={() => requestFeature(item.key)}
                     >
                       <span className="setup-switch__track">

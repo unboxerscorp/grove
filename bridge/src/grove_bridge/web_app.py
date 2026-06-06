@@ -49,6 +49,7 @@ from grove_bridge.assistant import (
 from grove_bridge.auth import Account, DashboardRole
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
 from grove_bridge.chat_runtime import (
+    CHAT_BRIDGE_RUNTIME_FLAG,
     CHAT_BRIDGE_SHADOW_PERSONA,
     CHAT_PROVIDER_DEFAULT_MODEL,
     CHAT_PROVIDER_DEFAULT_PROVIDER,
@@ -999,6 +1000,15 @@ def create_app(
         )
         project = resolve_project(request)
         feature_name = _gui_feature_name(feature)
+        if (
+            feature_name == CHAT_BRIDGE_RUNTIME_FLAG
+            and payload.enabled
+            and not _chat_provider_config(project.config)["api_key"]
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="chat provider must be configured before enabling chat runtime",
+            )
         _store(request).set_gui_feature_enabled(
             board=project.board,
             feature=feature_name,

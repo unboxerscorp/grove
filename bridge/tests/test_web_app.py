@@ -910,6 +910,7 @@ def test_gui_feature_toggles_default_off_persist_and_audit(tmp_path: Path) -> No
         "handoff",
         "usage-trend",
         "retro-analytics",
+        "chat_bridge_runtime",
     }
 
     initial = client.get("/api/gui-features", headers=headers)
@@ -2262,6 +2263,40 @@ def test_chat_provider_config_status_and_save_redacts_key(tmp_path: Path) -> Non
     assert payload["model"] == "gemini-2.5-flash"
     assert "api_key" not in payload
     assert "AIza-test-key" not in json.dumps(payload)
+
+
+def test_chat_runtime_feature_requires_provider_config(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    blocked = client.post(
+        "/api/gui-features/chat_bridge_runtime",
+        headers=headers,
+        json={"enabled": True},
+    )
+
+    assert blocked.status_code == 409
+    assert (
+        store.gui_feature_flags(board="dev10", features=("chat_bridge_runtime",))[
+            "chat_bridge_runtime"
+        ]["configured"]
+        is False
+    )
+
+    client.post(
+        "/api/chat/provider",
+        headers=headers,
+        json={"provider": "gemini", "model": "gemini-test", "api_key": "AIza-test-key"},
+    )
+    enabled = client.post(
+        "/api/gui-features/chat_bridge_runtime",
+        headers=headers,
+        json={"enabled": True},
+    )
+
+    assert enabled.status_code == 200
+    assert enabled.json()["feature"]["enabled"] is True
 
 
 def test_master_chat_flag_on_uses_gemini_provider_answer(
