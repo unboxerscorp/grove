@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from grove_bridge.assistant import AssistantTransportError
 from grove_bridge.chat_runtime import (
     CHAT_BRIDGE_RUNTIME_FLAG,
+    CHAT_BRIDGE_SHADOW_PERSONA,
     ChatProviderAdapter,
     ChatWorkerPool,
     ClaudeChatProviderAdapter,
@@ -17,6 +20,7 @@ from grove_bridge.chat_runtime import (
     TurnParseError,
     chat_bridge_runtime_enabled,
     guard_answer_channel,
+    load_chat_bridge_persona,
     parse_structured_turn,
 )
 
@@ -220,3 +224,19 @@ def test_gemini_provider_adapter_requires_text() -> None:
 
     with pytest.raises(AssistantTransportError):
         adapter.generate(ProviderRequest(system_prompt="persona", user_text="hello"))
+
+
+def test_load_chat_bridge_persona_absent_falls_back_to_placeholder(tmp_path: Path) -> None:
+    # No path / missing file / empty file → placeholder (behavior unchanged until
+    # chat-master fills the source).
+    assert load_chat_bridge_persona(None) == CHAT_BRIDGE_SHADOW_PERSONA
+    assert load_chat_bridge_persona(tmp_path / "missing.md") == CHAT_BRIDGE_SHADOW_PERSONA
+    empty = tmp_path / "empty.md"
+    empty.write_text("   \n", encoding="utf-8")
+    assert load_chat_bridge_persona(empty) == CHAT_BRIDGE_SHADOW_PERSONA
+
+
+def test_load_chat_bridge_persona_present_returns_source_text(tmp_path: Path) -> None:
+    persona = tmp_path / "chat-persona.md"
+    persona.write_text("You are the real chat-master persona.\n", encoding="utf-8")
+    assert load_chat_bridge_persona(persona) == "You are the real chat-master persona."

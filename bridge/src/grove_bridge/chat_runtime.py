@@ -344,6 +344,24 @@ def load_gemini_provider_config(
     }
 
 
+def load_chat_bridge_persona(path: Path | None) -> str:
+    """Load the chat-master persona/policy system prompt from a runtime source.
+
+    Returns :data:`CHAT_BRIDGE_SHADOW_PERSONA` (placeholder) when the source is
+    ``None``, missing, empty, or unreadable — so behavior is unchanged until
+    chat-master fills the source. chat-master edits the source file directly
+    (no code change, no commit; the file is re-read per turn so edits take effect
+    without a restart).
+    """
+    if path is None:
+        return CHAT_BRIDGE_SHADOW_PERSONA
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, OSError):
+        return CHAT_BRIDGE_SHADOW_PERSONA
+    return text or CHAT_BRIDGE_SHADOW_PERSONA
+
+
 # --------------------------------------------------------------------------- #
 # No-template guard (free-chat ANSWER channel only; confirm-flow copy exempt)
 # --------------------------------------------------------------------------- #

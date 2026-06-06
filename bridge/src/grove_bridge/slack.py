@@ -31,7 +31,6 @@ from grove_bridge.assistant import (
 )
 from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.chat_runtime import (
-    CHAT_BRIDGE_SHADOW_PERSONA,
     ChatProviderAdapter,
     ChatWorkerPool,
     GeminiChatProviderAdapter,
@@ -40,6 +39,7 @@ from grove_bridge.chat_runtime import (
     TurnParseError,
     chat_bridge_runtime_enabled,
     guard_answer_channel,
+    load_chat_bridge_persona,
     load_gemini_provider_config,
     parse_structured_turn,
 )
@@ -673,6 +673,12 @@ class SlackConnector:
         _chat_bridge_on = chat_bridge_runtime_enabled(self.store, board=self.human_gate.board)
         self._chat_bridge_provider_path = (
             Path("~/.grove").expanduser() / self.human_gate.board / "chat-provider.json"
+        )
+        # Persona/policy system-prompt source (chat-master-owned, runtime file).
+        # Absent → loader returns the placeholder, so behavior is unchanged until
+        # chat-master fills it (no code change, no commit; re-read per turn).
+        self._chat_bridge_persona_path = (
+            Path("~/.grove").expanduser() / self.human_gate.board / "chat-persona.md"
         )
         _chat_bridge_provider = load_gemini_provider_config(self._chat_bridge_provider_path)
         self._chat_bridge_runtime: ChatWorkerPool | None = (
@@ -2515,7 +2521,7 @@ class SlackConnector:
                 if response_text is None:
                     generated = adapter.generate(
                         ProviderRequest(
-                            system_prompt=CHAT_BRIDGE_SHADOW_PERSONA,
+                            system_prompt=load_chat_bridge_persona(self._chat_bridge_persona_path),
                             user_text=self._chat_bridge_slack_user_text(
                                 item,
                                 conversation_id=conversation_id,
