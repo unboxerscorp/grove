@@ -175,6 +175,8 @@ function LoadProjectModal(props: { onLoaded: (name: string) => void; onClose: ()
       <span className="proj-result__items">{items.length ? items.join(", ") : "—"}</span>
     </div>
   );
+  const rebindSession = result?.name || basename(path);
+  const rebindCommand = `grove rebind --session ${rebindSession}`;
 
   return (
     <ProjModal title={t("proj.load.heading")} onClose={onClose} kind="load">
@@ -212,6 +214,12 @@ function LoadProjectModal(props: { onLoaded: (name: string) => void; onClose: ()
           </div>
           {bucket(t("proj.load.restored"), result.restored ?? [], "is-restored")}
           {bucket(t("proj.load.stale"), result.stale ?? [], "is-stale")}
+          {(result.stale ?? []).length > 0 && (
+            <div className="proj-load__rebind">
+              <span>{t("proj.load.rebindHint")}</span>
+              <code>{rebindCommand}</code>
+            </div>
+          )}
           {bucket(t("proj.load.fresh"), result.fresh ?? [], "is-fresh")}
           <div className="proj-form__actions">
             <button type="button" className="dr-btn dr-btn--ghost" onClick={onClose}>

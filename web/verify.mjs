@@ -405,6 +405,31 @@ async function coreMain() {
       i18nKoAgain.stored === "ko" &&
       i18nKoAgain.boardTitle === "사람용 목록";
 
+    await page.click(".proj-switcher__btn");
+    await page.waitForSelector(".proj-menu__load", { timeout: 5000 });
+    await page.click(".proj-menu__load");
+    await page.waitForSelector(".proj-modal.is-load", { timeout: 5000 });
+    await page.type('.proj-modal input[name="loadPath"]', "/Users/dev/rebind-demo");
+    await page.click(".proj-load__submit");
+    await page.waitForSelector(".proj-result", { timeout: 6000 });
+    const projectLoadRebind = await page.evaluate(() => ({
+      staleText: (document.querySelector(".proj-result__bucket.is-stale")?.textContent ?? "").trim(),
+      hint: (document.querySelector(".proj-load__rebind")?.textContent ?? "").trim(),
+      command: (document.querySelector(".proj-load__rebind code")?.textContent ?? "").trim(),
+    }));
+    await page.click(".proj-modal.is-load .dr-btn--ghost");
+    await page.waitForFunction(() => !document.querySelector(".proj-modal.is-load"), { timeout: 5000 });
+    if (await page.$(".proj-menu__scrim")) {
+      await page.click(".proj-menu__scrim");
+      await page.waitForFunction(() => !document.querySelector(".proj-menu"), { timeout: 5000 });
+    }
+    const projectLoadRebindOk =
+      // #N6 stale rebind entrypoint: project load results surface a conservative
+      // CLI rebind command for stale nodes without mutating org structure.
+      /docs/.test(projectLoadRebind.staleText) &&
+      /rebind/i.test(projectLoadRebind.hint) &&
+      projectLoadRebind.command === "grove rebind --session rebind-demo";
+
     await page.waitForFunction(
       () => /\d/.test(document.querySelector(".nodestat__chip.is-running")?.textContent ?? ""),
       { timeout: 8000 },
@@ -520,6 +545,7 @@ async function coreMain() {
       /4\/6/.test(sidebar.liveMeta) &&
       statusActiveAliasOk &&
       i18nFullOk &&
+      projectLoadRebindOk &&
       statusLoading.loading &&
       statusLoading.noFalseZero &&
       teamLoading.nodes === 0 &&
@@ -569,6 +595,8 @@ async function coreMain() {
             i18nEnReload,
             i18nKoAgain,
             i18nFullOk,
+            projectLoadRebind,
+            projectLoadRebindOk,
             errors,
           },
           null,
@@ -588,6 +616,7 @@ async function coreMain() {
         statusActiveAlias,
         statusLoading,
         i18nFullOk,
+        projectLoadRebindOk,
         lists: board.lists,
       }),
     );

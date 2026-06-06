@@ -95,12 +95,12 @@
 - **화면에서 보는 것:** 불러오기 모달, restored/stale/fresh 색상 버킷 + OK 배지, 전환 후 조직도/보드.
 - **성공 기준:** 무결성 결과가 정확히 분류되고, 전환 후 그 프로젝트 컨텍스트로 재스코프된다.
 
-| 단계                   | 화면             | 성공 기준                                   | 커버 테스트                                                                                                                                                 | 상태                              |
-| ---------------------- | ---------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| 불러오기 실행          | 불러오기 모달    | `POST /api/projects/load{path}`→무결성 결과 | `web/verify.mjs`(loadResult buckets/ok), `bridge::test_load_project_invokes_load_project_and_returns_integrity_result`, `src/commands/load-project.test.ts` | covered                           |
-| 무결성 분류 표시       | 결과 패널        | restored/stale/fresh 분리 표시              | `web/verify.mjs`(buckets≥3), `src/rebind.test.ts`(전사 rebind 계획)                                                                                         | covered                           |
-| 프로젝트 전환·재스코프 | 헤더/조직도/보드 | 전환 후 `X-Grove-Project`로 데이터 재스코프 | `web/verify.mjs`(projAfterLoad, projectHeader), `bridge::test_project_header_scopes_status_org_nodes_boards_and_tasks`                                      | covered                           |
-| stale 노드 후속 처리   | (웹 액션 없음)   | stale 노드 rebind 안내/실행 진입점          | — (웹은 표시만; rebind는 CLI `src/rebind.test.ts`)                                                                                                          | **needs-test (N6, 제품 갭 동반)** |
+| 단계                   | 화면             | 성공 기준                                   | 커버 테스트                                                                                                                                                 | 상태    |
+| ---------------------- | ---------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| 불러오기 실행          | 불러오기 모달    | `POST /api/projects/load{path}`→무결성 결과 | `web/verify.mjs`(loadResult buckets/ok), `bridge::test_load_project_invokes_load_project_and_returns_integrity_result`, `src/commands/load-project.test.ts` | covered |
+| 무결성 분류 표시       | 결과 패널        | restored/stale/fresh 분리 표시              | `web/verify.mjs`(buckets≥3), `src/rebind.test.ts`(전사 rebind 계획)                                                                                         | covered |
+| 프로젝트 전환·재스코프 | 헤더/조직도/보드 | 전환 후 `X-Grove-Project`로 데이터 재스코프 | `web/verify.mjs`(projAfterLoad, projectHeader), `bridge::test_project_header_scopes_status_org_nodes_boards_and_tasks`                                      | covered |
+| stale 노드 후속 처리   | 불러오기 결과    | stale 노드 rebind 안내/실행 진입점          | `web/verify.mjs` `#N6 stale rebind entrypoint`, `src/rebind.test.ts`                                                                                        | covered |
 
 ---
 
@@ -231,7 +231,7 @@
 | N3  | 터미널 WS 재스코프      | 프로젝트 전환 후 노드 선택 시 새 프로젝트 ticket으로 terminal WS 재연결                           | `web/verify.mjs` `wsBindOk`, `web/e2e/api.mjs` ws-ticket project binding                         | P1   | covered |
 | N4  | WS 재연결·백오프        | 소켓 close 시 지수 백오프(상한), 4401은 재연결 중단                                               | `web/verify.mjs` `n4Ok` close/reconnect/4401 assertions                                          | P2   | covered |
 | N5  | 터미널 상태 전이        | connecting→live→reconnecting→error UI 라벨/LED 전이                                               | `web/verify.mjs` `#N5 terminal connection-state transitions`                                     | P2   | covered |
-| N6  | stale 후속 액션         | 무결성 stale 노드에 대한 rebind 진입점(제품화 후 테스트)                                          | `web` + `src/rebind.test.ts` 연계                                                                | P2   | backlog |
+| N6  | stale 후속 액션         | 무결성 stale 노드에 대한 rebind 진입점(제품화 후 테스트)                                          | `web/verify.mjs` `#N6 stale rebind entrypoint`, `src/rebind.test.ts`                             | P2   | covered |
 | N7  | 전체 i18n               | 브랜드 외 탭/패널/폼 라벨까지 KO/EN 전환 스냅샷                                                   | `web/verify.mjs` `#N7 full-label i18n snapshot`                                                  | P2   | covered |
 | N8  | 접근성                  | 드래그 키보드 대안·포커스 순서·ARIA(다음 패스)                                                    | `web/verify.mjs` `#N8 org accessibility snapshot`                                                | P3   | partial |
 | N9  | 읽기 전용 터미널        | xterm 입력 비전달 보장(키 입력→무전송)                                                            | `web/verify.mjs` `#N9 xterm stdin disabled`                                                      | P3   | covered |
