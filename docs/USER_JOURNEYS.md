@@ -206,16 +206,17 @@
 
 ---
 
-## 여정 11 — 읽기 전용 터미널 안전성 (창의 추가)
+## 여정 11 — 터미널 입력 경로 분리 (창의 추가)
 
-- **페르소나:** 남의 노드를 관찰만 하려는 사용자.
-- **목표:** 터미널은 보기 전용이라 실수로도 노드에 키 입력이 전달되지 않는다.
-- **성공 기준:** 프런트는 stdin 비활성, 백엔드 터미널 경로는 단방향 캡처만.
+- **페르소나:** 터미널을 관찰하면서 필요할 때 명시적으로 노드에 입력을 보내는 운영자.
+- **목표:** xterm 미러 자체는 단방향 캡처로 유지하고, 입력은 operator-gated send form/API로만 전달한다.
+- **성공 기준:** 프런트 xterm stdin은 비활성이고, `/ws/terminal`은 캡처 프레임만 보내며, 입력은 별도 `/api/nodes/{node}/send` 경로의 권한/기능 플래그를 통과할 때만 전달된다.
 
-| 단계             | 화면        | 성공 기준                             | 커버 테스트                                                       | 상태    |
-| ---------------- | ----------- | ------------------------------------- | ----------------------------------------------------------------- | ------- |
-| 단방향 스트림    | 터미널 패널 | 프레임 수신만, 입력 미전송            | `bridge::test_terminal_streams_worker_pane_frame`(송신 경로 없음) | partial |
-| 프런트 입력 차단 | 터미널 패널 | xterm `disableStdin`로 키 미전달 보장 | `web/verify.mjs` `#N9 xterm stdin disabled`                       | covered |
+| 단계             | 화면        | 성공 기준                                 | 커버 테스트                                                                                                 | 상태    |
+| ---------------- | ----------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------- |
+| 단방향 스트림    | 터미널 패널 | `/ws/terminal`은 캡처 프레임만 전송       | `bridge::test_terminal_streams_worker_pane_frame`                                                           | covered |
+| 프런트 입력 차단 | 터미널 패널 | xterm `disableStdin`로 키 미전달 보장     | `web/verify.mjs` `#N9 xterm stdin disabled`                                                                 | covered |
+| 명시적 노드 입력 | 터미널 패널 | operator send form/API만 tmux 입력을 전달 | `web/verify.mjs` node-send assertions, `bridge::test_terminal_allows_lead_pane_view_and_operator_node_send` | covered |
 
 ---
 
