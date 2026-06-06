@@ -3,6 +3,7 @@ from __future__ import annotations
 from grove_bridge.context_pack import (
     GROVE_CONTEXT_PACK_HEADER,
     ContextPackNode,
+    build_compact_grove_context_pack,
     build_grove_context_pack,
     collapse_foreign_projects,
     prepend_grove_context_pack,
@@ -258,3 +259,52 @@ def test_collapse_project_field_is_render_inert() -> None:
             "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder)",
         ]
     )
+
+
+# Compact node-to-node pack. COMPACT_PARITY_PACK is duplicated verbatim in
+# src/context-pack.test.ts — the Python and TypeScript compact builders MUST
+# emit identical bytes for identical input, like the full PARITY_PACK above.
+COMPACT_PARITY_WORK_INSTRUCTIONS = "PR 머지 전 reviewer 승인 필수\n  여러 줄 가능"
+COMPACT_PARITY_PACK = "\n".join(
+    [
+        "GROVE CONTEXT PACK (compact)",
+        "Caller node: lead",
+        "Project: dev10",
+        "Target node: maker",
+        "Target role: Builder",
+        "Target work instructions (advisory): PR 머지 전 reviewer 승인 필수",
+        "Visible org: 3 nodes — run `grove org --json` for the full tree; "
+        "`grove task mine` for your tasks.",
+    ]
+)
+
+
+def test_compact_pack_render_is_byte_identical_to_the_typescript_renderer() -> None:
+    pack = build_compact_grove_context_pack(
+        caller_node="lead",
+        nodes=(
+            ContextPackNode(name="lead", agent="claude"),
+            ContextPackNode(name="maker", agent="claude"),
+            ContextPackNode(name="reviewer", agent="claude"),
+        ),
+        project="dev10",
+        target_node="maker",
+        target_role="Builder",
+        target_work_instructions=COMPACT_PARITY_WORK_INSTRUCTIONS,
+    )
+
+    assert pack == COMPACT_PARITY_PACK
+
+
+def test_compact_pack_omits_unset_lines_and_singularizes_count() -> None:
+    pack = build_compact_grove_context_pack(
+        caller_node="lead",
+        nodes=(ContextPackNode(name="lead", agent="claude"),),
+        project="dev10",
+        target_node="maker",
+    )
+
+    assert "Target role:" not in pack
+    assert "(advisory)" not in pack
+    assert "Visible org: 1 node — run `grove org --json`" in pack
+    assert pack.startswith(GROVE_CONTEXT_PACK_HEADER)

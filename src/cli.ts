@@ -231,6 +231,10 @@ program
   .command("send <node> <message...>")
   .description("send a direct message to a node (non-blocking)")
   .option("--project <project>", "target grove project/session for the addressed node")
+  .option(
+    "--context <mode>",
+    "context pack: full | compact | none (default: compact for live send)",
+  )
   .option("-c, --config <file>", "path to grove.yaml")
   .action(
     run((node: string, message: string[], opts: Record<string, unknown>) =>
@@ -255,6 +259,7 @@ program
   .command("ask <node> <message...>")
   .description("send a direct message and wait for the result (send + wait)")
   .option("--project <project>", "target grove project/session for the addressed node")
+  .option("--context <mode>", "context pack: full | compact | none (default: compact for live ask)")
   .option("-c, --config <file>", "path to grove.yaml")
   .option("-t, --timeout <dur>", "max wait, e.g. 30s 20m 1h", "30m")
   .action(

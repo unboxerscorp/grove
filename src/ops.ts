@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 
 import type { Context, NodeCtx } from "./context.js";
-import { prependNodeContextPack } from "./context-pack.js";
+import { type ContextMode, prependNodeContextPack } from "./context-pack.js";
 import { eventLogSize, readTurnEventsSince } from "./events.js";
 import { type NodeRuntime, saveRegistry, updateRegistryNode } from "./registry.js";
 import {
@@ -220,13 +220,17 @@ export async function submitMessage(
   opts: {
     callerNode?: string;
     context?: Context;
+    contextMode?: ContextMode;
     includeContextPack?: boolean;
     project?: string;
   } = {},
 ): Promise<void> {
   await assertPaneInputClear(nc);
-  const submittedMessage =
-    opts.includeContextPack === false ? message : prependNodeContextPack(nc, message, opts);
+  // Live node-to-node callers (send/ask) pass "compact"; bootstrap/fan-out
+  // leave it unset → "full". includeContextPack:false stays "none" (no pack).
+  const contextMode: ContextMode =
+    opts.includeContextPack === false ? "none" : (opts.contextMode ?? "full");
+  const submittedMessage = prependNodeContextPack(nc, message, { ...opts, contextMode });
   await sendLiteral(nc.addr, BP_START + submittedMessage + BP_END);
   await sleep(220);
   await sendEnter(nc.addr);
@@ -372,7 +376,12 @@ export async function ask(
   nc: NodeCtx,
   message: string,
   timeoutMs: number,
-  opts: { eventLogDir?: string; submissionContext?: Context; submissionProject?: string } = {},
+  opts: {
+    contextMode?: ContextMode;
+    eventLogDir?: string;
+    submissionContext?: Context;
+    submissionProject?: string;
+  } = {},
 ): Promise<string | null> {
   const transcript = resolveTranscript(ctx, nc);
   const haveBaseline = Boolean(transcript) && nc.adapter.size(transcript) > 0;
@@ -388,6 +397,7 @@ export async function ask(
   await submitMessage(nc, message, {
     callerNode: "grove ask CLI",
     context: opts.submissionContext ?? ctx,
+    contextMode: opts.contextMode,
     project: opts.submissionProject,
   });
   const res = await waitForCompletion(ctx, nc, {

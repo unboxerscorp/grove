@@ -213,6 +213,45 @@ def build_grove_context_pack(
     return _truncate_utf8(redact_grove_context_text("\n".join(lines)), max_bytes)
 
 
+def build_compact_grove_context_pack(
+    *,
+    project: str,
+    caller_node: str | None = None,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    nodes: Sequence[ContextPackNode] = (),
+    target_node: str | None = None,
+    target_role: str | None = None,
+    target_work_instructions: str | None = None,
+) -> str:
+    """Compact node-to-node pack: the token-saving default for live `grove send`
+    / `grove ask` between running nodes. Carries identity plus the target's role
+    and work-instructions summary, and an org digest (node count) with a one-line
+    reminder pointing at `grove org --json` / `grove task mine` for a full
+    refresh. Keeps the `GROVE CONTEXT PACK` header prefix so the
+    no-duplicate-prepend guard still fires. Mirror of
+    context-pack.ts:buildCompactGroveContextPack."""
+    target = target_node.strip() if target_node is not None and target_node.strip() else "(none)"
+    role = _first_line(target_role)
+    work_instructions = _work_instructions_summary(target_work_instructions)
+    node_count = len(tuple(nodes))
+    noun = "node" if node_count == 1 else "nodes"
+    lines = [
+        f"{GROVE_CONTEXT_PACK_HEADER} (compact)",
+        f"Caller node: {_clean(caller_node, 'operator/CLI')}",
+        f"Project: {_clean(project)}",
+        f"Target node: {target}",
+        *([f"Target role: {role}"] if role else []),
+        *(
+            [f"Target work instructions (advisory): {work_instructions}"]
+            if work_instructions
+            else []
+        ),
+        f"Visible org: {node_count} {noun} — run `grove org --json` for the "
+        f"full tree; `grove task mine` for your tasks.",
+    ]
+    return _truncate_utf8(redact_grove_context_text("\n".join(lines)), max_bytes)
+
+
 def prepend_grove_context_pack(
     message: str | None,
     *,

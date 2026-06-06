@@ -233,6 +233,52 @@ export function buildGroveContextPack(input: GroveContextPackInput): string {
   );
 }
 
+/**
+ * Compact node-to-node pack: the token-saving default for live `grove send` /
+ * `grove ask` between running nodes. Carries identity (caller/project/target),
+ * the target's role + work-instructions summary, and an org digest (node count)
+ * with a one-line reminder pointing at `grove org --json` / `grove task mine`
+ * for a full refresh — so the org/rules are still reachable, just not inlined.
+ * Keeps the `GROVE CONTEXT PACK` header prefix so the no-duplicate-prepend guard
+ * still fires. Mirror of context_pack.py:build_compact_grove_context_pack.
+ */
+export function buildCompactGroveContextPack(input: GroveContextPackInput): string {
+  const targetNode = input.targetNode?.trim();
+  const targetRole = firstLine(input.targetRole);
+  const workInstructions = workInstructionsSummary(input.targetWorkInstructions);
+  const nodeCount = (input.nodes ?? []).length;
+  const lines = [
+    `${GROVE_CONTEXT_PACK_HEADER} (compact)`,
+    `Caller node: ${clean(input.callerNode, "operator/CLI")}`,
+    `Project: ${clean(input.project)}`,
+    targetNode ? `Target node: ${targetNode}` : "Target node: (none)",
+    ...(targetRole ? [`Target role: ${targetRole}`] : []),
+    ...(workInstructions ? [`Target work instructions (advisory): ${workInstructions}`] : []),
+    `Visible org: ${nodeCount} ${nodeCount === 1 ? "node" : "nodes"} — run \`grove org --json\` for the full tree; \`grove task mine\` for your tasks.`,
+  ];
+  return truncateUtf8(
+    redactGroveContextText(lines.join("\n")),
+    input.maxBytes ?? DEFAULT_MAX_BYTES,
+  );
+}
+
+export type ContextMode = "full" | "compact" | "none";
+
+function asContextMode(value: string | undefined): ContextMode | undefined {
+  const mode = value?.trim().toLowerCase();
+  return mode === "full" || mode === "compact" || mode === "none" ? mode : undefined;
+}
+
+/** Resolve the context-pack mode by precedence: an explicit value (e.g. the
+ *  `--context` flag) wins, then the `GROVE_CONTEXT_MODE` env override, then the
+ *  caller's fallback (compact for live node-to-node, full for bootstrap). */
+export function resolveContextMode(
+  explicit: string | undefined,
+  fallback: ContextMode,
+): ContextMode {
+  return asContextMode(explicit) ?? asContextMode(process.env.GROVE_CONTEXT_MODE) ?? fallback;
+}
+
 export function prependGroveContextPack(message: string, input: GroveContextPackInput): string {
   if (message.trimStart().startsWith(GROVE_CONTEXT_PACK_HEADER)) return message;
   const pack = buildGroveContextPack(input);
@@ -244,12 +290,13 @@ export function buildNodeContextPack(
   opts: {
     callerNode?: string;
     context?: Context;
+    contextMode?: ContextMode;
     maxBytes?: number;
     project?: string;
   } = {},
 ): string {
   const project = opts.project ?? opts.context?.config.session ?? "unknown";
-  return buildGroveContextPack({
+  const input: GroveContextPackInput = {
     callerNode: opts.callerNode,
     maxBytes: opts.maxBytes,
     nodes: opts.context ? contextPackNodesFromContext(opts.context) : [{ ...nc.node }],
@@ -257,7 +304,10 @@ export function buildNodeContextPack(
     targetNode: nc.node.name,
     targetRole: nc.node.role,
     targetWorkInstructions: nc.node.work_instructions,
-  });
+  };
+  return opts.contextMode === "compact"
+    ? buildCompactGroveContextPack(input)
+    : buildGroveContextPack(input);
 }
 
 export function prependNodeContextPack(
@@ -266,10 +316,12 @@ export function prependNodeContextPack(
   opts: {
     callerNode?: string;
     context?: Context;
+    contextMode?: ContextMode;
     maxBytes?: number;
     project?: string;
   } = {},
 ): string {
+  if (opts.contextMode === "none") return message;
   if (message.trimStart().startsWith(GROVE_CONTEXT_PACK_HEADER)) return message;
   return `${buildNodeContextPack(nc, opts)}\n\nOriginal message:\n${message}`;
 }

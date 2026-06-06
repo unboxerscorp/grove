@@ -57,7 +57,7 @@ describe("cmdAsk", () => {
     await cmdAsk("maker", "hello", { config: "grove.yaml", timeout: "2s" });
 
     expect(loadContext).toHaveBeenCalledWith("grove.yaml");
-    expect(ask).toHaveBeenCalledWith(ctx, nc, "hello", 2000);
+    expect(ask).toHaveBeenCalledWith(ctx, nc, "hello", 2000, { contextMode: "compact" });
     expect(writes).toEqual(["answer\n"]);
     expect(process.exitCode).toBeUndefined();
   });
@@ -101,6 +101,7 @@ describe("cmdAsk", () => {
       expect.objectContaining({ project: "dev11" }),
     );
     expect(ask).toHaveBeenCalledWith(targetCtx, targetNc, "hello", 2000, {
+      contextMode: "compact",
       submissionContext: ctx,
       submissionProject: "dev10",
     });

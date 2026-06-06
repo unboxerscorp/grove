@@ -1,12 +1,14 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  buildCompactGroveContextPack,
   buildGroveContextPack,
   collapseForeignProjects,
   type ContextPackNode,
   contextPackNodesFromContext,
   GROVE_CONTEXT_PACK_HEADER,
   prependGroveContextPack,
+  resolveContextMode,
 } from "./context-pack.js";
 
 describe("buildGroveContextPack", () => {
@@ -337,5 +339,111 @@ describe("collapseForeignProjects", () => {
         "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder)",
       ].join("\n"),
     );
+  });
+});
+
+// Compact node-to-node pack (token-saving default for `grove send`/`grove ask`).
+// COMPACT_PARITY_PACK is duplicated verbatim in bridge/tests/test_context_pack.py
+// — the TS and Python compact builders MUST emit identical bytes for identical
+// input, exactly like the full PARITY_PACK above.
+const COMPACT_PARITY_WORK_INSTRUCTIONS = "PR 머지 전 reviewer 승인 필수\n  여러 줄 가능";
+const COMPACT_PARITY_PACK = [
+  "GROVE CONTEXT PACK (compact)",
+  "Caller node: lead",
+  "Project: dev10",
+  "Target node: maker",
+  "Target role: Builder",
+  "Target work instructions (advisory): PR 머지 전 reviewer 승인 필수",
+  "Visible org: 3 nodes — run `grove org --json` for the full tree; `grove task mine` for your tasks.",
+].join("\n");
+
+describe("buildCompactGroveContextPack", () => {
+  function node(name: string): ContextPackNode {
+    return { agent: "claude", name };
+  }
+
+  test("renders the compact pack, byte-identical to the Python renderer", () => {
+    const pack = buildCompactGroveContextPack({
+      callerNode: "lead",
+      nodes: [node("lead"), node("maker"), node("reviewer")],
+      project: "dev10",
+      projectLead: "lead",
+      targetNode: "maker",
+      targetRole: "Builder",
+      targetWorkInstructions: COMPACT_PARITY_WORK_INSTRUCTIONS,
+    });
+
+    expect(pack).toBe(COMPACT_PARITY_PACK);
+  });
+
+  test("starts with the GROVE CONTEXT PACK header so the no-duplicate-prepend guard still applies", () => {
+    const pack = buildCompactGroveContextPack({
+      nodes: [node("lead")],
+      project: "dev10",
+      targetNode: "maker",
+    });
+
+    expect(pack.startsWith(GROVE_CONTEXT_PACK_HEADER)).toBe(true);
+  });
+
+  test("omits role/work-instructions lines when unset and singularizes the node count", () => {
+    const pack = buildCompactGroveContextPack({
+      callerNode: "lead",
+      nodes: [node("lead")],
+      project: "dev10",
+      targetNode: "maker",
+    });
+
+    expect(pack).not.toContain("Target role:");
+    expect(pack).not.toContain("(advisory)");
+    expect(pack).toContain("Visible org: 1 node — run `grove org --json`");
+  });
+
+  test("redacts secrets in the compact pack too", () => {
+    const pack = buildCompactGroveContextPack({
+      nodes: [node("lead")],
+      project: "dev10",
+      targetNode: "maker",
+      targetWorkInstructions: "deploy token=xoxb-deadbeef now",
+    });
+
+    expect(pack).not.toContain("xoxb-deadbeef");
+    expect(pack).toContain("token=[redacted]");
+  });
+});
+
+describe("resolveContextMode", () => {
+  const ENV = "GROVE_CONTEXT_MODE";
+  function withEnv(value: string | undefined, fn: () => void): void {
+    const prev = process.env[ENV];
+    if (value === undefined) delete process.env[ENV];
+    else process.env[ENV] = value;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env[ENV];
+      else process.env[ENV] = prev;
+    }
+  }
+
+  test("explicit flag wins over env and fallback", () => {
+    withEnv("compact", () => {
+      expect(resolveContextMode("full", "compact")).toBe("full");
+    });
+  });
+
+  test("env overrides the fallback when no explicit flag", () => {
+    withEnv("none", () => {
+      expect(resolveContextMode(undefined, "compact")).toBe("none");
+    });
+  });
+
+  test("falls back when neither flag nor env is a valid mode", () => {
+    withEnv("bogus", () => {
+      expect(resolveContextMode("nonsense", "compact")).toBe("compact");
+    });
+    withEnv(undefined, () => {
+      expect(resolveContextMode(undefined, "full")).toBe("full");
+    });
   });
 });

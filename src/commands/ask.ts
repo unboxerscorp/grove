@@ -1,4 +1,5 @@
 import { loadContext, nodeOf } from "../context.js";
+import { resolveContextMode } from "../context-pack.js";
 import { ask } from "../ops.js";
 import { resolveProjectNodeTarget } from "../project-address.js";
 import { color, err, info } from "../util/log.js";
@@ -7,8 +8,10 @@ import { parseDuration } from "../util/time.js";
 export async function cmdAsk(
   name: string,
   message: string,
-  opts: { config?: string; project?: string; timeout?: string },
+  opts: { config?: string; context?: string; project?: string; timeout?: string },
 ): Promise<void> {
+  // Live node-to-node ask defaults to the compact pack; --context / env override.
+  const contextMode = resolveContextMode(opts.context, "compact");
   const callerCtx = loadContext(opts.config);
   const target =
     opts.project || name.includes(":") ? resolveProjectNodeTarget(callerCtx, name, opts) : null;
@@ -19,10 +22,11 @@ export async function cmdAsk(
   info(`ask → ${color.bold(label)} …`);
   const res = target
     ? await ask(ctx, nc, message, timeoutMs, {
+        contextMode,
         submissionContext: target.callerCtx,
         submissionProject: target.callerCtx.config.session,
       })
-    : await ask(ctx, nc, message, timeoutMs);
+    : await ask(ctx, nc, message, timeoutMs, { contextMode });
   if (res === null) {
     err(`${label}: timed out after ${opts.timeout ?? "30m"}`);
     process.exitCode = 1;

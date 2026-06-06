@@ -119,6 +119,7 @@ describe("cmdSend", () => {
     expect(submitMessage).toHaveBeenCalledWith(targetNc, "hello", {
       callerNode: "grove send CLI",
       context: callerCtx,
+      contextMode: "compact",
       project: "dev10",
     });
   });

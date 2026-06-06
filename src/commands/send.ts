@@ -1,4 +1,5 @@
 import { loadContext, nodeOf } from "../context.js";
+import { resolveContextMode } from "../context-pack.js";
 import { eventLogSize } from "../events.js";
 import {
   type PendingBinding,
@@ -24,8 +25,10 @@ interface PendingSubmission {
 export async function cmdSend(
   name: string,
   message: string,
-  opts: { config?: string; project?: string },
+  opts: { config?: string; context?: string; project?: string },
 ): Promise<void> {
+  // Live node-to-node send defaults to the compact pack; --context / env override.
+  const contextMode = resolveContextMode(opts.context, "compact");
   const callerCtx = loadContext(opts.config);
   const target =
     opts.project || name.includes(":") ? resolveProjectNodeTarget(callerCtx, name, opts) : null;
@@ -59,9 +62,10 @@ export async function cmdSend(
     ? submitMessage(nc, message, {
         callerNode: "grove send CLI",
         context: target.callerCtx,
+        contextMode,
         project: target.callerCtx.config.session,
       })
-    : submitMessage(nc, message, { callerNode: "grove send CLI", context: ctx }));
+    : submitMessage(nc, message, { callerNode: "grove send CLI", contextMode, context: ctx }));
 
   const submitted = await poll(
     () => {
