@@ -6,6 +6,12 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 14:56 KST Slack/web/org soak 샘플:
+  - `46f5a78` Slack timeout retry 배포 후 2회 연속 샘플(14:54, 14:56 KST)에서 Slack pid `75126` 유지, `socket_connected=true`, heartbeat fresh.
+  - `slack_chat_queue`는 `total/pending/failed=0/0/0`, live board residue는 `tasks=0`, `comments=0`, `p2-test=0` 유지.
+  - main web `8765`는 `started_at=1780721628` 유지하며 uptime 상승, remote web `5173`은 `started_at=1780721854` 유지하며 uptime 상승. 둘 다 health ok.
+  - tmux windows는 `0 grove-master`, `1 web`, `2 slack`, `3 advisor`, `4 jester` 그대로 유지됐다.
+
 - 2026-06-06 14:50 KST Slack queue timeout retry 보강:
   - Slack queue worker의 `grove ask`가 120초 timeout(`subprocess.TimeoutExpired` 또는 `timed out after`)을 내도 failed/fallback으로 종료하지 않는다. master가 긴 turn 중인 정상 상황으로 보고 pending으로 되돌린 뒤 retry한다.
   - 첫 timeout defer 시 같은 Slack thread에 `아직 <node> 응답을 기다리고 있어 대기열에서 계속 재시도합니다. 완료되면 이 스레드에 답변합니다.` 안내를 1회 남긴다. 이후 답변이 오면 원래 thread에 결과를 게시하고 queue item은 done 처리한다.
