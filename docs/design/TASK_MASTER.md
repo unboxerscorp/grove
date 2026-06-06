@@ -25,7 +25,8 @@ code or auto-mutating tasks. It is the active counterpart to the read-only
 
 - **Coordinates only**: never auto-executes code; never auto-creates tasks; never
   force-changes a task's status. Nodes move `ready→running` themselves (the existing
-  claim: `grove task start --from-status ready --run-id`, 409 = single-winner). The
+  claim: `grove task start <id> --from-status ready`, 409 = single-winner; --run-id
+  verifies a later transition of an already-running item, NOT the initial claim). The
   task-master only _nudges_.
 - Dispatch only to **assigned, executor-eligible** nodes; unassigned → human.
 - **Idempotent + rate-limited** (cooldown/backoff per task; no nudge storms).
