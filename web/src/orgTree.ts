@@ -68,3 +68,28 @@ export function buildOrgTree<N extends GroveNode>(
     rows,
   };
 }
+
+export interface NodeListRow<N extends GroveNode> {
+  node: N;
+  depth: number;
+  section: "tree" | "services";
+}
+
+/**
+ * Ordered rows for the node list rail: the org tree (honoring the same
+ * server-authoritative childrenMap/roots the OrgChart feeds buildOrgTree)
+ * followed by background service nodes in their own flat section. Passing the
+ * server children/roots is what keeps the list's indentation in lockstep with
+ * the org chart — omitting them falls back to raw parent pointers and diverges.
+ */
+export function buildNodeListRows<N extends GroveNode>(
+  nodes: N[],
+  childrenMap: Record<string, string[]> = {},
+  roots: string[] = [],
+): Array<NodeListRow<N>> {
+  const tree = buildOrgTree(nodes, childrenMap, roots);
+  return [
+    ...tree.rows.map((row) => ({ ...row, section: "tree" as const })),
+    ...tree.serviceNodes.map((node) => ({ node, depth: 0, section: "services" as const })),
+  ];
+}

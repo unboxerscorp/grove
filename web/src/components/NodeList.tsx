@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { agentGlyph, cx } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import { liveNodeCount } from "../nodeLive";
-import { buildOrgTree, isBgServiceNode } from "../orgTree";
+import { buildNodeListRows, isBgServiceNode } from "../orgTree";
 import type { GroveNode } from "../types";
 import { NodeHealthBadge } from "./NodeHealthBadge";
 
@@ -26,19 +26,18 @@ export function NodeList(props: {
   selectedPane: string | null;
   onSelect: (pane: string) => void;
   boardLive: boolean;
+  // Server-authoritative tree shape from /api/org — the same childrenMap/roots
+  // the OrgChart feeds buildOrgTree. Threaded in so the list's indentation
+  // stays in lockstep with the org chart instead of diverging on raw parent
+  // pointers (task_2149). Optional: absent → parent-pointer fallback.
+  childrenMap?: Record<string, string[]>;
+  roots?: string[];
 }) {
-  const { nodes, selectedPane, onSelect, boardLive } = props;
+  const { nodes, selectedPane, onSelect, boardLive, childrenMap, roots } = props;
   const { t } = useI18n();
   const [query, setQuery] = useState("");
 
-  const orgTree = useMemo(() => buildOrgTree(nodes), [nodes]);
-  const ordered = useMemo(
-    () => [
-      ...orgTree.rows.map((row) => ({ ...row, section: "tree" as const })),
-      ...orgTree.serviceNodes.map((node) => ({ node, depth: 0, section: "services" as const })),
-    ],
-    [orgTree],
-  );
+  const ordered = useMemo(() => buildNodeListRows(nodes, childrenMap, roots), [nodes, childrenMap, roots]);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return ordered;

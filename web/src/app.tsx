@@ -117,6 +117,12 @@ export function App() {
   // project.board server-side). Constant — never derived from /api/boards list[0].
   const boardId = "default";
   const [nodes, setNodes] = useState<GroveNode[]>([]);
+  // Server-authoritative tree shape from /api/org, fed to the NodeList so its
+  // indentation matches the OrgChart (both call buildOrgTree with the same
+  // childrenMap/roots). Additive: the `nodes` set above stays sourced from
+  // /api/nodes — this only carries the tree edges, not the node set (task_2149).
+  const [orgChildren, setOrgChildren] = useState<Record<string, string[]>>({});
+  const [orgRoots, setOrgRoots] = useState<string[]>([]);
   const [selectedPane, setSelectedPane] = useState<string | null>(null);
   const [joinCode] = useState<string | null>(initialJoinCode);
   const [view, setView] = useState<View>(joinCode ? "connect" : "board");
@@ -265,6 +271,30 @@ export function App() {
         .listNodes()
         .then((n) => {
           if (alive) setNodes(Array.isArray(n) ? n : []);
+        })
+        .catch(() => {
+          /* keep last */
+        });
+    void load();
+    const t = setInterval(() => void load(), 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [projectTick]);
+
+  // Org tree edges (re-scoped per project; poll). Mirrors the nodes effect but
+  // hits /api/org for the server-authoritative children/roots so the NodeList
+  // indents identically to the OrgChart (task_2149). Failure keeps last edges.
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      api
+        .getOrg()
+        .then((o) => {
+          if (!alive) return;
+          setOrgChildren(o.children ?? {});
+          setOrgRoots(o.roots ?? []);
         })
         .catch(() => {
           /* keep last */
@@ -537,7 +567,14 @@ export function App() {
           <NodeStatusBar liveTick={liveTick} projectTick={projectTick} />
 
           <main className="dr-main">
-            <NodeList nodes={nodes} selectedPane={selectedPane} onSelect={pickNode} boardLive={boardLive} />
+            <NodeList
+              nodes={nodes}
+              selectedPane={selectedPane}
+              onSelect={pickNode}
+              boardLive={boardLive}
+              childrenMap={orgChildren}
+              roots={orgRoots}
+            />
             <section className="dr-stage">
           {view === "board" && boardId ? (
             <BoardView
