@@ -75,7 +75,8 @@ function assertLiveE2eCleansOwnBoardFixtures() {
   const live = readFileSync(path.join(root, "e2e", "live.mjs"), "utf8");
   if (
     !/function\s+cleanupLiveE2eBoardFixtures\s*\(/.test(live) ||
-    !/cleanupLiveE2eBoardFixtures\s*\(\s*RUN_ID\s*\)/.test(live)
+    !/cleanupLiveE2eBoardFixtures\s*\(\s*RUN_ID\s*\)/.test(live) ||
+    !/DELETE\s+FROM\s+boards[\s\S]+slug\s*=\s*\$\{sqlQuote\(TEST_PROJECT\)\}[\s\S]+NOT\s+EXISTS/.test(live)
   ) {
     throw new Error("live e2e must clean its own RUN_ID p2-live board fixtures from the live board DB");
   }
@@ -615,6 +616,13 @@ async function coreMain() {
 
     await page.$eval('.dr-card[data-task="G-7"] .dr-card__open', (el) => el.click());
     await page.waitForSelector(".dr-drawer__panel", { timeout: 8000 });
+    await page.waitForFunction(
+      () =>
+        (document.querySelector(".dr-drawer__ticket")?.textContent ?? "").trim() === "G-7" &&
+        !!document.querySelector(".dr-drawer .dr-pill") &&
+        !!document.querySelector(".dr-slack-thread"),
+      { timeout: 8000 },
+    );
     const n2Drawer = await page.evaluate(() => ({
       ticket: (document.querySelector(".dr-drawer__ticket")?.textContent ?? "").trim(),
       hasPill: !!document.querySelector(".dr-drawer .dr-pill"),
@@ -1758,6 +1766,13 @@ async function main() {
       target?.querySelector(".dr-card__open")?.click();
     });
     await page.waitForSelector(".dr-drawer__panel", { timeout: 8000 });
+    await page.waitForFunction(
+      () =>
+        (document.querySelector(".dr-drawer__ticket")?.textContent ?? "").trim() === "G-7" &&
+        !!document.querySelector(".dr-drawer .dr-pill") &&
+        !!document.querySelector(".dr-slack-thread"),
+      { timeout: 8000 },
+    );
     const n2Drawer = await page.evaluate(() => ({
       ticket: (document.querySelector(".dr-drawer__ticket")?.textContent ?? "").trim(),
       hasPill: !!document.querySelector(".dr-drawer .dr-pill"),

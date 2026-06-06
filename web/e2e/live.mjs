@@ -165,6 +165,9 @@ DELETE FROM comments WHERE task_id IN (SELECT id FROM live_e2e_cleanup_tasks);
 DELETE FROM runs WHERE task_id IN (SELECT id FROM live_e2e_cleanup_tasks);
 DELETE FROM events WHERE task_id IN (SELECT id FROM live_e2e_cleanup_tasks);
 DELETE FROM tasks WHERE id IN (SELECT id FROM live_e2e_cleanup_tasks);
+DELETE FROM boards
+  WHERE slug = ${sqlQuote(TEST_PROJECT)}
+    AND NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.board_id = boards.id);
 DROP TABLE live_e2e_cleanup_tasks;
 COMMIT;
 `;
