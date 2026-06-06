@@ -6,8 +6,10 @@ bounded, approval-gated, and re-consulted with advisor before any code that
 touches the live Slack route or board writes.
 
 Read alongside [MASTER_NODE.md](./MASTER_NODE.md), which records the current live
-decision that Slack and web chat route to the live `grove-master` node and the
-bridge owns the edge (auth, context, redaction, queue, confirmation, audit).
+route while the handoff is being implemented: the bridge still owns the edge
+(auth, context, redaction, queue, confirmation, audit), but the visible
+`chat-master` node owns the canonical chat semantics and should be treated as an
+active collaborator, not an observer.
 
 ## Canonical Intent vs Live Model
 
@@ -18,9 +20,11 @@ decides whether an input is chit-chat (answer directly) or a new task (create a
 task and hand it to the MASTER NODE). In the canonical org it is drawn as a node:
 `grove-master → chat-master → grove-dev / projects…`.
 
-The live model (MASTER_NODE.md) deliberately **collapsed** that scaffold: Slack
-and web chat route to `grove-master`, and the **bridge connector** is the edge
-owner. Most CHAT MASTER responsibilities already exist there:
+The live transition model keeps Slack/web packets on the stable bridge route for
+now, while a visible `chat-master` node exists in the org and owns the canonical
+semantics. The bridge connector remains the transport/runtime edge until the
+handoff is safe; `chat-master` is responsible for answering what it can,
+identifying work requests, and driving confirmed task creation semantics.
 
 | Canonical CHAT MASTER responsibility        | Current implementation                                                                                                             | State                                            |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
@@ -30,37 +34,24 @@ owner. Most CHAT MASTER responsibilities already exist there:
 | Route to master, eventual answer            | worker → `chat_facade.send` / `AssistantBroker.handle_turn`; answer posted to origin thread/session                                | ✅                                               |
 | Decide chit-chat vs new task                | `classify_master_message` (master.py) + `AssistantBroker` preview/answer                                                           | ⚠️ classifies, but free-chat → task is not wired |
 | Create task from chat + confirm             | Block Kit confirm + `create_task` exists **only for slash commands** (`/bug`,`/feedback`,`/task`); not from free chat              | ❌ gap                                           |
-| Web chat history                            | `/api/master/chat` GET returns `{"messages": []}` stub                                                                             | ❌ stub                                          |
+| Web chat history                            | `master_chat_messages` stores and returns conversation history                                                                     | ✅                                               |
 | No one-node-per-thread explosion            | shared queue/broker keyed by thread; no node spawned per thread                                                                    | ✅                                               |
 
-**Conclusion:** the canonical CHAT MASTER is ~80% realized as the _bridge edge +
-grove-master_ function. The real gaps are (1) free-chat → task intake with
-confirmation, and (2) web-chat durable-queue parity + history.
+**Conclusion:** the canonical CHAT MASTER is now a real visible node plus an
+edge implementation. The remaining high-value gap is free-chat → task intake
+with explicit confirmation; web-chat history has landed.
 
-## Design Decision (operator's call) — node vs function
+## Design Decision — active node, stable edge
 
-Two ways to satisfy "CHAT MASTER":
+**Decision (2026-06, grove-master/operator): active `chat-master` node exists.**
+It is not observe-only. It owns chat semantics, answers simple questions when it
+can, and may create human-facing tasks only through explicit confirmed flows.
+The live bridge route remains stable until a deliberate handoff is implemented;
+route changes remain approval-gated.
 
-- **(A) Function, no new node (recommended).** Treat the bridge connector as the
-  CHAT MASTER edge and grove-master as the interpreter; close the gaps above
-  in-place. Aligns with MASTER_NODE.md's superseding decision and master's
-  "avoid a new persistent node," and changes no org topology. Lowest risk.
-- **(B) Distinct chat-master node.** Add a visible `chat-master` node between the
-  external surfaces and `grove-master`, matching the canonical org literally.
-  Contradicts the live superseding decision, adds a persistent node, and is an
-  org change — **operator-owned, explicit approval required, not recommended for
-  first pass.**
+## First-Pass Target
 
-This doc designs for **(A)**. Choosing (B) is an operator decision; flag before
-any node creation.
-
-**Decision (2026-06, grove-master/operator): Model A** — realize CHAT MASTER as
-the bridge-edge function + grove-master, no new persistent `chat-master` node. A
-distinct chat-master node and the B-impl route changes remain approval-gated.
-
-## First-Pass Target (function model)
-
-Close the two gaps without changing the existing route:
+Close the remaining gap without destabilizing the existing route:
 
 1. **Free-chat task intake.** When the worker's classification marks a turn as a
    probable new task (not chit-chat), it produces a **task proposal** and uses
@@ -68,9 +59,6 @@ Close the two gaps without changing the existing route:
    slash commands use) to ask the user to confirm before any task is created.
    Web chat surfaces the same proposal via `/api/master/chat` →
    `/api/master/chat/confirm` (already present for brokered actions).
-2. **Web-chat queue parity (smaller).** Decide explicitly whether floating web
-   chat gets `slack_chat_queue`-style durability or stays live request/reply;
-   implement history beyond the stub only if the operator wants it.
 
 ## Design Guards (advisor — bake into implementation)
 
@@ -104,13 +92,13 @@ Bounded, approval-gated, re-consult advisor first. Likely surfaces:
 "task")`.
 - `bridge/.../web_app.py` — render the proposal through the existing
   `/api/master/chat` + confirm endpoints; decide web-chat queue parity/history.
-- Heavy tests: idempotency on the task path, single-path (no double-routing),
+- Targeted checks: idempotency on the task path, single-path (no double-routing),
   worker-not-handler placement, per-thread isolation, board scope, redaction.
 
 ## Non-Goals (first pass)
 
 - No change to the live Slack/web → grove-master route.
-- No new persistent `chat-master` node unless the operator explicitly chooses
-  model (B).
+- No observe-only chat-master posture; the node is active within confirmed-flow
+  safety boundaries.
 - No silent/auto task creation — always behind Block Kit / web confirm.
 - No blocking work in the Slack socket handler.
