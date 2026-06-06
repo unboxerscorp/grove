@@ -44,6 +44,7 @@ function assertNoLegacyProjectMasterMock() {
 function assertNoStaleItemTitleCopy() {
   const currentSources = [
     readFileSync(path.join(root, "src", "app.tsx"), "utf8"),
+    readFileSync(path.join(root, "src", "i18n.tsx"), "utf8"),
     readFileSync(path.join(root, "src", "types.ts"), "utf8"),
     readFileSync(path.join(root, "src", "styles.css"), "utf8"),
     readFileSync(path.join(root, "mock", "harness.ts"), "utf8"),
@@ -58,7 +59,10 @@ function assertNoStaleItemTitleCopy() {
     `title:\\s*"(?:${[`Task ${"drawer"}`, `Board ${"event-tail"}`, `solo ${"task"}`].join("|")})`,
     "i",
   );
-  const staleSourceCopy = new RegExp([`Task ${"drawer"}`, `Board ${"event-tail"}`, `solo ${"task"}`].join("|"), "i");
+  const staleSourceCopy = new RegExp(
+    [`Task ${"drawer"}`, `Board ${"event-tail"}`, `solo ${"task"}`, `Blocked ${"tasks"}`, `차단된 ${"태스크"}`].join("|"),
+    "i",
+  );
   const staleVerifyWait = new RegExp(`includes\\(["']${`solo ${"task"}`}["']\\)`, "i");
   if (staleSourceCopy.test(currentSources) || staleTitle.test(`${currentSources}\n${bundle}`) || staleVerifyWait.test(verify)) {
     throw new Error("web frontend source must use item/list wording, not task/board title copy");
