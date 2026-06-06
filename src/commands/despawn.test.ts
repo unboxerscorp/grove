@@ -62,10 +62,14 @@ function deps(killResult = true): {
   deps: DespawnDeps;
   guardSessions: string[];
   killed: string[];
+  paneIdByAddr: Map<string, string>;
+  paneTargetById: Map<string, string>;
   saves: number;
 } {
   const guardSessions: string[] = [];
   const killed: string[] = [];
+  const paneIdByAddr = new Map<string, string>();
+  const paneTargetById = new Map<string, string>();
   let saves = 0;
   return {
     deps: {
@@ -74,6 +78,8 @@ function deps(killResult = true): {
         killed.push(addr);
         return killResult;
       },
+      paneId: async (addr) => paneIdByAddr.get(addr) ?? null,
+      paneTargetById: async (_session, id) => paneTargetById.get(id) ?? null,
       preserveActiveWindow: async (session, fn) => {
         guardSessions.push(session);
         return fn();
@@ -87,6 +93,8 @@ function deps(killResult = true): {
     },
     guardSessions,
     killed,
+    paneIdByAddr,
+    paneTargetById,
   };
 }
 
@@ -193,6 +201,24 @@ describe("despawnNodes", () => {
     expect(state.killed).toEqual(["dev10:2.%6"]);
     expect(ctx.registry.nodes.viewer).toBeUndefined();
     expect(result.removed.map((item) => item.name)).toEqual(["viewer"]);
+  });
+
+  test("rebinds surviving pane targets after tmux pane indexes shift", async () => {
+    const reg = registry();
+    reg.nodes.maker!.tmux_pane = "dev10:2.1";
+    reg.nodes.viewer!.tmux_pane = "dev10:2.2";
+    const ctx = context(reg);
+    const state = deps();
+    state.paneIdByAddr.set("dev10:1.%1", "%1");
+    state.paneIdByAddr.set("dev10:2.2", "%6");
+    state.paneTargetById.set("%1", "dev10:1.0");
+    state.paneTargetById.set("%6", "dev10:2.1");
+
+    await despawnNodes(ctx, { node: "maker", operatorOverride: true }, state.deps);
+
+    expect(state.killed).toEqual(["dev10:2.1"]);
+    expect(ctx.registry.nodes.viewer?.tmux_pane).toBe("dev10:2.1");
+    expect(ctx.registry.nodes.lead?.tmux_pane).toBe("dev10:1.0");
   });
 
   test("bulk group despawn requires operator override after confirmation", async () => {

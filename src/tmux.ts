@@ -195,6 +195,25 @@ async function paneIndexTarget(session: string, paneId: string): Promise<string>
   return `${session}:${windowPane}`;
 }
 
+export async function paneId(addr: string): Promise<string | null> {
+  if (!isSinglePaneTarget(addr)) return null;
+  try {
+    const id = (await tmux(["display-message", "-t", addr, "-p", PANE_ID_FORMAT])).trim();
+    return /^%\d+$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function paneTargetById(session: string, id: string): Promise<string | null> {
+  if (!/^%\d+$/.test(id)) return null;
+  try {
+    return await paneIndexTarget(session, id);
+  } catch {
+    return null;
+  }
+}
+
 export async function createDetachedPane(req: CreateDetachedPaneRequest): Promise<string> {
   const window = req.window ?? req.name;
   if (!(await hasSession(req.session))) {

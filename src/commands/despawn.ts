@@ -1,6 +1,13 @@
 import { type Context, loadContext } from "../context.js";
 import { loadOrInit, type NodeRuntime, saveRegistry } from "../registry.js";
-import { hasSession, isSinglePaneTarget, killPane, preserveActiveWindow } from "../tmux.js";
+import {
+  hasSession,
+  isSinglePaneTarget,
+  killPane,
+  paneId,
+  paneTargetById,
+  preserveActiveWindow,
+} from "../tmux.js";
 import { validateGroveName } from "../util/names.js";
 
 const DEFAULT_DESPAWN_SESSION = "dev10";
@@ -30,6 +37,8 @@ export interface DespawnResult {
 export interface DespawnDeps {
   hasSession(session: string): Promise<boolean>;
   killPane(addr: string): Promise<boolean>;
+  paneId(addr: string): Promise<string | null>;
+  paneTargetById(session: string, id: string): Promise<string | null>;
   preserveActiveWindow<T>(session: string, fn: () => Promise<T>): Promise<T>;
   saveRegistry(ctx: Context["registry"]): void;
 }
@@ -37,6 +46,8 @@ export interface DespawnDeps {
 const defaultDeps: DespawnDeps = {
   hasSession,
   killPane,
+  paneId,
+  paneTargetById,
   preserveActiveWindow,
   saveRegistry,
 };
@@ -138,8 +149,8 @@ async function killTargetPanes(
   session: string,
   runtimes: NodeRuntime[],
   deps: DespawnDeps,
+  alive: boolean,
 ): Promise<DespawnNodeResult[]> {
-  const alive = await deps.hasSession(session);
   const kill = async (): Promise<DespawnNodeResult[]> => {
     const out: DespawnNodeResult[] = [];
     for (const runtime of runtimes) {
@@ -158,6 +169,37 @@ async function killTargetPanes(
   return alive ? deps.preserveActiveWindow(session, kill) : kill();
 }
 
+async function snapshotSurvivingPaneIds(
+  ctx: Context,
+  names: string[],
+  deps: DespawnDeps,
+): Promise<Map<string, string>> {
+  const removed = new Set(names);
+  const out = new Map<string, string>();
+  for (const runtime of Object.values(ctx.registry.nodes)) {
+    if (removed.has(runtime.name)) continue;
+    const pane = runtime.tmux_pane;
+    if (!pane || !isSinglePaneTarget(pane)) continue;
+    const id = await deps.paneId(pane);
+    if (id) out.set(runtime.name, id);
+  }
+  return out;
+}
+
+async function refreshSurvivingPaneTargets(
+  ctx: Context,
+  session: string,
+  paneIds: Map<string, string>,
+  deps: DespawnDeps,
+): Promise<void> {
+  for (const [name, id] of paneIds) {
+    const runtime = ctx.registry.nodes[name];
+    if (!runtime) continue;
+    const target = await deps.paneTargetById(session, id);
+    if (target) runtime.tmux_pane = target;
+  }
+}
+
 export async function despawnNodes(
   baseCtx: Context,
   input: DespawnInput,
@@ -168,8 +210,13 @@ export async function despawnNodes(
   const names = targetNodes(ctx, input);
   assertTerminationAllowed(ctx, input, names);
   const runtimes = names.map((name) => ctx.registry.nodes[name]!);
-  const removed = await killTargetPanes(session, runtimes, deps);
+  const alive = await deps.hasSession(session);
+  const survivingPaneIds = alive
+    ? await snapshotSurvivingPaneIds(ctx, names, deps)
+    : new Map<string, string>();
+  const removed = await killTargetPanes(session, runtimes, deps, alive);
   removeFromRegistry(ctx, names);
+  if (alive) await refreshSurvivingPaneTargets(ctx, session, survivingPaneIds, deps);
   deps.saveRegistry(ctx.registry);
   return { removed, session };
 }
