@@ -1,8 +1,11 @@
 # grove 팀모드 인증 설계
 
-상태: v1.2 설계안. 구현은 후속 작업에서 진행한다.
+> Status: historical v1.2 design.
+> Current live auth is documented in `docs/design/AUTH_AND_PROJECTS.md`.
+> The notes below preserve the original team-auth design discussion and may
+> contain stale line references or legacy token/bootstrap terminology.
 
-## 현재 기준
+## v1.2 당시 기준
 
 - 대시보드는 현재 `X-Grove-Session-Token` 단일 헤더로 REST를 보호한다. 토큰 이름은 `bridge/src/grove_bridge/web_app.py:31`, 검증은 `bridge/src/grove_bridge/web_app.py:680`에 있다.
 - 토큰은 세션별 `~/.grove/<session>/dashboard-token`에 생성·저장된다. 생성 경로는 `bridge/src/grove_bridge/web_app.py:564`, 파일 권한은 `bridge/src/grove_bridge/web_app.py:588`이다.

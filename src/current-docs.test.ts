@@ -35,4 +35,14 @@ describe("current design docs", () => {
       "The phase-1 bridge module, `grove_bridge.auth`, defines typed auth interfaces",
     );
   });
+
+  test("legacy team auth design is clearly marked as historical", () => {
+    const teamAuth = doc("docs/DESIGN_team_auth.md");
+
+    expect(teamAuth).toContain("Status: historical v1.2 design");
+    expect(teamAuth).toContain(
+      "Current live auth is documented in `docs/design/AUTH_AND_PROJECTS.md`",
+    );
+    expect(teamAuth).not.toContain("상태: v1.2 설계안. 구현은 후속 작업에서 진행한다.");
+  });
 });

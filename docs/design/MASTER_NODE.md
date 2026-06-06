@@ -93,7 +93,7 @@ heartbeat freshness afterward.
 
 Floating web chat is a live conversation surface for `grove-master`. It may
 display compact facts, health summaries, and pending human-facing items, but it
-must not force answers into a deterministic facts-only mode. The master can
+must not force answers into a deterministic summary-only mode. The master can
 answer naturally, inspect state, coordinate nodes, and carry out explicit
 operator instructions.
 
