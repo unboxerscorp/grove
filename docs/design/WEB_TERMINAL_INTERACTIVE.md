@@ -35,8 +35,17 @@ Canonical tmux socket: `tmux -L dev10`.
 
 ## Decisions / risks (apply all)
 
-- **Sizing isolation (the whole point)**: verify the grouped session does NOT shrink the
-  operator's live panes. Test against the running `tmux -L dev10`. This is the gate.
+- **⚠ Sizing isolation — UNVERIFIED, GATE-FIRST**: an isolated test (board-worker, throwaway
+  socket) shows grouped sessions SHARE the window object + size — `resize-window` on the web
+  session also resized the base, and window-size/aggressive-resize resolve to ONE size per
+  shared window. So "independent size, fills web width without shrinking the operator" is NOT
+  confirmed and may be impossible for the SAME node-window. **Stage 0 gate** = a CONCLUSIVE
+  isolated-replica test (2 real PTY clients at different sizes, aggressive-resize,
+  same-vs-DIFFERENT current-window). Run ONLY on a throwaway socket — NEVER live `tmux -L
+dev10` (it runs everyone). Build only on PASS. On FAIL, pivot: (a) accept shared size +
+  zoom the target pane, (b) per-web-client SEPARATE window, (c) keep capture output + add a
+  real input channel only (no grouped resize). Pane-focus (select-pane/zoom) is likely shared
+  too — settle in the same gate.
 - **Multi-typing**: multiple admins in one pane = standard tmux shared behavior (works;
   coordination is human). Acceptable for v1 (C-level).
 - **Resource**: 1 tmux session + 1 PTY per viewer — hard cap + idle-kill on disconnect.
@@ -48,9 +57,12 @@ Canonical tmux socket: `tmux -L dev10`.
 
 ## Stages (stability first; split-screen is a later iteration)
 
-1. **Backend**: grouped-session + PTY manager + bidirectional `/ws/terminal`
-   (output + input + resize) + lifecycle/cleanup. **Verify sizing isolation** on the
-   live `tmux -L dev10` before wiring the frontend.
+0. **Gate (board-worker)**: conclusive sizing-isolation test on a throwaway socket (NOT
+   live dev10) → PASS/FAIL with evidence + the chosen approach if FAIL. No build until this
+   settles. Ownership for the build: **task-worker** owns Stage 1 backend (heavy PTY work in
+   shared `web_app.py`); board-worker owns the gate + design + Stage 2 FE + no-regression.
+1. **Backend (task-worker, post-gate)**: PTY manager + bidirectional `/ws/terminal`
+   (output + input + resize) + session lifecycle/cleanup, per the gate's approved approach.
 2. **Frontend**: xterm stdin + resize handlers; drop the mirror/snapshot logic + send box.
 3. **Harden**: resource caps, idle-kill, reconnect, error/close codes, pane-not-found.
 4. **Later (operator)**: split-screen / multi-pane web layouts.
