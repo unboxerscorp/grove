@@ -6,6 +6,12 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 14:32 KST Slack loop 운영 안정화:
+  - `~/.grove/dev10/run-slack-loop.sh`는 더 이상 `uv run ... | tee` 파이프라인으로 Slack child를 실행하지 않는다. 기존 구조에서는 `slack-runtime.json`의 child pid에 TERM을 보내면 loop/pane이 같이 사라져 `dev10:2` window를 수동 복구해야 했다.
+  - 현재 runtime script는 bash `set -uo pipefail` + `uv run ... >> "$HOME/.grove/dev10/slack.log" 2>&1` 직접 리다이렉트 구조다. child exit status를 직접 받고 loop shell은 살아남는다.
+  - 적용 검증: 새 loop를 `dev10:2`에 적용한 뒤 Slack child TERM smoke에서 pid `60549 -> 60697`로 재시작했고, `dev10:2` window/pane은 유지됐다. 현재 Slack runtime pid는 `60697`, `socket_connected=true`, heartbeat fresh다.
+  - 이 변경은 repo-tracked product code가 아니라 live 운영 스크립트 수정이다. main web `8765`, remote web `5173`, org node registry에는 영향을 주지 않았다.
+
 - 2026-06-06 14:27 KST 최신 안정화 상태:
   - 이 항목을 포함하는 최신 product-code HEAD는 `d516175 fix: acknowledge slack chat and guard pane input` 이후 Slack 입력충돌 실패 사유 copy 패치를 적용한다.
   - Slack routed chat은 `route_chat_to_node=True` 경로에서 `grove-master` 호출 전에 같은 thread에 1회 working ack를 즉시 남긴다. 긴 turn 동안 Slack 사용자가 무응답으로 느끼는 문제를 줄이기 위한 안정화이며, ack post 실패는 실제 처리 실패로 만들지 않는다.
