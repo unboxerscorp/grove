@@ -581,6 +581,7 @@ def test_shared_access_viewer_is_read_only_for_mutations(
             "/api/boards/dev10/tasks",
             {"title": "Delegate", "assignee": "worker"},
         ),
+        ("PATCH", f"/api/tasks/{task.id}", {"title": "Edited"}),
         ("POST", f"/api/tasks/{task.id}/comments", {"body": "comment"}),
         ("POST", f"/api/tasks/{task.id}/answer", {"text": "answer"}),
         ("POST", f"/api/tasks/{done_task.id}/retro", {"text": "retro", "node": "worker"}),
@@ -1562,6 +1563,45 @@ def test_task_assignee_patch_reassigns_clears_and_rejects_non_executors(
     assert store.list_audit_events(board="dev10", action="assignee-change")  # master -> worker
     assert store.list_audit_events(board="dev10", action="assignee-clear")  # worker -> none
     assert store.list_audit_events(board="dev10", action="assignee-set")  # none -> lead
+
+
+def test_patch_task_fields_edits_title_and_body(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    created = client.post(
+        "/api/boards/main/tasks",
+        headers=headers,
+        json={"title": "Old title", "body": "Old body"},
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    edited = client.patch(
+        f"/api/tasks/{task_id}",
+        headers=headers,
+        json={"title": "New title", "body": "New body"},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["title"] == "New title"
+    assert edited.json()["body"] == "New body"
+
+    # Partial edit: a body-only update leaves the title intact.
+    body_only = client.patch(f"/api/tasks/{task_id}", headers=headers, json={"body": "Body only"})
+    assert body_only.status_code == 200
+    assert body_only.json()["title"] == "New title"
+    assert body_only.json()["body"] == "Body only"
+
+    # Empty title and no-op edits are rejected.
+    assert (
+        client.patch(f"/api/tasks/{task_id}", headers=headers, json={"title": "   "}).status_code
+        == 400
+    )
+    assert client.patch(f"/api/tasks/{task_id}", headers=headers, json={}).status_code == 400
+
+    assert store.get_task(board="dev10", task_id=task_id).title == "New title"
+    assert store.list_audit_events(board="dev10", action="edit")
 
 
 def test_manual_task_status_transition_is_scoped_audited_and_emits_event(

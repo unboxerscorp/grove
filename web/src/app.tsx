@@ -253,6 +253,10 @@ export function App() {
     setProject(name); // api header
     setActiveProject(name);
     setSelectedPane(null);
+    // Project-scope continuity: an open detail drawer / decision inbox belongs to
+    // the previous project's scope — close them so no stale, wrong-scope item lingers.
+    setOpenTaskId(null);
+    setInboxOpen(false);
     setProjectTick((x) => x + 1);
     setLiveTick((x) => x + 1);
   }, []);
@@ -534,6 +538,18 @@ export function App() {
                 </div>
               );
             })}
+            {/* Decision inbox: the answer flow for ask-human / feedback items. A
+                discoverable, keyboard-reachable entry (the only other trigger is a
+                hidden compat hook) with a live pending-count badge. */}
+            <button
+              type="button"
+              className="dr-navitem dr-tab dr-navitem--inbox"
+              onClick={() => onNav(() => openDrawer("inbox"))}
+            >
+              <span className="dr-navitem__icon" aria-hidden="true">✉</span>
+              <span className="dr-navitem__label">{t("inbox.open")}</span>
+              {inboxCount > 0 && <span className="dr-col__n">{inboxCount}</span>}
+            </button>
           </nav>
         </aside>
 
@@ -637,6 +653,7 @@ export function App() {
 
       <TaskDrawer
         taskId={openTaskId}
+        projectTick={projectTick}
         onChanged={() => setLiveTick((x) => x + 1)}
         onClose={() => setOpenTaskId(null)}
       />

@@ -109,6 +109,38 @@ def test_set_task_assignee_reassigns_clears_and_records_audit(tmp_path: Path) ->
     assert store.list_audit_events(board="main", action="assignee-set")  # none -> lead
 
 
+def test_set_task_fields_edits_title_body_and_records_audit(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="main", title="Old title", body="Old body", assignee="worker")
+    actor = {"kind": "local", "id": "lead", "login": "lead", "role": "none"}
+
+    both = store.set_task_fields(
+        board="main",
+        task_id=task.id,
+        title="New title",
+        body="New body",
+        update_body=True,
+        actor=actor,
+    )
+    title_only = store.set_task_fields(
+        board="main", task_id=task.id, title="Title only", actor=actor
+    )
+    body_cleared = store.set_task_fields(
+        board="main", task_id=task.id, body=None, update_body=True, actor=actor
+    )
+
+    assert both.title == "New title"
+    assert both.body == "New body"
+    # title-only update leaves the body intact
+    assert title_only.title == "Title only"
+    assert title_only.body == "New body"
+    # body-only update (clearing) leaves the title intact
+    assert body_cleared.title == "Title only"
+    assert body_cleared.body is None
+    assert store.get_task(board="main", task_id=task.id).title == "Title only"
+    assert store.list_audit_events(board="main", action="edit")
+
+
 def test_slack_chat_queue_response_text_column_migrates(tmp_path: Path) -> None:
     db_path = tmp_path / "board.db"
     with sqlite3.connect(db_path) as conn:

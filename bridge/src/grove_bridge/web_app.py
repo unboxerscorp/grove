@@ -458,6 +458,11 @@ class TaskReviewerPayload(BaseModel):
     reviewer: str | None = Field(default=None, max_length=500)
 
 
+class TaskEditPayload(BaseModel):
+    title: str | None = Field(default=None, max_length=500)
+    body: str | None = Field(default=None, max_length=20_000)
+
+
 class TaskAssigneePayload(BaseModel):
     assignee: str | None = Field(default=None, max_length=500)
 
@@ -1904,6 +1909,38 @@ def create_app(
             board=board,
             task_id=task.id,
             assignee=assignee,
+            actor=_actor_payload(auth),
+        )
+        return _task_payload(updated)
+
+    @app.patch("/api/tasks/{task_id}")
+    def update_task_fields_endpoint(
+        request: Request,
+        task_id: str,
+        payload: TaskEditPayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="task edit requires operator role",
+        )
+        provided = payload.model_fields_set & {"title", "body"}
+        if not provided:
+            raise HTTPException(status_code=400, detail="no editable fields provided")
+        project = resolve_project(request)
+        task = _task_for_project(_store(request), task_id, project=project)
+        board = _store(request).board_slug_for_id(task.board_id)
+        title: str | None = None
+        if "title" in provided:
+            title = (payload.title or "").strip()
+            if not title:
+                raise HTTPException(status_code=400, detail="title cannot be empty")
+        update_body = "body" in provided
+        updated = _store(request).set_task_fields(
+            board=board,
+            task_id=task.id,
+            title=title,
+            body=payload.body if update_body else None,
+            update_body=update_body,
             actor=_actor_payload(auth),
         )
         return _task_payload(updated)

@@ -288,19 +288,36 @@ function TaskSlackThreads({ threads, t }: { threads: SlackThread[]; t: TFn }) {
 
 export function TaskDrawer(props: {
   taskId: string | null;
+  projectTick?: number;
   onClose: () => void;
   onChanged?: () => void;
 }) {
-  const { taskId, onClose, onChanged } = props;
+  const { taskId, projectTick, onClose, onChanged } = props;
   const { t } = useI18n();
   const panelRef = useRef<HTMLElement | null>(null);
   useFocusTrap(!!taskId, panelRef);
+  // Project-scope continuity: close the drawer when the active project changes —
+  // the open item belongs to the previous project's scope, and refetching its id
+  // under the new project would be stale/404. The parent also clears openTaskId on
+  // switch; this guards any other projectTick bump (e.g. first-load adoption).
+  const lastProjectTick = useRef(projectTick);
+  useEffect(() => {
+    if (lastProjectTick.current !== projectTick) {
+      lastProjectTick.current = projectTick;
+      if (taskId) onClose();
+    }
+  }, [projectTick, taskId, onClose]);
   const [task, setTask] = useState<Task | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [slackThreads, setSlackThreads] = useState<SlackThread[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editBody, setEditBody] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!taskId) {
@@ -337,6 +354,36 @@ export function TaskDrawer(props: {
       alive = false;
     };
   }, [taskId]);
+
+  const startEdit = () => {
+    if (!task) return;
+    setEditTitle(task.title);
+    setEditBody(task.body ?? "");
+    setEditError(null);
+    setEditing(true);
+  };
+
+  const saveEdit = () => {
+    if (!task) return;
+    const title = editTitle.trim();
+    if (!title) {
+      setEditError(t("drawer.editTitleRequired"));
+      return;
+    }
+    setEditBusy(true);
+    setEditError(null);
+    api
+      .patchTask(task.id, { title, body: editBody })
+      .then((updated) => {
+        setTask(updated);
+        setEditing(false);
+        onChanged?.();
+      })
+      .catch((e: unknown) =>
+        setEditError(e instanceof Error ? e.message : t("drawer.editError")),
+      )
+      .finally(() => setEditBusy(false));
+  };
 
   // Close on Escape while open.
   useEffect(() => {
@@ -395,7 +442,54 @@ export function TaskDrawer(props: {
 
         {task && (
           <div className="dr-drawer__scroll">
-            <h2 className="dr-drawer__title">{task.title}</h2>
+            {editing ? (
+              <form
+                className="node-form dr-task-edit"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  saveEdit();
+                }}
+              >
+                <label className="node-form__label">
+                  {t("drawer.editTitle")}
+                  <input
+                    className="dr-input"
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                  />
+                </label>
+                <label className="node-form__label">
+                  {t("drawer.editBody")}
+                  <textarea
+                    className="dr-input"
+                    rows={4}
+                    value={editBody}
+                    onChange={(e) => setEditBody(e.target.value)}
+                  />
+                </label>
+                {editError && <div className="node-form__error">{editError}</div>}
+                <div className="node-form__actions">
+                  <button
+                    type="button"
+                    className="dr-btn dr-btn--ghost"
+                    onClick={() => setEditing(false)}
+                    disabled={editBusy}
+                  >
+                    {t("drawer.editCancel")}
+                  </button>
+                  <button type="submit" className="dr-btn dr-btn--primary" disabled={editBusy}>
+                    {editBusy ? t("drawer.editSaving") : t("drawer.editSave")}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="dr-drawer__title-row">
+                <h2 className="dr-drawer__title">{task.title}</h2>
+                <button type="button" className="dr-btn dr-btn--ghost" onClick={startEdit}>
+                  {t("drawer.edit")}
+                </button>
+              </div>
+            )}
             <div className="dr-drawer__facts">
               {task.assignee && (
                 <span className="dr-fact">

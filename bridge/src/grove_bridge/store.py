@@ -641,6 +641,86 @@ class SQLiteBoardStore:
             raise KeyError(task_id)
         return _task_from_row(updated)
 
+    def set_task_fields(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        title: str | None = None,
+        body: str | None = None,
+        update_body: bool = False,
+        actor: Mapping[str, object],
+    ) -> Task:
+        """Edit a task's title and/or body. ``title`` is applied when not None;
+        ``body`` is applied (including clearing to NULL) only when
+        ``update_body`` is True, so partial edits leave the other field intact."""
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            previous_title = _row_str(row, "title")
+            assignments: list[str] = []
+            params: list[object] = []
+            changed_fields: list[str] = []
+            new_title = previous_title
+            if title is not None:
+                assignments.append("title = ?")
+                params.append(title)
+                new_title = title
+                changed_fields.append("title")
+            if update_body:
+                assignments.append("body = ?")
+                params.append(body)
+                changed_fields.append("body")
+            if not assignments:
+                return _task_from_row(row)
+            assignments.append("updated_at = ?")
+            params.append(now)
+            params.extend([board_id, task_id])
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(assignments)} WHERE board_id = ? AND id = ?",
+                tuple(params),
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="task.updated",
+                payload={"fields": changed_fields, "title": new_title},
+                now=now,
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="audit.task.edit",
+                payload=_audit_payload(
+                    actor=actor,
+                    action="edit",
+                    target={"type": "task", "id": task_id},
+                    board=board,
+                    status="ok",
+                    summary=new_title,
+                    ts=now,
+                    extra={"fields": ",".join(changed_fields)},
+                ),
+                now=now,
+            )
+            updated = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+        if updated is None:
+            raise KeyError(task_id)
+        return _task_from_row(updated)
+
     def accept_handoff_task(
         self,
         *,

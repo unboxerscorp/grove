@@ -3434,6 +3434,22 @@ button {
   line-height: 1.3;
 }
 
+.dr-drawer__title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.dr-drawer__title-row .dr-drawer__title {
+  margin-bottom: 0;
+}
+
+.dr-task-edit {
+  margin-bottom: 14px;
+}
+
 .dr-drawer__facts {
   display: flex;
   flex-wrap: wrap;
