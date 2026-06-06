@@ -2740,7 +2740,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   return realFetch(input, init);
 }) as typeof fetch;
 
-// --- mock WebSockets (board event-tail + terminal frames) -------------------
+// --- mock WebSockets (list event-tail + terminal frames) --------------------
 function bytesToB64(s: string): string {
   const u = new TextEncoder().encode(s);
   let bin = "";

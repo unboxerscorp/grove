@@ -41,8 +41,14 @@ function assertNoLegacyProjectMasterMock() {
   }
 }
 
-function assertNoStaleMockItemTitleCopy() {
-  const source = readFileSync(path.join(root, "mock", "harness.ts"), "utf8");
+function assertNoStaleItemTitleCopy() {
+  const currentSources = [
+    readFileSync(path.join(root, "src", "app.tsx"), "utf8"),
+    readFileSync(path.join(root, "src", "types.ts"), "utf8"),
+    readFileSync(path.join(root, "src", "styles.css"), "utf8"),
+    readFileSync(path.join(root, "mock", "harness.ts"), "utf8"),
+    readFileSync(path.join(root, "verify.mjs"), "utf8"),
+  ].join("\n");
   const verify = readFileSync(path.join(root, "verify.mjs"), "utf8");
   const bundle = existsSync(path.join(root, "mock", "harness.js"))
     ? readFileSync(path.join(root, "mock", "harness.js"), "utf8")
@@ -51,9 +57,10 @@ function assertNoStaleMockItemTitleCopy() {
     `title:\\s*"(?:${[`Task ${"drawer"}`, `Board ${"event-tail"}`, `solo ${"task"}`].join("|")})`,
     "i",
   );
+  const staleSourceCopy = new RegExp([`Task ${"drawer"}`, `Board ${"event-tail"}`, `solo ${"task"}`].join("|"), "i");
   const staleVerifyWait = new RegExp(`includes\\(["']${`solo ${"task"}`}["']\\)`, "i");
-  if (staleTitle.test(`${source}\n${bundle}`) || staleVerifyWait.test(verify)) {
-    throw new Error("web mock item titles must use item/list wording, not task/board title copy");
+  if (staleSourceCopy.test(currentSources) || staleTitle.test(`${currentSources}\n${bundle}`) || staleVerifyWait.test(verify)) {
+    throw new Error("web frontend source must use item/list wording, not task/board title copy");
   }
 }
 
@@ -292,7 +299,7 @@ async function coreMain() {
   assertNoInboxUnblockCopy();
   assertNoDelegateTaskCopy();
   assertNoLegacyProjectMasterMock();
-  assertNoStaleMockItemTitleCopy();
+  assertNoStaleItemTitleCopy();
   assertNoLegacyProjectMasterE2eFixtures();
   assertLiveE2eDefaultsCurrentPort();
   assertLiveE2eAvoidsReentrantMasterChatPost();
@@ -810,7 +817,7 @@ async function main() {
     assertNoInboxUnblockCopy();
     assertNoDelegateTaskCopy();
     assertNoLegacyProjectMasterMock();
-    assertNoStaleMockItemTitleCopy();
+    assertNoStaleItemTitleCopy();
     assertNoLegacyProjectMasterE2eFixtures();
     assertLiveE2eDefaultsCurrentPort();
     assertLiveE2eAvoidsReentrantMasterChatPost();
@@ -1407,7 +1414,7 @@ async function main() {
     );
     const addTask = await page.evaluate(() => ({ created: window.__MOCK__?.createdTask ?? "" }));
 
-    // Open the task drawer on the first card; assert comments + runs loaded.
+    // Open the item drawer on the first card; assert comments + runs loaded.
     await page.$eval(".dr-card__open", (el) => el.click());
     await page.waitForSelector(".dr-drawer__panel", { timeout: 8000 });
     await page.waitForFunction(
@@ -1422,7 +1429,7 @@ async function main() {
     }));
 
     // v1.11 planner FE surfacing: read-only ranked node recommendations in the
-    // task drawer. Snapshot task-mutation diag before/after to prove recommending
+    // item drawer. Snapshot task-mutation diag before/after to prove recommending
     // never auto-assigns/claims (read_only is preserved end to end).
     const mutBefore = await page.evaluate(() =>
       JSON.stringify({
@@ -1532,7 +1539,7 @@ async function main() {
       plannerDelegateOk &&
       errorNoLeakOk;
 
-    // Close the task drawer.
+    // Close the item drawer.
     await page.click(".dr-drawer__close");
     await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
 
@@ -1559,7 +1566,7 @@ async function main() {
         durText: (document.querySelector(".exec-timeline__dur")?.textContent ?? "").trim(),
       };
     });
-    // V17-W2 handoff EXPORT: from the open task drawer, generate a SIGNED
+    // V17-W2 handoff EXPORT: from the open item drawer, generate a SIGNED
     // package. The copyable JSON carries the signature (receiver needs it to
     // verify); the human meta line shows only handoff_id + key_id (never the
     // signing key). Read-only: exporting must not mutate the receiver/sender.
