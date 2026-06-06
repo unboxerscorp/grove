@@ -5766,3 +5766,23 @@ button {
 .org-deleg-mode__btn.is-on { color: var(--ink); background: var(--teal); font-weight: 700; }
 .org-deleg-legend__label { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
 .org-deleg-edge.is-current { opacity: 0.95; }
+
+/* Interactive-terminal read-only grid (multi-window). Scoped: .dr-termview /
+   .dr-termgrid / .dr-term--compact only — appended to avoid touching shared rules. */
+.dr-termview { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: 8px; }
+.dr-termview__modes { display: flex; gap: 6px; flex: 0 0 auto; }
+.dr-termview__mode { font-family: var(--mono); font-size: 11px; color: var(--dim); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
+.dr-termview__mode.is-active { color: var(--ink); border-color: var(--teal); }
+.dr-termgrid { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: 8px; }
+.dr-termgrid__toolbar { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.dr-termgrid__dim { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.dr-termgrid__count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.dr-termgrid__grid { display: grid; flex: 1; min-height: 0; min-width: 0; gap: 8px; }
+.dr-termgrid__cell { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.dr-termgrid__cellbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-bottom: 4px; }
+.dr-termgrid__pick { flex: 1; min-width: 0; }
+.dr-termgrid__full { flex: 0 0 auto; font-family: var(--mono); color: var(--dim); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 9px; cursor: pointer; }
+.dr-termgrid__full:disabled { opacity: 0.4; cursor: default; }
+.dr-termgrid__screen { display: flex; flex: 1; min-height: 0; min-width: 0; }
+/* compact TerminalPane fills its grid cell with a slimmer header */
+.dr-term--compact .dr-term__bar { padding: 4px 8px; }

@@ -13,6 +13,7 @@ import { OrgChart } from "./components/OrgChart";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
 import { TaskDrawer } from "./components/TaskDrawer";
 import { TerminalPane } from "./components/TerminalPane";
+import { TerminalGrid } from "./components/TerminalGrid";
 import { GroveMark } from "./components/GroveMark";
 import { cx } from "./constants";
 import { useI18n } from "./i18n";
@@ -76,6 +77,8 @@ export function App() {
   const [orgRoots, setOrgRoots] = useState<string[]>([]);
   const [selectedPane, setSelectedPane] = useState<string | null>(null);
   const [view, setView] = useState<View>("board");
+  // Terminal layout: "single" (default = no-regression) or the read-only grid.
+  const [termMode, setTermMode] = useState<"single" | "grid">("single");
   // Current member role: member null (local-token) = operator; only a team
   // "viewer" loses project-create + share. Re-confirmed on navigation / refresh.
   const [isViewer, setIsViewer] = useState(false);
@@ -500,7 +503,37 @@ export function App() {
               ) : view === "auth" ? (
                 <AuthPanel />
               ) : (
-                <TerminalPane node={selected} />
+                <div className="dr-termview">
+                  <div className="dr-termview__modes" role="group" aria-label={t("tab.terminal")}>
+                    <button
+                      type="button"
+                      className={cx("dr-termview__mode", termMode === "single" && "is-active")}
+                      aria-pressed={termMode === "single"}
+                      onClick={() => setTermMode("single")}
+                    >
+                      {t("term.mode.single")}
+                    </button>
+                    <button
+                      type="button"
+                      className={cx("dr-termview__mode", termMode === "grid" && "is-active")}
+                      aria-pressed={termMode === "grid"}
+                      onClick={() => setTermMode("grid")}
+                    >
+                      {t("term.mode.grid")}
+                    </button>
+                  </div>
+                  {termMode === "grid" ? (
+                    <TerminalGrid
+                      nodes={nodes}
+                      onFullView={(pane) => {
+                        pickNode(pane);
+                        setTermMode("single");
+                      }}
+                    />
+                  ) : (
+                    <TerminalPane node={selected} />
+                  )}
+                </div>
               )}
             </section>
           </main>
