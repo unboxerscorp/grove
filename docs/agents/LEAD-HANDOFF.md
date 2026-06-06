@@ -6,6 +6,13 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 15:18 KST Slack queue restart-crossing reclaim guard:
+  - 최신 product-code HEAD는 `84a9480 test: guard slack queue reclaim`이다. 런타임 변경 없는 test-only guard다.
+  - Slack queue worker/restart 도중 item이 `running` 상태로 남아도 `SLACK_NODE_CHAT_RUNNING_STALE_SECONDS` 이후 `list_due_slack_chat_messages`가 다시 due로 잡는 경로를 테스트로 고정했다.
+  - 핵심 교차점도 함께 검증한다. 이미 `response_text`가 저장된 running item은 stale 후 reclaim되면 cached response를 Slack thread에 delivery하고, master ask/chat facade를 다시 호출하지 않는다. 즉 gap A의 멱등 delivery와 restart reclaim이 같이 유지된다.
+  - stale 전에는 due로 잡히지 않아 double-claim을 방지한다. `SLACK_NODE_CHAT_RUNNING_STALE_SECONDS > GROVE_CHAT_TIMEOUT_SECONDS * 2` assertion으로 정상 ask timeout보다 충분히 긴 reclaim window도 고정했다.
+  - 검증: `uv run --project bridge pytest bridge/tests/test_slack.py -k "reclaims_stale_running_item or chat_routing"` 15 passed, `uv run --project bridge pytest bridge/tests/test_slack.py` 94 passed, `pnpm check` green(TS/Vitest 305, bridge pytest 461). 런타임 변경이 없어서 Slack/web 재시작은 하지 않았다.
+
 - 2026-06-06 15:12 KST Slack socket wedged self-restart 보강:
   - 최신 product-code HEAD는 `01782f4 fix: restart wedged slack socket`이다. Slack connector process가 살아 있지만 Socket Mode가 60초 연속 disconnected 상태이면 `Slack socket wedged >60s; exiting for fresh restart` 로그를 남기고 종료한다.
   - transient disconnect는 기존처럼 같은 process 안에서 per-poll reconnect를 시도한다. reconnect가 성공해 `socket_connected=true`가 되면 disconnected timer는 즉시 reset된다.
