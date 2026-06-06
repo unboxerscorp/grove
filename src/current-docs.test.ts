@@ -65,4 +65,11 @@ describe("current design docs", () => {
     expect(`${generated}\n${harness}`).not.toContain("human-facing task");
     expect(harness).not.toContain("Human task API");
   });
+
+  test("README examples use item ids for human-facing list commands", () => {
+    const readme = doc("README.md");
+
+    expect(readme).toContain("grove task ask-human <item_id>");
+    expect(readme).not.toContain("grove task ask-human task_123");
+  });
 });

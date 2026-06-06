@@ -16,7 +16,7 @@ grove-web --enable-node-input     # optional: operator-gated web input to node p
 grove serve --port 8787          # optional local OpenAI-compatible chat facade
 grove send maker-1 "Please inspect the auth retry path and report risks."
 grove ask reviewer "Review the current diff"
-grove task ask-human task_123 --comment "Which branch should this use?"
+grove task ask-human <item_id> --comment "Which branch should this use?"
 grove watchdog --json            # dry-run node health and recovery plan
 grove repair --all
 ```
