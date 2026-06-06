@@ -219,19 +219,23 @@
 
 ---
 
-## 신규 테스트 필요 (백로그)
+## 신규 테스트 필요 / 커버리지 갱신
 
-다음 테스트 패스의 입력. 우선순위는 사용자 영향 기준.
+다음 테스트 패스의 입력. 우선순위는 사용자 영향 기준. `covered` 항목은
+이 문서 작성 이후 테스트가 추가되어 백로그에서 닫힌 항목이다.
 
-| ID  | 대상                    | 무엇을 검증                                                                                       | 권장 위치                                                | 우선 |
-| --- | ----------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------- | ---- |
-| N1  | 신규/전환 직후 컨텍스트 | 새 프로젝트 생성·전환 직후 조직도/보드가 그 프로젝트(빈 컨텍스트)로 재로드, 이전 데이터 잔존 없음 | `web/verify.mjs` 흐름 + 전환 경합 케이스                 | P1   |
-| N2  | ask-human 웹 가시화     | blocked/사람대기 카드 표시 + Slack 스레드 링크 렌더                                               | `web/verify.mjs`(+ 필요 시 SPA UI 추가는 별도 제품 작업) | P1   |
-| N3  | 터미널 WS 재스코프      | 프로젝트 전환 후 노드 선택 시 새 프로젝트 ticket으로 terminal WS 재연결                           | `web/verify.mjs` / `web/e2e/api.mjs`                     | P1   |
-| N4  | WS 재연결·백오프        | 소켓 close 시 지수 백오프(상한), 4401은 재연결 중단                                               | `web/verify.mjs`(mock에 close/4401 시뮬레이트 추가)      | P2   |
-| N5  | 터미널 상태 전이        | connecting→live→reconnecting→error UI 라벨/LED 전이                                               | `web/verify.mjs`                                         | P2   |
-| N6  | stale 후속 액션         | 무결성 stale 노드에 대한 rebind 진입점(제품화 후 테스트)                                          | `web` + `src/rebind.test.ts` 연계                        | P2   |
-| N7  | 전체 i18n               | 브랜드 외 탭/패널/폼 라벨까지 KO/EN 전환 스냅샷                                                   | `web/verify.mjs`                                         | P2   |
-| N8  | 접근성                  | 드래그 키보드 대안·포커스 순서·ARIA(다음 패스)                                                    | `web` a11y                                               | P3   |
-| N9  | 읽기 전용 터미널        | xterm 입력 비전달 보장(키 입력→무전송)                                                            | `web/verify.mjs`                                         | P3   |
-| N10 | 그룹 일괄 작업          | 그룹 단위 일괄 배정/보드 그룹 필터(제품화 후)                                                     | `web` + `bridge`                                         | P3   |
+| ID  | 대상                    | 무엇을 검증                                                                                       | 권장/실제 위치                                                                                   | 우선 | 상태    |
+| --- | ----------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ---- | ------- |
+| N1  | 신규/전환 직후 컨텍스트 | 새 프로젝트 생성·전환 직후 조직도/보드가 그 프로젝트(빈 컨텍스트)로 재로드, 이전 데이터 잔존 없음 | `web/verify.mjs` `#N1 project switch re-scope + no residue`                                      | P1   | covered |
+| N2  | ask-human 웹 가시화     | blocked/사람대기 카드 표시 + Slack 스레드 링크 렌더                                               | `web/verify.mjs` `#N2`, `web/e2e/live.mjs` inbox journey, `web/e2e/api.mjs` `/api/inbox` journey | P1   | partial |
+| N3  | 터미널 WS 재스코프      | 프로젝트 전환 후 노드 선택 시 새 프로젝트 ticket으로 terminal WS 재연결                           | `web/verify.mjs` `wsBindOk`, `web/e2e/api.mjs` ws-ticket project binding                         | P1   | covered |
+| N4  | WS 재연결·백오프        | 소켓 close 시 지수 백오프(상한), 4401은 재연결 중단                                               | `web/verify.mjs` `n4Ok` close/reconnect/4401 assertions                                          | P2   | covered |
+| N5  | 터미널 상태 전이        | connecting→live→reconnecting→error UI 라벨/LED 전이                                               | `web/verify.mjs` `#N5 terminal connection-state transitions`                                     | P2   | covered |
+| N6  | stale 후속 액션         | 무결성 stale 노드에 대한 rebind 진입점(제품화 후 테스트)                                          | `web` + `src/rebind.test.ts` 연계                                                                | P2   | backlog |
+| N7  | 전체 i18n               | 브랜드 외 탭/패널/폼 라벨까지 KO/EN 전환 스냅샷                                                   | `web/verify.mjs`                                                                                 | P2   | backlog |
+| N8  | 접근성                  | 드래그 키보드 대안·포커스 순서·ARIA(다음 패스)                                                    | `web` a11y                                                                                       | P3   | backlog |
+| N9  | 읽기 전용 터미널        | xterm 입력 비전달 보장(키 입력→무전송)                                                            | `web/verify.mjs`                                                                                 | P3   | backlog |
+| N10 | 그룹 일괄 작업          | 그룹 단위 일괄 배정/보드 그룹 필터(제품화 후)                                                     | `web` + `bridge`                                                                                 | P3   | backlog |
+
+N2는 blocked/ask-human 카드, inbox API, live inbox answer 흐름은 커버됐지만,
+Slack thread link를 drawer에 렌더하는 전용 SPA 표면은 아직 제품화되지 않아 `partial`로 남긴다.
