@@ -52,6 +52,7 @@ function deps(opts: { ghAuthed?: boolean; sessionExists?: boolean; template?: st
       },
       hasSession: async () => opts.sessionExists ?? false,
       homeDir: () => "/home/tester",
+      cwd: () => "/home/tester/grove",
       newSession: async (name, sessionOpts) => {
         newSessions.push({
           cwd: sessionOpts.cwd ?? "",
@@ -136,7 +137,7 @@ describe("createNewProject", () => {
         session: "alpha",
       }),
     );
-    expect(state.masterWrites).toEqual(["/home/tester/grove-projects/alpha"]);
+    expect(state.masterWrites).toEqual(["/home/tester/grove"]);
     expect(state.writes.map((write) => write.file)).toEqual([
       "registry:alpha",
       "/home/tester/grove-projects/alpha/grove.project.json",

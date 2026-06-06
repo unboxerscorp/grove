@@ -66,6 +66,7 @@ export interface GhResult {
 
 export interface NewProjectDeps {
   hasSession(session: string): Promise<boolean>;
+  cwd(): string;
   newSession(name: string, opts: { cwd?: string; windowName?: string }): Promise<void>;
   ensureDir(dir: string): Promise<void>;
   homeDir(): string;
@@ -83,6 +84,7 @@ const defaultDeps: NewProjectDeps = {
     await mkdir(dir, { recursive: true });
   },
   hasSession,
+  cwd: () => process.cwd(),
   homeDir: () => os.homedir(),
   newSession,
   now: () => new Date().toISOString(),
@@ -357,7 +359,7 @@ export async function createNewProject(
   }
   persistProjectLead(ctx, dir, specs, nodes);
   deps.saveRegistry(ctx.registry);
-  deps.ensureSharedMasterRegistry(dir);
+  deps.ensureSharedMasterRegistry(deps.cwd());
   const now = deps.now();
   await deps.writeFile(
     path.join(dir, PROJECT_FILE_NAME),

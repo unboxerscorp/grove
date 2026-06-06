@@ -193,12 +193,13 @@ export function sharedMasterRuntime(): NodeRuntime {
 
 export function ensureSharedMasterRegistry(cwd: string): Registry {
   const reg = loadOrInit(MASTER_REGISTRY_SESSION, cwd);
+  reg.cwd = cwd;
   const existing = reg.nodes[GROVE_MASTER_NODE_NAME];
   reg.nodes[GROVE_MASTER_NODE_NAME] = {
     ...sharedMasterRuntime(),
     ...existing,
     children: existing?.children ?? [],
-    cwd: existing?.cwd ?? cwd,
+    cwd,
     name: GROVE_MASTER_NODE_NAME,
     parent: "",
   };
