@@ -27,6 +27,7 @@ from grove_bridge.assistant import (
     AssistantScope,
     AssistantTransportError,
     AssistantUnavailable,
+    classify_for_task,
 )
 from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.config import default_board_db_path
@@ -2290,6 +2291,8 @@ class SlackConnector:
 
     def _process_node_chat_queue_item(self, item: SlackChatQueueItem, *, now: int) -> None:
         item = self.store.mark_slack_chat_message_running(item.id, now=now)
+        if self._process_node_chat_task_intake(item, now=now):
+            return
         session_id = _slack_chat_queue_conversation_id(item)
         response_text = item.response_text
         terminal_failure = False
@@ -2361,6 +2364,55 @@ class SlackConnector:
             return
         if not terminal_failure:
             self.store.complete_slack_chat_message(item.id, now=now)
+
+    def _process_node_chat_task_intake(self, item: SlackChatQueueItem, *, now: int) -> bool:
+        if self.command_config is None or self.confirmations is None:
+            return False
+        if not self._intake_enabled(self.command_config):
+            return False
+        actor = self._assistant_member(item.user_id)
+        if actor is None or actor.role not in {"admin", "operator"}:
+            return False
+        draft = classify_for_task(item.text)
+        if draft is None:
+            return False
+        event = _slack_event_from_chat_queue_item(item)
+        classification = SlackIntentClassification(
+            intent="task_request",
+            confidence=draft.confidence,
+            title=draft.title,
+            summary=draft.body,
+            labels=("task", "slack-chat"),
+            reason=draft.reason,
+        )
+        preview = self._preview_intake_task(
+            event=event,
+            actor=actor,
+            classification=classification,
+        )
+        if preview is None:
+            return False
+        try:
+            self.slack_client.post_message(
+                channel=item.channel_id,
+                text=preview.text,
+                thread_ts=item.thread_ts,
+                blocks=preview.blocks,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "Slack chat task preview delivery deferred: %s",
+                _safe_log_error(exc),
+            )
+            self.store.defer_slack_chat_message(
+                item.id,
+                error=_safe_log_error(exc),
+                next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                now=now,
+            )
+            return True
+        self.store.complete_slack_chat_message(item.id, now=now)
+        return True
 
     def _post_node_chat_busy_notice(self, item: SlackChatQueueItem) -> None:
         try:
@@ -3025,6 +3077,18 @@ def _slack_chat_queue_conversation_id(item: SlackChatQueueItem) -> str:
     return (
         f"slack:{_safe_slack_text(item.team_id)}:"
         f"{_safe_slack_text(item.channel_id)}:{_safe_slack_text(item.thread_ts)}"
+    )
+
+
+def _slack_event_from_chat_queue_item(item: SlackChatQueueItem) -> SlackEvent:
+    return SlackEvent(
+        team=item.team_id,
+        channel=item.channel_id,
+        user=item.user_id,
+        text=item.text,
+        ts=item.message_ts,
+        thread_ts=item.thread_ts,
+        event_type="app_mention",
     )
 
 

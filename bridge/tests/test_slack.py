@@ -1289,6 +1289,80 @@ def test_chat_routing_can_forward_addressed_turn_to_node(tmp_path: Path) -> None
     assert slack.posts[-1] == ("C123", "grove reply", "111.222")
 
 
+def test_chat_routing_task_like_message_posts_intake_confirm_before_node_route(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    slack = FakeSlackClient()
+    chat = FakeChatFacade()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-master"),
+        command_config=SlackCommandConfig(
+            board="main",
+            members={"UOP": SlackCommandMember("member-op", "olivia", "operator")},
+            intake_enabled=True,
+        ),
+        assistant_broker=FakeAssistantBroker("assistant should not run"),
+        route_chat_to_node=True,
+    )
+
+    handled = connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="UOP",
+            text="<@BOT> task add board export",
+            ts="111.222",
+            thread_ts=None,
+            event_type="app_mention",
+        )
+    )
+
+    assert handled is True
+    assert slack.posts == [
+        (
+            "C123",
+            "접수했습니다. grove-master 전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.",
+            "111.222",
+        ),
+    ]
+
+    assert connector.poll_node_chat_queue() == 1
+    assert chat.calls == []
+    assert len(slack.posts) == 2
+    preview = slack.posts[-1][1]
+    assert preview.startswith("preview: create task_request item title=board export")
+    confirm = _extract_confirm_from_reason(preview)
+    assert confirm is not None
+    assert store.list_tasks(board="main") == []
+    assert (
+        store.list_due_slack_chat_messages(
+            board="main",
+            now=9999999999,
+            running_stale_before=9999999999,
+            limit=10,
+        )
+        == []
+    )
+
+    assert connector.handle_event(addressed_slack_event("UOP", f"confirm {confirm}", ts="111.333"))
+
+    tasks = store.list_tasks(board="main")
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.title == "board export"
+    assert task.status == "ready"
+    assert task.assignee is None
+    intake = cast(Mapping[str, object], task.metadata["intake"])
+    assert intake["source"] == "slack"
+    assert intake["intent"] == "task_request"
+    assert chat.calls == []
+
+
 def test_chat_routing_defers_busy_prompt_guard_and_retries(tmp_path: Path) -> None:
     slack = FakeSlackClient()
     chat = SequenceChatFacade(

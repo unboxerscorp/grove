@@ -42,6 +42,7 @@ NODE_ROUTED_TURN_TIMEOUT = "120s"
 NODE_ROUTED_PROCESS_TIMEOUT_SECONDS = 150.0
 TASK_COUNT_STATUSES = ("ready", "running", "blocked", "review", "done", "archived", "ask_human")
 IN_FLIGHT_STATUSES = ("running", "review", "blocked", "ask_human")
+GROVE_TASK_INTAKE_MIN_CONFIDENCE = 0.75
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 CITATION_RE = re.compile(r"\[(fact:[A-Za-z0-9_.-]+)\]")
@@ -92,6 +93,29 @@ ACTION_HANDOFF_TERMS = (
     "deploy",
     "prod",
     "production",
+)
+TASK_INTAKE_TERMS = (
+    "태스크",
+    "작업",
+    "할 일",
+    "할일",
+    "todo",
+    "task",
+    "issue",
+    "bug",
+    "버그",
+)
+TASK_INTAKE_ACTION_TERMS = (
+    "만들",
+    "생성",
+    "추가",
+    "등록",
+    "넣어",
+    "올려",
+    "create",
+    "add",
+    "file",
+    "open",
 )
 ASSISTANT_TRANSPORT_FALLBACK_TEXT = "지금은 답변을 만들 수 없어요. 잠시 뒤 다시 시도해 주세요."
 INTERNAL_IMPLEMENTATION_TERM_RE = re.compile(
@@ -171,6 +195,46 @@ class AssistantContext:
     store: SQLiteBoardStore
     workspace_path: Path | None = None
     grove_home: Path | None = None
+
+
+@dataclass(frozen=True)
+class TaskProposalDraft:
+    title: str
+    body: str
+    confidence: float
+    reason: str
+
+
+def classify_for_task(message: str) -> TaskProposalDraft | None:
+    """Return a side-effect-free task proposal only for explicit task intake."""
+    redacted = _safe_public_text(message).strip()
+    if not redacted:
+        return None
+    classification = classify_master_message(redacted)
+    if classification.kind in {
+        "feedback_route",
+        "capability_question",
+        "node_question",
+        "project_question",
+    }:
+        return None
+    normalized = redacted.casefold()
+    has_task_term = any(term in normalized for term in TASK_INTAKE_TERMS)
+    has_action_term = any(term in normalized for term in TASK_INTAKE_ACTION_TERMS)
+    explicit_prefix = bool(
+        re.match(r"^\s*(?:task|todo|issue|bug|태스크|작업|버그)\s*[:：-]", normalized)
+    )
+    if not explicit_prefix and not (has_task_term and has_action_term):
+        return None
+    if classification.confidence < GROVE_TASK_INTAKE_MIN_CONFIDENCE and not explicit_prefix:
+        return None
+    title = _task_proposal_title(redacted)
+    return TaskProposalDraft(
+        title=title,
+        body=redacted,
+        confidence=max(classification.confidence, GROVE_TASK_INTAKE_MIN_CONFIDENCE),
+        reason=f"task_intake:{classification.reason}",
+    )
 
 
 @dataclass(frozen=True)
@@ -1874,6 +1938,33 @@ def _transport_busy_detail(detail: str) -> bool:
     )
 
 
+def _task_proposal_title(message: str) -> str:
+    clean = re.sub(r"<@[A-Za-z0-9]+>", "", message).strip()
+    clean = re.sub(
+        r"^\s*(?:task|todo|issue|bug|태스크|작업|버그)\s*[:：-]\s*",
+        "",
+        clean,
+        flags=re.I,
+    ).strip()
+    clean = re.sub(
+        r"^(?:이거|이걸|이 내용|다음 내용|please|pls)\s*",
+        "",
+        clean,
+        flags=re.I,
+    ).strip()
+    clean = re.sub(
+        r"(?:태스크|작업|할 일|할일|todo|task|issue)(?:로|으로)?\s*"
+        r"(?:만들어|생성해|추가해|등록해|넣어|올려|create|add|file|open)\s*",
+        "",
+        clean,
+        flags=re.I,
+    ).strip()
+    clean = re.sub(r"\s+", " ", clean).strip(" .。")
+    if not clean:
+        return "Slack chat task request"
+    return clean[:120]
+
+
 def _run_command(
     args: Sequence[str],
     *,
@@ -1909,7 +2000,9 @@ __all__ = [
     "AssistantTransportError",
     "AssistantUnavailable",
     "NodeRoutedAssistantClient",
+    "TaskProposalDraft",
     "build_assistant_facts",
+    "classify_for_task",
     "create_default_assistant_client",
     "requires_master_chat_action_gate",
 ]

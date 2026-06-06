@@ -19,6 +19,7 @@ from grove_bridge.assistant import (
     NodeRoutedAssistantClient,
     _parse_action_spec,
     build_assistant_facts,
+    classify_for_task,
     create_default_assistant_client,
     requires_master_chat_action_gate,
 )
@@ -60,6 +61,15 @@ class BusyLLMClient:
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         _ = (system_prompt, user_prompt)
         raise AssistantBusy("node is rate limited")
+
+
+def test_classify_for_task_requires_explicit_task_intake() -> None:
+    draft = classify_for_task("task add board export")
+
+    assert draft is not None
+    assert draft.title == "board export"
+    assert classify_for_task("summarize status") is None
+    assert classify_for_task("feedback simplify setup") is None
 
 
 class FakeCompletedProcess:
