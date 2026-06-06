@@ -1,6 +1,6 @@
 // MasterChat — floating web chat widget (Channel-Talk style, bottom-right).
 //
-// v1.27. Conversational launcher to GROVE MASTER. Mounted
+// v1.27. Conversational launcher for CHAT MASTER semantics. Mounted
 // once at the app root (see app.tsx). Strings live in i18n.tsx (mchat.*), styles
 // in styles.css (.dr-mchat), and the REST calls live in api.ts.
 //
@@ -204,7 +204,7 @@ export function MasterChat(props: { openSignal?: number } = {}) {
     };
   }, []);
 
-  // Open the floating chat on a global event (e.g. clicking GROVE MASTER in the
+  // Open the floating chat on a global event (e.g. clicking the chat entrypoint in the
   // org chart). Navigation-safe: only opens the panel, never mutates.
   useEffect(() => {
     const onOpen = () => setOpen(true);

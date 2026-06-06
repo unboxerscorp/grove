@@ -866,7 +866,7 @@ export interface JoinResult {
   expires_at?: number;
 }
 
-// Master chat (v1.27). Conversational channel to GROVE MASTER, implemented by
+// Master chat (v1.27). Conversational channel with CHAT MASTER semantics, implemented by
 // grove-py at /api/master/chat. POST is live; the
 // history GET may stay unimplemented (POST-only route) and 405 — callers treat
 // 404/405/501/503 as a graceful "not yet available" and surface other codes as
@@ -1604,7 +1604,7 @@ export const api = {
   // treats that as "no history" and judges availability on send instead.
   getMasterChatHistory: () => getJSON<MasterChatHistory>("/api/master/chat"),
 
-  // POST a message to GROVE MASTER. request_id = clientId (optimistic id);
+  // POST a message to the chat endpoint. request_id = clientId (optimistic id);
   // conversation_id threads the session (assigned by the backend, reused on the
   // next send). Returns the raw MasterChatResponse — see masterReplyText().
   async sendMasterChat(

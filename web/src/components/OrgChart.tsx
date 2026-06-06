@@ -842,7 +842,7 @@ export function OrgChart(props: {
 
   return (
     <section className="org">
-      {/* v1.29 cross-project bar: GROVE MASTER root (opens floating chat) + project
+      {/* v1.29 cross-project bar: CHAT MASTER entrypoint + project
           leads. Current lead expands the tree below; others switch project. */}
       {(master || projectLeads.length > 0) && (
         <div className="org-master-bar" role="navigation" aria-label={t("org.crossProject")}>
