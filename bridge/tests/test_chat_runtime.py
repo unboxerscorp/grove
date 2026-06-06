@@ -6,6 +6,7 @@ from grove_bridge.chat_runtime import (
     CHAT_BRIDGE_RUNTIME_FLAG,
     ChatProviderAdapter,
     ChatWorkerPool,
+    ClaudeChatProviderAdapter,
     KillSwitch,
     NoTemplateViolation,
     ProviderRequest,
@@ -145,3 +146,31 @@ def test_worker_pool_kill_switch_blocks_acquire() -> None:
     assert pool.try_acquire_session("conv-A") is False
     ks.reset()
     assert pool.try_acquire_session("conv-A") is True
+
+
+class _RecordingLLM:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+        self.calls.append((system_prompt, user_prompt))
+        return "claude says hi"
+
+
+def test_claude_provider_adapter_delegates_to_direct_llm_client() -> None:
+    llm = _RecordingLLM()
+    adapter = ClaudeChatProviderAdapter(llm=llm)
+    out = adapter.generate(ProviderRequest(system_prompt="persona", user_text="hello"))
+    assert out == "claude says hi"
+    assert llm.calls == [("persona", "hello")]
+
+
+def test_claude_provider_adapter_redaction_composes() -> None:
+    secret = "xoxb-" + ("m" * 44)
+    llm = _RecordingLLM()
+    adapter = RedactingProviderAdapter(inner=ClaudeChatProviderAdapter(llm=llm))
+    adapter.generate(ProviderRequest(system_prompt=f"p {secret}", user_text=f"u {secret}"))
+    assert llm.calls
+    sent_system, sent_user = llm.calls[0]
+    assert secret not in sent_system
+    assert secret not in sent_user

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from grove_bridge.chat_runtime import ProviderRequest
 from grove_bridge.slack import ChatRouteConfig, HumanGateConfig, SlackConnector
 from grove_bridge.store import SQLiteBoardStore
 
@@ -69,7 +70,22 @@ def test_flag_off_runtime_not_constructed_and_existing_path_unchanged(tmp_path: 
     assert slack.posts
 
 
-def test_flag_on_runtime_constructed_and_holds_without_publish(tmp_path: Path) -> None:
+class _FakeAdapter:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def generate(self, request: ProviderRequest) -> str:
+        self.calls.append(request.user_text)
+        return "shadow answer"
+
+
+class _RaisingAdapter:
+    def generate(self, request: ProviderRequest) -> str:
+        _ = request
+        raise RuntimeError("provider unavailable")
+
+
+def test_flag_on_generation_failure_holds_without_publish(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "b.db")
     store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
     slack, facade = _FakeSlack(), _FakeFacade()
@@ -77,15 +93,38 @@ def test_flag_on_runtime_constructed_and_holds_without_publish(tmp_path: Path) -
 
     # Flag ON: runtime constructed; the guarded branch takes over.
     assert conn._chat_bridge_runtime is not None
+    conn._chat_bridge_adapter = _RaisingAdapter()  # deterministic: no real API call
 
     _enqueue(store)
     conn.poll_node_chat_queue()
 
-    # Stage0: no live node route + no user-facing publish.
+    # Generation failed → no live node route + no user-facing publish; item held.
     assert facade.calls == []
     assert slack.posts == []
-    # Item held on the durable queue (deferred, not dropped/completed).
     due = store.list_due_slack_chat_messages(
         board="dev10", now=9_999_999_999, running_stale_before=9_999_999_999, limit=10
     )
     assert len(due) == 1
+
+
+def test_flag_on_shadow_generates_without_publish(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    slack, facade = _FakeSlack(), _FakeFacade()
+    conn = _connector(store, slack, facade)
+    assert conn._chat_bridge_runtime is not None
+    adapter = _FakeAdapter()
+    conn._chat_bridge_adapter = adapter  # inject (avoid real API)
+
+    _enqueue(store)
+    conn.poll_node_chat_queue()
+
+    # SHADOW: generated via the adapter, but published NOTHING (user-facing 0).
+    assert adapter.calls == ["hi"]
+    assert facade.calls == []
+    assert slack.posts == []
+    # Shadow consumed the item (completed, not left due).
+    due = store.list_due_slack_chat_messages(
+        board="dev10", now=9_999_999_999, running_stale_before=9_999_999_999, limit=10
+    )
+    assert due == []

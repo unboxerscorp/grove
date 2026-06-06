@@ -26,6 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
+from grove_bridge.assistant import AnthropicAssistantClient, AssistantLLMClient
 from grove_bridge.auth_status import redact_secret_text
 
 # GUI feature flag name (default OFF). Distinct from the ``intake`` flag, which
@@ -36,6 +37,13 @@ CHAT_BRIDGE_RUNTIME_FLAG = "chat_bridge_runtime"
 # contract (marker + field schema) is chat-master-owned; this is the Stage0
 # scaffold of the boundary.
 TASK_PROPOSAL_MARKER = "<<<GROVE_TASK_PROPOSAL>>>"
+
+# SHADOW-only placeholder persona (0 user exposure). The canonical persona/policy
+# is chat-master's deliverable, folded in before any canary/live publish.
+CHAT_BRIDGE_SHADOW_PERSONA = (
+    "You are grove's chat-master assistant. (SHADOW placeholder persona — not for "
+    "canary/live; the canonical persona is supplied by chat-master before cutover.)"
+)
 
 ChatSurface = Literal["slack", "web"]
 TurnKind = Literal["answer", "task_proposal"]
@@ -175,6 +183,27 @@ class RedactingProviderAdapter:
             user_text=self.redact(request.user_text),
         )
         return self.inner.generate(safe)
+
+
+@dataclass
+class ClaudeChatProviderAdapter:
+    """Concrete bridge-native adapter: generates a turn by calling Claude's
+    Messages API directly via the bridge's ``AnthropicAssistantClient`` (raw-HTTP,
+    **not** a persistent CLI node and **not** the AssistantBroker node-routed
+    client). Wrap in :class:`RedactingProviderAdapter` for the [R] boundary.
+
+    Model / effort / thinking tuning (``claude-opus-4-8`` + adaptive thinking +
+    streaming, per the claude-api skill) is the underlying client's config and is
+    finalized at canary; the default direct client guarantees no CLI routing.
+    """
+
+    llm: AssistantLLMClient = field(default_factory=AnthropicAssistantClient)
+
+    def generate(self, request: ProviderRequest) -> str:
+        return self.llm.complete(
+            system_prompt=request.system_prompt,
+            user_prompt=request.user_text,
+        )
 
 
 # --------------------------------------------------------------------------- #
