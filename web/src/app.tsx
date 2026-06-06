@@ -290,7 +290,7 @@ export function App() {
     };
   }, [liveTick, projectTick]);
 
-  // Board event-tail: a single-use ws-ticket (carrying the current project via
+  // List event-tail: a single-use ws-ticket (carrying the current project via
   // the X-Grove-Session-Token/X-Grove-Project headers) is minted, then the
   // socket connects with ?ticket= so the backend can bind it to the active
   // project. Re-runs on projectTick too, so switching project (and initial

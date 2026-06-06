@@ -221,7 +221,7 @@ export interface TerminalFrame {
   ts: number;
 }
 
-/** Board event-tail message; cursor advances the client's tail position. */
+/** List event-tail message; cursor advances the client's tail position. */
 export interface BoardEvent {
   cursor?: number;
   type?: string;
