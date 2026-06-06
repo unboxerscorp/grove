@@ -8052,6 +8052,51 @@ def test_update_node_can_patch_and_clear_kind_and_classifies_service(
     assert "kind" not in registry_after["worker"]
 
 
+def test_org_payload_is_backward_compatible_when_no_node_is_marked_service(
+    tmp_path: Path,
+) -> None:
+    """Backward-compat guard (analogous to the work_instructions-unset byte test):
+    with no node declaring kind, the org payload is unchanged — every node keeps
+    its default classification and nothing is rendered as a service."""
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "codex",
+                "children": ["worker", "reviewer"],
+                "group": "services",
+                "tmux_pane": "dev10:1.0",
+            },
+            "worker": {
+                "name": "worker",
+                "agent": "claude",
+                "parent": "lead",
+                "group": "services",
+                "tmux_pane": "dev10:1.1",
+            },
+            "reviewer": {
+                "name": "reviewer",
+                "agent": "codex",
+                "parent": "lead",
+                "tmux_pane": "dev10:1.2",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    org = client.get("/api/org", headers=auth_headers(client))
+    assert org.status_code == 200
+    nodes = org.json()["nodes"]
+    by_name = {node["name"]: node for node in nodes}
+    # Nothing is marked → no node is a service even though some are group=services.
+    assert all(node["kind"] != "service" for node in nodes)
+    # group=services must NOT imply service kind — only an explicit kind does.
+    assert by_name["lead@dev10"]["kind"] == "registry"
+    assert by_name["worker"]["kind"] == "registry"
+
+
 def test_update_node_can_clear_parent_and_group(tmp_path: Path) -> None:
     write_registry(
         tmp_path,
