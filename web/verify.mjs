@@ -45,6 +45,7 @@ function assertNoStaleItemTitleCopy() {
   const currentSources = [
     readFileSync(path.join(root, "src", "app.tsx"), "utf8"),
     readFileSync(path.join(root, "src", "i18n.tsx"), "utf8"),
+    readFileSync(path.join(root, "src", "components", "TaskDrawer.tsx"), "utf8"),
     readFileSync(path.join(root, "src", "types.ts"), "utf8"),
     readFileSync(path.join(root, "src", "styles.css"), "utf8"),
     readFileSync(path.join(root, "mock", "harness.ts"), "utf8"),
@@ -80,7 +81,13 @@ function assertNoStaleItemTitleCopy() {
     "i",
   );
   const staleVerifyWait = new RegExp(`includes\\(["']${`solo ${"task"}`}["']\\)`, "i");
-  if (staleSourceCopy.test(currentSources) || staleTitle.test(`${currentSources}\n${bundle}`) || staleVerifyWait.test(verify)) {
+  const staleA11yLabel = new RegExp(`aria-label=["']${"task detail"}["']`, "i");
+  if (
+    staleSourceCopy.test(currentSources) ||
+    staleTitle.test(`${currentSources}\n${bundle}`) ||
+    staleVerifyWait.test(verify) ||
+    staleA11yLabel.test(currentSources)
+  ) {
     throw new Error("web frontend source must use item/list wording, not task/board title copy");
   }
 }

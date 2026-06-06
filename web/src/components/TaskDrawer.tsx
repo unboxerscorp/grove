@@ -288,7 +288,7 @@ export function TaskDrawer(props: {
   return (
     <div className="dr-drawer">
       <div className="dr-drawer__scrim" onClick={onClose} />
-      <aside className="dr-drawer__panel" role="dialog" aria-modal="true" aria-label="task detail" tabIndex={-1} ref={panelRef}>
+      <aside className="dr-drawer__panel" role="dialog" aria-modal="true" aria-label="item detail" tabIndex={-1} ref={panelRef}>
         <header className="dr-drawer__head">
           <div className="dr-drawer__id">
             <span className="dr-drawer__ticket" style={{ color: statusColor(canonicalStatus(task?.status)) }}>
