@@ -12,7 +12,7 @@ Nodes do not autonomously create, terminate, or rearrange other nodes. Organizat
 If you think a new persistent node, role, child, or specialist pane is needed, inspect the org and ask the human operator or project lead. If the human explicitly asks you to create it, use the operator-marked command.
 
 ```bash
-grove org --json
+grove org --all --json
 grove status
 ```
 
@@ -42,7 +42,7 @@ The dashboard node creation flow supplies the project cwd. Project nodes should 
 After spawning, confirm the node appears in the registry and has a pane binding:
 
 ```bash
-grove org --json
+grove org --all --json
 grove session
 grove rebind <name>
 ```

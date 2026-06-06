@@ -22,3 +22,4 @@ grove is a terminal cockpit for running a tree of Claude Code and Codex agents i
 - Keep behavior changes backed by tests.
 - Report blockers with the exact command or file that exposed them.
 - Never claim a gate is green without running the gate.
+- Use `grove org --all --json` for startup and routing context so every node sees the full multi-project tree. Use project-scoped org views only after deliberately narrowing the task.

@@ -28,9 +28,11 @@ Do not autonomously create or delete nodes. Organization changes require explici
 ## Commands and APIs
 
 ```bash
-grove org --json
+grove org --all --json
 grove status
 ```
+
+Use the all-project org view for startup and routing context; narrow to a project view only after choosing the target project.
 
 Human-facing item API:
 

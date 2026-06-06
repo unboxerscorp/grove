@@ -58,7 +58,7 @@ node-to-node work.
 
 ## Commands you can run
 
-- \`grove org --json\` — inspect nodes, roles, panes, cwd, and hierarchy.
+- \`grove org --all --json\` — inspect the full multi-project tree: nodes, roles, panes, cwd, and hierarchy.
 - \`grove status\` — see node state and recent activity.
 - \`grove send <node> "<message>"\` — send a direct non-blocking message.
 - \`grove wait <node>\` — block until that node finishes its current turn and
@@ -69,8 +69,8 @@ node-to-node work.
 
 ## Working well
 
-1. Start by checking \`grove org --json\` so you know your node name, role,
-   parent, children, tmux pane, and cwd.
+1. Start by checking \`grove org --all --json\` so you know your node name, role,
+   parent, children, tmux pane, cwd, and other project leads.
 2. Give peers clear, self-contained context: what to inspect or change, which
    files matter, how to verify, and what result to report.
 2. Prefer \`grove ask\` when you need the result before continuing.

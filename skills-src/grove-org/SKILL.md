@@ -10,9 +10,11 @@ description: Use before asking, sending, inspecting, or routing work to another 
 Before asking, sending, inspecting, or routing work, inspect the current grove organization. Do not ask the user what the current org is if it can be queried.
 
 ```bash
-grove org --json
+grove org --all --json
 grove status
 ```
+
+Use `grove org --all --json` for startup and routing decisions so multi-project leads and services are visible. Use project-scoped org output only after deliberately narrowing the task.
 
 Check:
 

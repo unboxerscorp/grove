@@ -16,7 +16,7 @@ Choose a moderator. The moderator coordinates direct prompts, waits for replies,
 Inspect existing groups first:
 
 ```bash
-grove org --json
+grove org --all --json
 ```
 
 Do not autonomously spawn missing peers. If the org is missing a role, ask the human operator or project lead; if the human explicitly asks you to create it, use the operator-marked GUI/API/CLI path.

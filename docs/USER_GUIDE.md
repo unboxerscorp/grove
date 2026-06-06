@@ -154,7 +154,7 @@ nodes:
 ```bash
 grove spawn --name maker --agent codex --role "TypeScript 구현" \
   --description "src/ 변경 담당" --parent lead --group core --session alpha --json
-grove org --json
+grove org --all --json
 grove org
 ```
 

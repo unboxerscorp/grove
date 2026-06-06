@@ -5,7 +5,7 @@ This repo is growing into a cockpit product with multiple makers working at once
 ## Startup Order
 
 1. Read `AGENTS.md`.
-2. Run `grove org --json` and pin a short self-context block before acting: current node name, project/session, parent, children, role, tmux pane, and working directory.
+2. Run `grove org --all --json` and pin a short self-context block before acting: current node name, project/session, parent, children, role, tmux pane, working directory, and the visible multi-project tree.
 3. Check current operator-visible work assigned to you when a human-facing item may exist:
    `grove task list --session <project> --board <project> --assignee <node>`.
 4. Read `docs/agents/shared-context.md`.

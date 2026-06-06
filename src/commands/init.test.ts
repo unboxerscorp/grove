@@ -66,7 +66,7 @@ describe("cmdInit", () => {
     const context = readFileSync(path.join(root, "grove-context.md"), "utf8");
     expect(context).toContain("direct node communication");
     expect(context).toContain("Human-facing list items");
-    expect(context).toContain("grove org --json");
+    expect(context).toContain("grove org --all --json");
     expect(context).not.toContain("delegation protocol");
     expect(context).not.toContain("board task");
     const lead = loadRegistry("dev10")?.nodes.lead;

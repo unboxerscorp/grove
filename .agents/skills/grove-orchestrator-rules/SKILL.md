@@ -29,7 +29,7 @@ TDD belongs wherever it is useful. Coordinate directly with the relevant node.
 ## Commands and APIs
 
 ```bash
-grove org --json
+grove org --all --json
 grove status
 ```
 
