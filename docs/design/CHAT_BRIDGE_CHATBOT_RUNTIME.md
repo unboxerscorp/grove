@@ -80,10 +80,11 @@ chat-master (§7 copy); the bridge supplies structure/fields/validation/defaults
 
 ### (6) Stage0 safety
 
-Feature flag `chat_bridge_runtime` (default **OFF**) + kill-switch + metrics. **`gui_features.intake`
-stays `false`** (intake DARK) throughout. New components are constructed **only when the flag is on**; with the
-flag off, the existing Slack daemon / web request path is **unchanged and the live route is not touched**. DB
-schema additions are **additive** (new tables/columns; no migration of live data, no change to existing reads).
+Feature flag `chat_bridge_runtime` (default **OFF**, stored on the master/dev10 board and shared across projects),
+a kill-switch, and metrics. **`gui_features.intake` stays `false`** (intake DARK) throughout. New components are
+constructed **only when the flag is on**; with the flag off, the existing Slack daemon / web request path is
+**unchanged and the live route is not touched**. DB schema additions are **additive** (new tables/columns; no
+migration of live data, no change to existing reads).
 
 ### (7) chat-master node = presence/policy/audit/semantic owner
 

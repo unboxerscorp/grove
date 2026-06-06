@@ -1014,8 +1014,9 @@ def create_app(
                 status_code=409,
                 detail="chat provider must be configured before enabling chat runtime",
             )
+        feature_board = _gui_feature_board(project, feature_name)
         _store(request).set_gui_feature_enabled(
-            board=project.board,
+            board=feature_board,
             feature=feature_name,
             enabled=payload.enabled,
         )
@@ -6026,7 +6027,10 @@ def _gui_feature_state(
     project: ProjectContext,
     feature: str,
 ) -> dict[str, object]:
-    stored = store.gui_feature_flags(board=project.board, features=(feature,))[feature]
+    stored = store.gui_feature_flags(
+        board=_gui_feature_board(project, feature),
+        features=(feature,),
+    )[feature]
     enabled = stored.get("enabled")
     runtime_contract = _gui_feature_runtime_contract(feature)
     if stored.get("configured") is True and isinstance(enabled, bool):
@@ -6063,6 +6067,12 @@ def _gui_feature_enabled(
     feature: str,
 ) -> bool:
     return bool(_gui_feature_state(store, project=project, feature=feature)["enabled"])
+
+
+def _gui_feature_board(project: ProjectContext, feature: str) -> str:
+    if feature == CHAT_BRIDGE_RUNTIME_FLAG:
+        return DEFAULT_SESSION
+    return project.board
 
 
 def _require_gui_feature_enabled(
@@ -6158,7 +6168,10 @@ def _handle_master_chat_request(
     auth: AuthContext,
     project: ProjectContext,
 ) -> dict[str, object] | Response:
-    if chat_bridge_runtime_enabled(_store(request), board=project.board):
+    if chat_bridge_runtime_enabled(
+        _store(request),
+        board=_gui_feature_board(project, CHAT_BRIDGE_RUNTIME_FLAG),
+    ):
         return _handle_chat_bridge_runtime_web_request(
             request,
             payload,

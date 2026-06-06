@@ -2328,6 +2328,42 @@ def test_chat_runtime_feature_requires_provider_config(tmp_path: Path) -> None:
     assert enabled.json()["feature"]["enabled"] is True
 
 
+def test_chat_runtime_feature_is_shared_across_projects(tmp_path: Path) -> None:
+    write_registry(tmp_path, "base-inbrain-server", {"lead": {"name": "lead"}})
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    client.post(
+        "/api/chat/provider",
+        headers=headers | {"X-Grove-Project": "base-inbrain-server"},
+        json={"provider": "gemini", "model": "gemini-test", "api_key": "AIza-shared-key"},
+    )
+    enabled = client.post(
+        "/api/gui-features/chat_bridge_runtime",
+        headers=headers | {"X-Grove-Project": "base-inbrain-server"},
+        json={"enabled": True},
+    )
+    dev10_features = client.get("/api/gui-features", headers=headers)
+
+    assert enabled.status_code == 200
+    assert enabled.json()["feature"]["enabled"] is True
+    assert (
+        store.gui_feature_flags(board="dev10", features=("chat_bridge_runtime",))[
+            "chat_bridge_runtime"
+        ]["enabled"]
+        is True
+    )
+    assert (
+        store.gui_feature_flags(
+            board="base-inbrain-server",
+            features=("chat_bridge_runtime",),
+        )["chat_bridge_runtime"]["configured"]
+        is False
+    )
+    assert dev10_features.json()["features"]["chat_bridge_runtime"]["enabled"] is True
+
+
 def test_master_chat_flag_on_uses_gemini_provider_answer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2369,6 +2405,45 @@ def test_master_chat_flag_on_uses_gemini_provider_answer(
     assert payload["answer"]["metadata"]["provider"] == "gemini"
     history = client.get("/api/master/chat?conversation_id=conv-gemini", headers=headers)
     assert [item["role"] for item in history.json()["messages"]] == ["user", "assistant"]
+
+
+def test_master_chat_uses_shared_runtime_flag_from_foreign_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_registry(tmp_path, "base-inbrain-server", {"lead": {"name": "lead"}})
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+    client.post(
+        "/api/chat/provider",
+        headers=headers,
+        json={"provider": "gemini", "model": "gemini-test", "api_key": "AIza-test-key"},
+    )
+
+    class FakeGeminiAdapter:
+        def __init__(self, *, api_key: str, model: str) -> None:
+            self.api_key = api_key
+            self.model = model
+
+        def generate(self, request: object) -> str:
+            _ = request
+            return "Base 프로젝트에서도 Gemini가 답합니다."
+
+    monkeypatch.setattr(web_app, "GeminiChatProviderAdapter", FakeGeminiAdapter)
+
+    response = client.post(
+        "/api/master/chat",
+        headers=headers | {"X-Grove-Project": "base-inbrain-server"},
+        json={
+            "message": "안녕?",
+            "conversation_id": "conv-base-gemini",
+            "request_id": "req-base-gemini",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["answer"]["text"] == "Base 프로젝트에서도 Gemini가 답합니다."
 
 
 def test_master_chat_history_get_returns_empty_message_list(tmp_path: Path) -> None:
