@@ -72,4 +72,14 @@ describe("current design docs", () => {
     expect(readme).toContain("grove task ask-human <item_id>");
     expect(readme).not.toContain("grove task ask-human task_123");
   });
+
+  test("README describes the current cockpit product surface", () => {
+    const readme = doc("README.md");
+
+    expect(readme).toContain("web cockpit");
+    expect(readme).not.toContain("dev-room web SPA");
+    expect(readme).not.toContain("Web dev-room SPA");
+    expect(readme).not.toContain("dev-room list access");
+    expect(readme).not.toContain("one project, one tmux session, one");
+  });
 });

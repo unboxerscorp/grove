@@ -1,6 +1,6 @@
 # grove
 
-**A standalone, self-contained dev-room / team-OS for real CLI agents.**
+**A standalone, self-contained GROVE cockpit / team-OS for real CLI agents.**
 
 grove runs a visible org of `codex`, `claude`, and `agy` CLI sessions in tmux, then
 gives the operator one web cockpit: human-facing lists, live terminals, org
@@ -11,7 +11,7 @@ runtime.
 ```bash
 grove up                         # start the org chart in tmux
 grove org --json                  # inspect nodes, roles, panes, cwd, and hierarchy
-grove-web --port 8765            # open the dev-room web SPA + dashboard APIs
+grove-web --port 8765            # open the web cockpit + dashboard APIs
 grove-web --enable-node-input     # optional: operator-gated web input to node panes
 grove serve --port 8787          # optional local OpenAI-compatible chat facade
 grove send maker-1 "Please inspect the auth retry path and report risks."
@@ -25,7 +25,7 @@ grove repair --all
 
 - **Real tmux agent tree** - bring up an org chart of `codex`, `claude`, and `agy`
   nodes; each node is a live tmux pane with adapter-specific turn detection.
-- **Web dev-room SPA** - `grove-web` serves human-facing lists, org chart, live
+- **Web cockpit SPA** - `grove-web` serves human-facing lists, org chart, live
   terminal viewer, project switcher, login/setup panels, Slack configuration UX, audit
   drawer, setup panels, terminal connect copy, tutorial, and the floating MasterChat
   widget.
@@ -55,13 +55,13 @@ grove repair --all
 - **Item self-status CLI** - v1.31 adds `grove task start|review|done|block|ask-human`
   for updating an existing human-facing item when durable operator-visible state is
   useful.
-- **Project room model** - v1.27 makes the dashboard use one active project, one tmux
-  session, and one project-scoped human-facing list store. The old board selector is
-  gone; the `"default"` board alias resolves to the active project's list store. New
-  projects keep an explicit workspace/cwd and a live project lead node; new
-  human-facing item creation uses a required assignee dropdown that defaults from the
-  current org metadata, such as the project lead or GROVE MASTER in the single dev10
-  room.
+- **Project room model** - v1.27 makes the dashboard use one active project, one
+  explicit workspace/registry, and one project-scoped human-facing list store. The old
+  board selector is gone; the `"default"` board alias resolves to the active project's
+  list store. New projects keep an explicit workspace/cwd and a live project lead node;
+  panes may share an operational tmux host session such as `dev10`. New human-facing
+  item creation uses a required assignee dropdown that defaults from the current org
+  metadata, such as the project lead or GROVE MASTER in the single dev10 room.
   v1.30 adds dashboard project creation, GitHub import through `new-project --clone`,
   and display names such as showing project `dev10` as `grove-dev`.
 - **Human list query and saved views** - v1.26 adds status/assignee/label filters,
@@ -256,7 +256,7 @@ mypy strict, and pytest. Python checks use `uv`.
 
 | command                                  | purpose                                        |
 | ---------------------------------------- | ---------------------------------------------- |
-| `grove-web [--port 8765]`                | run the dev-room web SPA and dashboard APIs    |
+| `grove-web [--port 8765]`                | run the web cockpit and dashboard APIs         |
 | `grove init`                             | scaffold a starter org chart and context docs  |
 | `grove new-project <name> [--clone url]` | create or clone/import a local project room    |
 | `grove load-project <path>`              | load an existing project room                  |
@@ -311,7 +311,7 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   redacted metadata. It can answer from scoped project/org/human-item/runtime facts and can
   act when the operator explicitly instructs it through the appropriate path.
 - Human-list query/search is deterministic, paginated, project-scoped, role-aware, and
-  redacted. Missing list stores or saved views return clear 404s; dev-room list access
+  redacted. Missing list stores or saved views return clear 404s; compatibility list access
   stays inside the owning project and rejects cross-project board IDs kept for API
   compatibility. Saving or deleting named views is the audited exception.
 - The v1.29 human-list model is "registered items do not disappear." Every status
@@ -330,10 +330,12 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   as durable human-facing item mutations. Use `--from-status` and `--idempotency-key`
   for stale or repeated updates; non-loopback dashboard URLs require explicit remote
   opt-in.
-- The dashboard follows a 1:1:1 project model: one project, one tmux session, one
-  human-facing list store. The `"default"` alias resolves to the active project list,
-  not a global board picker. New item forms require choosing an assignee from project candidates;
-  unknown assignees are omitted rather than accepted as free text.
+- The dashboard follows a project-scoped model: one project identity, one explicit
+  workspace/registry, and one human-facing list store. The tmux host session is
+  placement metadata and may be shared, for example the single live `dev10` session.
+  The `"default"` alias resolves to the active project list, not a global board picker.
+  New item forms require choosing an assignee from project candidates; unknown
+  assignees are omitted rather than accepted as free text.
 - Dashboard login uses server-side sessions when team auth is enabled. Project
   creation, GitHub import, and display-name changes are project lifecycle operations
   that remain role-gated and audited; display names are labels, not authority or
