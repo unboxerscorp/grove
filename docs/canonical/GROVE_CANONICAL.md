@@ -14,6 +14,8 @@ GROVE는 Codex, Claude Code, Antigravity CLI 서비스들을 노드로서 구동
 
 CHAT MASTER의 사용자 응답 경로는 persistent CLI 노드에 동기 질의하는 방식이 아니라, Slack 스레드와 웹 챗봇 세션을 처리하는 bridge-native chatbot runtime으로 구현합니다. `chat-master` 노드는 이 런타임의 정체성, 정책, 감사, 운영자 대화용 presence를 소유하지만, 사용자-facing hot path가 단일 CLI 입력 버퍼에 막히면 안 됩니다.
 
+현재 MVP의 bridge-native chatbot runtime provider는 Gemini이며, 운영자가 웹 UI Setup에서 Gemini API key를 저장한 뒤 Chat runtime을 켜서 사용합니다.
+
 CHAT MASTER는 각 Slack의 스레드, 그리고 웹 GUI 챗봇들 각 세션에 대해서 Queue로 관리하여 독립성을 보장합니다.
 
 GROVE가 기존의 sub-agents들을 기본적으로 활용하는 서비스들과 다른 점은, 그로브 내에서 각 노드들은 독립적으로 24시간 구동 중인 CLI 서비스이기 때문에, 작업 기록을 언제든지 조회할 수 있고 실제로 해당 노드에 직접 명령을 내리거나 대화를 나눌 수 있다는 점입니다.

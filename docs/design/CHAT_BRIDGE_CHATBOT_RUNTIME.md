@@ -8,7 +8,7 @@
 > zero live behavior change, existing route untouched). Stage0 code lands after lead review + window. Live
 > flip / canary / cutover = separate master/operator approval. No org change (no node-per-thread). Persona /
 > policy / user-facing wording co-owned with chat-master (semantic owner). Supersedes `CHAT_MASTER_INTAKE_RETARGET.md`
-> (CLI-retarget + predicate — abandoned). Claude API usage follows the `claude-api` skill.
+> (CLI-retarget + predicate — abandoned). MVP provider is Gemini, configured from Setup via `chat-provider.json`.
 
 ## 1. Problem
 
@@ -17,7 +17,8 @@ out to the chat-master tmux pane one turn at a time (`chat_facade.send(node="cha
 `NodeRoutedAssistantClient.complete` CLI `ask` for web). That single pane serializes all Slack threads + web
 conversations, couples availability/latency to one pane, and provides no first-class per-conversation session.
 The operator decision: replace the CLI hot path with a **bridge-native chatbot runtime** that generates answers
-by calling the Claude API directly, with durable per-conversation sessions and a bounded async worker pool.
+through a bridge-owned provider adapter, with durable per-conversation sessions and a bounded async worker pool.
+For the current MVP this adapter is Gemini (`gemini-2.5-flash` by default), configured by the operator in Setup.
 
 ## 2. Current state (verified)
 
@@ -28,8 +29,8 @@ by calling the Claude API directly, with durable per-conversation sessions and a
   cache) / `defer` / `fail` / `complete`.
 - Web: `POST /api/master/chat` → `AssistantBroker.handle_turn` → `NodeRoutedAssistantClient.complete` (sync CLI).
   History persisted (G5) via `append_master_chat_message` / `list_master_chat_messages`.
-- The bridge already has a **direct Anthropic client** precedent: `AnthropicAssistantClient` (assistant.py) calls
-  the Messages API over HTTP. The new runtime formalizes and replaces the CLI path with a bridge-native adapter.
+- The bridge now has a **direct Gemini provider** path: `GeminiChatProviderAdapter` (chat_runtime.py) calls
+  Gemini's REST API over HTTP. The runtime formalizes and replaces the CLI path with a bridge-native adapter.
 
 ## 3. Adopted architecture (Stage0 introduces, inert behind flag)
 
@@ -42,15 +43,14 @@ mode/linkage. New `chat_sessions(conversation_id, surface, status, created_at, l
 
 ### (2) Chatbot provider adapter / LLM call path (NO CLI pane buffer)
 
-A **dedicated bridge-native provider adapter** generates each turn by calling the Claude API directly — **never**
-the persistent CLI node and **never** the `AssistantBroker` node-routed client. (chat-master node is the
-persona/policy/semantic _source_, not a runtime backend.) Per the `claude-api` skill:
+A **dedicated bridge-native provider adapter** generates each turn by calling the configured chatbot provider
+directly — **never** the persistent CLI node and **never** the `AssistantBroker` node-routed client. (chat-master
+node is the persona/policy/semantic _source_, not a runtime backend.)
 
-- Official Anthropic Python SDK (`anthropic`) preferred; the existing `AnthropicAssistantClient` raw-HTTP path is
-  the in-repo precedent/fallback.
-- Model `claude-opus-4-8`; `thinking: {type: "adaptive"}`; stream long outputs (`max_tokens` headroom);
-  `output_config.effort` tunable. Persona/policy = system prompt (from chat-master); context = bounded, redacted
-  session transcript + facts. Prompt-cache the stable persona/system prefix.
+- MVP provider: Gemini via `GeminiChatProviderAdapter`, configured from Setup (`/api/chat/provider`) and stored in
+  `~/.grove/<session>/chat-provider.json`.
+- Default model: `gemini-2.5-flash` unless the operator changes it in Setup.
+- Persona/policy = system prompt (from chat-master); context = bounded, redacted session transcript + facts.
 - The adapter emits a **structured turn result** (answer | task-proposal + fields + chat-master-authored card text).
 
 ### (3) Bounded async worker pool + per-session FIFO
@@ -79,7 +79,7 @@ chat-master (§7 copy); the bridge supplies structure/fields/validation/defaults
 
 ### (6) Stage0 safety
 
-Feature flag (e.g. `GROVE_CHAT_BRIDGE_RUNTIME`, default **OFF**) + kill-switch + metrics. **`gui_features.intake`
+Feature flag `chat_bridge_runtime` (default **OFF**) + kill-switch + metrics. **`gui_features.intake`
 stays `false`** (intake DARK) throughout. New components are constructed **only when the flag is on**; with the
 flag off, the existing Slack daemon / web request path is **unchanged and the live route is not touched**. DB
 schema additions are **additive** (new tables/columns; no migration of live data, no change to existing reads).
@@ -199,8 +199,8 @@ node-per-thread; no user-facing templates; live route untouched until an approve
   (+ fields + card text) + the safe-fallback parse rule; finalized at the Stage0 window. Parse failure → defer per
   §4, **never** a raw-text fabricated answer (agreed). (claimed by chat-master 2026-06-06)
 - **Pool size N** + per-surface concurrency caps; web queue parity scope (durable vs request/reply).
-- **Provider backend specifics:** official `anthropic` SDK vs. reuse the existing `AnthropicAssistantClient`
-  raw-HTTP path; model/effort tuning per the `claude-api` skill (default `claude-opus-4-8`, adaptive thinking).
+- **Provider backend specifics:** Gemini is the MVP provider. Keep the provider boundary narrow enough to add a
+  different backend later, but current runtime docs/tests should assume Gemini config and redaction.
 
 ## 11. Risks
 
@@ -238,8 +238,8 @@ user-facing templates; no fabricated answers on failure; no flip/canary/cutover 
 - `bridge/src/grove_bridge/store.py` — `chat_sessions` table (additive); `slack_chat_queue`/`node_chat_queue`
   **reused, not replaced** **[A2]**; bounded concurrent drain with **per-item claim** **[A2]**; metrics
   extension (depth/oldest_age/active workers/saturation/error rate) **[A5]**.
-- `bridge/src/grove_bridge/assistant.py` — bridge-native **provider adapter** (new; reuse/extend
-  `AnthropicAssistantClient` raw-HTTP or official `anthropic` SDK), persona system prompt, structured-turn parse +
+- `bridge/src/grove_bridge/chat_runtime.py` — bridge-native **provider adapter** (`GeminiChatProviderAdapter`),
+  persona system prompt, structured-turn parse +
   safe-fallback (parse fail → defer, never fabricate), **redaction of secrets/PII before any provider call** **[R]**.
   Not the abandoned node-routed/predicate code.
 - `bridge/src/grove_bridge/slack.py` — worker-pool integration behind flag; shadow/canary gating; kill-switch;
@@ -271,8 +271,8 @@ All of §8, **plus**:
   **HOLD/defer**, not a fake "busy". **Confirm-flow §7 fixed copy is chat-master-authored and EXCLUDED** from this
   detector (per chat-master semantic ownership).
 - **[R] provider redaction:** assert secrets/PII (e.g. `xoxb-…` tokens, paths, emails) in the session transcript
-  are **redacted before** any direct Claude API call — the provider request never carries raw secrets (mirror the
-  existing `build_assistant_facts` redaction test style).
+  are **redacted before** any direct Gemini/provider call — the provider request never carries raw secrets (mirror
+  the existing `build_assistant_facts` redaction test style).
 - Plus observability assertions (metrics per-poll) + circuit-breaker→kill-switch path **[A5]**.
 
 ### 13.5 Remaining approval gates (in order)
@@ -296,5 +296,5 @@ All of §8, **plus**:
   a separate post-MVP gate. **⚠ CAVEAT (operator-blocked 2026-06-06):** web turns MUST NOT be enqueued onto
   `slack_chat_queue` (e.g. `team_id="web"`) for the shared Slack worker to drain — that cross-surface contamination
   risks fake Slack-channel posts. Web parity needs its own queue/worker, not slack_chat_queue reuse.
-- **Provider backend** — **Rec:** official `anthropic` SDK (fallback: `AnthropicAssistantClient` raw-HTTP);
-  `claude-opus-4-8` + adaptive thinking + streaming + effort per the `claude-api` skill; confirm at impl.
+- **Provider backend** — **Resolved for MVP:** Gemini (`GeminiChatProviderAdapter`, default
+  `gemini-2.5-flash`) configured from Setup. Future providers can be added behind the same adapter boundary.
