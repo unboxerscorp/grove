@@ -77,6 +77,7 @@ function assertNoStaleItemTitleCopy() {
       `승인 대기 ${"작업"} 없음`,
       `로컬 ${"작업"}`,
       `이 ${"작업"} 수락`,
+      `No ${"task"} is claimed`,
     ].join("|"),
     "i",
   );

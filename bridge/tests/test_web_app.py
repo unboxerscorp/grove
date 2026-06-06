@@ -5084,6 +5084,7 @@ def test_plan_endpoint_ranks_candidates_with_role_load_and_cost_signals(
     assert response.status_code == 200
     payload = response.json()
     assert payload["read_only"] is True
+    assert "No task is claimed" not in " ".join(payload["limitations"])
     assert payload["candidates"][0]["node"] == "python-idle"
     assert payload["candidates"][0]["rank"] == {
         "value": 1,

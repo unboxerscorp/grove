@@ -2188,7 +2188,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         ],
         limitations: [
           "Scores are best-effort routing hints from registry, board load, and usage metadata.",
-          "No task is claimed, assigned, spawned, or executed by this endpoint.",
+          "No item is claimed or assigned, and no node is spawned or execution started by this endpoint.",
         ],
       }),
     );
