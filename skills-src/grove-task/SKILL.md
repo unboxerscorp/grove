@@ -24,17 +24,17 @@ grove task list --session <project> --board <project> --assignee <node>
 Claiming is operator/lead-initiated, never autonomous. There is **no separate claim endpoint**: a node claims an item it has been assigned (and told to start) by transitioning it with the existing `start` verb under optimistic concurrency.
 
 ```bash
-grove task start <task_id> --from-status ready --run-id <run_id>
+grove task start <task_id> --from-status ready
 ```
 
 - `--from-status ready` makes the claim single-winner: if another node already moved the item out of `ready`, grove-web returns HTTP 409 (conflict) and your claim safely loses. Treat 409 as "already claimed" and move on.
-- `--run-id <run_id>` ties the claim to your run for idempotent follow-up transitions.
+- Do NOT pass `--run-id` on the initial `ready -> running` claim. A ready item has no current run, so `--run-id` makes grove-web 409 with "expected current run ..., found None". `--run-id` validates _run ownership_ for follow-up transitions on an item that already has a current run (the executor claim path) — not the first claim.
 - Only claim items already assigned to you. grove does not auto-poll or auto-start work; a human or your lead owns assignment and the decision to begin.
 
 ## Status transitions
 
 ```bash
-grove task start <task_id> --run-id <run_id> --from-status ready
+grove task start <task_id> --from-status ready
 grove task done <task_id> --comment "verified"
 grove task block <task_id> --comment "blocked on ..."
 grove task ask-human <task_id> --comment "need human decision"
