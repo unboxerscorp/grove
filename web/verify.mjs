@@ -71,6 +71,16 @@ function assertLiveE2eAvoidsReentrantMasterChatPost() {
   }
 }
 
+function assertLiveE2eCleansOwnBoardFixtures() {
+  const live = readFileSync(path.join(root, "e2e", "live.mjs"), "utf8");
+  if (
+    !/function\s+cleanupLiveE2eBoardFixtures\s*\(/.test(live) ||
+    !/cleanupLiveE2eBoardFixtures\s*\(\s*RUN_ID\s*\)/.test(live)
+  ) {
+    throw new Error("live e2e must clean its own RUN_ID p2-live board fixtures from the live board DB");
+  }
+}
+
 function assertTerminalPaneDisablesXtermStdin() {
   // #N9 xterm stdin disabled: terminal panes are mirrors; typed input goes only
   // through the explicit node send form when that feature is available.
@@ -268,6 +278,7 @@ async function coreMain() {
   assertNoLegacyProjectMasterE2eFixtures();
   assertLiveE2eDefaultsCurrentPort();
   assertLiveE2eAvoidsReentrantMasterChatPost();
+  assertLiveE2eCleansOwnBoardFixtures();
   assertTerminalPaneDisablesXtermStdin();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
@@ -758,6 +769,7 @@ async function main() {
     assertNoLegacyProjectMasterE2eFixtures();
     assertLiveE2eDefaultsCurrentPort();
     assertLiveE2eAvoidsReentrantMasterChatPost();
+    assertLiveE2eCleansOwnBoardFixtures();
     assertTerminalPaneDisablesXtermStdin();
     await verifyRetiredLegacySurfaces(browser);
     // The historical full-panel script below is intentionally archived. It

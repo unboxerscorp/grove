@@ -2,7 +2,8 @@
 //
 // This intentionally targets the running cockpit at http://127.0.0.1:8765 and
 // clicks the SPA like an operator. It creates only unique p2-live-* list items,
-// avoids existing tasks, and restores mutable GUI feature state in finally.
+// avoids existing tasks, removes its own RUN_ID fixtures, and restores mutable
+// GUI feature state in finally.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -126,6 +127,53 @@ function cleanupIsolatedRegistryFixture(fixture) {
   const resolvedHome = path.resolve(groveHome);
   if (resolvedProject === resolvedHome || !resolvedProject.startsWith(`${resolvedHome}${path.sep}`)) return;
   rmSync(resolvedProject, { recursive: true, force: true });
+}
+
+function sqlQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function liveBoardDbPath() {
+  const explicit = process.env.GROVE_LIVE_BOARD_DB_PATH ?? process.env.GROVE_BOARD_DB;
+  if (explicit?.trim()) return path.resolve(explicit.trim());
+  const groveHome = process.env.GROVE_HOME ?? path.join(homedir(), ".grove");
+  return path.join(groveHome, "boards", "board.db");
+}
+
+function cleanupLiveE2eBoardFixtures(runId) {
+  const dbPath = liveBoardDbPath();
+  if (!existsSync(dbPath)) {
+    console.log(`LIVE_E2E_CLEANUP_SKIP board-db-missing ${dbPath}`);
+    return;
+  }
+  const sql = `
+PRAGMA busy_timeout=5000;
+BEGIN IMMEDIATE;
+CREATE TEMP TABLE live_e2e_cleanup_tasks(id TEXT PRIMARY KEY);
+INSERT INTO live_e2e_cleanup_tasks(id)
+  SELECT tasks.id
+  FROM tasks
+  JOIN boards ON boards.id = tasks.board_id
+  WHERE boards.slug = ${sqlQuote(TEST_PROJECT)}
+    AND tasks.title LIKE ${sqlQuote(`${runId}%`)};
+SELECT 'LIVE_E2E_CLEANUP matched=' || COUNT(*) FROM live_e2e_cleanup_tasks;
+DELETE FROM decision_dispatch_locks WHERE task_id IN (SELECT id FROM live_e2e_cleanup_tasks);
+DELETE FROM deps WHERE parent_id IN (SELECT id FROM live_e2e_cleanup_tasks) OR child_id IN (SELECT id FROM live_e2e_cleanup_tasks);
+DELETE FROM notify_subs WHERE task_id IN (SELECT id FROM live_e2e_cleanup_tasks);
+DELETE FROM slack_threads WHERE task_id IN (SELECT id FROM live_e2e_cleanup_tasks);
+DELETE FROM comments WHERE task_id IN (SELECT id FROM live_e2e_cleanup_tasks);
+DELETE FROM runs WHERE task_id IN (SELECT id FROM live_e2e_cleanup_tasks);
+DELETE FROM events WHERE task_id IN (SELECT id FROM live_e2e_cleanup_tasks);
+DELETE FROM tasks WHERE id IN (SELECT id FROM live_e2e_cleanup_tasks);
+DROP TABLE live_e2e_cleanup_tasks;
+COMMIT;
+`;
+  const result = spawnSync("sqlite3", [dbPath, sql], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`live e2e board fixture cleanup failed: ${result.stderr || result.stdout || result.status}`);
+  }
+  const summary = result.stdout.trim() || "LIVE_E2E_CLEANUP matched=0";
+  console.log(summary);
 }
 
 function ensureIsolatedProjectFixture() {
@@ -570,6 +618,7 @@ async function main() {
   const page = await browser.newPage();
   let originalNodeInput = null;
   let originalNodeInputProject = null;
+  let boardCleanupError = null;
 
   page.on("pageerror", (err) => pageErrors.push(err.message));
   page.on("console", (msg) => {
@@ -984,10 +1033,18 @@ async function main() {
     try {
       await closeBrowser(browser);
     } finally {
+      try {
+        cleanupLiveE2eBoardFixtures(RUN_ID);
+      } catch (err) {
+        boardCleanupError = err;
+        console.log(`LIVE_E2E_CLEANUP_FAILED ${redacted(err instanceof Error ? err.message : String(err))}`);
+      }
       cleanupIsolatedTmuxPane(tmuxFixture);
       cleanupIsolatedRegistryFixture(fixture);
     }
   }
+
+  if (boardCleanupError) throw boardCleanupError;
 
   check("no uncaught page exceptions", pageErrors.length === 0, pageErrors.join(" | "));
   const expected404Paths = new Set(["/api/share", "/api/join", "/api/summary", "/api/aggregate"]);
