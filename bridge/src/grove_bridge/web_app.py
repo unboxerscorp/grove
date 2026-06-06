@@ -8008,8 +8008,6 @@ def _org_graph_parent(
             return _org_display_node_name(raw_parent, project=project, current=current)
         return GROVE_MASTER_NODE_NAME
     if raw_parent:
-        if raw_parent == GROVE_MASTER_NODE_NAME:
-            return _project_lead_node_name(project)
         if raw_parent in raw_names:
             return _org_display_node_name(raw_parent, project=project, current=current)
     return _project_lead_node_name(project)

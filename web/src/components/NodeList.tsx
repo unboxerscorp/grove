@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { agentGlyph, cx } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import { liveNodeCount } from "../nodeLive";
+import { buildOrgTree, isBgServiceNode } from "../orgTree";
 import type { GroveNode } from "../types";
 import { NodeHealthBadge } from "./NodeHealthBadge";
 
@@ -20,33 +21,6 @@ function statusClass(status: string): string {
   }
 }
 
-function hierarchicalNodes(nodes: GroveNode[]): { node: GroveNode; depth: number }[] {
-  const byName = new Map(nodes.map((node) => [node.name, node]));
-  const children = new Map<string, GroveNode[]>();
-  const roots: GroveNode[] = [];
-  for (const node of nodes) {
-    const parent = node.parent ?? null;
-    if (parent && byName.has(parent)) {
-      const list = children.get(parent) ?? [];
-      list.push(node);
-      children.set(parent, list);
-    } else {
-      roots.push(node);
-    }
-  }
-  const ordered: { node: GroveNode; depth: number }[] = [];
-  const seen = new Set<string>();
-  const visit = (node: GroveNode, depth: number) => {
-    if (seen.has(node.name)) return;
-    seen.add(node.name);
-    ordered.push({ node, depth });
-    for (const child of children.get(node.name) ?? []) visit(child, depth + 1);
-  };
-  for (const root of roots) visit(root, 0);
-  for (const node of nodes) visit(node, 0);
-  return ordered;
-}
-
 export function NodeList(props: {
   nodes: GroveNode[];
   selectedPane: string | null;
@@ -57,12 +31,21 @@ export function NodeList(props: {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
 
-  const ordered = useMemo(() => hierarchicalNodes(nodes), [nodes]);
+  const orgTree = useMemo(() => buildOrgTree(nodes), [nodes]);
+  const ordered = useMemo(
+    () => [
+      ...orgTree.rows.map((row) => ({ ...row, section: "tree" as const })),
+      ...orgTree.serviceNodes.map((node) => ({ node, depth: 0, section: "services" as const })),
+    ],
+    [orgTree],
+  );
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return ordered;
     return ordered.filter(({ node }) =>
-      `${node.name} ${node.agent} ${node.tmux_pane} ${node.session_id} ${node.status}`.toLowerCase().includes(q),
+      `${node.name} ${node.agent} ${node.kind ?? ""} ${node.group ?? ""} ${node.tmux_pane} ${node.session_id} ${node.status}`
+        .toLowerCase()
+        .includes(q),
     );
   }, [ordered, query]);
 
@@ -91,13 +74,19 @@ export function NodeList(props: {
         {filtered.length === 0 && (
           <div className="dr-rail__empty">{nodes.length ? t("nodes.noMatch") : t("nodes.none")}</div>
         )}
-        {filtered.map(({ node: n, depth }, i) => (
+        {filtered.map(({ node: n, depth, section }, i) => (
           <button
             key={n.tmux_pane || n.session_id || n.name}
             type="button"
             data-node={n.name}
             data-depth={depth}
-            className={cx("dr-node", n.tmux_pane === selectedPane && "is-selected", n.terminal_allowed === false && "is-locked")}
+            data-section={section}
+            className={cx(
+              "dr-node",
+              n.tmux_pane === selectedPane && "is-selected",
+              n.terminal_allowed === false && "is-locked",
+              isBgServiceNode(n) && "is-service",
+            )}
             style={
               {
                 "--depth": depth,
@@ -116,7 +105,7 @@ export function NodeList(props: {
                 <span className="dr-node__name">{n.name}</span>
                 <NodeHealthBadge health={n.health} compact />
                 <span className="dr-node__agent" title={n.agent}>
-                  {agentGlyph(n.agent)} {n.agent}
+                  {isBgServiceNode(n) ? t("node.kind.service") : `${agentGlyph(n.agent)} ${n.agent}`}
                 </span>
               </span>
               <span className="dr-node__sub">

@@ -5708,7 +5708,7 @@ def test_org_includes_master_and_cross_project_leads(
     assert "xoxb-" not in rendered
 
 
-def test_org_projects_nodes_under_lead_even_when_grove_master_is_real(
+def test_org_keeps_master_owned_chat_and_services_outside_project_lead(
     tmp_path: Path,
 ) -> None:
     write_registry(
@@ -5719,19 +5719,30 @@ def test_org_projects_nodes_under_lead_even_when_grove_master_is_real(
                 "name": "grove-master",
                 "agent": "codex",
                 "parent": "",
-                "children": ["web", "slack"],
+                "children": ["chat-master", "web", "slack"],
                 "tmux_pane": "dev10:0.0",
+            },
+            "chat-master": {
+                "name": "chat-master",
+                "agent": "claude",
+                "parent": "grove-master",
+                "group": "master",
+                "tmux_pane": "dev10:0.1",
             },
             "web": {
                 "name": "web",
                 "agent": "codex",
                 "parent": "grove-master",
+                "group": "services",
+                "kind": "service",
                 "tmux_pane": "dev10:1.0",
             },
             "slack": {
                 "name": "slack",
                 "agent": "codex",
                 "parent": "grove-master",
+                "group": "services",
+                "kind": "service",
                 "tmux_pane": "dev10:2.0",
             },
         },
@@ -5743,15 +5754,19 @@ def test_org_projects_nodes_under_lead_even_when_grove_master_is_real(
     assert response.status_code == 200
     payload = response.json()
     nodes = {node["name"]: node for node in payload["nodes"]}
-    assert set(nodes) == {"grove-master", "lead@dev10", "slack", "web"}
-    assert nodes["grove-master"]["children"] == ["lead@dev10"]
+    assert set(nodes) == {"chat-master", "grove-master", "lead@dev10", "slack", "web"}
+    assert nodes["grove-master"]["children"] == ["chat-master", "lead@dev10", "slack", "web"]
+    assert nodes["chat-master"]["parent"] == "grove-master"
     assert nodes["lead@dev10"]["parent"] == "grove-master"
-    assert nodes["lead@dev10"]["children"] == ["slack", "web"]
+    assert nodes["lead@dev10"]["children"] == []
     assert nodes["lead@dev10"]["kind"] == "meta"
-    assert nodes["slack"]["parent"] == "lead@dev10"
-    assert nodes["web"]["parent"] == "lead@dev10"
+    assert nodes["slack"]["kind"] == "service"
+    assert nodes["slack"]["parent"] == "grove-master"
+    assert nodes["web"]["kind"] == "service"
+    assert nodes["web"]["parent"] == "grove-master"
     assert [candidate["name"] for candidate in payload["assignee_candidates"]] == [
         "grove-master",
+        "chat-master",
         "slack",
         "web",
     ]

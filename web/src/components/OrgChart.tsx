@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { AGENTS, agentGlyph, cx, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
+import { buildOrgTree, isBgServiceNode } from "../orgTree";
 import type { TFn } from "../i18n";
 import type { MasterMeta, MasterOrg, NodeHealth, OrgNode, ProjectLead } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
@@ -37,6 +38,18 @@ function statusClass(status: string): string {
     default:
       return "is-idle";
   }
+}
+
+function isServiceNode(node: OrgNode): boolean {
+  return isBgServiceNode(node);
+}
+
+function nodeDisplayGlyph(node: OrgNode, t: TFn): string {
+  return isServiceNode(node) ? t("node.kind.service.short") : agentGlyph(node.agent);
+}
+
+function nodeTypeLabel(node: OrgNode, t: TFn): string {
+  return isServiceNode(node) ? t("node.kind.service") : node.agent;
 }
 
 /** Tidy top-down layout: leaves get sequential x-slots, parents centre over kids. */
@@ -350,7 +363,7 @@ function NodeDrawer(props: {
         <header className="dr-drawer__head">
           <div className="dr-drawer__id">
             <span className="dr-drawer__ticket">
-              {agentGlyph(node.agent)} {node.name}
+              {nodeDisplayGlyph(node, t)} {node.name}
             </span>
             <span className="dr-pill" style={{ "--accent": statusColor(node.status) } as React.CSSProperties}>
               {statusLabel(t, node.status)}
@@ -367,7 +380,7 @@ function NodeDrawer(props: {
             {fact(t("node.fact.workInstructions"), node.work_instructions)}
             {node.kind === "service" && fact(t("node.fact.kind"), t("node.kind.service"))}
             {fact(t("node.fact.group"), node.group)}
-            {fact(t("node.fact.agent"), node.agent)}
+            {fact(isServiceNode(node) ? t("node.fact.runtime") : t("node.fact.agent"), node.agent)}
             {fact(t("node.fact.parent"), node.parent ?? undefined)}
             {fact(t("node.fact.children"), node.children?.length ?? 0)}
             {fact(t("node.fact.pane"), node.tmux_pane)}
@@ -544,35 +557,23 @@ export function OrgChart(props: {
     return m;
   }, [nodes]);
 
-  const childrenOf = useCallback(
-    (name: string): string[] => {
-      if (childrenMap[name]) return childrenMap[name]!;
-      const node = byName[name];
-      if (node?.children?.length) return node.children;
-      return nodes.filter((n) => n.parent === name).map((n) => n.name);
-    },
-    [childrenMap, byName, nodes],
-  );
-
-  const roots = useMemo(() => {
-    if (rootList.length) return rootList;
-    return nodes.filter((n) => !n.parent).map((n) => n.name);
-  }, [rootList, nodes]);
+  const orgTree = useMemo(() => buildOrgTree(nodes, childrenMap, rootList), [childrenMap, nodes, rootList]);
+  const { treeNodes, serviceNodes, roots, names, childrenOf } = orgTree;
 
   const groups = useMemo(() => {
     const set = new Set<string>();
     for (const n of nodes) if (n.group) set.add(n.group);
     return Array.from(set).sort();
   }, [nodes]);
+  const allNames = useMemo(() => nodes.map((n) => n.name), [nodes]);
   const groupColor = useCallback(
     (group?: string) => (group ? GROUP_PALETTE[groups.indexOf(group) % GROUP_PALETTE.length]! : "var(--slate)"),
     [groups],
   );
 
-  const names = useMemo(() => nodes.map((n) => n.name), [nodes]);
   const structSig = useMemo(
-    () => roots.join(",") + "#" + nodes.map((n) => `${n.name}>${n.parent ?? ""}`).sort().join("|"),
-    [roots, nodes],
+    () => roots.join(",") + "#" + treeNodes.map((n) => `${n.name}>${n.parent ?? ""}`).sort().join("|"),
+    [roots, treeNodes],
   );
   const layout = useMemo(
     () => computeLayout(names, roots, childrenOf),
@@ -762,9 +763,9 @@ export function OrgChart(props: {
   const parentCandidatesFor = useCallback(
     (node: OrgNode): OrgNode[] => {
       const descendants = descendantsOf(node.name, childrenOf);
-      return nodes.filter((candidate) => candidate.name !== node.name && candidate.name !== node.parent && !descendants.has(candidate.name));
+      return treeNodes.filter((candidate) => candidate.name !== node.name && candidate.name !== node.parent && !descendants.has(candidate.name));
     },
-    [childrenOf, nodes],
+    [childrenOf, treeNodes],
   );
 
   const stopPD = (e: React.PointerEvent) => e.stopPropagation();
@@ -841,7 +842,7 @@ export function OrgChart(props: {
 
       {adding && (
         <NodeForm
-          existing={names}
+          existing={allNames}
           groups={groups}
           onCreating={setPending}
           onCreated={() => setReloadKey((k) => k + 1)}
@@ -871,6 +872,26 @@ export function OrgChart(props: {
         onOpenMasterChat={onOpenMasterChat}
         onSwitchProject={onSwitchProject}
       />
+
+      {serviceNodes.length > 0 && (
+        <div className="org-services" aria-label={t("org.services")}>
+          <span className="org-services__label">{t("org.services")}</span>
+          {serviceNodes.map((node) => (
+            <button
+              key={node.name}
+              type="button"
+              className="org-services__item"
+              onClick={() => onOpenTerminal(node.tmux_pane)}
+              title={t("node.kind.service.hint")}
+            >
+              <span className={cx("org-node__dot", statusClass(node.status))} />
+              <span className="org-services__name">{node.name}</span>
+              <span className="org-services__type">{t("node.kind.service")}</span>
+              <span className="org-services__pane">{node.tmux_pane}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className={cx("org-canvas", drag && "is-dragging")} ref={canvasRef}>
         <div className="org-stage" style={{ width: layout.width, height: layout.height }}>
@@ -913,7 +934,7 @@ export function OrgChart(props: {
 
           </svg>
 
-          {nodes.map((node) => {
+          {treeNodes.map((node) => {
             const p = posFor(node.name);
             const isDrag = drag?.name === node.name;
             const isOver = drag?.over === node.name;
@@ -924,7 +945,7 @@ export function OrgChart(props: {
                 key={node.name}
                 data-name={node.name}
                 role="group"
-                aria-label={`${node.name} ${node.agent} ${statusLabel(t, node.status)}`}
+                aria-label={`${node.name} ${nodeTypeLabel(node, t)} ${statusLabel(t, node.status)}`}
                 className={cx(
                   "org-node",
                   isDrag && "is-dragging",
@@ -946,7 +967,9 @@ export function OrgChart(props: {
                   <span className={cx("org-node__dot", statusClass(node.status))} />
                   <span className="org-node__name">{node.name}</span>
                   <NodeHealthBadge health={nodeHealth[node.name] ?? node.health} compact />
-                  <span className="org-node__agent">{agentGlyph(node.agent)}</span>
+                  <span className={cx("org-node__agent", isServiceNode(node) && "is-service")}>
+                    {nodeDisplayGlyph(node, t)}
+                  </span>
                   {node.kind === "service" && (
                     <span className="org-node__kind" title={t("node.kind.service.hint")}>
                       {t("node.kind.service")}
