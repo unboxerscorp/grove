@@ -965,9 +965,8 @@ def test_gui_feature_gui_override_wins_over_startup_flags_and_documents_digest(
         retro_analytics_enabled=True,
     )
     headers = auth_headers(client)
-    flag_features = (
+    config_backed_features = (
         "quota",
-        "intake",
         "node-input",
         "summary",
         "handoff",
@@ -977,10 +976,13 @@ def test_gui_feature_gui_override_wins_over_startup_flags_and_documents_digest(
 
     initial = client.get("/api/gui-features", headers=headers).json()["features"]
 
-    for feature in flag_features:
+    for feature in config_backed_features:
         assert initial[feature]["enabled"] is True
         assert initial[feature]["configured"] is False
         assert initial[feature]["source"] == "config"
+    assert initial["intake"]["enabled"] is False
+    assert initial["intake"]["configured"] is False
+    assert initial["intake"]["source"] == "default"
     assert initial["digest"]["enabled"] is False
     assert initial["digest"]["source"] == "default"
     assert initial["digest"]["runtime_contract"] == {
@@ -990,7 +992,7 @@ def test_gui_feature_gui_override_wins_over_startup_flags_and_documents_digest(
         "default_enabled": False,
     }
 
-    for feature in flag_features:
+    for feature in (*config_backed_features, "intake"):
         response = client.post(
             f"/api/gui-features/{feature}",
             headers=headers,
@@ -1013,7 +1015,7 @@ def test_gui_feature_gui_override_wins_over_startup_flags_and_documents_digest(
     assert digest.status_code == 200
     assert digest.json()["feature"]["enabled"] is True
     assert digest.json()["feature"]["source"] == "gui"
-    for feature in flag_features:
+    for feature in (*config_backed_features, "intake"):
         assert updated[feature]["enabled"] is False
         assert updated[feature]["source"] == "gui"
     assert updated["digest"]["enabled"] is True

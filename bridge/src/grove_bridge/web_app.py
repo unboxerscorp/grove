@@ -6080,7 +6080,7 @@ def _gui_feature_config_default(config: WebAppConfig, feature: str) -> bool:
     if feature == "quota":
         return config.quota_enabled
     if feature == "intake":
-        return config.slack_intake_enabled
+        return False
     if feature == "node-input":
         return config.node_input_enabled
     if feature == "summary":

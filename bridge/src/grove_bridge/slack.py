@@ -1793,7 +1793,7 @@ class SlackConnector:
         enabled = state.get("enabled")
         if configured is True and isinstance(enabled, bool):
             return enabled
-        return config.intake_enabled
+        return False
 
     def _execute_approve(
         self,

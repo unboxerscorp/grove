@@ -2682,16 +2682,9 @@ def test_slack_intake_gui_flag_is_runtime_source_of_truth(tmp_path: Path) -> Non
     )
 
     assert fallback_connector.handle_event(slack_event("UOP", "/grove bug checkout crashes"))
-    fallback_preview = fallback_slack.posts[-1][1]
-    fallback_confirm = confirmation_id(fallback_preview)
-    assert fallback_preview.startswith("LLM preview ready.")
-
-    assert fallback_connector.handle_event(
-        addressed_slack_event("UOP", f"confirm {fallback_confirm}", ts="444.566")
-    )
-
-    assert len(fallback_store.list_tasks(board="main")) == 1
-    assert fallback_slack.posts[-1][1] == "LLM completed the Slack request."
+    assert fallback_slack.posts[-1][1] == "LLM explained why the request was not completed."
+    assert "confirm " not in fallback_slack.posts[-1][1]
+    assert fallback_store.list_tasks(board="main") == []
 
     cli_on_store = SQLiteBoardStore(tmp_path / "cli-on.db")
     cli_on_slack = FakeSlackClient()
