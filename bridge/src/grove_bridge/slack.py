@@ -44,7 +44,7 @@ from grove_bridge.chat_runtime import (
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
 from grove_bridge.master import MasterChatResponse, MasterChatResponseType
-from grove_bridge.store import SlackChatQueueItem, SlackThread, SQLiteBoardStore, Task
+from grove_bridge.store import BoardEvent, SlackChatQueueItem, SlackThread, SQLiteBoardStore, Task
 
 LOGGER = logging.getLogger(__name__)
 SLACK_CONFIG_PATH = Path("~/.grove/slack.json").expanduser()
@@ -55,6 +55,7 @@ HUMAN_GATE_PENDING_TTL_SECONDS = 60
 HUMAN_GATE_MODE = "human_gate"
 HUMAN_GATE_PENDING_MODE = "human_gate_pending"
 HUMAN_GATE_METADATA_EVENT_TYPE = "grove_human_gate"
+TASK_COMPLETION_METADATA_EVENT_TYPE = "grove_task_completed"
 DIGEST_REMINDER_MODE = "digest_reminder"
 INTAKE_CONFIRM_ACTION_ID = "grove_intake_confirm"
 INTAKE_ANSWER_ONLY_ACTION_ID = "grove_intake_answer_only"
@@ -762,6 +763,65 @@ class SlackConnector:
             self._record_human_gate_thread(task=task, channel=channel, thread_ts=thread_ts)
             self._delete_pending_human_gate(task=task, channel=channel)
             posted += 1
+        return posted
+
+    def poll_completion_notices(self) -> int:
+        channel = self.human_gate.channel
+        if channel is None:
+            return 0
+        board = self.human_gate.board
+        cursor_state = self.store.slack_completion_notice_cursor(board=board)
+        if cursor_state["configured"] is not True:
+            self.store.set_slack_completion_notice_cursor(
+                board=board,
+                cursor=self.store.latest_event_cursor(board=board),
+            )
+            return 0
+        cursor = int(cursor_state["cursor"])
+        max_cursor = cursor
+        posted = 0
+        for event in self.store.list_events_after(cursor=cursor, board=board, limit=100):
+            if not _is_task_completion_event(event):
+                max_cursor = event.cursor
+                continue
+            if event.task_id is None:
+                max_cursor = event.cursor
+                continue
+            try:
+                task = self.store.get_task(board=board, task_id=event.task_id)
+            except KeyError:
+                max_cursor = event.cursor
+                continue
+            if task.status != "done":
+                max_cursor = event.cursor
+                continue
+            dedup_key = _completion_notice_dedup_key(event)
+            try:
+                existing = self.slack_client.find_message_by_metadata(
+                    channel=channel,
+                    event_type=TASK_COMPLETION_METADATA_EVENT_TYPE,
+                    dedup_key=dedup_key,
+                    oldest=str(max(0, event.created_at - 60)),
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "Slack completion notice reconciliation failed: %s", _safe_log_error(exc)
+                )
+                break
+            if existing is None:
+                try:
+                    self.slack_client.post_message(
+                        channel=channel,
+                        text=_completion_notice_text(task, event=event),
+                        metadata=_completion_notice_metadata(task, event=event),
+                    )
+                except Exception as exc:
+                    LOGGER.warning("Slack completion notice post failed: %s", _safe_log_error(exc))
+                    break
+                posted += 1
+            max_cursor = event.cursor
+        if max_cursor > cursor:
+            self.store.set_slack_completion_notice_cursor(board=board, cursor=max_cursor)
         return posted
 
     def _recover_pending_human_gate(
@@ -2904,6 +2964,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 node_chat_queue=connector.node_chat_queue_summary(now=int(time.time())),
             )
             connector.poll_human_gates()
+            connector.poll_completion_notices()
             try:
                 connector.poll_digest()
             except Exception as exc:
@@ -3091,6 +3152,43 @@ def _mapping_str(mapping: Mapping[str, object], key: str) -> str | None:
 
 def _needs_human(task: Task) -> bool:
     return bool(task.metadata.get("needs_human"))
+
+
+def _is_task_completion_event(event: BoardEvent) -> bool:
+    if event.kind == "task.completed":
+        return True
+    if event.kind != "audit.task.status":
+        return False
+    return event.payload.get("to_status") == "done"
+
+
+def _completion_notice_dedup_key(event: BoardEvent) -> str:
+    task_id = event.task_id or "unknown"
+    return f"task_completed:{task_id}:{event.cursor}"
+
+
+def _completion_notice_metadata(task: Task, *, event: BoardEvent) -> dict[str, object]:
+    return {
+        "event_type": TASK_COMPLETION_METADATA_EVENT_TYPE,
+        "event_payload": {
+            "dedup_key": _completion_notice_dedup_key(event),
+            "board": task.board_id,
+            "task_id": task.id,
+        },
+    }
+
+
+def _completion_notice_text(task: Task, *, event: BoardEvent) -> str:
+    summary = ""
+    raw_summary = event.payload.get("summary")
+    if isinstance(raw_summary, str):
+        summary = raw_summary.strip()
+    title = _safe_slack_message_text(task.title)
+    assignee = _safe_slack_message_text(task.assignee or "unassigned")
+    parts = [f"Task completed: `{task.id}` - {title}", f"assignee: {assignee}"]
+    if summary:
+        parts.append(f"summary: {_safe_slack_message_text(summary)}")
+    return "\n".join(parts)
 
 
 def _answer_comment_body(text: str) -> str:

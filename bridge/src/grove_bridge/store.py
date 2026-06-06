@@ -2557,6 +2557,50 @@ class SQLiteBoardStore:
             ).fetchall()
         return [_event_from_row(row) for row in rows]
 
+    def latest_event_cursor(self, *, board: str | None = None) -> int:
+        clauses: list[str] = []
+        params: list[object] = []
+        if board is not None:
+            board_id = self._board_id_for_slug(board)
+            if board_id is None:
+                return 0
+            clauses.append("board_id = ?")
+            params.append(board_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT rowid AS cursor FROM events {where} ORDER BY rowid DESC LIMIT 1",
+                params,
+            ).fetchone()
+        if row is None:
+            return 0
+        return _row_int(row, "cursor")
+
+    def slack_completion_notice_cursor(self, *, board: str) -> dict[str, object]:
+        settings = self._board_settings(board) or {}
+        raw = settings.get("slack_completion_notices")
+        configured = isinstance(raw, Mapping)
+        mapping = raw if isinstance(raw, Mapping) else {}
+        cursor = mapping.get("cursor")
+        return {
+            "configured": configured,
+            "cursor": cursor if isinstance(cursor, int) and not isinstance(cursor, bool) else 0,
+        }
+
+    def set_slack_completion_notice_cursor(self, *, board: str, cursor: int) -> None:
+        now = _now()
+        board_id = self._ensure_board(board)
+        clean_cursor = max(0, int(cursor))
+        with self._connect(immediate=True) as conn:
+            settings = self._settings_for_update(conn, board_id=board_id)
+            raw = settings.get("slack_completion_notices")
+            if not isinstance(raw, dict):
+                raw = {}
+                settings["slack_completion_notices"] = raw
+            raw["cursor"] = clean_cursor
+            raw["updated_at"] = now
+            self._write_board_settings(conn, board_id=board_id, settings=settings, now=now)
+
     def list_audit_events(
         self,
         *,

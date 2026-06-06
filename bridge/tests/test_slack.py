@@ -653,6 +653,60 @@ def test_human_decision_notice_uses_item_copy_and_records_thread_reply(tmp_path:
     assert chat.calls == []
 
 
+def test_poll_completion_notices_watermarks_then_posts_new_done_task(tmp_path: Path) -> None:
+    board = "main"
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    old_task = store.create_task(
+        board=board,
+        title="Old finished task",
+        body=None,
+        assignee="worker",
+        status="ready",
+    )
+    store.set_task_status(
+        board=board,
+        task_id=old_task.id,
+        status="done",
+        actor={"kind": "local", "id": "lead", "login": "lead"},
+    )
+    slack = FakeSlackClient()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=FakeChatFacade(),
+        human_gate=HumanGateConfig(board=board, channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-qa"),
+    )
+
+    assert connector.poll_completion_notices() == 0
+    assert slack.posts == []
+
+    task = store.create_task(
+        board=board,
+        title="Ship MVP",
+        body=None,
+        assignee="worker",
+        status="ready",
+    )
+    store.set_task_status(
+        board=board,
+        task_id=task.id,
+        status="done",
+        actor={"kind": "local", "id": "lead", "login": "lead"},
+    )
+
+    assert connector.poll_completion_notices() == 1
+    assert slack.posts == [
+        (
+            "C123",
+            f"Task completed: `{task.id}` - Ship MVP\nassignee: worker\nsummary: Ship MVP",
+            None,
+        ),
+    ]
+    assert connector.poll_completion_notices() == 0
+    assert len(slack.posts) == 1
+
+
 def test_human_gate_default_notice_does_not_route_to_master_node(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
