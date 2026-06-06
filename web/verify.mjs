@@ -329,6 +329,82 @@ async function coreMain() {
       };
     });
 
+    const collectI18nSnapshot = () =>
+      page.evaluate(() => ({
+        htmlLang: document.documentElement.lang,
+        stored: localStorage.getItem("grove.lang"),
+        brandSub: (document.querySelector(".dr-brand__sub")?.textContent ?? "").trim(),
+        navGroups: Array.from(document.querySelectorAll(".dr-sidebar .dr-navgroup__label")).map((el) =>
+          (el.textContent ?? "").trim(),
+        ),
+        tabs: Array.from(document.querySelectorAll(".dr-sidebar .dr-tab")).map((el) => (el.textContent ?? "").trim()),
+        boardTitle: (document.querySelector(".dr-board__title")?.textContent ?? "").trim(),
+        boardLists: Array.from(document.querySelectorAll(".dr-col__title")).map((el) => (el.textContent ?? "").trim()),
+        addButton: (document.querySelector(".dr-addbtn")?.textContent ?? "").trim(),
+      }));
+    const collectI18nAddForm = () =>
+      page.evaluate(() => ({
+        heading: (document.querySelector(".dr-addform__head")?.textContent ?? "").trim(),
+        title: document.querySelector(".dr-addform__title")?.getAttribute("placeholder") ?? "",
+        body: document.querySelector(".dr-addform__body")?.getAttribute("placeholder") ?? "",
+        assignee: document.querySelector(".dr-addform__assignee")?.getAttribute("aria-label") ?? "",
+        submit: (document.querySelector(".dr-addform__submit")?.textContent ?? "").trim(),
+        cancel: (document.querySelector(".dr-addform__cancel")?.textContent ?? "").trim(),
+      }));
+    const i18nKo = await collectI18nSnapshot();
+    await page.click('.dr-lang__btn[data-lang="en"]');
+    await page.waitForFunction(
+      () => (document.querySelector(".dr-board__title")?.textContent ?? "").trim() === "Human lists",
+      { timeout: 6000 },
+    );
+    const i18nEn = await collectI18nSnapshot();
+    await page.click(".dr-addbtn");
+    await page.waitForSelector(".dr-addform", { timeout: 5000 });
+    const i18nEnForm = await collectI18nAddForm();
+    await page.click(".dr-addform__cancel");
+    await page.waitForFunction(() => !document.querySelector(".dr-addform"), { timeout: 5000 });
+    await page.reload({ waitUntil: "load" });
+    await page.waitForSelector(".devroom .dr-brand", { timeout: 8000 });
+    await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
+    const i18nEnReload = await collectI18nSnapshot();
+    await page.click('.dr-lang__btn[data-lang="ko"]');
+    await page.waitForFunction(
+      () => (document.querySelector(".dr-board__title")?.textContent ?? "").trim() === "사람용 목록",
+      { timeout: 6000 },
+    );
+    const i18nKoAgain = await collectI18nSnapshot();
+    const i18nFullOk =
+      // #N7 full-label i18n snapshot: core tabs, board panels, and add-item form
+      // switch language immediately and persist through reload.
+      i18nKo.htmlLang === "ko" &&
+      i18nKo.navGroups.includes("작업") &&
+      i18nKo.navGroups.includes("커뮤니케이션") &&
+      i18nKo.tabs.some((t) => /목록/.test(t)) &&
+      i18nKo.tabs.some((t) => /터미널/.test(t)) &&
+      i18nKo.boardTitle === "사람용 목록" &&
+      i18nKo.boardLists.join("|").includes("피드백 및 할 일") &&
+      i18nEn.htmlLang === "en" &&
+      i18nEn.stored === "en" &&
+      i18nEn.navGroups.includes("Work") &&
+      i18nEn.navGroups.includes("Comms") &&
+      i18nEn.tabs.some((t) => /Lists/.test(t)) &&
+      i18nEn.tabs.some((t) => /Terminal/.test(t)) &&
+      i18nEn.boardTitle === "Human lists" &&
+      i18nEn.boardLists.join("|").includes("Feedback and to-dos") &&
+      i18nEn.addButton === "+ Add" &&
+      i18nEnForm.heading === "New item" &&
+      i18nEnForm.title === "Title (required)" &&
+      i18nEnForm.body === "Body (optional)" &&
+      i18nEnForm.assignee === "Assignee" &&
+      i18nEnForm.submit === "Add" &&
+      i18nEnForm.cancel === "Cancel" &&
+      i18nEnReload.htmlLang === "en" &&
+      i18nEnReload.stored === "en" &&
+      i18nEnReload.boardTitle === "Human lists" &&
+      i18nKoAgain.htmlLang === "ko" &&
+      i18nKoAgain.stored === "ko" &&
+      i18nKoAgain.boardTitle === "사람용 목록";
+
     await page.waitForFunction(
       () => /\d/.test(document.querySelector(".nodestat__chip.is-running")?.textContent ?? ""),
       { timeout: 8000 },
@@ -425,6 +501,7 @@ async function coreMain() {
       sidebar.liveStat === "4" &&
       /4\/6/.test(sidebar.liveMeta) &&
       statusActiveAliasOk &&
+      i18nFullOk &&
       statusLoading.loading &&
       statusLoading.noFalseZero &&
       teamLoading.nodes === 0 &&
@@ -461,6 +538,12 @@ async function coreMain() {
             statusActiveAlias,
             statusActiveAliasOk,
             statusLoading,
+            i18nKo,
+            i18nEn,
+            i18nEnForm,
+            i18nEnReload,
+            i18nKoAgain,
+            i18nFullOk,
             errors,
           },
           null,
@@ -479,6 +562,7 @@ async function coreMain() {
         statusInitial,
         statusActiveAlias,
         statusLoading,
+        i18nFullOk,
         lists: board.lists,
       }),
     );

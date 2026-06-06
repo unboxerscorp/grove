@@ -183,11 +183,11 @@
 - **목표:** KO/EN 토글로 모든 UI가 전환되고, 핵심 흐름을 키보드로도 쓸 수 있다.
 - **성공 기준:** 토글 시 라벨이 즉시 전환(localStorage 지속), 드래그/캔버스에 키보드 대안·ARIA 제공.
 
-| 단계           | 화면            | 성공 기준                           | 커버 테스트                            | 상태                |
-| -------------- | --------------- | ----------------------------------- | -------------------------------------- | ------------------- |
-| 언어 토글      | 헤더 KO/EN      | 토글 시 라벨 전환, 새로고침 후 유지 | `web/verify.mjs`(i18nOk: 브랜드 ko/en) | partial             |
-| 전체 라벨 전환 | 탭/패널/폼 전반 | 브랜드 외 모든 라벨도 전환 검증     | —                                      | **needs-test (N7)** |
-| 키보드 접근성  | 조직도/드로어   | 드래그 대안·포커스·ARIA             | — (lead가 다음 패스로 명시)            | **needs-test (N8)** |
+| 단계           | 화면            | 성공 기준                           | 커버 테스트                                     | 상태                |
+| -------------- | --------------- | ----------------------------------- | ----------------------------------------------- | ------------------- |
+| 언어 토글      | 헤더 KO/EN      | 토글 시 라벨 전환, 새로고침 후 유지 | `web/verify.mjs` `#N7 full-label i18n snapshot` | covered             |
+| 전체 라벨 전환 | 탭/패널/폼 전반 | 브랜드 외 모든 라벨도 전환 검증     | `web/verify.mjs` `#N7 full-label i18n snapshot` | covered             |
+| 키보드 접근성  | 조직도/드로어   | 드래그 대안·포커스·ARIA             | — (lead가 다음 패스로 명시)                     | **needs-test (N8)** |
 
 ---
 
@@ -232,7 +232,7 @@
 | N4  | WS 재연결·백오프        | 소켓 close 시 지수 백오프(상한), 4401은 재연결 중단                                               | `web/verify.mjs` `n4Ok` close/reconnect/4401 assertions                                          | P2   | covered |
 | N5  | 터미널 상태 전이        | connecting→live→reconnecting→error UI 라벨/LED 전이                                               | `web/verify.mjs` `#N5 terminal connection-state transitions`                                     | P2   | covered |
 | N6  | stale 후속 액션         | 무결성 stale 노드에 대한 rebind 진입점(제품화 후 테스트)                                          | `web` + `src/rebind.test.ts` 연계                                                                | P2   | backlog |
-| N7  | 전체 i18n               | 브랜드 외 탭/패널/폼 라벨까지 KO/EN 전환 스냅샷                                                   | `web/verify.mjs`                                                                                 | P2   | backlog |
+| N7  | 전체 i18n               | 브랜드 외 탭/패널/폼 라벨까지 KO/EN 전환 스냅샷                                                   | `web/verify.mjs` `#N7 full-label i18n snapshot`                                                  | P2   | covered |
 | N8  | 접근성                  | 드래그 키보드 대안·포커스 순서·ARIA(다음 패스)                                                    | `web` a11y                                                                                       | P3   | backlog |
 | N9  | 읽기 전용 터미널        | xterm 입력 비전달 보장(키 입력→무전송)                                                            | `web/verify.mjs` `#N9 xterm stdin disabled`                                                      | P3   | covered |
 | N10 | 그룹 일괄 작업          | 그룹 단위 일괄 배정/보드 그룹 필터(제품화 후)                                                     | `web` + `bridge`                                                                                 | P3   | backlog |
