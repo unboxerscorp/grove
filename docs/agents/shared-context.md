@@ -16,6 +16,14 @@ grove is a terminal cockpit for running a tree of Claude Code and Codex agents i
 - Durable turn events must remain idempotent and resume-safe.
 - CLI behavior should remain scriptable and predictable.
 
+## Current MVP Priorities
+
+- Canonical product source: `docs/canonical/GROVE_CANONICAL.md`.
+- Highest priority is usable chat, then task management. The web MVP is: org view, live status, task management, and GUI org edits.
+- CHAT MASTER user-facing chat is bridge-native chatbot runtime, not a persistent CLI input buffer. Slack and web chat should route through CHAT MASTER semantics; direct node chat remains available for operator/node coordination.
+- SSH public-key registration is out of MVP scope. The machine is a headless 24/7 host on Tailscale; host access or SSH setup requests should go through the operator/grove-master instead of adding product UI for key registration.
+- Prefer fast, focused implementation with targeted verification for the changed surface. Run the broad gate only when the change is broad or release-critical.
+
 ## Collaboration Invariants
 
 - Prefer small, reviewable changes.
