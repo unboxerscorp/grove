@@ -37,9 +37,11 @@ from grove_bridge.chat_runtime import (
     GeminiChatProviderAdapter,
     ProviderRequest,
     RedactingProviderAdapter,
+    TurnParseError,
     chat_bridge_runtime_enabled,
     guard_answer_channel,
     load_gemini_provider_config,
+    parse_structured_turn,
 )
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
@@ -1766,7 +1768,13 @@ class SlackConnector:
         actor: Mapping[str, object],
     ) -> str:
         config = self.command_config
-        if config is None or not self._intake_enabled(config):
+        if config is None:
+            return "deny: slack control commands disabled"
+        proposal = _decode_intake_proposal(pending.args)
+        runtime_task = (
+            proposal is not None and proposal.slack.get("runtime") == "chat_bridge_runtime"
+        )
+        if not runtime_task and not self._intake_enabled(config):
             return "deny: slack intake disabled"
         if pending.actor.role not in {"admin", "operator"}:
             self._audit_slack_command(
@@ -1777,7 +1785,6 @@ class SlackConnector:
                 summary="insufficient role",
             )
             return "deny: operator or admin role required to create human-facing items"
-        proposal = _decode_intake_proposal(pending.args)
         if proposal is None:
             self._audit_slack_command(
                 command="intake",
@@ -1810,6 +1817,12 @@ class SlackConnector:
                     "confidence": proposal.confidence,
                     "reason": proposal.reason,
                 },
+                "chat_runtime": {
+                    "source": "slack",
+                    "confirmation_id": pending.confirmation_id,
+                }
+                if runtime_task
+                else None,
                 "slack": dict(proposal.slack),
             },
         )
@@ -1817,7 +1830,7 @@ class SlackConnector:
             board=config.board,
             kind="audit.task.create",
             actor=actor,
-            action="slack_intake_create",
+            action="chat_runtime_task_create" if runtime_task else "slack_intake_create",
             target={"type": "task", "id": task.id},
             task_id=task.id,
             status="ok",
@@ -1826,6 +1839,7 @@ class SlackConnector:
                 "intent": proposal.intent,
                 "labels": list(proposal.labels),
                 "assignee": assignee,
+                "runtime": "chat_bridge_runtime" if runtime_task else None,
             },
         )
         self._audit_slack_command(
@@ -1836,7 +1850,10 @@ class SlackConnector:
             summary="created human-facing item",
             target={"type": "task", "id": task.id},
             task_id=task.id,
-            payload={"intent": proposal.intent},
+            payload={
+                "intent": proposal.intent,
+                "runtime": "chat_bridge_runtime" if runtime_task else None,
+            },
         )
         return (
             f"completed: created human-facing item id={_safe_slack_text(task.id)} "
@@ -2505,8 +2522,41 @@ class SlackConnector:
                             ),
                         )
                     )
+                    turn = parse_structured_turn(generated)
+                    if turn.kind == "task_proposal":
+                        if turn.proposal is None:
+                            raise TurnParseError("task proposal is missing payload")
+                        preview = self._chat_bridge_runtime_task_preview(
+                            item,
+                            card_text=turn.card_text or "",
+                            title=turn.proposal.title,
+                            body=turn.proposal.body,
+                            worktree=turn.proposal.worktree,
+                        )
+                        if preview is None:
+                            raise TurnParseError("task proposal cannot be confirmed")
+                        response_text = preview.text
+                        self.slack_client.post_message(
+                            channel=item.channel_id,
+                            text=preview.text,
+                            thread_ts=item.thread_ts,
+                            blocks=preview.blocks,
+                        )
+                        if item.response_text is None:
+                            item = self.store.store_slack_chat_message_response(
+                                item.id,
+                                response_text=response_text,
+                                now=now,
+                            )
+                        self._persist_chat_bridge_slack_turn(
+                            item,
+                            conversation_id=conversation_id,
+                            response_text=response_text,
+                        )
+                        self.store.complete_slack_chat_message(item.id, now=now)
+                        return True
                     response_text = guard_answer_channel(
-                        generated,
+                        turn.answer_text or "",
                         forbidden=frozenset(
                             {ASSISTANT_TRANSPORT_FALLBACK_TEXT, "master chat is unavailable"}
                         ),
@@ -2565,6 +2615,69 @@ class SlackConnector:
             return True
         finally:
             runtime.release_session(conversation_id)
+
+    def _chat_bridge_runtime_task_preview(
+        self,
+        item: SlackChatQueueItem,
+        *,
+        card_text: str,
+        title: str,
+        body: str,
+        worktree: str | None,
+    ) -> SlackBlockMessage | None:
+        if self.command_config is None or self.confirmations is None:
+            return None
+        actor = self._assistant_member(item.user_id)
+        if actor is None or actor.role not in {"admin", "operator"}:
+            return None
+        clean_card = _safe_slack_message_text(card_text).strip()
+        if not clean_card:
+            return None
+        event = _slack_event_from_chat_queue_item(item)
+        proposal = SlackIntakeProposal(
+            intent="task_request",
+            title=_safe_intake_title(title),
+            body=_safe_slack_message_text(body or item.text),
+            labels=("chat-runtime", "chat-master", "task-request"),
+            priority=0,
+            assignee=None,
+            confidence=1.0,
+            reason="chat_runtime:structured_turn",
+            slack={
+                "team": _safe_slack_text(event.team),
+                "channel": _safe_slack_text(event.channel),
+                "thread_ts": _safe_slack_text(event.thread_ts or event.ts),
+                "message_ts": _safe_slack_text(event.ts),
+                "user": _safe_slack_text(event.user),
+                "runtime": "chat_bridge_runtime",
+                "worktree": _safe_slack_text(worktree or ""),
+            },
+        )
+        pending = self.confirmations.create(
+            command="task_create",
+            args=(json.dumps(proposal.to_json(), sort_keys=True),),
+            event=event,
+            actor=actor,
+        )
+        self._audit_slack_command(
+            command="intake",
+            event=event,
+            actor=_slack_member_actor(event.user, actor),
+            status="preview",
+            summary="chat runtime task proposal",
+            payload={
+                "confirmation_id": pending.confirmation_id,
+                "intent": proposal.intent,
+                "runtime": "chat_bridge_runtime",
+            },
+        )
+        return SlackBlockMessage(
+            text=clean_card,
+            blocks=_chat_bridge_runtime_task_blocks(
+                clean_card,
+                confirmation_id=pending.confirmation_id,
+            ),
+        )
 
     def _chat_bridge_slack_user_text(
         self,
@@ -3481,6 +3594,40 @@ def _build_intake_task_proposal(
             "thread_ts": _safe_slack_text(event.thread_ts or event.ts),
             "message_ts": _safe_slack_text(event.ts),
             "user": _safe_slack_text(event.user),
+        },
+    )
+
+
+def _chat_bridge_runtime_task_blocks(
+    card_text: str,
+    *,
+    confirmation_id: str,
+) -> tuple[Mapping[str, object], ...]:
+    return (
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": _safe_slack_message_text(card_text)[:3000],
+            },
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "태스크 생성"},
+                    "style": "primary",
+                    "action_id": INTAKE_CONFIRM_ACTION_ID,
+                    "value": confirmation_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "답변만"},
+                    "action_id": INTAKE_ANSWER_ONLY_ACTION_ID,
+                    "value": confirmation_id,
+                },
+            ],
         },
     )
 

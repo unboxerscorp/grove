@@ -6,17 +6,24 @@ import pytest
 
 import grove_bridge.slack as slack_module
 from grove_bridge.chat_runtime import ProviderRequest
-from grove_bridge.slack import ChatRouteConfig, HumanGateConfig, SlackConnector
+from grove_bridge.slack import (
+    ChatRouteConfig,
+    HumanGateConfig,
+    SlackCommandConfig,
+    SlackCommandMember,
+    SlackConnector,
+)
 from grove_bridge.store import SQLiteBoardStore
 
 
 class _FakeSlack:
     def __init__(self) -> None:
         self.posts: list[tuple[str, str]] = []
+        self.post_kwargs: list[dict[str, object]] = []
 
     def post_message(self, *, channel: str, text: str, **kwargs: object) -> str:
-        _ = kwargs
         self.posts.append((channel, text))
+        self.post_kwargs.append(dict(kwargs))
         return "ts"
 
     def find_message_by_metadata(self, **kwargs: object) -> None:
@@ -33,13 +40,20 @@ class _FakeFacade:
         return "node answer"
 
 
-def _connector(store: SQLiteBoardStore, slack: _FakeSlack, facade: _FakeFacade) -> SlackConnector:
+def _connector(
+    store: SQLiteBoardStore,
+    slack: _FakeSlack,
+    facade: _FakeFacade,
+    *,
+    command_config: SlackCommandConfig | None = None,
+) -> SlackConnector:
     return SlackConnector(
         store=store,
         slack_client=slack,
         chat_facade=facade,
         human_gate=HumanGateConfig(board="dev10", channel="C1"),
         chat_route=ChatRouteConfig(default_node="chat-master"),
+        command_config=command_config,
         route_chat_to_node=True,
     )
 
@@ -181,6 +195,67 @@ def test_flag_on_gemini_runtime_generates_and_publishes_without_cli_node(tmp_pat
         board="dev10", now=9_999_999_999, running_stale_before=9_999_999_999, limit=10
     )
     assert due == []
+
+
+class _ProposalAdapter:
+    def generate(self, request: ProviderRequest) -> str:
+        assert "Current user message:\nhi" in request.user_text
+        return (
+            '<<<GROVE_TASK_PROPOSAL>>>{"title":"Slack task",'
+            '"body":"Slack에서 요청한 작업","project":"dev10","worktree":null,'
+            '"card_text":"이 요청을 Slack task로 등록할까요?"}'
+        )
+
+
+def test_flag_on_runtime_task_proposal_uses_confirm_without_intake_flag(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    store.set_gui_feature_enabled(board="dev10", feature="intake", enabled=False)
+    slack, facade = _FakeSlack(), _FakeFacade()
+    command_config = SlackCommandConfig(
+        board="dev10",
+        members={
+            "U": SlackCommandMember(
+                member_id="lead",
+                name="lead",
+                role="operator",
+            )
+        },
+    )
+    conn = _connector(store, slack, facade, command_config=command_config)
+    conn._chat_bridge_adapter = _ProposalAdapter()
+
+    _enqueue(store)
+    conn.poll_node_chat_queue()
+
+    assert facade.calls == []
+    assert slack.posts == [("C1", "이 요청을 Slack task로 등록할까요?")]
+    blocks = slack.post_kwargs[0]["blocks"]
+    assert isinstance(blocks, tuple)
+    confirmation_id = blocks[1]["elements"][0]["value"]  # type: ignore[index]
+    handled = conn.handle_interaction(
+        {
+            "type": "block_actions",
+            "team": {"id": "T"},
+            "channel": {"id": "C1"},
+            "user": {"id": "U"},
+            "message": {"ts": "1.2", "thread_ts": "th"},
+            "actions": [
+                {
+                    "action_id": slack_module.INTAKE_CONFIRM_ACTION_ID,
+                    "value": confirmation_id,
+                }
+            ],
+        }
+    )
+
+    assert handled is True
+    tasks = store.list_tasks(board="dev10")
+    assert [task.title for task in tasks] == ["Slack task"]
+    assert tasks[0].metadata["chat_runtime"]["source"] == "slack"
+    assert len(slack.posts) == 2
 
 
 def test_runtime_flag_and_provider_refresh_without_slack_restart(

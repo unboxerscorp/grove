@@ -2418,20 +2418,12 @@ def test_master_chat_flag_on_uses_gemini_provider_answer(
     assert [item["role"] for item in history.json()["messages"]] == ["user", "assistant"]
 
 
-def test_master_chat_flag_on_keeps_action_preview_confirmation_path(tmp_path: Path) -> None:
+def test_master_chat_flag_on_runtime_task_proposal_confirms_to_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
-    llm = SequenceAssistantLLMClient(
-        json.dumps(
-            {
-                "action_type": "create_project",
-                "target": "alpha",
-                "params": {"title": "Alpha cockpit"},
-            }
-        ),
-        "Alpha 프로젝트 생성을 MASTER 검토함에 올릴까요? `confirm {confirmation_id}`",
-    )
-    client = make_client(tmp_path, store, assistant_client=llm)
+    client = make_client(tmp_path, store)
     headers = auth_headers(client)
     client.post(
         "/api/chat/provider",
@@ -2439,11 +2431,26 @@ def test_master_chat_flag_on_keeps_action_preview_confirmation_path(tmp_path: Pa
         json={"provider": "gemini", "model": "gemini-test", "api_key": "AIza-test-key"},
     )
 
+    class FakeGeminiAdapter:
+        def __init__(self, *, api_key: str, model: str) -> None:
+            self.api_key = api_key
+            self.model = model
+
+        def generate(self, request: object) -> str:
+            _ = request
+            return (
+                '<<<GROVE_TASK_PROPOSAL>>>{"title":"Alpha task",'
+                '"body":"Alpha 프로젝트 준비","project":"dev10","worktree":null,'
+                '"card_text":"Alpha task를 태스크로 만들까요?"}'
+            )
+
+    monkeypatch.setattr(web_app, "GeminiChatProviderAdapter", FakeGeminiAdapter)
+
     response = client.post(
         "/api/master/chat",
         headers=headers,
         json={
-            "message": "Alpha 프로젝트 만들어줘",
+            "message": "Alpha 프로젝트 준비 태스크 만들어줘",
             "conversation_id": "conv-runtime-preview",
             "request_id": "req-runtime-preview",
         },
@@ -2451,13 +2458,39 @@ def test_master_chat_flag_on_keeps_action_preview_confirmation_path(tmp_path: Pa
 
     assert response.status_code == 200
     payload = response.json()
-    confirmation_id = payload["proposal"]["proposal_id"]
+    confirmation_id = payload["proposal"]["payload"]["confirmation_id"]
     assert payload["response_type"] == "preview"
     assert payload["requires_confirmation"] is True
-    assert payload["answer"]["text"] == (
-        f"Alpha 프로젝트 생성을 MASTER 검토함에 올릴까요? `confirm {confirmation_id}`"
+    assert payload["answer"]["text"] == "Alpha task를 태스크로 만들까요?"
+    assert confirmation_id.startswith("chat_task_")
+
+    confirmed = client.post(
+        "/api/master/chat/confirm",
+        headers=headers,
+        json={
+            "confirmation_id": confirmation_id,
+            "idempotency_key": "confirm-alpha-task-once",
+            "conversation_id": "conv-runtime-preview",
+            "request_id": "req-runtime-confirm",
+        },
     )
-    assert confirmation_id.startswith("assistant_")
+    retried = client.post(
+        "/api/master/chat/confirm",
+        headers=headers,
+        json={
+            "confirmation_id": confirmation_id,
+            "idempotency_key": "confirm-alpha-task-once",
+            "conversation_id": "conv-runtime-preview",
+            "request_id": "req-runtime-confirm-retry",
+        },
+    )
+
+    assert confirmed.status_code == 200
+    assert retried.status_code == 200
+    tasks = store.list_tasks(board="dev10")
+    assert [task.title for task in tasks] == ["Alpha task"]
+    assert confirmed.json()["answer"]["metadata"]["task_id"] == tasks[0].id
+    assert retried.json()["answer"]["metadata"]["task_id"] == tasks[0].id
 
 
 def test_master_chat_uses_shared_runtime_flag_from_foreign_project(

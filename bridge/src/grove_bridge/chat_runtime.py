@@ -56,8 +56,14 @@ CHAT_BRIDGE_SHADOW_PERSONA = (
     "Use supplied Grove context, but do not invent node names, task ids, or hidden "
     "capabilities. If the user asks for work to be created, explain that task "
     "creation requires an explicit confirmation flow; do not claim a task was "
-    "created unless it was actually confirmed. Write concise Korean by default "
-    "unless the user uses another language."
+    "created unless it was actually confirmed. When the user clearly wants a task "
+    "created, output exactly one structured task proposal and no extra prose: "
+    f"{TASK_PROPOSAL_MARKER}"
+    '{"title":"short task title","body":"task details","project":"selected project",'
+    '"worktree":null,"card_text":"your user-facing confirmation question"}. '
+    "The card_text must be your own natural wording asking whether to create the "
+    "task. For ordinary chat, do not use the marker. Write concise Korean by "
+    "default unless the user uses another language."
 )
 
 ChatSurface = Literal["slack", "web"]

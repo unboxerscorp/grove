@@ -18,7 +18,9 @@ import secrets
 import shlex
 import subprocess
 import sys
+import threading
 import time
+from _thread import LockType
 from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
@@ -56,9 +58,11 @@ from grove_bridge.chat_runtime import (
     GeminiChatProviderAdapter,
     ProviderRequest,
     RedactingProviderAdapter,
+    TurnParseError,
     chat_bridge_runtime_enabled,
     guard_answer_channel,
     load_gemini_provider_config,
+    parse_structured_turn,
 )
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
@@ -755,6 +759,21 @@ class TicketStore:
         expired = [ticket for ticket, grant in self._tickets.items() if grant.expires_at < now]
         for ticket in expired:
             self._tickets.pop(ticket, None)
+
+
+@dataclass
+class ChatRuntimePendingTask:
+    confirmation_id: str
+    board: str
+    project: str
+    conversation_id: str
+    request_id: str
+    actor: Mapping[str, object]
+    title: str
+    body: str
+    worktree: str | None
+    source_message: str
+    created_task_by_key: dict[str, str] = field(default_factory=dict)
 
 
 def create_app(
@@ -6186,6 +6205,92 @@ def _actor_payload(auth: AuthContext) -> dict[str, object]:
     return {"kind": "local", "id": "lead", "login": "lead", "role": "none"}
 
 
+def _chat_runtime_pending_tasks(
+    request: Request,
+) -> tuple[dict[str, ChatRuntimePendingTask], LockType]:
+    pending = getattr(request.app.state, "chat_runtime_pending_tasks", None)
+    lock = getattr(request.app.state, "chat_runtime_pending_tasks_lock", None)
+    if not isinstance(pending, dict) or not isinstance(lock, LockType):
+        pending = {}
+        lock = threading.Lock()
+        request.app.state.chat_runtime_pending_tasks = pending
+        request.app.state.chat_runtime_pending_tasks_lock = lock
+    return cast(dict[str, ChatRuntimePendingTask], pending), lock
+
+
+def _chat_runtime_task_title(value: str) -> str:
+    clean = _public_chat_text(value).strip()
+    return clean[:500] if clean else "chat task"
+
+
+def _chat_runtime_task_body(value: str) -> str:
+    return _public_chat_text(value).strip()[:20_000]
+
+
+def _chat_runtime_task_preview_payload(
+    *,
+    conversation_id: str,
+    request_id: str,
+    confirmation_id: str,
+    title: str,
+    body: str,
+    worktree: str | None,
+    card_text: str,
+    auth: AuthContext,
+    project: ProjectContext,
+    provider: Mapping[str, str],
+) -> dict[str, object]:
+    actor = _actor_payload(auth)
+    return {
+        "conversation_id": conversation_id,
+        "request_id": request_id,
+        "response_type": "preview",
+        "classification": {
+            "kind": "action",
+            "intent": "bridge_native.task_proposal",
+            "confidence": 1.0,
+            "signals": ["chat_runtime_structured_turn"],
+        },
+        "answer": {
+            "text": _public_chat_text(card_text),
+            "citations": [],
+            "metadata": {
+                "runtime": "chat_bridge_runtime",
+                "provider": provider["provider"],
+                "model": provider["model"],
+            },
+        },
+        "proposal": {
+            "proposal_id": confirmation_id,
+            "intent": "task_create",
+            "summary": title,
+            "target_project": project.name,
+            "requires_confirmation": True,
+            "requires_operator": True,
+            "payload": {
+                "confirmation_id": confirmation_id,
+                "title": title,
+                "body": body,
+                "project": project.name,
+                "worktree": worktree,
+                "confirm": {
+                    "endpoint": "/api/master/chat/confirm",
+                    "command": f"confirm {confirmation_id}",
+                },
+            },
+        },
+        "feedback_route": None,
+        "operator_gate": {
+            "allowed": True,
+            "reason": "explicit_confirmation_required",
+            "actor_id": _actor_id(actor),
+            "target_project": project.name,
+            "audit_metadata": {"runtime": "chat_bridge_runtime"},
+        },
+        "requires_confirmation": True,
+    }
+
+
 def _handle_master_chat_request(
     request: Request,
     payload: MasterChatPayload,
@@ -6193,7 +6298,7 @@ def _handle_master_chat_request(
     auth: AuthContext,
     project: ProjectContext,
 ) -> dict[str, object] | Response:
-    if not requires_master_chat_action_gate(payload.message) and chat_bridge_runtime_enabled(
+    if chat_bridge_runtime_enabled(
         _store(request),
         board=_gui_feature_board(project, CHAT_BRIDGE_RUNTIME_FLAG),
     ):
@@ -6271,10 +6376,72 @@ def _handle_chat_bridge_runtime_web_request(
                 ),
             )
         )
-        answer_text = guard_answer_channel(generated, forbidden=CHAT_RUNTIME_FORBIDDEN_ANSWERS)
+        turn = parse_structured_turn(generated)
+        if turn.kind == "task_proposal":
+            if turn.proposal is None:
+                raise TurnParseError("task proposal is missing payload")
+            card_text = _public_chat_text(turn.card_text or "").strip()
+            if not card_text:
+                raise TurnParseError("task proposal is missing card_text")
+            confirmation_id = f"chat_task_{secrets.token_urlsafe(8)}"
+            title = _chat_runtime_task_title(turn.proposal.title)
+            body = _chat_runtime_task_body(turn.proposal.body)
+            pending = ChatRuntimePendingTask(
+                confirmation_id=confirmation_id,
+                board=project.board,
+                project=project.name,
+                conversation_id=conversation_id,
+                request_id=request_id,
+                actor=_actor_payload(auth),
+                title=title,
+                body=body,
+                worktree=turn.proposal.worktree,
+                source_message=_public_chat_text(payload.message),
+            )
+            pending_tasks, pending_lock = _chat_runtime_pending_tasks(request)
+            with pending_lock:
+                pending_tasks[confirmation_id] = pending
+            rendered = _chat_runtime_task_preview_payload(
+                conversation_id=conversation_id,
+                request_id=request_id,
+                confirmation_id=confirmation_id,
+                title=title,
+                body=body,
+                worktree=turn.proposal.worktree,
+                card_text=card_text,
+                auth=auth,
+                project=project,
+                provider=provider,
+            )
+            _store(request).add_audit_event(
+                board=project.board,
+                kind="audit.master.turn.received",
+                actor=_actor_payload(auth),
+                action="master.turn.received",
+                target={"type": "master", "id": request_id},
+                payload={
+                    "conversation_id": conversation_id,
+                    "response_type": "preview",
+                    "runtime": "chat_bridge_runtime",
+                    "provider": provider["provider"],
+                    "proposal_id": confirmation_id,
+                },
+                summary=_safe_public_text(payload.message),
+            )
+            _persist_master_chat_turn(_store(request), payload, rendered, project=project)
+            return rendered
+        answer_text = guard_answer_channel(
+            turn.answer_text or "",
+            forbidden=CHAT_RUNTIME_FORBIDDEN_ANSWERS,
+        )
     except AssistantTransportError as exc:
         LOGGER.warning("event=chat_bridge_web_transport_error error=%s", _safe_log_text(exc))
         raise HTTPException(status_code=503, detail="chat provider is unavailable") from exc
+    except TurnParseError as exc:
+        LOGGER.warning("event=chat_bridge_web_structured_turn_error error=%s", _safe_log_text(exc))
+        raise HTTPException(
+            status_code=503, detail="chat provider returned invalid task proposal"
+        ) from exc
     except Exception as exc:
         LOGGER.warning("event=chat_bridge_web_error error=%s", _safe_log_text(exc))
         raise HTTPException(status_code=500, detail="chat provider failed") from exc
@@ -6349,6 +6516,108 @@ def _chat_bridge_web_user_text(
     )
 
 
+def _confirm_chat_runtime_pending_task(
+    request: Request,
+    payload: MasterChatConfirmPayload,
+    *,
+    auth: AuthContext,
+    project: ProjectContext,
+) -> dict[str, object] | None:
+    pending_tasks, pending_lock = _chat_runtime_pending_tasks(request)
+    with pending_lock:
+        pending = pending_tasks.get(payload.confirmation_id)
+        if pending is None:
+            return None
+        if pending.board != project.board:
+            raise HTTPException(status_code=404, detail="chat task confirmation not found")
+        existing_task_id = pending.created_task_by_key.get(payload.idempotency_key)
+        if existing_task_id is None and pending.created_task_by_key:
+            raise HTTPException(status_code=409, detail="chat task confirmation already used")
+        if existing_task_id is None:
+            actor = _actor_payload(auth)
+            task_body = _task_body_with_grove_context(
+                pending.body or pending.source_message,
+                actor=actor,
+                assignee=None,
+                project=project,
+            )
+            task = _store(request).create_task(
+                board=project.board,
+                title=pending.title,
+                body=task_body,
+                assignee=None,
+                status="ready",
+                priority=0,
+                created_by=_actor_id(actor),
+                metadata={
+                    "labels": ["chat-runtime", "chat-master"],
+                    "chat_runtime": {
+                        "source": "web",
+                        "confirmation_id": pending.confirmation_id,
+                        "conversation_id": pending.conversation_id,
+                        "request_id": pending.request_id,
+                    },
+                    "worktree": pending.worktree,
+                },
+            )
+            pending.created_task_by_key[payload.idempotency_key] = task.id
+        else:
+            task = _store(request).get_task(board=project.board, task_id=existing_task_id)
+    request_id = _master_request_id(payload.request_id, prefix="req")
+    answer_text = f"태스크를 생성했습니다: {task.title} (`{task.id}`)"
+    rendered: dict[str, object] = {
+        "conversation_id": pending.conversation_id,
+        "request_id": request_id,
+        "response_type": "answer",
+        "classification": {
+            "kind": "action",
+            "intent": "bridge_native.task_confirm",
+            "confidence": 1.0,
+            "signals": ["chat_runtime_confirm"],
+        },
+        "answer": {
+            "text": answer_text,
+            "citations": [],
+            "metadata": {
+                "runtime": "chat_bridge_runtime",
+                "task_id": task.id,
+                "idempotency_key": payload.idempotency_key,
+            },
+        },
+        "proposal": None,
+        "feedback_route": None,
+        "operator_gate": None,
+        "requires_confirmation": False,
+    }
+    _store(request).add_audit_event(
+        board=project.board,
+        kind="audit.task.create",
+        actor=_actor_payload(auth),
+        action="chat_runtime_task_create",
+        target={"type": "task", "id": task.id},
+        task_id=task.id,
+        status="ok",
+        summary=task.title,
+        payload={
+            "confirmation_id": pending.confirmation_id,
+            "conversation_id": pending.conversation_id,
+            "source": "web",
+        },
+    )
+    try:
+        _store(request).append_master_chat_message(
+            board=project.board,
+            conversation_id=pending.conversation_id,
+            role="assistant",
+            text=answer_text,
+            request_id=request_id,
+            origin_surface=payload.origin_surface,
+        )
+    except Exception as exc:
+        LOGGER.warning("chat runtime confirm history persist failed: %s", _safe_log_text(exc))
+    return rendered
+
+
 def _master_chat_message_payload(message: MasterChatMessage) -> dict[str, object]:
     return {
         "role": message.role,
@@ -6406,6 +6675,14 @@ def _handle_master_chat_confirm_request(
     auth: AuthContext,
     project: ProjectContext,
 ) -> dict[str, object] | Response:
+    runtime_confirmed = _confirm_chat_runtime_pending_task(
+        request,
+        payload,
+        auth=auth,
+        project=project,
+    )
+    if runtime_confirmed is not None:
+        return runtime_confirmed
     assistant_client = _assistant_client(request)
     if not _node_routed_target_available(project.config, assistant_client):
         raise HTTPException(status_code=503, detail="master chat is unavailable")
