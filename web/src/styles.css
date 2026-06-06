@@ -5871,6 +5871,18 @@ button {
    touching shared rules. Each row has its own right "+" (add a column to that
    row, so rows can differ); the single bottom "+" adds a new row. */
 .dr-termgrid { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: 6px; }
+/* View tabs: each tab = one saved ragged layout (persisted to localStorage). */
+.dr-termtabs { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; flex: 0 0 auto; }
+.dr-termtabs__tab { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); overflow: hidden; }
+.dr-termtabs__tab.is-active { border-color: var(--teal); background: var(--raise); }
+.dr-termtabs__name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; color: var(--dim); background: transparent; border: 0; padding: 4px 10px; cursor: pointer; }
+.dr-termtabs__name:hover { color: var(--text); }
+.dr-termtabs__tab.is-active .dr-termtabs__name { color: var(--text); }
+.dr-termtabs__close { font-family: var(--mono); font-size: 12px; line-height: 1; color: var(--faint); background: transparent; border: 0; padding: 4px 8px 4px 2px; cursor: pointer; }
+.dr-termtabs__close:hover { color: var(--coral); }
+.dr-termtabs__new { font-family: var(--mono); font-size: 11px; color: var(--dim); background: var(--panel-2); border: 1px dashed var(--line); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+.dr-termtabs__new:hover { color: var(--text); border-color: var(--teal); }
+.dr-termtabs__new:disabled { opacity: 0.3; cursor: default; }
 /* Ragged layout: rows stack vertically (equal height); each row lays its own
    cells out horizontally (equal width within that row) followed by that row's
    "+ column" button — so each row can hold a different number of columns. */
