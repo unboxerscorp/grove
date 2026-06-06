@@ -583,6 +583,7 @@ export function App() {
               liveTick={liveTick}
               projectTick={projectTick}
               boardLive={boardLive}
+              project={project}
               onOpenTask={setOpenTaskId}
             />
           ) : view === "board" ? (

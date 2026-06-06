@@ -30,6 +30,20 @@ export const HUMAN_LIST_COLUMNS = [
   { key: "ask_human", labelKey: "board.list.human", createStatus: "ask_human" },
 ] as const;
 
+// Completed work is pulled out of the active human lists into a separate archive
+// section. Keyed on CANONICAL status (done stays "done"; "archived" passes through
+// canonicalStatus unchanged). Kept as a set so future terminal states fold in here.
+export const ARCHIVE_STATUSES = new Set<string>(["done", "archived"]);
+
+/** Operator-list bucket for a task, given its ALREADY-canonical status and
+ *  needs_human flag. Archive (done/archived) wins first so a completed task never
+ *  lingers in the human-decision list; then ask_human; everything else is todo. */
+export function boardBucket(canonStatus: string, needsHuman: boolean): "todo" | "ask_human" | "archive" {
+  if (ARCHIVE_STATUSES.has(canonStatus)) return "archive";
+  if (needsHuman || canonStatus === "ask_human") return "ask_human";
+  return "todo";
+}
+
 export const HUMAN_CREATE_STATUS_COLUMNS = CANONICAL_COLUMNS.filter((c) =>
   ["ready", "ask_human"].includes(c.key),
 );

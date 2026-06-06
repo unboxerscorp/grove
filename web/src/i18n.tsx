@@ -96,6 +96,9 @@ const KO: Dict = {
   "board.addToList": "{list}에 추가",
   "board.list.todo": "피드백 및 할 일",
   "board.list.human": "사람 판단 필요",
+  "board.list.archive": "완료 보관함",
+  "board.archive.toggle": "완료 보관함 펼치기/접기",
+  "board.project": "프로젝트",
 
   "add.open": "+ 추가",
   "add.heading": "새 항목",
@@ -865,6 +868,9 @@ const EN: Dict = {
   "board.addToList": "Add to {list}",
   "board.list.todo": "Feedback and to-dos",
   "board.list.human": "Needs human decision",
+  "board.list.archive": "Archive",
+  "board.archive.toggle": "Toggle archive",
+  "board.project": "Project",
 
   "add.open": "+ Add",
   "add.heading": "New item",
