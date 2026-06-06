@@ -78,6 +78,9 @@ function assertNoStaleItemTitleCopy() {
       `로컬 ${"작업"}`,
       `이 ${"작업"} 수락`,
       `No ${"task"} is claimed`,
+      `Grove ${"Dev Room"}`,
+      `Dev ${"Room SPA"}`,
+      `dev-room ${"SPA"}`,
     ].join("|"),
     "i",
   );

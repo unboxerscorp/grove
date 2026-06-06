@@ -2,7 +2,7 @@
   "name": "@grove/dev-room-web",
   "private": true,
   "version": "0.32.0",
-  "description": "Grove Dev Room — standalone single-page app served by the grove web server at /. No external plugin host.",
+  "description": "Grove web cockpit — standalone single-page app served by the grove web server at /. No external plugin host.",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",

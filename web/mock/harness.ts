@@ -1,4 +1,4 @@
-// Standalone mock backend for the Dev Room SPA.
+// Standalone mock backend for the Grove web cockpit.
 //
 // Installs the page globals the grove web server would inject, then intercepts
 // fetch + WebSocket so the built bundle runs end-to-end in a plain browser
@@ -35,7 +35,7 @@ const TASKS: Record<string, MockTask[]> = {
     {
       id: "G-1",
       // raw stored status "running" is the canonical "running" column key.
-      title: "Stand up the dev-room SPA",
+      title: "Stand up the web cockpit",
       status: "running",
       assignee: "frontend",
       latest_summary: "wiring the live xterm stream into the cockpit",

@@ -701,7 +701,7 @@ def create_app(
         registry_session=os.environ.get("GROVE_VIEWER_SESSION", DEFAULT_SESSION),
     )
     board_store = store or SQLiteBoardStore(app_config.board_db_path)
-    app = FastAPI(title="grove dev room")
+    app = FastAPI(title="grove cockpit")
     app.state.config = app_config
     app.state.store = board_store
     app.state.assistant_client = assistant_client

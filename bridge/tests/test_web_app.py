@@ -96,6 +96,13 @@ class ContentBlockedAssistantLLMClient:
         return "요청을 확인 카드로 만들 수 없어요. 내용을 조금 더 구체적으로 알려주세요."
 
 
+def test_app_metadata_uses_cockpit_name(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    app = cast(FastAPI, client.app)
+    assert app.title == "grove cockpit"
+
+
 def payload_contains_number(value: object, needle: int | float) -> bool:
     if isinstance(value, bool):
         return False

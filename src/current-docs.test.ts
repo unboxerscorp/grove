@@ -93,4 +93,17 @@ describe("current design docs", () => {
     expect(webReadme).not.toContain("task detail");
     expect(webReadme).not.toContain("dev-room SPA");
   });
+
+  test("web metadata describes the current cockpit model", () => {
+    const webMetadata = [
+      doc("web/package.json"),
+      doc("web/build.mjs"),
+      doc("web/src/styles.css"),
+      doc("web/mock/index.html"),
+    ].join("\n");
+
+    expect(webMetadata).toContain("cockpit");
+    expect(webMetadata).not.toContain("Grove Dev Room");
+    expect(webMetadata).not.toContain("Dev Room SPA");
+  });
 });

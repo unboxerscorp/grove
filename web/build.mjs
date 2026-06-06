@@ -1,4 +1,4 @@
-// Self-contained esbuild build for the Grove Dev Room SPA. Intentionally
+// Self-contained esbuild build for the Grove web cockpit. Intentionally
 // separate from grove's root tsup/eslint/`pnpm check`.
 //
 //   dist/index.html + dist/app.js + dist/app.css -> the static app the grove
@@ -44,7 +44,7 @@ async function run() {
     sourcemap: true,
   });
 
-  console.log("[dev-room] build ok → dist/index.html, dist/app.js, dist/app.css, mock/harness.js");
+  console.log("[cockpit] build ok → dist/index.html, dist/app.js, dist/app.css, mock/harness.js");
 }
 
 run().catch((err) => {
