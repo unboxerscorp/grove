@@ -5733,6 +5733,12 @@ def test_org_includes_master_and_cross_project_leads(
         workspace="/repo/dev11",
         display_name="Client Project /Users/chopin/secret xoxb-" + ("s" * 44),
     )
+    write_registry(
+        tmp_path,
+        ".master",
+        {"lead": {"name": "lead", "agent": "claude"}},
+        workspace="/repo/internal-master",
+    )
 
     def fake_run(
         args: list[str],
@@ -5751,6 +5757,7 @@ def test_org_includes_master_and_cross_project_leads(
         "/api/org",
         headers=auth_headers(client) | {"X-Grove-Project": "dev11"},
     )
+    projects = client.get("/api/projects", headers=auth_headers(client))
 
     assert response.status_code == 200
     payload = response.json()
@@ -5770,6 +5777,7 @@ def test_org_includes_master_and_cross_project_leads(
     }
     assert payload["project"]["display_name"] == "grove-dev"
     leads = {lead["project"]: lead for lead in payload["project_leads"]}
+    assert ".master" not in leads
     assert leads["dev10"]["display_name"] == "grove-dev"
     assert leads["dev10"]["current"] is True
     assert leads["dev10"]["switch_target"] == "dev10"
@@ -5779,10 +5787,14 @@ def test_org_includes_master_and_cross_project_leads(
     assert leads["dev11"]["switch_target"] == "dev11"
     assert scoped.status_code == 200
     scoped_leads = {lead["project"]: lead for lead in scoped.json()["project_leads"]}
+    assert ".master" not in scoped_leads
     assert scoped.json()["project"]["display_name"] == "Client Project [path] [redacted]"
     assert scoped_leads["dev11"]["current"] is True
     assert scoped_leads["dev10"]["current"] is False
+    assert projects.status_code == 200
+    assert ".master" not in {project["name"] for project in projects.json()}
     rendered = json.dumps(response.json()) + json.dumps(scoped.json())
+    assert "lead@.master" not in rendered
     assert "/Users/chopin" not in rendered
     assert "xoxb-" not in rendered
 

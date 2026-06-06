@@ -6316,8 +6316,20 @@ def _project_registry_names(config: WebAppConfig) -> set[str]:
     return {
         registry_path.parent.name
         for registry_path in config.grove_home.glob("*/registry.json")
-        if registry_path.parent.name
+        if _is_visible_project_registry_name(registry_path.parent.name)
     }
+
+
+def _is_visible_project_registry_name(name: str) -> bool:
+    """Return true for operator-facing project registries.
+
+    Internal registries such as ~/.grove/.master and archived/test buckets are
+    useful to backend routing and recovery, but they should not appear as
+    switchable projects or synthetic leads in the cockpit org graph.
+    """
+
+    clean = name.strip()
+    return clean != "" and not clean.startswith((".", "_"))
 
 
 def _enrich_master_chat_answer(
@@ -7286,6 +7298,8 @@ def _project_payloads(config: WebAppConfig) -> list[dict[str, object]]:
     projects: list[dict[str, object]] = []
     for registry_path in sorted(config.grove_home.glob("*/registry.json")):
         session_dir = registry_path.parent
+        if not _is_visible_project_registry_name(session_dir.name):
+            continue
         loaded = _read_json_mapping(registry_path, error_detail="invalid grove registry")
         raw_nodes = loaded.get("nodes")
         tmux_session = _project_tmux_session_from_registry(session_dir.name, loaded)
