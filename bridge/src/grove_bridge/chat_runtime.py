@@ -208,7 +208,7 @@ class ChatProviderAdapter(Protocol):
     directly (official ``anthropic`` SDK or the raw-HTTP client) — never a
     persistent CLI node."""
 
-    def generate(self, request: ProviderRequest) -> str: ...
+    def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str: ...
 
 
 @dataclass
@@ -219,12 +219,45 @@ class RedactingProviderAdapter:
     inner: ChatProviderAdapter
     redact: Callable[[str], str] = redact_secret_text
 
-    def generate(self, request: ProviderRequest) -> str:
+    def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
         safe = ProviderRequest(
             system_prompt=self.redact(request.system_prompt),
             user_text=self.redact(request.user_text),
         )
-        return self.inner.generate(safe)
+        safe_tools = [self._redacting_tool(tool) for tool in tools]
+        return self.inner.generate(safe, tools=safe_tools)
+
+    def _redacting_tool(self, tool: ChatTool) -> ChatTool:
+        # [R]: tool RESULTS (real board data fed back via functionResponse) are
+        # redacted before the provider sees them, mirroring request redaction.
+        redact = self.redact
+        inner_handler = tool.handler
+
+        def handler(args: Mapping[str, object]) -> Mapping[str, object]:
+            return _redact_tool_result(inner_handler(args), redact)
+
+        return ChatTool(
+            name=tool.name,
+            description=tool.description,
+            parameters=tool.parameters,
+            handler=handler,
+        )
+
+
+def _redact_tool_result(
+    result: Mapping[str, object], redact: Callable[[str], str]
+) -> dict[str, object]:
+    return {key: _redact_value(value, redact) for key, value in result.items()}
+
+
+def _redact_value(value: object, redact: Callable[[str], str]) -> object:
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, Mapping):
+        return {key: _redact_value(val, redact) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(item, redact) for item in value]
+    return value
 
 
 @dataclass
@@ -241,7 +274,10 @@ class ClaudeChatProviderAdapter:
 
     llm: AssistantLLMClient = field(default_factory=AnthropicAssistantClient)
 
-    def generate(self, request: ProviderRequest) -> str:
+    def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
+        # The direct Claude client path does not (yet) do function-calling; tools
+        # are accepted for interface parity and ignored here.
+        _ = tools
         return self.llm.complete(
             system_prompt=request.system_prompt,
             user_prompt=request.user_text,

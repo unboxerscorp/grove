@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from grove_bridge.chat_runtime import (
     CHAT_BRIDGE_RUNTIME_FLAG,
     CHAT_BRIDGE_SHADOW_PERSONA,
     ChatProviderAdapter,
+    ChatTool,
     ChatWorkerPool,
     ClaudeChatProviderAdapter,
     GeminiChatProviderAdapter,
@@ -74,7 +76,8 @@ class _RecordingAdapter:
     def __init__(self) -> None:
         self.seen: ProviderRequest | None = None
 
-    def generate(self, request: ProviderRequest) -> str:
+    def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
+        _ = tools
         self.seen = request
         return "generated answer"
 
@@ -333,3 +336,30 @@ def test_gemini_tool_loop_is_bounded_and_defers_when_no_text(tmp_path: Path) -> 
     # Model never converges to text → bounded loop → raise (defer), no hallucination.
     with pytest.raises(AssistantTransportError):
         adapter.generate(ProviderRequest(system_prompt="p", user_text="x"), tools=[tool])
+
+
+def test_redacting_adapter_redacts_tool_results_before_provider() -> None:
+    # [R]: tool RESULTS (real board data fed back via functionResponse) must be
+    # redacted before the provider sees them — not just the initial request.
+    secret = "xoxb-" + ("m" * 44)
+
+    def handler(args: Mapping[str, object]) -> Mapping[str, object]:
+        _ = args
+        return {"tasks": [{"title": f"ship {secret}"}], "count": 1}
+
+    tool = ChatTool(name="t", description="d", parameters={"type": "object"}, handler=handler)
+    captured: dict[str, object] = {}
+
+    class _Inner:
+        def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
+            _ = request
+            captured["result"] = tools[0].handler({})  # what the provider would receive
+            return "ok"
+
+    adapter = RedactingProviderAdapter(inner=_Inner())
+    out = adapter.generate(ProviderRequest(system_prompt="p", user_text="u"), tools=[tool])
+
+    assert out == "ok"
+    rendered = json.dumps(captured["result"])
+    assert secret not in rendered  # nested string values redacted recursively
+    assert "[redacted]" in rendered  # redaction was actually applied to the result

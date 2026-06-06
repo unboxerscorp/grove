@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
 import grove_bridge.slack as slack_module
-from grove_bridge.chat_runtime import ProviderRequest
+from grove_bridge.chat_runtime import ChatTool, ProviderRequest
 from grove_bridge.slack import (
     ChatRouteConfig,
     HumanGateConfig,
@@ -91,14 +92,14 @@ class _FakeAdapter:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def generate(self, request: ProviderRequest) -> str:
+    def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
         self.calls.append(request.user_text)
         return "shadow answer"
 
 
 class _RaisingAdapter:
-    def generate(self, request: ProviderRequest) -> str:
-        _ = request
+    def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
+        _ = (request, tools)
         raise RuntimeError("provider unavailable")
 
 
@@ -128,7 +129,7 @@ def test_flag_on_generation_failure_defers_without_cli_fallback(tmp_path: Path) 
 
 
 class _ProposalAdapter:
-    def generate(self, request: ProviderRequest) -> str:
+    def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
         _ = request
         return '<<<GROVE_TASK_PROPOSAL>>>{"title": "정리", "card_text": "태스크로 만들까요?"}'
 
@@ -231,7 +232,7 @@ def test_flag_on_gemini_runtime_generates_and_publishes_without_cli_node(tmp_pat
 
 
 class _ProposalAdapter:
-    def generate(self, request: ProviderRequest) -> str:
+    def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
         assert "Current user message:\nhi" in request.user_text
         return (
             '<<<GROVE_TASK_PROPOSAL>>>{"title":"Slack task",'
@@ -312,7 +313,7 @@ def test_runtime_flag_and_provider_refresh_without_slack_restart(
             self.api_key = api_key
             self.model = model
 
-        def generate(self, request: ProviderRequest) -> str:
+        def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
             assert "Current user message:\nhi" in request.user_text
             return "runtime answer"
 
@@ -324,3 +325,27 @@ def test_runtime_flag_and_provider_refresh_without_slack_restart(
 
     assert facade.calls == []
     assert slack.posts == [("C1", "runtime answer")]
+
+
+def test_flag_on_passes_get_project_tasks_tool_to_adapter(tmp_path: Path) -> None:
+    # The shadow worker must hand the read-only get_project_tasks tool to the
+    # provider so real-state questions are answered from the board, not guessed.
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    slack, facade = _FakeSlack(), _FakeFacade()
+    conn = _connector(store, slack, facade)
+    assert conn._chat_bridge_runtime is not None
+    seen: list[str] = []
+
+    class _RecordingToolsAdapter:
+        def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
+            _ = request
+            seen.extend(t.name for t in tools)
+            return "shadow answer"
+
+    conn._chat_bridge_adapter = _RecordingToolsAdapter()
+
+    _enqueue(store)
+    conn.poll_node_chat_queue()
+
+    assert "get_project_tasks" in seen

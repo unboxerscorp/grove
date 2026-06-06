@@ -32,10 +32,12 @@ from grove_bridge.assistant import (
 from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.chat_runtime import (
     ChatProviderAdapter,
+    ChatTool,
     ChatWorkerPool,
     GeminiChatProviderAdapter,
     ProviderRequest,
     RedactingProviderAdapter,
+    build_get_project_tasks_tool,
     chat_bridge_runtime_enabled,
     guard_answer_channel,
     load_chat_bridge_persona,
@@ -2491,6 +2493,12 @@ class SlackConnector:
             self._chat_bridge_provider_signature = signature
         return self._chat_bridge_adapter is not None
 
+    def _chat_bridge_tools(self) -> list[ChatTool]:
+        """Read-only tools the bridge-native runtime exposes to the provider's
+        function-calling, so real-state questions (e.g. remaining tasks) are
+        answered from the board — never guessed. Writes stay confirm-gated."""
+        return [build_get_project_tasks_tool(self.store, default_board=self.human_gate.board)]
+
     def _process_chat_bridge_runtime_item(self, item: SlackChatQueueItem, *, now: int) -> bool:
         """Bridge-native Slack runtime entry — flag-gated; reached only
         when the runtime flag is ON (``self._chat_bridge_runtime`` constructed).
@@ -2526,7 +2534,8 @@ class SlackConnector:
                                 item,
                                 conversation_id=conversation_id,
                             ),
-                        )
+                        ),
+                        tools=self._chat_bridge_tools(),
                     )
                     turn = parse_structured_turn(generated)
                     if turn.kind == "task_proposal":
