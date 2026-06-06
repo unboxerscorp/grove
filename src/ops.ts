@@ -30,7 +30,7 @@ const DETECT_TIMEOUT_MS = 20_000;
 const SHELLS = new Set(["zsh", "-zsh", "bash", "-bash", "sh", "fish", "tmux"]);
 const BP_START = "\x1b[200~";
 const BP_END = "\x1b[201~";
-const NON_EMPTY_AGENT_INPUT_RE = /^\s*[›❯]\s+(\S.*)$/u;
+const AGENT_INPUT_PROMPT_RE = /^\s*[›❯](?:\s+(.*))?$/u;
 const DIM_ANSI_RE = new RegExp(`${String.fromCharCode(27)}\\[(?:0;)?2m`);
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
 
@@ -252,9 +252,12 @@ export async function assertPaneInputClear(nc: NodeCtx): Promise<void> {
 export function nonEmptyAgentInput(paneText: string): string | null {
   for (const rawLine of paneText.split(/\r?\n/).reverse()) {
     const line = stripAnsi(rawLine);
-    const match = NON_EMPTY_AGENT_INPUT_RE.exec(line);
-    if (match?.[1] && agentPromptTextLooksGhost(rawLine)) return null;
-    if (match?.[1]) return match[1].trim();
+    const match = AGENT_INPUT_PROMPT_RE.exec(line);
+    if (!match) continue;
+    const input = (match[1] ?? "").trim();
+    if (!input) return null;
+    if (agentPromptTextLooksGhost(rawLine)) return null;
+    return input;
   }
   return null;
 }

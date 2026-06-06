@@ -88,6 +88,24 @@ describe("submitMessage", () => {
     expect(nonEmptyAgentInput("› \n  gpt-5.5 xhigh")).toBeNull();
   });
 
+  test("only considers the latest agent prompt input", () => {
+    expect(
+      nonEmptyAgentInput(
+        [
+          "❯ GROVE CONTEXT PACK (compact)",
+          "  Original message:",
+          "  안녕",
+          "⏺ 안녕하세요",
+          "",
+          "────────────────────────────────",
+          "❯\u00a0",
+          "────────────────────────────────",
+          "  ⏵⏵ bypass permissions on",
+        ].join("\n"),
+      ),
+    ).toBeNull();
+  });
+
   test("does not treat dim auto-suggested prompt text as real input", () => {
     expect(
       nonEmptyAgentInput("\u001b[1m›\u001b[0m \u001b[2mExplain this codebase\u001b[0m"),
