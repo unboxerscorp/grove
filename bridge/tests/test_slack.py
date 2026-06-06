@@ -1428,6 +1428,78 @@ def test_chat_routing_posts_waiting_notice_for_long_busy_prompt(tmp_path: Path) 
     assert queued[0].attempts == 6
 
 
+def test_chat_routing_defers_timeout_and_retries(tmp_path: Path) -> None:
+    slack = FakeSlackClient()
+    chat = SequenceChatFacade(
+        subprocess.TimeoutExpired(cmd=["grove", "ask"], timeout=120),
+        "grove reply after timeout",
+    )
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-master"),
+        assistant_broker=FakeAssistantBroker("assistant should not run"),
+        route_chat_to_node=True,
+        node_chat_retry_delay_seconds=0,
+    )
+
+    handled = connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="<@BOT> summarize status",
+            ts="111.222",
+            thread_ts=None,
+            event_type="app_mention",
+        )
+    )
+
+    assert handled is True
+    assert connector.poll_node_chat_queue() == 1
+    queued = store.list_due_slack_chat_messages(
+        board="main",
+        now=9999999999,
+        running_stale_before=9999999999,
+        limit=10,
+    )
+    assert len(queued) == 1
+    assert queued[0].status == "pending"
+    assert queued[0].attempts == 1
+    assert slack.posts == [
+        (
+            "C123",
+            "접수했습니다. grove-master 전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.",
+            "111.222",
+        ),
+        (
+            "C123",
+            "아직 grove-master 응답을 기다리고 있어 대기열에서 계속 재시도합니다. "
+            "완료되면 이 스레드에 답변합니다.",
+            "111.222",
+        ),
+    ]
+
+    assert connector.poll_node_chat_queue() == 1
+    assert chat.calls == [
+        ("slack:T1:C123:111.222", "grove-master", "summarize status"),
+        ("slack:T1:C123:111.222", "grove-master", "summarize status"),
+    ]
+    assert slack.posts[-1] == ("C123", "grove reply after timeout", "111.222")
+    assert (
+        store.list_due_slack_chat_messages(
+            board="main",
+            now=9999999999,
+            running_stale_before=9999999999,
+            limit=10,
+        )
+        == []
+    )
+
+
 def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
     tmp_path: Path,
 ) -> None:

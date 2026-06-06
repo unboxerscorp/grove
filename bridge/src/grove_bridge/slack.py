@@ -58,6 +58,10 @@ SLACK_NODE_CHAT_INPUT_BUSY_NOTICE = (
     "아직 {node} 입력창에 작성 중인 내용이 있어 대기열에서 기다리고 있습니다. "
     "메시지가 섞이지 않도록 계속 재시도합니다."
 )
+SLACK_NODE_CHAT_TIMEOUT_NOTICE = (
+    "아직 {node} 응답을 기다리고 있어 대기열에서 계속 재시도합니다. "
+    "완료되면 이 스레드에 답변합니다."
+)
 SLACK_NODE_CHAT_RUNNING_STALE_SECONDS = 300
 SLACK_NODE_CHAT_QUEUE_LIMIT = 5
 SLACK_SCOPES = (
@@ -2301,6 +2305,17 @@ class SlackConnector:
                     now=now,
                 )
                 return
+            if _slack_node_chat_timed_out(exc):
+                LOGGER.info("Slack node chat deferred by timeout: %s", _safe_log_error(exc))
+                if item.attempts == 0:
+                    self._post_node_chat_timeout_notice(item)
+                self.store.defer_slack_chat_message(
+                    item.id,
+                    error=_safe_log_error(exc),
+                    next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                    now=now,
+                )
+                return
             LOGGER.warning("Slack node chat failed: %s", _safe_log_error(exc))
             self.store.fail_slack_chat_message(item.id, error=_safe_log_error(exc), now=now)
             response_text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
@@ -2326,6 +2341,19 @@ class SlackConnector:
         except Exception as exc:
             LOGGER.warning(
                 "Slack node chat busy notice could not be posted: %s",
+                _safe_log_error(exc),
+            )
+
+    def _post_node_chat_timeout_notice(self, item: SlackChatQueueItem) -> None:
+        try:
+            self.slack_client.post_message(
+                channel=item.channel_id,
+                text=_slack_node_chat_timeout_notice(item.node),
+                thread_ts=item.thread_ts,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "Slack node chat timeout notice could not be posted: %s",
                 _safe_log_error(exc),
             )
 
@@ -2951,8 +2979,17 @@ def _slack_node_chat_busy_notice(node: str) -> str:
     return SLACK_NODE_CHAT_INPUT_BUSY_NOTICE.format(node=safe_node)
 
 
+def _slack_node_chat_timeout_notice(node: str) -> str:
+    safe_node = _safe_slack_text(node).strip() or "grove-master"
+    return SLACK_NODE_CHAT_TIMEOUT_NOTICE.format(node=safe_node)
+
+
 def _slack_node_chat_input_busy(exc: Exception) -> bool:
     return SLACK_NODE_CHAT_INPUT_BUSY_MARKER in str(exc)
+
+
+def _slack_node_chat_timed_out(exc: Exception) -> bool:
+    return isinstance(exc, subprocess.TimeoutExpired) or "timed out after" in str(exc)
 
 
 def _slack_assistant_request_id(event: SlackEvent) -> str:

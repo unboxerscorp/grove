@@ -6,6 +6,11 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 14:50 KST Slack queue timeout retry 보강:
+  - Slack queue worker의 `grove ask`가 120초 timeout(`subprocess.TimeoutExpired` 또는 `timed out after`)을 내도 failed/fallback으로 종료하지 않는다. master가 긴 turn 중인 정상 상황으로 보고 pending으로 되돌린 뒤 retry한다.
+  - 첫 timeout defer 시 같은 Slack thread에 `아직 <node> 응답을 기다리고 있어 대기열에서 계속 재시도합니다. 완료되면 이 스레드에 답변합니다.` 안내를 1회 남긴다. 이후 답변이 오면 원래 thread에 결과를 게시하고 queue item은 done 처리한다.
+  - 검증: `uv run --group dev pytest tests/test_slack.py -q -k 'chat_routing'` 13 passed, bridge full `ruff/mypy/pytest` 457 passed, `pnpm check` green(TS/Vitest 305, bridge pytest 457).
+
 - 2026-06-06 14:46 KST Slack queue 비동기 분리 보강:
   - `eba552d`의 durable queue 방향은 유지하되, enqueue 직후 event handler가 `poll_node_chat_queue()`를 동기 호출하던 약점을 제거했다. 이제 Slack inbound handler는 queue 저장 + thread ack만 하고 즉시 반환한다.
   - queue drain은 별도 daemon worker thread(`grove-slack-node-chat-queue`)가 담당한다. 따라서 master 호출이 길어져도 Slack socket event handler와 main heartbeat loop가 같은 `ask` 호출에 묶이지 않는다.
