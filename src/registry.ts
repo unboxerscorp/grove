@@ -21,6 +21,10 @@ export interface NodeRuntime {
   /** Optional operator-set work instructions (작업지침). Advisory context only:
    *  surfaced in the grove context pack and org payload, never enforced. */
   work_instructions?: string;
+  /** Role-plane classification for display/identity: "agent" (default),
+   *  "service" (background server pane), or "human". Display only — does not
+   *  change addressability or liveness. */
+  kind?: string;
   parent?: string;
   children?: string[];
   group?: string;

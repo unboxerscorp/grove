@@ -22,6 +22,7 @@ export interface SpawnInput {
   rolePreset?: string;
   description?: string;
   workInstructions?: string;
+  kind?: string;
   parent?: string;
   group?: string;
   session?: string;
@@ -40,6 +41,7 @@ interface SpawnRequest {
   rolePresetVersion?: string;
   description?: string;
   workInstructions?: string;
+  kind?: string;
   parent?: string;
   group?: string;
   session: string;
@@ -57,6 +59,7 @@ export interface SpawnResult {
   rolePresetVersion?: string;
   description?: string;
   workInstructions?: string;
+  kind?: string;
   session: string;
   tmuxSession?: string;
   pane: string;
@@ -169,6 +172,7 @@ function parseSpawnRequest(ctx: Context, input: SpawnInput): SpawnRequest {
     cwd: defaultSpawnCwd(ctx, input.cwd),
     description: trimmed(input.description),
     workInstructions: trimmed(input.workInstructions),
+    kind: trimmed(input.kind),
     group: group ? validateGroveName(group, "--group") : undefined,
     name,
     parent: parent ? validateGroveName(parent, "--parent") : undefined,
@@ -193,6 +197,7 @@ function runtimeFromConfigured(node: ResolvedNode): NodeRuntime {
     cwd: node.cwd,
     description: node.description,
     work_instructions: node.work_instructions,
+    kind: node.kind,
     group: node.group,
     name: node.name,
     parent: node.parent,
@@ -264,6 +269,7 @@ export async function spawnNode(
       cwd: parsed.cwd,
       description: parsed.description,
       work_instructions: parsed.workInstructions,
+      kind: parsed.kind,
       group: parsed.group,
       name: parsed.name,
       parent: parsed.parent,
@@ -292,6 +298,7 @@ export async function spawnNode(
       cwd: parsed.cwd,
       description: parsed.description,
       work_instructions: parsed.workInstructions,
+      kind: parsed.kind,
       group: parsed.group,
       name: parsed.name,
       parent: parsed.parent,
@@ -310,6 +317,7 @@ export async function spawnNode(
       cwd: parsed.cwd,
       description: parsed.description,
       workInstructions: parsed.workInstructions,
+      kind: parsed.kind,
       group: parsed.group,
       name: parsed.name,
       pane,
@@ -332,6 +340,7 @@ export function renderSpawnText(result: SpawnResult): string {
   if (result.rolePreset) lines.push(`rolePreset: ${result.rolePreset}`);
   if (result.description) lines.push(`description: ${result.description}`);
   if (result.workInstructions) lines.push(`work_instructions: ${result.workInstructions}`);
+  if (result.kind) lines.push(`kind: ${result.kind}`);
   lines.push(`cwd: ${result.cwd}`);
   lines.push(`pane: ${result.pane}`);
   if (result.parent) lines.push(`parent: ${result.parent}`);

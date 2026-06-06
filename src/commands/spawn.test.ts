@@ -505,7 +505,7 @@ describe("spawnNode", () => {
     expect(result.rebindHint).toContain("grove rebind");
   });
 
-  test("persists work_instructions and surfaces it in the result and text", async () => {
+  test("persists work_instructions and kind and surfaces them in the result and text", async () => {
     const ctx = makeContext(registry());
     const state = deps({ bindTranscript: true });
 
@@ -518,14 +518,19 @@ describe("spawnNode", () => {
         parent: "lead",
         role: "Builder",
         workInstructions: "PR 머지 전 reviewer 승인 필수",
+        kind: "service",
       },
       state.deps,
     );
 
     expect(state.launched[0]?.node.work_instructions).toBe("PR 머지 전 reviewer 승인 필수");
+    expect(state.launched[0]?.node.kind).toBe("service");
     expect(ctx.registry.nodes.maker?.work_instructions).toBe("PR 머지 전 reviewer 승인 필수");
+    expect(ctx.registry.nodes.maker?.kind).toBe("service");
     expect(result.workInstructions).toBe("PR 머지 전 reviewer 승인 필수");
+    expect(result.kind).toBe("service");
     expect(renderSpawnText(result)).toContain("work_instructions: PR 머지 전 reviewer 승인 필수");
+    expect(renderSpawnText(result)).toContain("kind: service");
   });
 
   test("renders text and JSON summaries", () => {
@@ -534,6 +539,7 @@ describe("spawnNode", () => {
       cwd: "/repo",
       description: "Owns implementation tasks",
       workInstructions: "PR 머지 전 reviewer 승인 필수",
+      kind: "service",
       group: "core",
       name: "maker",
       pane: "dev10:2.0",
@@ -549,6 +555,7 @@ describe("spawnNode", () => {
     expect(renderSpawnText(result)).toContain("maker [codex]");
     expect(renderSpawnText(result)).toContain("description: Owns implementation tasks");
     expect(renderSpawnText(result)).toContain("work_instructions: PR 머지 전 reviewer 승인 필수");
+    expect(renderSpawnText(result)).toContain("kind: service");
     expect(renderSpawnText(result)).toContain("pane: dev10:2.0");
     expect(JSON.parse(renderSpawnJson(result))).toEqual(result);
   });

@@ -20,6 +20,7 @@ export const NodeConfigSchema = z
     role: z.string().optional(),
     description: z.string().optional(),
     work_instructions: z.string().optional(),
+    kind: z.string().optional(),
     cwd: z.string().optional(),
     resume: z.string().optional(),
     // Explicit tmux target suffix, e.g. a window index or "window.pane" ("0.1").
@@ -58,6 +59,7 @@ export interface ResolvedNode {
   rolePresetVersion?: string;
   description?: string;
   work_instructions?: string;
+  kind?: string;
   cwd: string;
   resume?: string;
   tmux?: string;
@@ -100,6 +102,7 @@ export function resolveNodes(config: GroveConfig): ResolvedNode[] {
       role: n.role,
       description: n.description,
       work_instructions: n.work_instructions,
+      kind: n.kind,
       cwd: expandHome(n.cwd ?? config.cwd),
       resume: n.resume,
       tmux: n.tmux,

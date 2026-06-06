@@ -77,6 +77,10 @@ export interface GroveNode {
   children?: string[];
   group?: string;
   description?: string;
+  // Role-plane classification from the org payload (web_app.py
+  // _node_kind_for_registry): "registry" (agent, default), "service"
+  // (background server pane), or "human". Display/identity only.
+  kind?: string;
   // Optional advisory work instructions (작업지침). Surfaced as node context;
   // never system-enforced. snake_case to match the web_app.py NodeRecord wire.
   work_instructions?: string;

@@ -181,6 +181,9 @@ const KO: Dict = {
 
   "node.fact.role": "역할",
   "node.fact.workInstructions": "작업지침",
+  "node.fact.kind": "유형",
+  "node.kind.service": "서비스",
+  "node.kind.service.hint": "백그라운드 서버 페인 (에이전트 노드 아님)",
   "node.fact.group": "그룹",
   "node.fact.agent": "에이전트",
   "node.fact.pane": "페인",
@@ -943,6 +946,9 @@ const EN: Dict = {
 
   "node.fact.role": "role",
   "node.fact.workInstructions": "work instructions",
+  "node.fact.kind": "kind",
+  "node.kind.service": "service",
+  "node.kind.service.hint": "background server pane (not an agent node)",
   "node.fact.group": "group",
   "node.fact.agent": "agent",
   "node.fact.pane": "pane",

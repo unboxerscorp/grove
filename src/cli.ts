@@ -126,6 +126,7 @@ program
     "--work-instructions <text>",
     "optional advisory work instructions (작업지침) surfaced as node context",
   )
+  .option("--kind <kind>", "node role-plane: agent (default), service, or human")
   .option("--parent <node>", "parent node name")
   .option("--group <group>", "team group")
   .option("--session <session>", "target grove project/registry session")

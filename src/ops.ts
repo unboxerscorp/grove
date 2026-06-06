@@ -427,10 +427,10 @@ async function tmuxPaneRuntime(nc: NodeCtx): Promise<{ tmux_pane?: string }> {
 
 function teamRuntime(
   nc: NodeCtx,
-): Pick<NodeRuntime, "children" | "cwd" | "description" | "group" | "parent" | "role"> {
+): Pick<NodeRuntime, "children" | "cwd" | "description" | "group" | "kind" | "parent" | "role"> {
   const runtime: Pick<
     NodeRuntime,
-    "children" | "cwd" | "description" | "group" | "parent" | "role"
+    "children" | "cwd" | "description" | "group" | "kind" | "parent" | "role"
   > = {
     children: [...nc.node.children],
     cwd: nc.node.cwd,
@@ -439,6 +439,7 @@ function teamRuntime(
   if (nc.node.description) runtime.description = nc.node.description;
   if (nc.node.parent) runtime.parent = nc.node.parent;
   if (nc.node.group) runtime.group = nc.node.group;
+  if (nc.node.kind) runtime.kind = nc.node.kind;
   return runtime;
 }
 

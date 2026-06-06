@@ -365,6 +365,7 @@ function NodeDrawer(props: {
           <div className="dr-drawer__facts">
             {fact(t("node.fact.role"), node.role)}
             {fact(t("node.fact.workInstructions"), node.work_instructions)}
+            {node.kind === "service" && fact(t("node.fact.kind"), t("node.kind.service"))}
             {fact(t("node.fact.group"), node.group)}
             {fact(t("node.fact.agent"), node.agent)}
             {fact(t("node.fact.parent"), node.parent ?? undefined)}
@@ -946,6 +947,11 @@ export function OrgChart(props: {
                   <span className="org-node__name">{node.name}</span>
                   <NodeHealthBadge health={nodeHealth[node.name] ?? node.health} compact />
                   <span className="org-node__agent">{agentGlyph(node.agent)}</span>
+                  {node.kind === "service" && (
+                    <span className="org-node__kind" title={t("node.kind.service.hint")}>
+                      {t("node.kind.service")}
+                    </span>
+                  )}
                 </div>
                 {node.role && <div className="org-node__role">{node.role}</div>}
                 {node.description && (

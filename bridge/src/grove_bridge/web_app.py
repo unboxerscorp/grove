@@ -488,6 +488,7 @@ class NodeCreatePayload(BaseModel):
     cwd: str | None = Field(default=None, max_length=2000)
     description: str | None = Field(default=None, max_length=1000)
     work_instructions: str | None = Field(default=None, max_length=1000)
+    kind: str | None = Field(default=None, max_length=50)
     parent: str | None = Field(default=None, max_length=100)
     group: str | None = Field(default=None, max_length=100)
     window: int | None = Field(default=None, ge=0)
@@ -498,6 +499,7 @@ class NodeUpdatePayload(BaseModel):
     group: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=1000)
     work_instructions: str | None = Field(default=None, max_length=1000)
+    kind: str | None = Field(default=None, max_length=50)
 
 
 class NodeTerminatePayload(BaseModel):
@@ -8225,6 +8227,7 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
     work_instructions = _optional_text(
         payload.work_instructions, field_name="work_instructions", max_length=1000
     )
+    kind = _optional_text(payload.kind, field_name="kind", max_length=50)
     parent = _optional_node_ref(payload.parent, field_name="parent")
     group = _optional_node_ref(payload.group, field_name="group")
     args = ["grove", "spawn", "--operator", "--name", name, "--agent", agent]
@@ -8238,6 +8241,8 @@ def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str
         args.extend(["--description", description])
     if work_instructions is not None:
         args.extend(["--work-instructions", work_instructions])
+    if kind is not None:
+        args.extend(["--kind", kind])
     if parent is not None:
         args.extend(["--parent", parent])
     if group is not None:
@@ -8552,6 +8557,13 @@ def _update_node_relationships(
             target.pop("work_instructions", None)
         else:
             target["work_instructions"] = new_work_instructions
+
+    if "kind" in payload.model_fields_set:
+        new_kind = _optional_text(payload.kind, field_name="kind", max_length=50)
+        if new_kind is None:
+            target.pop("kind", None)
+        else:
+            target["kind"] = new_kind
 
     _write_registry_atomic(registry_path, registry)
     return _org_payload(config)
@@ -8890,7 +8902,15 @@ def _is_human_node_mapping(node: Mapping[str, object]) -> bool:
 
 
 def _node_kind_for_registry(node: Mapping[str, object]) -> str:
-    return "human" if _is_human_node_mapping(node) else "registry"
+    if _is_human_node_mapping(node):
+        return "human"
+    # Explicit operator-set classification only — never inferred from node name.
+    # "service" marks a background server pane (grove-web/grove-slack) so the UI
+    # stops rendering it as an addressable agent. Display/identity only; this does
+    # not affect liveness, status, or addressability.
+    if _mapping_string(node, "kind") == "service":
+        return "service"
+    return "registry"
 
 
 def _is_reviewer_node(node: Mapping[str, object]) -> bool:

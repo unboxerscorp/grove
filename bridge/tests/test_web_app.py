@@ -7963,6 +7963,95 @@ def test_update_node_can_patch_and_clear_work_instructions(tmp_path: Path) -> No
     assert "work_instructions" not in nodes_after["worker"]
 
 
+def test_create_node_passes_kind_to_spawn_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        captured.append(args)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps({"name": "edge-1", "agent": "codex"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("grove_bridge.web_app.subprocess.run", fake_run)
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.post(
+        "/api/nodes",
+        headers=auth_headers(client),
+        json={"name": "edge-1", "agent": "codex", "kind": "service"},
+    )
+
+    assert response.status_code == 200
+    args = captured[0]
+    assert "--kind" in args
+    assert args[args.index("--kind") + 1] == "service"
+
+
+def test_update_node_can_patch_and_clear_kind_and_classifies_service(
+    tmp_path: Path,
+) -> None:
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "codex",
+                "children": ["worker"],
+                "tmux_pane": "dev10:1.0",
+            },
+            "worker": {
+                "name": "worker",
+                "agent": "codex",
+                "parent": "lead",
+                "children": [],
+                "group": "services",
+                "tmux_pane": "dev10:1.1",
+            },
+        },
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    response = client.patch(
+        "/api/nodes/worker",
+        headers=auth_headers(client),
+        json={"kind": "service"},
+    )
+
+    assert response.status_code == 200
+    org_nodes = {node["name"]: node for node in response.json()["nodes"]}
+    # explicit kind=service is surfaced; unmarked nodes stay the default kind
+    assert org_nodes["worker"]["kind"] == "service"
+    assert org_nodes["lead@dev10"]["kind"] == "registry"
+    registry_nodes = cast(dict[str, dict[str, object]], read_registry(tmp_path, "dev10")["nodes"])
+    assert registry_nodes["worker"]["kind"] == "service"
+
+    cleared = client.patch(
+        "/api/nodes/worker",
+        headers=auth_headers(client),
+        json={"kind": ""},
+    )
+
+    assert cleared.status_code == 200
+    cleared_nodes = {node["name"]: node for node in cleared.json()["nodes"]}
+    assert cleared_nodes["worker"]["kind"] == "registry"
+    registry_after = cast(dict[str, dict[str, object]], read_registry(tmp_path, "dev10")["nodes"])
+    assert "kind" not in registry_after["worker"]
+
+
 def test_update_node_can_clear_parent_and_group(tmp_path: Path) -> None:
     write_registry(
         tmp_path,

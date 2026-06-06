@@ -31,6 +31,7 @@ function nodeFromRuntime(
     cwd: expandHome(cwd),
     description: runtime.description,
     work_instructions: runtime.work_instructions,
+    kind: runtime.kind,
     group: runtime.group,
     name,
     parent: runtime.parent,
