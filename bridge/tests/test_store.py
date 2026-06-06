@@ -148,6 +148,75 @@ def test_slack_chat_queue_response_text_column_migrates(tmp_path: Path) -> None:
     assert queued.response_text is None
 
 
+def test_slack_chat_queue_summary_counts_active_rows_and_oldest_age(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+
+    assert store.slack_chat_queue_summary(board="main", now=200) == {
+        "total": 0,
+        "pending": 0,
+        "running": 0,
+        "failed": 0,
+        "oldest_pending_age_seconds": None,
+    }
+
+    pending = store.enqueue_slack_chat_message(
+        board="main",
+        team_id="T1",
+        channel_id="C1",
+        thread_ts="111.1",
+        message_ts="111.1",
+        user_id="U1",
+        node="grove-master",
+        text="pending",
+    )
+    running = store.enqueue_slack_chat_message(
+        board="main",
+        team_id="T1",
+        channel_id="C1",
+        thread_ts="111.2",
+        message_ts="111.2",
+        user_id="U1",
+        node="grove-master",
+        text="running",
+    )
+    failed = store.enqueue_slack_chat_message(
+        board="main",
+        team_id="T1",
+        channel_id="C1",
+        thread_ts="111.3",
+        message_ts="111.3",
+        user_id="U1",
+        node="grove-master",
+        text="failed",
+    )
+    done = store.enqueue_slack_chat_message(
+        board="main",
+        team_id="T1",
+        channel_id="C1",
+        thread_ts="111.4",
+        message_ts="111.4",
+        user_id="U1",
+        node="grove-master",
+        text="done",
+    )
+    store.mark_slack_chat_message_running(running.id, now=100)
+    store.fail_slack_chat_message(failed.id, error="failed", now=100)
+    store.complete_slack_chat_message(done.id, now=100)
+    with store._connect(immediate=True) as conn:
+        conn.execute("UPDATE slack_chat_queue SET created_at = 120 WHERE id = ?", (pending.id,))
+        conn.execute("UPDATE slack_chat_queue SET created_at = 100 WHERE id = ?", (running.id,))
+        conn.execute("UPDATE slack_chat_queue SET created_at = 80 WHERE id = ?", (failed.id,))
+        conn.execute("UPDATE slack_chat_queue SET created_at = 60 WHERE id = ?", (done.id,))
+
+    assert store.slack_chat_queue_summary(board="main", now=200) == {
+        "total": 3,
+        "pending": 1,
+        "running": 1,
+        "failed": 1,
+        "oldest_pending_age_seconds": 100,
+    }
+
+
 def test_legacy_running_statuses_normalize_filter_and_count_as_wip(tmp_path: Path) -> None:
     db_path = tmp_path / "board.db"
     store = SQLiteBoardStore(db_path)

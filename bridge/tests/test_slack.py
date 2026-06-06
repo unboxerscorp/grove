@@ -3806,6 +3806,13 @@ def test_slack_main_connects_polls_and_closes_socket(
     assert socket.connected is True
     assert socket.closed is True
     assert runtime_statuses[0]["socket_connected"] is True
+    assert runtime_statuses[0]["node_chat_queue"] == {
+        "total": 0,
+        "pending": 0,
+        "running": 0,
+        "failed": 0,
+        "oldest_pending_age_seconds": None,
+    }
     assert json.loads(runtime_status_path.read_text(encoding="utf-8"))["socket_connected"] is False
 
 

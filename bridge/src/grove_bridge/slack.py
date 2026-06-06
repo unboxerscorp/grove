@@ -2285,6 +2285,9 @@ class SlackConnector:
             self._node_chat_queue_lock.release()
         return processed
 
+    def node_chat_queue_summary(self, *, now: int) -> dict[str, int | None]:
+        return self.store.slack_chat_queue_summary(board=self.human_gate.board, now=now)
+
     def _process_node_chat_queue_item(self, item: SlackChatQueueItem, *, now: int) -> None:
         item = self.store.mark_slack_chat_message_running(item.id, now=now)
         session_id = _slack_chat_queue_conversation_id(item)
@@ -2458,6 +2461,7 @@ def _write_slack_runtime_status(
     socket_connected: bool,
     last_event_at: int | None = None,
     last_error: str | None = None,
+    node_chat_queue: Mapping[str, int | None] | None = None,
 ) -> None:
     payload: dict[str, object] = {
         "socket_connected": socket_connected,
@@ -2468,6 +2472,8 @@ def _write_slack_runtime_status(
         payload["last_event_at"] = last_event_at
     if last_error:
         payload["last_error"] = redact_secret_text(last_error)
+    if node_chat_queue is not None:
+        payload["node_chat_queue"] = dict(node_chat_queue)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     temp_path.write_text(f"{json.dumps(payload, sort_keys=True)}\n", encoding="utf-8")
@@ -2672,6 +2678,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 runtime_status_path,
                 socket_connected=socket_connected,
                 last_error=last_error,
+                node_chat_queue=connector.node_chat_queue_summary(now=int(time.time())),
             )
             connector.poll_human_gates()
             try:
@@ -2683,7 +2690,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         stop_node_chat_queue.set()
         if node_chat_queue_thread is not None:
             node_chat_queue_thread.join(timeout=1.0)
-        _write_slack_runtime_status(runtime_status_path, socket_connected=False)
+        _write_slack_runtime_status(
+            runtime_status_path,
+            socket_connected=False,
+            node_chat_queue=connector.node_chat_queue_summary(now=int(time.time())),
+        )
         socket_client.close()
 
 

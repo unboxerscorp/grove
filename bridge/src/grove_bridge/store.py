@@ -1959,6 +1959,44 @@ class SQLiteBoardStore:
             ).fetchall()
         return [_slack_chat_queue_item_from_row(row) for row in rows]
 
+    def slack_chat_queue_summary(self, *, board: str, now: int) -> dict[str, int | None]:
+        board_id = self._ensure_board(board)
+        counts = {"pending": 0, "running": 0, "failed": 0}
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM slack_chat_queue
+                WHERE board_id = ?
+                  AND status IN ('pending', 'running', 'failed')
+                GROUP BY status
+                """,
+                (board_id,),
+            ).fetchall()
+            oldest_row = conn.execute(
+                """
+                SELECT MIN(created_at) AS oldest
+                FROM slack_chat_queue
+                WHERE board_id = ?
+                  AND status IN ('pending', 'running')
+                """,
+                (board_id,),
+            ).fetchone()
+        for row in rows:
+            status = _row_str(row, "status")
+            if status in counts:
+                counts[status] = _row_int(row, "count")
+        oldest_age: int | None = None
+        if oldest_row is not None and oldest_row["oldest"] is not None:
+            oldest_age = max(0, now - int(oldest_row["oldest"]))
+        return {
+            "total": counts["pending"] + counts["running"] + counts["failed"],
+            "pending": counts["pending"],
+            "running": counts["running"],
+            "failed": counts["failed"],
+            "oldest_pending_age_seconds": oldest_age,
+        }
+
     def mark_slack_chat_message_running(self, item_id: str, *, now: int) -> SlackChatQueueItem:
         with self._connect(immediate=True) as conn:
             conn.execute(
