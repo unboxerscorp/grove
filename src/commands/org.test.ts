@@ -3,8 +3,14 @@ import { describe, expect, test } from "vitest";
 import type { AgentAdapter } from "../adapters/types.js";
 import { GroveConfigSchema, type ResolvedNode, resolveNodes } from "../config.js";
 import type { Context, NodeCtx } from "../context.js";
-import type { NodeRuntime } from "../registry.js";
-import { annotateOrgPaneStatus, buildOrg, renderOrgJson, renderOrgText } from "./org.js";
+import type { NodeRuntime, Registry } from "../registry.js";
+import {
+  annotateOrgPaneStatus,
+  buildAllProjectOrg,
+  buildOrg,
+  renderOrgJson,
+  renderOrgText,
+} from "./org.js";
 
 function adapter(agent: ResolvedNode["agent"]): AgentAdapter {
   return {
@@ -261,6 +267,77 @@ describe("org rendering", () => {
       roots: ["grove-master"],
       session: "dev10",
     });
+  });
+
+  test("builds an all-project org with namespaced project leads", () => {
+    const ctx = makeContext({
+      lead: {
+        agent: "claude",
+        children: ["maker"],
+        cwd: "/repo/dev10",
+        group: "lead",
+        name: "lead",
+        parent: "grove-master",
+        role: "Dev lead",
+        tmux_pane: "dev10:2.0",
+      },
+      maker: {
+        agent: "codex",
+        children: [],
+        cwd: "/repo/dev10",
+        group: "workers",
+        name: "maker",
+        parent: "lead",
+        role: "Maker",
+        tmux_pane: "dev10:2.1",
+      },
+    });
+    const alpha: Registry = {
+      cwd: "/repo/alpha",
+      nodes: {
+        lead: {
+          agent: "claude",
+          children: ["worker"],
+          cwd: "/repo/alpha",
+          group: "core",
+          name: "lead",
+          parent: "",
+          role: "Alpha lead",
+          tmux_pane: "dev10:3.1",
+        },
+        worker: {
+          agent: "claude",
+          children: [],
+          cwd: "/repo/alpha",
+          group: "workers",
+          name: "worker",
+          parent: "lead",
+          role: "Alpha worker",
+          tmux_pane: "dev10:3.2",
+        },
+      },
+      session: "alpha",
+      tmuxSession: "dev10",
+      updatedAt: "2026-06-06T00:00:00.000Z",
+    };
+
+    const org = buildAllProjectOrg(ctx, { alpha }, null);
+    const nodes = new Map(org.nodes.map((node) => [node.name, node]));
+
+    expect(org.roots).toEqual(["grove-master"]);
+    expect(nodes.get("grove-master")?.children).toEqual(["lead@alpha", "lead@dev10"]);
+    expect(nodes.get("lead@dev10")).toEqual(
+      expect.objectContaining({ parent: "grove-master", project: "dev10" }),
+    );
+    expect(nodes.get("maker")).toEqual(
+      expect.objectContaining({ parent: "lead@dev10", project: "dev10" }),
+    );
+    expect(nodes.get("lead@alpha")).toEqual(
+      expect.objectContaining({ parent: "grove-master", project: "alpha" }),
+    );
+    expect(nodes.get("worker@alpha")).toEqual(
+      expect.objectContaining({ parent: "lead@alpha", project: "alpha" }),
+    );
   });
 
   test("exposes runtime cwd, tmux pane, status, and session id", () => {

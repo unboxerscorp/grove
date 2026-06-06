@@ -226,7 +226,7 @@ def build_compact_grove_context_pack(
     """Compact node-to-node pack: the token-saving default for live `grove send`
     / `grove ask` between running nodes. Carries identity plus the target's role
     and work-instructions summary, and an org digest (node count) with a one-line
-    reminder pointing at `grove org --json` / `grove task mine` for a full
+    reminder pointing at `grove org --all --json` / `grove task mine` for a full
     refresh. Keeps the `GROVE CONTEXT PACK` header prefix so the
     no-duplicate-prepend guard still fires. Mirror of
     context-pack.ts:buildCompactGroveContextPack."""
@@ -246,8 +246,8 @@ def build_compact_grove_context_pack(
             if work_instructions
             else []
         ),
-        f"Visible org: {node_count} {noun} — run `grove org --json` for the "
-        f"full tree; `grove task mine` for your tasks.",
+        f"Visible org: {node_count} {noun} — run `grove org --all --json` for the "
+        f"full multi-project tree; `grove task mine` for your tasks.",
     ]
     return _truncate_utf8(redact_grove_context_text("\n".join(lines)), max_bytes)
 

@@ -273,8 +273,8 @@ COMPACT_PARITY_PACK = "\n".join(
         "Target node: maker",
         "Target role: Builder",
         "Target work instructions (advisory): PR 머지 전 reviewer 승인 필수",
-        "Visible org: 3 nodes — run `grove org --json` for the full tree; "
-        "`grove task mine` for your tasks.",
+        "Visible org: 3 nodes — run `grove org --all --json` for the full "
+        "multi-project tree; `grove task mine` for your tasks.",
     ]
 )
 
@@ -306,5 +306,5 @@ def test_compact_pack_omits_unset_lines_and_singularizes_count() -> None:
 
     assert "Target role:" not in pack
     assert "(advisory)" not in pack
-    assert "Visible org: 1 node — run `grove org --json`" in pack
+    assert "Visible org: 1 node — run `grove org --all --json`" in pack
     assert pack.startswith(GROVE_CONTEXT_PACK_HEADER)

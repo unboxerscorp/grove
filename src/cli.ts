@@ -76,6 +76,7 @@ program
   .command("org")
   .description("print the current grove team graph from the session registry")
   .option("-c, --config <file>", "path to grove.yaml")
+  .option("--all", "include lead-level nodes from every project registry")
   .option("--json", "print the team graph as JSON")
   .action(run((opts: Record<string, unknown>) => cmdOrg(withConfig(opts))));
 

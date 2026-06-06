@@ -1,3 +1,5 @@
+import { readdirSync } from "node:fs";
+
 import type { AgentType, ResolvedNode } from "../config.js";
 import { type Context, loadContext } from "../context.js";
 import {
@@ -8,7 +10,7 @@ import {
   sharedMasterRuntime,
 } from "../registry.js";
 import { paneExists, target } from "../tmux.js";
-import { MASTER_REGISTRY_SESSION } from "../util/paths.js";
+import { GROVE_HOME, MASTER_REGISTRY_SESSION } from "../util/paths.js";
 
 export interface OrgNode {
   name: string;
@@ -22,6 +24,7 @@ export interface OrgNode {
   tmux_pane: string;
   session_id: string;
   status: string;
+  project?: string;
   pane_exists?: boolean;
   unavailable_reason?: string;
 }
@@ -81,6 +84,52 @@ function projectLeadName(nodes: OrgNode[]): string | undefined {
   return nodes.find((node) => node.name !== GROVE_MASTER_NODE_NAME && node.parent === "")?.name;
 }
 
+function namespacedProjectNodeName(name: string, project: string): string {
+  return name === "lead" ? `lead@${project}` : `${name}@${project}`;
+}
+
+function displayNameForProjectNode(name: string, project: string, homeProject: string): string {
+  if (name === "lead") return namespacedProjectNodeName(name, project);
+  return project === homeProject ? name : namespacedProjectNodeName(name, project);
+}
+
+function projectNodesFromRegistry(
+  project: string,
+  registry: Registry,
+  opts: { homeProject: string },
+): OrgNode[] {
+  const { homeProject } = opts;
+  const configured = new Map<string, ResolvedNode>();
+  const rawNodes = Object.keys(registry.nodes)
+    .filter((name) => name !== GROVE_MASTER_NODE_NAME)
+    .map((name) =>
+      orgNode(
+        name,
+        registry.nodes[name]!,
+        configured.get(name),
+        registry.tmuxSession ?? registry.session,
+      ),
+    );
+  const leadName = projectLeadName(rawNodes);
+  const byRaw = new Map(rawNodes.map((node) => [node.name, node]));
+  return rawNodes.map((node) => {
+    const name = displayNameForProjectNode(node.name, project, homeProject);
+    const parent =
+      node.name === leadName || !node.parent || !byRaw.has(node.parent)
+        ? GROVE_MASTER_NODE_NAME
+        : displayNameForProjectNode(node.parent, project, homeProject);
+    return {
+      ...node,
+      children: node.children
+        .filter((child) => byRaw.has(child))
+        .map((child) => displayNameForProjectNode(child, project, homeProject)),
+      name,
+      parent,
+      project,
+    };
+  });
+}
+
 function applyMasterHierarchy(nodes: OrgNode[]): void {
   const byName = new Map(nodes.map((node) => [node.name, node]));
   const leadName = projectLeadName(nodes);
@@ -135,6 +184,43 @@ export function buildOrg(
     groups[node.group] = [...(groups[node.group] ?? []), node.name];
   }
   return { groups, nodes, roots, session: ctx.config.session };
+}
+
+export function buildAllProjectOrg(
+  ctx: Context,
+  projectRegistries: Record<string, Registry>,
+  masterRegistry: Registry | null = loadRegistry(MASTER_REGISTRY_SESSION),
+): OrgJson {
+  const homeProject = ctx.config.session;
+  const master = masterOrgNode(masterRegistry, homeProject);
+  const nodes: OrgNode[] = [master];
+  const registries = new Map<string, Registry>([
+    [homeProject, ctx.registry],
+    ...Object.entries(projectRegistries).filter(([project]) => project !== homeProject),
+  ]);
+  for (const [project, registry] of [...registries.entries()].sort(([a], [b]) =>
+    a.localeCompare(b),
+  )) {
+    nodes.push(...projectNodesFromRegistry(project, registry, { homeProject }));
+  }
+  deriveChildren(nodes);
+  const groups: Record<string, string[]> = {};
+  for (const node of nodes) {
+    if (!node.group) continue;
+    groups[node.group] = [...(groups[node.group] ?? []), node.name];
+  }
+  return { groups, nodes, roots: [GROVE_MASTER_NODE_NAME], session: homeProject };
+}
+
+function discoverProjectRegistries(): Record<string, Registry> {
+  const registries: Record<string, Registry> = {};
+  for (const entry of readdirSync(GROVE_HOME, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith(".") || entry.name.startsWith("_")) continue;
+    const registry = loadRegistry(entry.name);
+    if (registry) registries[entry.name] = registry;
+  }
+  return registries;
 }
 
 export async function annotateOrgPaneStatus(
@@ -221,8 +307,13 @@ export function renderOrgJson(org: OrgJson): string {
   return JSON.stringify(org, null, 2);
 }
 
-export async function cmdOrg(opts: { config?: string; json?: boolean }): Promise<void> {
+export async function cmdOrg(opts: {
+  all?: boolean;
+  config?: string;
+  json?: boolean;
+}): Promise<void> {
   const ctx = loadContext(opts.config);
-  const org = await annotateOrgPaneStatus(buildOrg(ctx));
+  const baseOrg = opts.all ? buildAllProjectOrg(ctx, discoverProjectRegistries()) : buildOrg(ctx);
+  const org = await annotateOrgPaneStatus(baseOrg);
   process.stdout.write(`${opts.json ? renderOrgJson(org) : renderOrgText(org)}\n`);
 }

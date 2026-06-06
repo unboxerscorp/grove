@@ -237,7 +237,7 @@ export function buildGroveContextPack(input: GroveContextPackInput): string {
  * Compact node-to-node pack: the token-saving default for live `grove send` /
  * `grove ask` between running nodes. Carries identity (caller/project/target),
  * the target's role + work-instructions summary, and an org digest (node count)
- * with a one-line reminder pointing at `grove org --json` / `grove task mine`
+ * with a one-line reminder pointing at `grove org --all --json` / `grove task mine`
  * for a full refresh — so the org/rules are still reachable, just not inlined.
  * Keeps the `GROVE CONTEXT PACK` header prefix so the no-duplicate-prepend guard
  * still fires. Mirror of context_pack.py:build_compact_grove_context_pack.
@@ -254,7 +254,7 @@ export function buildCompactGroveContextPack(input: GroveContextPackInput): stri
     targetNode ? `Target node: ${targetNode}` : "Target node: (none)",
     ...(targetRole ? [`Target role: ${targetRole}`] : []),
     ...(workInstructions ? [`Target work instructions (advisory): ${workInstructions}`] : []),
-    `Visible org: ${nodeCount} ${nodeCount === 1 ? "node" : "nodes"} — run \`grove org --json\` for the full tree; \`grove task mine\` for your tasks.`,
+    `Visible org: ${nodeCount} ${nodeCount === 1 ? "node" : "nodes"} — run \`grove org --all --json\` for the full multi-project tree; \`grove task mine\` for your tasks.`,
   ];
   return truncateUtf8(
     redactGroveContextText(lines.join("\n")),

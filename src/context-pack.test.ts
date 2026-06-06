@@ -354,7 +354,7 @@ const COMPACT_PARITY_PACK = [
   "Target node: maker",
   "Target role: Builder",
   "Target work instructions (advisory): PR 머지 전 reviewer 승인 필수",
-  "Visible org: 3 nodes — run `grove org --json` for the full tree; `grove task mine` for your tasks.",
+  "Visible org: 3 nodes — run `grove org --all --json` for the full multi-project tree; `grove task mine` for your tasks.",
 ].join("\n");
 
 describe("buildCompactGroveContextPack", () => {
@@ -396,7 +396,7 @@ describe("buildCompactGroveContextPack", () => {
 
     expect(pack).not.toContain("Target role:");
     expect(pack).not.toContain("(advisory)");
-    expect(pack).toContain("Visible org: 1 node — run `grove org --json`");
+    expect(pack).toContain("Visible org: 1 node — run `grove org --all --json`");
   });
 
   test("redacts secrets in the compact pack too", () => {
