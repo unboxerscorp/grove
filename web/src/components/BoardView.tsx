@@ -6,6 +6,7 @@ import { statusLabel, useI18n } from "../i18n";
 import type { AssigneeCandidate, BoardWorkflow, GroveNode, Task } from "../types";
 
 const PRIORITIES = ["low", "normal", "high"] as const;
+const GROUP_ASSIGNEE_PREFIX = "group:";
 
 /** Short, de-emphasized id slug for a card — long raw ids (task_2398…) are
  *  truncated so they never dominate or overflow; short ids (G-2) pass through. */
@@ -30,6 +31,26 @@ function AddTaskForm(props: { boardId: string; initialStatus?: string; onCreated
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const groupTargets = useMemo(() => {
+    const grouped = new Map<string, AssigneeCandidate[]>();
+    for (const candidate of candidates) {
+      const group = candidate.group?.trim();
+      if (!group) continue;
+      const members = grouped.get(group) ?? [];
+      members.push(candidate);
+      grouped.set(group, members);
+    }
+    return Array.from(grouped.entries())
+      .map(([group, members]) => ({
+        group,
+        members: members.slice().sort((a, b) => a.name.localeCompare(b.name)),
+      }))
+      .sort((a, b) => a.group.localeCompare(b.group));
+  }, [candidates]);
+
+  const selectedGroup = assignee.startsWith(GROUP_ASSIGNEE_PREFIX) ? assignee.slice(GROUP_ASSIGNEE_PREFIX.length) : "";
+  const selectedGroupMembers = selectedGroup ? (groupTargets.find((target) => target.group === selectedGroup)?.members ?? []) : [];
+
   // assignee = a REQUIRED dropdown of the project's nodes + default node
   // (web_app.py assignee_candidates/default_assignee; falls back to /api/org
   // nodes if the candidate list is absent). No free input.
@@ -39,10 +60,15 @@ function AddTaskForm(props: { boardId: string; initialStatus?: string; onCreated
       .getOrg()
       .then((o) => {
         if (!alive) return;
-        const cands: AssigneeCandidate[] =
+        const nodeByName = new Map((o.nodes ?? []).map((node) => [node.name, node]));
+        const baseCandidates: AssigneeCandidate[] =
           o.assignee_candidates && o.assignee_candidates.length > 0
             ? o.assignee_candidates
             : (o.nodes ?? []).map((n) => ({ name: n.name, role: n.role, agent: n.agent, status: n.status }));
+        const cands = baseCandidates.map((candidate) => ({
+          ...candidate,
+          group: candidate.group ?? nodeByName.get(candidate.name)?.group ?? "",
+        }));
         setCandidates(cands);
         const def =
           o.default_assignee && cands.some((c) => c.name === o.default_assignee)
@@ -67,14 +93,20 @@ function AddTaskForm(props: { boardId: string; initialStatus?: string; onCreated
     }
     setBusy(true);
     setError(null);
-    api
-      .createTask(boardId, {
-        title: titleTrim,
-        body: body.trim() || undefined,
-        assignee: assignee.trim() || undefined,
-        status,
-        priority,
-      })
+    const assignees =
+      selectedGroupMembers.length > 0 ? selectedGroupMembers.map((member) => member.name) : [assignee.trim()].filter(Boolean);
+    const bodyTrim = body.trim() || undefined;
+    Promise.all(
+      assignees.map((targetAssignee) =>
+        api.createTask(boardId, {
+          title: titleTrim,
+          body: bodyTrim,
+          assignee: targetAssignee || undefined,
+          status,
+          priority,
+        }),
+      ),
+    )
       .then(() => {
         setBusy(false);
         onCreated();
@@ -123,6 +155,15 @@ function AddTaskForm(props: { boardId: string; initialStatus?: string; onCreated
               {c.human ? " · human" : c.reviewer ? " · reviewer" : ""}
             </option>
           ))}
+          {groupTargets.length > 0 && (
+            <optgroup label={t("add.groups")}>
+              {groupTargets.map((target) => (
+                <option key={target.group} value={`${GROUP_ASSIGNEE_PREFIX}${target.group}`}>
+                  {t("add.groupTarget", { group: target.group, n: target.members.length })}
+                </option>
+              ))}
+            </optgroup>
+          )}
         </select>
         <select
           className="dr-select"

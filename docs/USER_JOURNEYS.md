@@ -65,7 +65,7 @@
 | 부모 끊기                | 연결선 ✕ / 노드 "부모 끊기" | `PATCH {parent:null}`→root로                             | `web/verify.mjs`(cutAffordance, cutParent), `bridge::test_update_node_can_clear_parent_and_group`                                             | covered |
 | 노드별 태스크 배정       | 노드 드로어                 | assignee=노드명으로 태스크 생성                          | `web/verify.mjs`(assignedAssignee), `bridge::test_rest_creates_task_on_board`                                                                 | covered |
 | 보드에서 추적            | 보드 뷰                     | 컬럼별 카운트·카드, 라이브 갱신                          | `web/verify.mjs`(board, boardLiveOk)                                                                                                          | covered |
-| 그룹 단위 일괄 배정/필터 | 보드 뷰                     | 그룹 선택→보드 그룹 필터, 일괄 배정은 백로그             | `web/verify.mjs` `#N10 board group filter`                                                                                                    | partial |
+| 그룹 단위 일괄 배정/필터 | 보드 뷰                     | 그룹 선택→보드 필터, 그룹 선택 배정→멤버별 항목 생성     | `web/verify.mjs` `#N10 board group filter + group bulk assignment`                                                                            | covered |
 
 ---
 
@@ -235,7 +235,7 @@
 | N7  | 전체 i18n               | 브랜드 외 탭/패널/폼 라벨까지 KO/EN 전환 스냅샷                                                   | `web/verify.mjs` `#N7 full-label i18n snapshot`                                                  | P2   | covered |
 | N8  | 접근성                  | 연결선 detach와 부모 선택 select로 드래그 키보드 대안 제공, 포커스·ARIA 스냅샷 검증               | `web/verify.mjs` `#N8 org accessibility snapshot`                                                | P3   | covered |
 | N9  | 읽기 전용 터미널        | xterm 입력 비전달 보장(키 입력→무전송)                                                            | `web/verify.mjs` `#N9 xterm stdin disabled`                                                      | P3   | covered |
-| N10 | 그룹 일괄 작업          | 보드 그룹 필터는 커버, 그룹 단위 일괄 배정은 제품화 후 보완                                       | `web/verify.mjs` `#N10 board group filter`                                                       | P3   | partial |
+| N10 | 그룹 일괄 작업          | 보드 그룹 필터와 그룹 선택 배정 시 멤버별 사람용 항목 생성                                        | `web/verify.mjs` `#N10 board group filter + group bulk assignment`                               | P3   | covered |
 
 N2는 blocked/ask-human 카드, inbox API, live inbox answer 흐름, drawer Slack thread
 entrypoint까지 커버됐다.

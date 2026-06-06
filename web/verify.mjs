@@ -563,6 +563,45 @@ async function coreMain() {
       boardGroupFilter.initial > boardGroupFilter.filtered &&
       boardGroupFilter.filtered > 0;
 
+    // #N10 group bulk assignment: the add form offers group targets and creates
+    // one human-facing item per current member of the selected org group.
+    const GROUP_TITLE = "Build group follow-up";
+    await page.click(".dr-addbtn");
+    await page.waitForSelector(".dr-addform", { timeout: 5000 });
+    await page.waitForFunction(
+      () => Array.from(document.querySelectorAll(".dr-addform__assignee option")).some((option) => option.getAttribute("value") === "group:build"),
+      { timeout: 8000 },
+    );
+    const groupAddOptions = await page.$$eval(".dr-addform__assignee option", (els) =>
+      els.map((el) => ({ value: el.getAttribute("value") ?? "", text: (el.textContent ?? "").trim() })),
+    );
+    await page.evaluate(() => {
+      if (window.__MOCK__) window.__MOCK__.taskPosts = [];
+    });
+    await page.type('.dr-addform input[name="title"]', GROUP_TITLE);
+    await page.select(".dr-addform__assignee", "group:build");
+    await page.waitForFunction(() => document.querySelector(".dr-addform__assignee")?.value === "group:build", {
+      timeout: 5000,
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    await page.click(".dr-addform__submit");
+    await page.waitForFunction(
+      (title) => (window.__MOCK__?.taskPosts ?? []).filter((post) => post.title === title).length === 3,
+      { timeout: 8000 },
+      GROUP_TITLE,
+    );
+    const boardGroupBulk = await page.evaluate((title) => {
+      const posts = (window.__MOCK__?.taskPosts ?? []).filter((post) => post.title === title);
+      return {
+        count: posts.length,
+        assignees: posts.map((post) => post.assignee).sort(),
+      };
+    }, GROUP_TITLE);
+    const boardGroupBulkOk =
+      groupAddOptions.some((option) => option.value === "group:build" && /build/.test(option.text)) &&
+      boardGroupBulk.count === 3 &&
+      JSON.stringify(boardGroupBulk.assignees) === JSON.stringify(["backend", "docs", "frontend"]);
+
     await page.$eval('.dr-card[data-task="G-7"] .dr-card__open', (el) => el.click());
     await page.waitForSelector(".dr-drawer__panel", { timeout: 8000 });
     const n2Drawer = await page.evaluate(() => ({
@@ -4211,6 +4250,7 @@ async function main() {
       cursorReplayOk &&
       n4Ok &&
       n5Ok &&
+      boardGroupBulkOk &&
       projModelOk &&
       n1Ok &&
       n2Ok &&
@@ -4294,6 +4334,7 @@ async function main() {
       cursorReplayOk,
       cursorReplay: { liveMaxBefore, ...replay },
       n4Ok,
+      boardGroupBulk,
       n4Reconnected,
       n4CatchUpCol,
       n4NoReconnect,

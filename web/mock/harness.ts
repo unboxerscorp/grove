@@ -2241,6 +2241,9 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         status: created.status,
         hasBody: Boolean(created.body),
       };
+      const taskPosts = (diag.taskPosts as unknown[] | undefined) ?? [];
+      taskPosts.push(diag.lastTaskPost);
+      diag.taskPosts = taskPosts;
       return Promise.resolve(json(created));
     }
     let list = TASKS[board] ?? [];

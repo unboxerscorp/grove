@@ -104,6 +104,7 @@ export interface AssigneeCandidate {
   agent?: string;
   role?: string;
   status?: string;
+  group?: string;
   default?: boolean;
   human?: boolean;
   reviewer?: boolean;
