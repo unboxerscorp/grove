@@ -2306,13 +2306,21 @@ class SlackConnector:
         return self.store.slack_chat_queue_summary(board=self.human_gate.board, now=now)
 
     def _process_node_chat_queue_item(self, item: SlackChatQueueItem, *, now: int) -> None:
-        if self._chat_bridge_runtime_ready():
-            # Flag ON only: bridge-native runtime may take the turn. Never entered
-            # when the flag is OFF or provider config is absent → the existing
-            # path below remains fallback. Setup key/flag changes are picked up
-            # without a Slack restart.
-            if self._process_chat_bridge_runtime_item(item, now=now):
-                return
+        if chat_bridge_runtime_enabled(self.store, board=self.human_gate.board):
+            # Runtime ON means the bridge-native provider owns this turn. Do not
+            # fall back to the persistent CLI node; retry/defer keeps the item
+            # durable until the provider/flag state is fixed or the operator
+            # explicitly turns the runtime OFF.
+            if self._chat_bridge_runtime_ready():
+                if self._process_chat_bridge_runtime_item(item, now=now):
+                    return
+            self.store.defer_slack_chat_message(
+                item.id,
+                error="chat bridge runtime unavailable",
+                next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                now=now,
+            )
+            return
         item = self.store.mark_slack_chat_message_running(item.id, now=now)
         if self._process_node_chat_task_intake(item, now=now):
             return
@@ -2404,11 +2412,8 @@ class SlackConnector:
         """Bridge-native Slack runtime entry — flag-gated; reached only
         when the runtime flag is ON (``self._chat_bridge_runtime`` constructed).
         With the flag OFF this is never called → the existing path is byte-identical.
-
-        LIVE only when a provider key is configured: generate via Gemini, post the
-        generated answer, and complete the durable queue item. If provider config
-        is missing or generation fails, return False so the existing node-routed
-        path can answer; no fabricated/template response is posted.
+        With the flag ON this method must either post a provider-generated answer
+        or defer the durable item; it must not fall back to the CLI node path.
         """
         runtime = self._chat_bridge_runtime
         adapter = self._chat_bridge_adapter
@@ -2420,7 +2425,13 @@ class SlackConnector:
                 "chat bridge runtime skipped conv=%s reason=session_busy",
                 conversation_id,
             )
-            return False
+            self.store.defer_slack_chat_message(
+                item.id,
+                error="chat bridge runtime session busy",
+                next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                now=now,
+            )
+            return True
         try:
             response_text = item.response_text
             try:
@@ -2442,12 +2453,24 @@ class SlackConnector:
                     )
             except Exception as exc:
                 LOGGER.warning(
-                    "chat bridge runtime generation failed; falling back to node route: %s",
+                    "chat bridge runtime generation failed; deferred without CLI fallback: %s",
                     _safe_log_error(exc),
                 )
-                return False
+                self.store.defer_slack_chat_message(
+                    item.id,
+                    error=_safe_log_error(exc),
+                    next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                    now=now,
+                )
+                return True
             if response_text is None:
-                return False
+                self.store.defer_slack_chat_message(
+                    item.id,
+                    error="chat bridge runtime returned no answer",
+                    next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                    now=now,
+                )
+                return True
             if item.response_text is None:
                 item = self.store.store_slack_chat_message_response(
                     item.id,
