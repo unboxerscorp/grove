@@ -2422,29 +2422,40 @@ class SlackConnector:
             )
             return False
         try:
+            response_text = item.response_text
             try:
-                generated = adapter.generate(
-                    ProviderRequest(system_prompt=CHAT_BRIDGE_SHADOW_PERSONA, user_text=item.text)
-                )
-                response_text = guard_answer_channel(
-                    generated,
-                    forbidden=frozenset(
-                        {ASSISTANT_TRANSPORT_FALLBACK_TEXT, "master chat is unavailable"}
-                    ),
-                )
+                if response_text is None:
+                    generated = adapter.generate(
+                        ProviderRequest(
+                            system_prompt=CHAT_BRIDGE_SHADOW_PERSONA,
+                            user_text=self._chat_bridge_slack_user_text(
+                                item,
+                                conversation_id=conversation_id,
+                            ),
+                        )
+                    )
+                    response_text = guard_answer_channel(
+                        generated,
+                        forbidden=frozenset(
+                            {ASSISTANT_TRANSPORT_FALLBACK_TEXT, "master chat is unavailable"}
+                        ),
+                    )
             except Exception as exc:
                 LOGGER.warning(
                     "chat bridge runtime generation failed; falling back to node route: %s",
                     _safe_log_error(exc),
                 )
                 return False
-            item = self.store.store_slack_chat_message_response(
-                item.id,
-                response_text=response_text,
-                now=now,
-            )
+            if response_text is None:
+                return False
+            if item.response_text is None:
+                item = self.store.store_slack_chat_message_response(
+                    item.id,
+                    response_text=response_text,
+                    now=now,
+                )
             try:
-                for response_chunk in _slack_assistant_response_chunks(item.response_text or ""):
+                for response_chunk in _slack_assistant_response_chunks(response_text):
                     self.slack_client.post_message(
                         channel=item.channel_id,
                         text=response_chunk,
@@ -2462,10 +2473,71 @@ class SlackConnector:
                     now=now,
                 )
                 return True
+            self._persist_chat_bridge_slack_turn(
+                item,
+                conversation_id=conversation_id,
+                response_text=response_text,
+            )
             self.store.complete_slack_chat_message(item.id, now=now)
             return True
         finally:
             runtime.release_session(conversation_id)
+
+    def _chat_bridge_slack_user_text(
+        self,
+        item: SlackChatQueueItem,
+        *,
+        conversation_id: str,
+    ) -> str:
+        history = self.store.list_master_chat_messages(
+            board=self.human_gate.board,
+            conversation_id=conversation_id,
+            limit=12,
+        )
+        history_lines = [
+            f"{message.role}: {_safe_slack_message_text(message.text)}"
+            for message in history[-12:]
+            if message.text.strip()
+        ]
+        return "\n".join(
+            [
+                "Surface: slack",
+                f"Board: {self.human_gate.board}",
+                f"Conversation: {conversation_id}",
+                f"Thread: {item.team_id}/{item.channel_id}/{item.thread_ts}",
+                "Conversation history:",
+                "\n".join(history_lines) if history_lines else "(none)",
+                "Current user message:",
+                _safe_slack_message_text(item.text),
+            ]
+        )
+
+    def _persist_chat_bridge_slack_turn(
+        self,
+        item: SlackChatQueueItem,
+        *,
+        conversation_id: str,
+        response_text: str,
+    ) -> None:
+        try:
+            self.store.append_master_chat_message(
+                board=self.human_gate.board,
+                conversation_id=conversation_id,
+                role="user",
+                text=_safe_slack_message_text(item.text),
+                request_id=item.id,
+                origin_surface="slack",
+            )
+            self.store.append_master_chat_message(
+                board=self.human_gate.board,
+                conversation_id=conversation_id,
+                role="assistant",
+                text=_safe_slack_message_text(response_text),
+                request_id=item.id,
+                origin_surface="slack",
+            )
+        except Exception as exc:
+            LOGGER.warning("chat bridge runtime history persist failed: %s", _safe_log_error(exc))
 
     def _process_node_chat_task_intake(self, item: SlackChatQueueItem, *, now: int) -> bool:
         if self.command_config is None or self.confirmations is None:

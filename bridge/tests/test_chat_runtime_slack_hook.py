@@ -118,15 +118,43 @@ def test_flag_on_gemini_runtime_generates_and_publishes_without_cli_node(tmp_pat
     assert conn._chat_bridge_runtime is not None
     adapter = _FakeAdapter()
     conn._chat_bridge_adapter = adapter  # inject (avoid real API)
+    conversation_id = "slack:T:C1:th"
+    store.append_master_chat_message(
+        board="dev10",
+        conversation_id=conversation_id,
+        role="user",
+        text="earlier question",
+        request_id="prev-1",
+        origin_surface="slack",
+    )
+    store.append_master_chat_message(
+        board="dev10",
+        conversation_id=conversation_id,
+        role="assistant",
+        text="earlier answer",
+        request_id="prev-1",
+        origin_surface="slack",
+    )
 
     _enqueue(store)
     conn.poll_node_chat_queue()
 
     # Runtime live path: generated via the adapter and posted directly; the CLI
     # node route is not called.
-    assert adapter.calls == ["hi"]
+    assert len(adapter.calls) == 1
+    assert "Conversation history:" in adapter.calls[0]
+    assert "earlier question" in adapter.calls[0]
+    assert "earlier answer" in adapter.calls[0]
+    assert "Current user message:\nhi" in adapter.calls[0]
     assert facade.calls == []
     assert slack.posts == [("C1", "shadow answer")]
+    history = store.list_master_chat_messages(board="dev10", conversation_id=conversation_id)
+    assert [(message.role, message.text) for message in history] == [
+        ("user", "earlier question"),
+        ("assistant", "earlier answer"),
+        ("user", "hi"),
+        ("assistant", "shadow answer"),
+    ]
     due = store.list_due_slack_chat_messages(
         board="dev10", now=9_999_999_999, running_stale_before=9_999_999_999, limit=10
     )
@@ -155,7 +183,8 @@ def test_runtime_flag_and_provider_refresh_without_slack_restart(
             self.model = model
 
         def generate(self, request: ProviderRequest) -> str:
-            return f"runtime answer: {request.user_text}"
+            assert "Current user message:\nhi" in request.user_text
+            return "runtime answer"
 
     monkeypatch.setattr(slack_module, "GeminiChatProviderAdapter", _FakeGeminiAdapter)
     store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
@@ -164,4 +193,4 @@ def test_runtime_flag_and_provider_refresh_without_slack_restart(
     conn.poll_node_chat_queue()
 
     assert facade.calls == []
-    assert slack.posts == [("C1", "runtime answer: hi")]
+    assert slack.posts == [("C1", "runtime answer")]
