@@ -1,0 +1,281 @@
+"""Bridge-native chatbot runtime — Stage0 scaffolding (flag-gated, inert).
+
+Design: docs/design/CHAT_BRIDGE_CHATBOT_RUNTIME.md.
+
+Stage0 rule: nothing in this module is constructed or wired into the live
+Slack/web route unless the operator explicitly enables the runtime feature flag
+(default OFF). Importing this module has **zero** effect on existing behavior —
+it defines types, a flag gate, a provider-adapter boundary, a no-template guard,
+and a bounded worker-pool scaffold. No live publish, no cutover, no intake
+changes happen here.
+
+Ownership notes:
+- The persona/policy system prompt and the exact structured-turn contract are
+  chat-master deliverables (submitted at the Stage0 window). The parser here is
+  a minimal scaffold of that boundary with the agreed **safe-fallback** rule.
+- The provider backend (official ``anthropic`` SDK vs. the existing raw-HTTP
+  ``AnthropicAssistantClient``) is confirmed at implementation; this module only
+  defines the boundary + a redacting wrapper.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Literal, Protocol, runtime_checkable
+
+from grove_bridge.auth_status import redact_secret_text
+
+# GUI feature flag name (default OFF). Distinct from the ``intake`` flag, which
+# stays FALSE independently — enabling the runtime does NOT enable intake.
+CHAT_BRIDGE_RUNTIME_FLAG = "chat_bridge_runtime"
+
+# Marker prefix for chat-master's structured task-proposal turn. The final
+# contract (marker + field schema) is chat-master-owned; this is the Stage0
+# scaffold of the boundary.
+TASK_PROPOSAL_MARKER = "<<<GROVE_TASK_PROPOSAL>>>"
+
+ChatSurface = Literal["slack", "web"]
+TurnKind = Literal["answer", "task_proposal"]
+
+
+# --------------------------------------------------------------------------- #
+# Flag gate
+# --------------------------------------------------------------------------- #
+@runtime_checkable
+class FlagSource(Protocol):
+    def gui_feature_flags(
+        self, *, board: str, features: tuple[str, ...]
+    ) -> dict[str, dict[str, object]]: ...
+
+
+def chat_bridge_runtime_enabled(flags: FlagSource, *, board: str) -> bool:
+    """True only when the operator has explicitly enabled the runtime flag.
+
+    Default OFF: an unconfigured flag, ``enabled`` other than ``True``, or any
+    error reading the flag source all resolve to ``False`` (inert). Keeping the
+    failure path OFF guarantees the runtime can never accidentally activate.
+    """
+    try:
+        state = flags.gui_feature_flags(board=board, features=(CHAT_BRIDGE_RUNTIME_FLAG,))[
+            CHAT_BRIDGE_RUNTIME_FLAG
+        ]
+    except Exception:
+        return False
+    return state.get("enabled") is True
+
+
+# --------------------------------------------------------------------------- #
+# Session + structured-turn types
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class ChatSession:
+    """A durable per-thread/per-conversation chat session (Slack thread or web
+    conversation). Persistence is the additive store's concern (later slice)."""
+
+    conversation_id: str
+    surface: ChatSurface
+    status: str = "active"
+
+
+@dataclass(frozen=True)
+class TaskProposalFields:
+    title: str
+    body: str = ""
+    project: str = "dev10"
+    worktree: str | None = None
+
+
+@dataclass(frozen=True)
+class StructuredTurn:
+    """Result of interpreting a chat-master turn: either a free-chat *answer*
+    (always an LLM generation) or a *task_proposal* (confirm-before-create)."""
+
+    kind: TurnKind
+    answer_text: str | None = None
+    proposal: TaskProposalFields | None = None
+    card_text: str | None = None
+
+
+class TurnParseError(Exception):
+    """A structured-turn marker was present but its payload was unparseable.
+
+    Per the SAFE-FALLBACK rule (design §4): callers MUST treat this as a
+    defer/retry — they must NEVER fabricate a user-facing answer/card from the
+    raw text when this is raised.
+    """
+
+
+def parse_structured_turn(raw: str) -> StructuredTurn:
+    """Parse a chat-master turn into a :class:`StructuredTurn`.
+
+    Safe fallback: text with no task-proposal marker is treated as a plain
+    *answer* (a successful generation). A present-but-malformed marker payload
+    raises :class:`TurnParseError` so the caller can defer/retry — it is never
+    silently turned into a fabricated answer.
+    """
+    text = raw if isinstance(raw, str) else ""
+    marker = text.find(TASK_PROPOSAL_MARKER)
+    if marker == -1:
+        return StructuredTurn(kind="answer", answer_text=text)
+    payload = text[marker + len(TASK_PROPOSAL_MARKER) :].strip()
+    try:
+        decoded = json.loads(payload)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise TurnParseError("unparseable task-proposal payload") from exc
+    if not isinstance(decoded, dict) or not isinstance(decoded.get("title"), str):
+        raise TurnParseError("task-proposal payload missing required title")
+    proposal = TaskProposalFields(
+        title=decoded["title"],
+        body=decoded.get("body", "") if isinstance(decoded.get("body"), str) else "",
+        project=decoded.get("project", "dev10")
+        if isinstance(decoded.get("project"), str)
+        else "dev10",
+        worktree=decoded.get("worktree") if isinstance(decoded.get("worktree"), str) else None,
+    )
+    card = decoded.get("card_text")
+    return StructuredTurn(
+        kind="task_proposal",
+        proposal=proposal,
+        card_text=card if isinstance(card, str) else None,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Provider-adapter boundary (NO CLI node; NO AssistantBroker node-routed client)
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class ProviderRequest:
+    system_prompt: str
+    user_text: str
+
+
+@runtime_checkable
+class ChatProviderAdapter(Protocol):
+    """Bridge-native LLM call boundary. Concrete impls call the Claude API
+    directly (official ``anthropic`` SDK or the raw-HTTP client) — never a
+    persistent CLI node."""
+
+    def generate(self, request: ProviderRequest) -> str: ...
+
+
+@dataclass
+class RedactingProviderAdapter:
+    """Wraps a provider adapter and redacts secrets/PII from every field before
+    the provider sees it ([R] guard): raw secrets never leave the bridge."""
+
+    inner: ChatProviderAdapter
+    redact: Callable[[str], str] = redact_secret_text
+
+    def generate(self, request: ProviderRequest) -> str:
+        safe = ProviderRequest(
+            system_prompt=self.redact(request.system_prompt),
+            user_text=self.redact(request.user_text),
+        )
+        return self.inner.generate(safe)
+
+
+# --------------------------------------------------------------------------- #
+# No-template guard (free-chat ANSWER channel only; confirm-flow copy exempt)
+# --------------------------------------------------------------------------- #
+class NoTemplateViolation(Exception):
+    """A fixed bridge template (or empty text) was about to be posted as a
+    free-chat answer. Confirm-flow §7 copy is chat-master-authored and is NOT
+    checked here."""
+
+
+def guard_answer_channel(answer: str, *, forbidden: frozenset[str]) -> str:
+    """Return ``answer`` if it is a genuine generation; raise
+    :class:`NoTemplateViolation` if it is empty/whitespace or matches a known
+    fixed bridge template. Applies to the free-chat answer channel only."""
+    norm = (answer or "").strip()
+    if not norm:
+        raise NoTemplateViolation("empty answer is not a valid generation")
+    if norm in forbidden:
+        raise NoTemplateViolation("fixed bridge template must not be posted as a chat answer")
+    return answer
+
+
+# --------------------------------------------------------------------------- #
+# Kill-switch + metrics
+# --------------------------------------------------------------------------- #
+@dataclass
+class KillSwitch:
+    """Emergency stop, distinct from the rollout flag. When tripped, the pool
+    refuses to acquire sessions; a circuit-breaker on error rate can trip it."""
+
+    _tripped: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def trip(self) -> None:
+        with self._lock:
+            self._tripped = True
+
+    def reset(self) -> None:
+        with self._lock:
+            self._tripped = False
+
+    @property
+    def tripped(self) -> bool:
+        with self._lock:
+            return self._tripped
+
+
+@dataclass
+class RuntimeMetrics:
+    enqueued: int = 0
+    processed: int = 0
+    deferred: int = 0
+    errors: int = 0
+    active_sessions: int = 0
+
+
+# --------------------------------------------------------------------------- #
+# Bounded worker-pool scaffold (per-session lease; NOT wired to the live route)
+# --------------------------------------------------------------------------- #
+class ChatWorkerPool:
+    """Bounded concurrency + per-session FIFO lease.
+
+    Scaffold only: this enforces the concurrency/ordering invariants
+    (≤ ``max_workers`` concurrent sessions, one in-flight worker per session) and
+    honors the kill-switch. Wiring it to the durable queue / provider adapter is
+    a later flag-gated slice — nothing here runs unless explicitly driven.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_workers: int = 4,
+        kill_switch: KillSwitch | None = None,
+        metrics: RuntimeMetrics | None = None,
+    ) -> None:
+        self.max_workers = max(1, max_workers)
+        self.kill_switch = kill_switch or KillSwitch()
+        self.metrics = metrics or RuntimeMetrics()
+        self._sessions_in_flight: set[str] = set()
+        self._lock = threading.Lock()
+
+    def try_acquire_session(self, conversation_id: str) -> bool:
+        """Acquire an exclusive in-flight lease for ``conversation_id``.
+
+        Returns ``False`` (and acquires nothing) if the kill-switch is tripped,
+        the session is already in flight (preserves per-session FIFO), or the
+        pool is at its concurrency cap.
+        """
+        with self._lock:
+            if self.kill_switch.tripped:
+                return False
+            if conversation_id in self._sessions_in_flight:
+                return False
+            if len(self._sessions_in_flight) >= self.max_workers:
+                return False
+            self._sessions_in_flight.add(conversation_id)
+            self.metrics.active_sessions = len(self._sessions_in_flight)
+            return True
+
+    def release_session(self, conversation_id: str) -> None:
+        with self._lock:
+            self._sessions_in_flight.discard(conversation_id)
+            self.metrics.active_sessions = len(self._sessions_in_flight)
