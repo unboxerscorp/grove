@@ -2973,7 +2973,12 @@ button {
 
 .dr-board__actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.dr-board__group-filter {
+  min-width: 132px;
 }
 
 .dr-board__msg {

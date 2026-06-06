@@ -533,8 +533,26 @@ async function coreMain() {
     const board = await page.evaluate(() => ({
       title: (document.querySelector(".dr-board__title")?.textContent ?? "").trim(),
       lists: Array.from(document.querySelectorAll(".dr-col__title")).map((el) => (el.textContent ?? "").trim()),
+      totalCards: document.querySelectorAll(".dr-card").length,
+      groupFilter: !!document.querySelector(".dr-board__group-filter"),
       noStatusFilters: document.querySelectorAll(".dr-board__filters, .dr-filter").length === 0,
     }));
+    const boardGroupFilter = { initial: board.totalCards, filtered: 0, values: [] };
+    if (board.groupFilter) {
+      boardGroupFilter.values = await page.$$eval(".dr-board__group-filter option", (els) =>
+        els.map((el) => el.getAttribute("value") ?? ""),
+      );
+      await page.select(".dr-board__group-filter", "build");
+      await page.waitForFunction(() => document.querySelectorAll(".dr-card").length > 0, { timeout: 5000 });
+      boardGroupFilter.filtered = await page.$$eval(".dr-card", (cards) => cards.length);
+    }
+    const boardGroupFilterOk =
+      // #N10 board group filter: group selection filters visible human-facing
+      // cards by the assignee's current org group without mutating assignments.
+      board.groupFilter &&
+      boardGroupFilter.values.includes("build") &&
+      boardGroupFilter.initial > boardGroupFilter.filtered &&
+      boardGroupFilter.filtered > 0;
 
     const ok =
       JSON.stringify(sidebar.groups) === JSON.stringify(["work", "comms", "audit", "setup"]) &&
@@ -570,6 +588,7 @@ async function coreMain() {
       slackGuide.noReadOnlyCopy &&
       /사람용|Human/i.test(board.title) &&
       board.lists.length === 2 &&
+      boardGroupFilterOk &&
       board.noStatusFilters &&
       errors.length === 0;
 
@@ -585,6 +604,8 @@ async function coreMain() {
             terminal,
             slackGuide,
             board,
+            boardGroupFilter,
+            boardGroupFilterOk,
             statusInitial,
             statusActiveAlias,
             statusActiveAliasOk,
@@ -617,6 +638,7 @@ async function coreMain() {
         statusLoading,
         i18nFullOk,
         projectLoadRebindOk,
+        boardGroupFilterOk,
         lists: board.lists,
       }),
     );

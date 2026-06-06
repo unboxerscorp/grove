@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, canonicalStatus } from "../api";
 import { COLUMNS, HUMAN_CREATE_STATUS_COLUMNS, HUMAN_LIST_COLUMNS, MANUAL_STATUS_COLUMNS, cx, initials, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
-import type { AssigneeCandidate, BoardWorkflow, Task } from "../types";
+import type { AssigneeCandidate, BoardWorkflow, GroveNode, Task } from "../types";
 
 const PRIORITIES = ["low", "normal", "high"] as const;
 
@@ -166,12 +166,13 @@ function AddTaskForm(props: { boardId: string; initialStatus?: string; onCreated
 
 export function BoardView(props: {
   boardId: string;
+  nodes: GroveNode[];
   liveTick: number;
   projectTick: number;
   boardLive: boolean;
   onOpenTask: (id: string) => void;
 }) {
-  const { boardId, liveTick, projectTick, boardLive, onOpenTask } = props;
+  const { boardId, nodes, liveTick, projectTick, boardLive, onOpenTask } = props;
   const { t } = useI18n();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [workflow, setWorkflow] = useState<BoardWorkflow | null>(null);
@@ -181,6 +182,7 @@ export function BoardView(props: {
   const [reloadKey, setReloadKey] = useState(0);
   const [adding, setAdding] = useState(false);
   const [addStatus, setAddStatus] = useState<string | undefined>(undefined);
+  const [groupFilter, setGroupFilter] = useState("");
 
   // Workflow (canonical columns/aliases). Falls back to local canonical columns
   // when the endpoint is unavailable (older backend).
@@ -222,6 +224,29 @@ export function BoardView(props: {
     // adopted/switched, so "default" resolves against the right project board.
   }, [boardId, liveTick, projectTick, reloadKey, t]);
 
+  useEffect(() => {
+    setGroupFilter("");
+  }, [projectTick]);
+
+  const nodeByName = useMemo(() => new Map(nodes.map((node) => [node.name, node])), [nodes]);
+
+  const groups = useMemo(
+    () => Array.from(new Set(nodes.map((node) => node.group).filter((group): group is string => Boolean(group)))).sort(),
+    [nodes],
+  );
+
+  useEffect(() => {
+    if (groupFilter && !groups.includes(groupFilter)) setGroupFilter("");
+  }, [groupFilter, groups]);
+
+  const visibleTasks = useMemo(() => {
+    if (!groupFilter) return tasks;
+    return tasks.filter((task) => {
+      const assignee = task.assignee?.trim();
+      return Boolean(assignee && nodeByName.get(assignee)?.group === groupFilter);
+    });
+  }, [groupFilter, nodeByName, tasks]);
+
   // Manual status targets for the on-card dropdown: only NON-virtual workflow
   // columns (a virtual column like ask_human is display-only — the backend rejects
   // a manual PATCH to it). Falls back to the static non-virtual canonical list.
@@ -238,12 +263,12 @@ export function BoardView(props: {
   const byColumn = useMemo(() => {
     const map: Record<string, Task[]> = {};
     for (const c of HUMAN_LIST_COLUMNS) map[c.key] = [];
-    for (const task of tasks) {
+    for (const task of visibleTasks) {
       const key = humanListKey(task, workflow);
       (map[key] ??= []).push(task);
     }
     return map;
-  }, [tasks, workflow]);
+  }, [visibleTasks, workflow]);
 
   const transition = (taskId: string, toStatus: string) => {
     setError(null);
@@ -259,9 +284,24 @@ export function BoardView(props: {
         <div className="dr-board__lead">
           <span className={cx("dr-spark", boardLive && "is-on")} />
           <span className="dr-board__title">{t("board.title")}</span>
-          <span className="dr-board__count">{t("board.count", { n: tasks.length })}</span>
+          <span className="dr-board__count">{t("board.count", { n: visibleTasks.length })}</span>
         </div>
         <div className="dr-board__actions">
+          {groups.length > 0 && (
+            <select
+              className="dr-select dr-board__group-filter"
+              aria-label={t("board.groupFilter")}
+              value={groupFilter}
+              onChange={(e) => setGroupFilter(e.target.value)}
+            >
+              <option value="">{t("board.groupAll")}</option>
+              {groups.map((group) => (
+                <option key={group} value={group}>
+                  {group}
+                </option>
+              ))}
+            </select>
+          )}
           <button
             type="button"
             className={cx("dr-addbtn", adding && "is-open")}

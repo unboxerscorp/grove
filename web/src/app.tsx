@@ -555,7 +555,14 @@ export function App() {
             <NodeList nodes={nodes} selectedPane={selectedPane} onSelect={pickNode} boardLive={boardLive} />
             <section className="dr-stage">
           {view === "board" && boardId ? (
-            <BoardView boardId={boardId} liveTick={liveTick} projectTick={projectTick} boardLive={boardLive} onOpenTask={setOpenTaskId} />
+            <BoardView
+              boardId={boardId}
+              nodes={nodes}
+              liveTick={liveTick}
+              projectTick={projectTick}
+              boardLive={boardLive}
+              onOpenTask={setOpenTaskId}
+            />
           ) : view === "board" ? (
             <div className="dr-stage__empty">{t("stage.noBoards")}</div>
           ) : view === "team" ? (

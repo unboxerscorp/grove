@@ -57,15 +57,15 @@
 - **화면에서 보는 것:** 베지어 연결선, 드래그 중 의도 배지("…의 하위로" / "…와 같은 그룹"), 그룹 색상 클러스터+범례, 보드 컬럼.
 - **성공 기준:** 드래그 한 번이 정확히 reparent/group/ungroup/detach로 반영(순환은 거부), 배정 태스크가 보드에 보인다.
 
-| 단계                     | 화면                        | 성공 기준                                                | 커버 테스트                                                                                                                                   | 상태                 |
-| ------------------------ | --------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
-| 드래그로 reparent        | 조직도 캔버스               | 대상 위 드롭→`PATCH /api/nodes/{n}{parent}`, 순환은 거부 | `web/verify.mjs`(patchedParent), `bridge::test_update_node_reparents_and_preserves_runtime_fields`, `bridge::test_update_node_rejects_cycles` | covered              |
-| 근접 그룹화              | 조직도 캔버스               | 근처 드롭→`PATCH {group}`, 배지 "같은 그룹"              | `web/verify.mjs`(patchedGroup, dragLabelsOk)                                                                                                  | covered              |
-| 그룹 이탈                | 조직도 캔버스               | 반경 밖 드롭→`PATCH {group:null}`                        | `web/verify.mjs`(groupExit)                                                                                                                   | covered              |
-| 부모 끊기                | 연결선 ✕ / 노드 "부모 끊기" | `PATCH {parent:null}`→root로                             | `web/verify.mjs`(cutAffordance, cutParent), `bridge::test_update_node_can_clear_parent_and_group`                                             | covered              |
-| 노드별 태스크 배정       | 노드 드로어                 | assignee=노드명으로 태스크 생성                          | `web/verify.mjs`(assignedAssignee), `bridge::test_rest_creates_task_on_board`                                                                 | covered              |
-| 보드에서 추적            | 보드 뷰                     | 컬럼별 카운트·카드, 라이브 갱신                          | `web/verify.mjs`(board, boardLiveOk)                                                                                                          | covered              |
-| 그룹 단위 일괄 배정/필터 | (미구현)                    | 그룹 선택→일괄 태스크, 보드 그룹 필터                    | —                                                                                                                                             | **N/A (백로그 N10)** |
+| 단계                     | 화면                        | 성공 기준                                                | 커버 테스트                                                                                                                                   | 상태    |
+| ------------------------ | --------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| 드래그로 reparent        | 조직도 캔버스               | 대상 위 드롭→`PATCH /api/nodes/{n}{parent}`, 순환은 거부 | `web/verify.mjs`(patchedParent), `bridge::test_update_node_reparents_and_preserves_runtime_fields`, `bridge::test_update_node_rejects_cycles` | covered |
+| 근접 그룹화              | 조직도 캔버스               | 근처 드롭→`PATCH {group}`, 배지 "같은 그룹"              | `web/verify.mjs`(patchedGroup, dragLabelsOk)                                                                                                  | covered |
+| 그룹 이탈                | 조직도 캔버스               | 반경 밖 드롭→`PATCH {group:null}`                        | `web/verify.mjs`(groupExit)                                                                                                                   | covered |
+| 부모 끊기                | 연결선 ✕ / 노드 "부모 끊기" | `PATCH {parent:null}`→root로                             | `web/verify.mjs`(cutAffordance, cutParent), `bridge::test_update_node_can_clear_parent_and_group`                                             | covered |
+| 노드별 태스크 배정       | 노드 드로어                 | assignee=노드명으로 태스크 생성                          | `web/verify.mjs`(assignedAssignee), `bridge::test_rest_creates_task_on_board`                                                                 | covered |
+| 보드에서 추적            | 보드 뷰                     | 컬럼별 카운트·카드, 라이브 갱신                          | `web/verify.mjs`(board, boardLiveOk)                                                                                                          | covered |
+| 그룹 단위 일괄 배정/필터 | 보드 뷰                     | 그룹 선택→보드 그룹 필터, 일괄 배정은 백로그             | `web/verify.mjs` `#N10 board group filter`                                                                                                    | partial |
 
 ---
 
@@ -235,7 +235,7 @@
 | N7  | 전체 i18n               | 브랜드 외 탭/패널/폼 라벨까지 KO/EN 전환 스냅샷                                                   | `web/verify.mjs` `#N7 full-label i18n snapshot`                                                  | P2   | covered |
 | N8  | 접근성                  | 드래그 키보드 대안·포커스 순서·ARIA(다음 패스)                                                    | `web/verify.mjs` `#N8 org accessibility snapshot`                                                | P3   | partial |
 | N9  | 읽기 전용 터미널        | xterm 입력 비전달 보장(키 입력→무전송)                                                            | `web/verify.mjs` `#N9 xterm stdin disabled`                                                      | P3   | covered |
-| N10 | 그룹 일괄 작업          | 그룹 단위 일괄 배정/보드 그룹 필터(제품화 후)                                                     | `web` + `bridge`                                                                                 | P3   | backlog |
+| N10 | 그룹 일괄 작업          | 보드 그룹 필터는 커버, 그룹 단위 일괄 배정은 제품화 후 보완                                       | `web/verify.mjs` `#N10 board group filter`                                                       | P3   | partial |
 
 N2는 blocked/ask-human 카드, inbox API, live inbox answer 흐름은 커버됐지만,
 Slack thread link를 drawer에 렌더하는 전용 SPA 표면은 아직 제품화되지 않아 `partial`로 남긴다.
