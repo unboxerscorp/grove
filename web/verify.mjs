@@ -71,6 +71,19 @@ function assertLiveE2eAvoidsReentrantMasterChatPost() {
   }
 }
 
+function assertTerminalPaneDisablesXtermStdin() {
+  // #N9 xterm stdin disabled: terminal panes are mirrors; typed input goes only
+  // through the explicit node send form when that feature is available.
+  const source = readFileSync(path.join(root, "src", "components", "TerminalPane.tsx"), "utf8");
+  if (
+    !/const\s+XTERM_DISABLE_STDIN\s*=\s*true\s*;/.test(source) ||
+    !/disableStdin:\s*XTERM_DISABLE_STDIN/.test(source) ||
+    !/data-xterm-stdin=\{XTERM_DISABLE_STDIN\s*\?\s*["']disabled["']\s*:\s*["']enabled["']\}/.test(source)
+  ) {
+    throw new Error("TerminalPane must keep xterm stdin disabled and expose that state for N9 verification");
+  }
+}
+
 function findChrome() {
   return [
     process.env.CHROME_PATH,
@@ -255,6 +268,7 @@ async function coreMain() {
   assertNoLegacyProjectMasterE2eFixtures();
   assertLiveE2eDefaultsCurrentPort();
   assertLiveE2eAvoidsReentrantMasterChatPost();
+  assertTerminalPaneDisablesXtermStdin();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
   }
@@ -331,6 +345,12 @@ async function coreMain() {
     if (activeAliasSetup) {
       const before = await page.evaluate(() => window.__MOCK__?.statusFetches ?? 0);
       await page.waitForFunction((prev) => (window.__MOCK__?.statusFetches ?? 0) > prev, { timeout: 8000 }, before);
+      await page.waitForFunction(
+        () =>
+          parseInt((document.querySelector(".nodestat__chip.is-running")?.textContent ?? "").trim(), 10) === 3 &&
+          parseInt((document.querySelector(".nodestat__chip.is-idle")?.textContent ?? "").trim(), 10) === 2,
+        { timeout: 8000 },
+      );
     }
     const statusActiveAlias = await page.evaluate(() => ({
       running: (document.querySelector(".nodestat__chip.is-running")?.textContent ?? "").trim(),
@@ -504,6 +524,7 @@ async function main() {
     assertNoLegacyProjectMasterE2eFixtures();
     assertLiveE2eDefaultsCurrentPort();
     assertLiveE2eAvoidsReentrantMasterChatPost();
+    assertTerminalPaneDisablesXtermStdin();
     await verifyRetiredLegacySurfaces(browser);
     // The historical full-panel script below is intentionally archived. It
     // assumes the old all-surfaces sidebar and is no longer the default
@@ -1993,6 +2014,7 @@ async function main() {
       connectBtn: document.querySelectorAll(".dr-term__connect-btn").length === 1,
       modeLabel: (document.querySelector(".dr-term__ro")?.textContent ?? "").trim(),
       streaming: (document.querySelector(".dr-term .xterm-rows")?.textContent ?? "").trim().length > 0,
+      xtermStdin: document.querySelector(".dr-term__host")?.getAttribute("data-xterm-stdin") ?? "",
     }));
     await page.$eval(".dr-term__connect-btn", (el) => el.click());
     await page.waitForSelector(".dr-term__connect-code", { timeout: 6000 });
@@ -2114,6 +2136,7 @@ async function main() {
       leadTerm.connectBtn &&
       !/(read-only|읽기 전용)/i.test(leadTerm.modeLabel) &&
       leadTerm.streaming &&
+      leadTerm.xtermStdin === "disabled" &&
       /tmux attach/.test(leadConnect.cmd) &&
       /Local tmux attach/.test(leadConnect.label) &&
       leadConnect.fetched === "root" &&

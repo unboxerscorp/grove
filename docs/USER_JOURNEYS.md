@@ -212,10 +212,10 @@
 - **목표:** 터미널은 보기 전용이라 실수로도 노드에 키 입력이 전달되지 않는다.
 - **성공 기준:** 프런트는 stdin 비활성, 백엔드 터미널 경로는 단방향 캡처만.
 
-| 단계             | 화면        | 성공 기준                             | 커버 테스트                                                       | 상태                |
-| ---------------- | ----------- | ------------------------------------- | ----------------------------------------------------------------- | ------------------- |
-| 단방향 스트림    | 터미널 패널 | 프레임 수신만, 입력 미전송            | `bridge::test_terminal_streams_worker_pane_frame`(송신 경로 없음) | partial             |
-| 프런트 입력 차단 | 터미널 패널 | xterm `disableStdin`로 키 미전달 보장 | —                                                                 | **needs-test (N9)** |
+| 단계             | 화면        | 성공 기준                             | 커버 테스트                                                       | 상태    |
+| ---------------- | ----------- | ------------------------------------- | ----------------------------------------------------------------- | ------- |
+| 단방향 스트림    | 터미널 패널 | 프레임 수신만, 입력 미전송            | `bridge::test_terminal_streams_worker_pane_frame`(송신 경로 없음) | partial |
+| 프런트 입력 차단 | 터미널 패널 | xterm `disableStdin`로 키 미전달 보장 | `web/verify.mjs` `#N9 xterm stdin disabled`                       | covered |
 
 ---
 
@@ -234,7 +234,7 @@
 | N6  | stale 후속 액션         | 무결성 stale 노드에 대한 rebind 진입점(제품화 후 테스트)                                          | `web` + `src/rebind.test.ts` 연계                                                                | P2   | backlog |
 | N7  | 전체 i18n               | 브랜드 외 탭/패널/폼 라벨까지 KO/EN 전환 스냅샷                                                   | `web/verify.mjs`                                                                                 | P2   | backlog |
 | N8  | 접근성                  | 드래그 키보드 대안·포커스 순서·ARIA(다음 패스)                                                    | `web` a11y                                                                                       | P3   | backlog |
-| N9  | 읽기 전용 터미널        | xterm 입력 비전달 보장(키 입력→무전송)                                                            | `web/verify.mjs`                                                                                 | P3   | backlog |
+| N9  | 읽기 전용 터미널        | xterm 입력 비전달 보장(키 입력→무전송)                                                            | `web/verify.mjs` `#N9 xterm stdin disabled`                                                      | P3   | covered |
 | N10 | 그룹 일괄 작업          | 그룹 단위 일괄 배정/보드 그룹 필터(제품화 후)                                                     | `web` + `bridge`                                                                                 | P3   | backlog |
 
 N2는 blocked/ask-human 카드, inbox API, live inbox answer 흐름은 커버됐지만,

@@ -20,6 +20,7 @@ const FONT = '"Spline Sans Mono", ui-monospace, SFMono-Regular, Menlo, monospace
 // pane is mirrored (replaced), never appended — the backend sends the full
 // `capture-pane -e -J` snapshot only when the pane changes.
 const CLEAR = "\x1b[2J\x1b[3J\x1b[H";
+const XTERM_DISABLE_STDIN = true;
 
 const THEME = {
   background: "#0a0c11",
@@ -213,7 +214,7 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
     const term = new Terminal({
       convertEol: true, // capture frames use \n; convert to CRLF (no staircase)
       cursorBlink: false,
-      disableStdin: true, // input is sent through the explicit send form below
+      disableStdin: XTERM_DISABLE_STDIN, // input is sent through the explicit send form below
       fontFamily: FONT,
       fontSize: 13,
       lineHeight: 1.3,
@@ -356,7 +357,7 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
       </header>
       <div className="dr-term__screen">
         {node && viewable ? (
-          <div className="dr-term__host" ref={hostRef} />
+          <div className="dr-term__host" data-xterm-stdin={XTERM_DISABLE_STDIN ? "disabled" : "enabled"} ref={hostRef} />
         ) : node && !viewable ? (
           <div className="dr-term__empty" data-notviewable="1">
             <div className="dr-term__empty-mark">⛔</div>
