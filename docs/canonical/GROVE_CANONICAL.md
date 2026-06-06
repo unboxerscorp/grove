@@ -10,7 +10,9 @@ GROVE는 Codex, Claude Code, Antigravity CLI 서비스들을 노드로서 구동
 
 모든 노드는 하나의 tmux 위에서 구동되며, 웹 GUI를 통해 실시간 현황을 확인하고 조직도를 편하게 수정할 수 있습니다.
 
-모든 노드의 root에는 GROVE MASTER 노드가 있으며, Slack이나 웹의 챗봇을 통해서는 CHAT MASTER 노드와 통신하게 됩니다. CHAT MASTER 노드는 외부와의 통신을 담당하며, 필요 시 task를 만들어 MASTER NODE에게 전달합니다.
+모든 노드의 root에는 GROVE MASTER 노드가 있으며, Slack이나 웹의 챗봇을 통해서는 CHAT MASTER와 통신하게 됩니다. CHAT MASTER는 외부와의 통신을 담당하며, 필요 시 task를 만들어 MASTER NODE에게 전달합니다.
+
+CHAT MASTER의 사용자 응답 경로는 persistent CLI 노드에 동기 질의하는 방식이 아니라, Slack 스레드와 웹 챗봇 세션을 처리하는 bridge-native chatbot runtime으로 구현합니다. `chat-master` 노드는 이 런타임의 정체성, 정책, 감사, 운영자 대화용 presence를 소유하지만, 사용자-facing hot path가 단일 CLI 입력 버퍼에 막히면 안 됩니다.
 
 CHAT MASTER는 각 Slack의 스레드, 그리고 웹 GUI 챗봇들 각 세션에 대해서 Queue로 관리하여 독립성을 보장합니다.
 
@@ -84,9 +86,13 @@ grove-master
 
 ## 챗마스터
 
-Slack에서는 기본적으로 @그로브 이렇게 직접 언급한 메시지에 대해서만 반응합니다. 직접 언급한 메시지 내부의 스레드에서 댓글을 달더라도, @그로브 라고 명시적인 언급을 하기 전에는 CHAT MASTER 노드에게 메시지가 전달되지 않습니다. 언급을 감지하게 되면 CHAT MASTER에게는 전체 스레드의 메시지가 전송되고, 판단 하에 사용자에게 응답합니다.
+Slack에서는 기본적으로 @그로브 이렇게 직접 언급한 메시지에 대해서만 반응합니다. 직접 언급한 메시지 내부의 스레드에서 댓글을 달더라도, @그로브 라고 명시적인 언급을 하기 전에는 CHAT MASTER에게 메시지가 전달되지 않습니다. 언급을 감지하게 되면 CHAT MASTER chatbot runtime에는 전체 스레드의 메시지가 전송되고, 판단 하에 사용자에게 응답합니다.
 
 웹 UI 상에서 우하단의 챗봇을 통해 말을 거는 경우도 Slack의 스레드 중 하나와 똑같이 취급합니다.
+
+CHAT MASTER chatbot runtime은 Slack 스레드와 웹 챗봇 세션을 각각 독립적인 durable session으로 관리합니다. 각 세션의 transcript, pending confirm, mode는 DB에 저장하며, 사용자 응답은 bounded async chatbot worker가 생성합니다. 이 worker는 persistent CLI 노드의 입력 버퍼를 사용하지 않습니다.
+
+사용자에게 보이는 채팅 응답 문구는 CHAT MASTER chatbot runtime이 생성한 표현이어야 합니다. bridge, connector, worker는 전송, queue, mention 감지, thread/session 분리, confirm plumbing을 담당하며, 임의의 템플릿 답변을 사용자-facing chat answer로 보내지 않습니다. 단, Slack reaction이나 명확히 구분되는 시스템 상태 표시는 채팅 답변과 분리된 보조 신호로 사용할 수 있습니다.
 
 ### 1. 단순 질문응답
 
