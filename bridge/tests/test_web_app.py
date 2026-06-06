@@ -34,6 +34,7 @@ from grove_bridge.auth_status import ToolAuthStatus
 from grove_bridge.chat_runtime import ChatTool, ProviderRequest
 from grove_bridge.pane_stream import StreamCapacityError
 from grove_bridge.store import BoardEvent, SQLiteBoardStore
+from grove_bridge.task_wakeup import TaskWakeupWatcher
 from grove_bridge.team_auth import (
     CSRF_HEADER,
     TEAM_SESSION_COOKIE,
@@ -9440,6 +9441,22 @@ def test_terminal_closes_at_capacity_when_streaming(
             ws.receive_json()
 
     assert exc.value.code == 4429
+
+
+def test_task_wakeup_watcher_starts_only_when_flag_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GROVE_TASKMASTER_WAKEUP", "1")
+    enabled = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    with enabled:  # enter lifespan -> startup
+        watcher = getattr(fastapi_app(enabled).state, "task_wakeup_watcher", None)
+        assert isinstance(watcher, TaskWakeupWatcher)
+
+    monkeypatch.delenv("GROVE_TASKMASTER_WAKEUP", raising=False)
+    disabled = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    with disabled:
+        assert getattr(fastapi_app(disabled).state, "task_wakeup_watcher", None) is None
 
 
 def test_terminal_uses_project_header_for_pane_allowlist(

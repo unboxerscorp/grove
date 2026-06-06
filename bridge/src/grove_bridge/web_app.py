@@ -17,13 +17,22 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from _thread import LockType
-from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Collection,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -105,6 +114,7 @@ from grove_bridge.store import (
     Task,
     TaskTransitionConflict,
 )
+from grove_bridge.task_wakeup import TaskWakeupWatcher, WakeupCoalescer
 from grove_bridge.team_auth import (
     CSRF_HEADER,
     MEMBER_ROLES,
@@ -799,7 +809,7 @@ def create_app(
         registry_session=os.environ.get("GROVE_VIEWER_SESSION", DEFAULT_SESSION),
     )
     board_store = store or SQLiteBoardStore(app_config.board_db_path)
-    app = FastAPI(title="grove cockpit")
+    app = FastAPI(title="grove cockpit", lifespan=_app_lifespan)
     app.state.config = app_config
     app.state.store = board_store
     app.state.assistant_client = assistant_client
@@ -8922,6 +8932,83 @@ def _tmux_pane_exists(pane: str) -> bool:
     if result.returncode != 0:
         return False
     return pane in result.stdout.decode("utf-8", errors="replace").splitlines()
+
+
+def _taskmaster_wakeup_enabled() -> bool:
+    """Operator opt-in for event-driven task-master wakeup. Default OFF
+    (stability first); set GROVE_TASKMASTER_WAKEUP=1 to enable. The 5-minute
+    task-master poll remains the fallback either way."""
+    return os.environ.get("GROVE_TASKMASTER_WAKEUP", "0").strip().lower() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _grove_binary() -> str:
+    return os.environ.get("GROVE_BIN") or shutil.which("grove") or "grove"
+
+
+def _build_task_wakeup_watcher(app: FastAPI) -> TaskWakeupWatcher:
+    config = cast(WebAppConfig, app.state.config)
+    store = cast(SQLiteBoardStore, app.state.store)
+    project = config.registry_session
+    board = project
+    target = os.environ.get("GROVE_TASKMASTER_NODE", "task-master")
+    grove_bin = _grove_binary()
+
+    async def send(message: str) -> None:
+        # Reuse `grove send` so the input-guard (never clobber a node mid-type)
+        # applies; observe-and-nudge only, never a status mutation.
+        await asyncio.to_thread(
+            subprocess.run,
+            [grove_bin, "send", "--project", project, target, message],
+            capture_output=True,
+            timeout=TMUX_TIMEOUT_SECONDS,
+            check=False,
+        )
+
+    return TaskWakeupWatcher(
+        list_events_after=lambda cursor: store.list_events_after(cursor=cursor, board=board),
+        latest_cursor=lambda: store.latest_event_cursor(board=board),
+        send=send,
+        now=time.monotonic,
+        sleep=asyncio.sleep,
+        coalescer=WakeupCoalescer(
+            debounce_seconds=_env_float("GROVE_TASKMASTER_DEBOUNCE_SECONDS", 5.0),
+            min_interval_seconds=_env_float("GROVE_TASKMASTER_MIN_INTERVAL_SECONDS", 30.0),
+        ),
+    )
+
+
+@contextlib.asynccontextmanager
+async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    watcher: TaskWakeupWatcher | None = None
+    watcher_task: asyncio.Task[None] | None = None
+    if _taskmaster_wakeup_enabled():
+        watcher = _build_task_wakeup_watcher(app)
+        app.state.task_wakeup_watcher = watcher
+        watcher_task = asyncio.create_task(watcher.run())
+    try:
+        yield
+    finally:
+        if watcher is not None:
+            watcher.stop()
+        if watcher_task is not None:
+            watcher_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await watcher_task
 
 
 def _pane_stream_manager(source: WebSocket) -> PaneStreamManager:
