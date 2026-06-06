@@ -229,9 +229,21 @@ export async function sendEnter(addr: string): Promise<void> {
   await tmux(["send-keys", "-t", addr, "Enter"]);
 }
 
-export async function capturePane(addr: string, lines = 200): Promise<string> {
+export async function capturePane(
+  addr: string,
+  lines = 200,
+  opts: { preserveEscapes?: boolean } = {},
+): Promise<string> {
   try {
-    return await tmux(["capture-pane", "-t", addr, "-p", "-S", `-${lines}`]);
+    return await tmux([
+      "capture-pane",
+      ...(opts.preserveEscapes ? ["-e"] : []),
+      "-t",
+      addr,
+      "-p",
+      "-S",
+      `-${lines}`,
+    ]);
   } catch {
     return "";
   }

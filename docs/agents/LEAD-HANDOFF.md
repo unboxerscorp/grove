@@ -6,6 +6,15 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 14:20 KST 최신 안정화 상태:
+  - 이 항목을 포함하는 최신 product-code HEAD는 직전 커밋 `859b88d docs: record remote web launch state` 이후 Slack 피드백/터미널 입력 충돌 방지 패치를 적용한다.
+  - Slack routed chat은 `route_chat_to_node=True` 경로에서 `grove-master` 호출 전에 같은 thread에 1회 working ack를 즉시 남긴다. 긴 turn 동안 Slack 사용자가 무응답으로 느끼는 문제를 줄이기 위한 안정화이며, ack post 실패는 실제 처리 실패로 만들지 않는다.
+  - `grove send`/`grove ask`의 `submitMessage`는 대상 tmux pane을 `capture-pane -e`로 확인하고, 실제 입력줄에 사용자가 작성한 텍스트가 있으면 주입을 거부한다. Codex `› ...`/Claude `❯ ...` 자동 추천 ghost는 dim ANSI 스타일로 구분해 실제 입력으로 보지 않는다. 목적은 사람 입력/CLI 자동 초안/노드 메시지가 섞여 같이 제출되는 회귀를 막는 것이다.
+  - 2026-06-06 14:20 KST 기준 조직 baseline은 5노드다: `0 grove-master`, `1 web`, `2 slack`, `3 advisor`, `4 jester`. `jester`는 social/passive 노드이며 요청받을 때만 짧은 농담을 하고 파일/org/list item을 건드리지 않는다.
+  - Slack은 새 코드 반영 중 `dev10:2.0` pane이 사라져 같은 index로 즉시 복구했다. 현재 Slack runtime pid는 `51917`, `socket_connected=true`, heartbeat fresh다.
+  - main web `8765`와 보조 원격 web `5173`은 재시작하지 않았고 health ok다. 2026-06-06 14:20 KST 기준 `8765 started_at=1780721628`, `5173 started_at=1780721854`.
+  - 검증: `pnpm build`, `pnpm check` green(TS/Vitest 56 files 305 tests, bridge pytest 454), Slack pane 복구 후 `grove org --json` 5노드 전부 `pane_exists=true`, `tmux` windows `0/1/2/3/4`.
+
 - 2026-06-06 13:57 KST 최신 live 운영(아래 13:14 기록보다 우선):
   - 최신 product-code HEAD는 `5d01154 fix: pin web tmux commands to session socket`이다. bridge tmux subprocess와 node connect payload가 pane/session에서 `tmux -L <session>`을 유도하므로 tmux 밖 launchd/SSH/headless 컨텍스트에서도 default socket이 아니라 `dev10` named socket을 결정적으로 본다.
   - main web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`가 관리하며 `0.0.0.0:8765`로 실행 중이다. 2026-06-06 13:57 KST 기준 child pid `34459`, `started_at=1780721628`, health ok.

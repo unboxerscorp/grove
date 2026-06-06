@@ -30,6 +30,9 @@ const DETECT_TIMEOUT_MS = 20_000;
 const SHELLS = new Set(["zsh", "-zsh", "bash", "-bash", "sh", "fish", "tmux"]);
 const BP_START = "\x1b[200~";
 const BP_END = "\x1b[201~";
+const NON_EMPTY_AGENT_INPUT_RE = /^\s*[›❯]\s+(\S.*)$/u;
+const DIM_ANSI_RE = new RegExp(`${String.fromCharCode(27)}\\[(?:0;)?2m`);
+const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
 
 export interface PendingBinding {
   sessionId: string;
@@ -221,6 +224,7 @@ export async function submitMessage(
     project?: string;
   } = {},
 ): Promise<void> {
+  await assertPaneInputClear(nc);
   const submittedMessage =
     opts.includeContextPack === false ? message : prependNodeContextPack(nc, message, opts);
   await sendLiteral(nc.addr, BP_START + submittedMessage + BP_END);
@@ -230,6 +234,35 @@ export async function submitMessage(
     await sleep(260);
     await sendEnter(nc.addr);
   }
+}
+
+export async function assertPaneInputClear(nc: NodeCtx): Promise<void> {
+  const text = await capturePane(nc.addr, 30, { preserveEscapes: true });
+  const pending = nonEmptyAgentInput(text);
+  if (!pending) return;
+  throw new Error(
+    `${nc.node.name}: target pane has unsent prompt input; refusing to inject a node message`,
+  );
+}
+
+export function nonEmptyAgentInput(paneText: string): string | null {
+  for (const rawLine of paneText.split(/\r?\n/).reverse()) {
+    const line = stripAnsi(rawLine);
+    const match = NON_EMPTY_AGENT_INPUT_RE.exec(line);
+    if (match?.[1] && agentPromptTextLooksGhost(rawLine)) return null;
+    if (match?.[1]) return match[1].trim();
+  }
+  return null;
+}
+
+function agentPromptTextLooksGhost(rawLine: string): boolean {
+  const promptIndex = Math.max(rawLine.lastIndexOf("›"), rawLine.lastIndexOf("❯"));
+  if (promptIndex < 0) return false;
+  return DIM_ANSI_RE.test(rawLine.slice(promptIndex));
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(ANSI_ESCAPE_RE, "");
 }
 
 export interface WaitOptions {

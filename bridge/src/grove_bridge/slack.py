@@ -48,6 +48,9 @@ INTAKE_CONFIRM_ACTION_ID = "grove_intake_confirm"
 INTAKE_ANSWER_ONLY_ACTION_ID = "grove_intake_answer_only"
 SLACK_EVENT_DEDUPE_MAX = 1000
 SLACK_ASSISTANT_RESPONSE_CHUNK_CHARS = 3000
+SLACK_NODE_CHAT_WORKING_NOTICE = (
+    "접수했습니다. {node}에 전달했고 처리 중입니다. 완료되면 이 스레드에 답변합니다."
+)
 SLACK_SCOPES = (
     "app_mentions:read",
     "channels:history",
@@ -2213,6 +2216,17 @@ class SlackConnector:
         session_id = _slack_assistant_conversation_id(event, thread_ts=thread_ts)
         text = _normalize_slack_text(event.text)
         node = _select_chat_node(event, self.chat_route)
+        try:
+            self.slack_client.post_message(
+                channel=event.channel,
+                text=_slack_node_chat_working_notice(node),
+                thread_ts=thread_ts,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "Slack node chat working notice could not be posted: %s",
+                _safe_log_error(exc),
+            )
         lock = self._locks.setdefault(session_id, threading.Lock())
         try:
             with lock:
@@ -2816,6 +2830,11 @@ def _slack_assistant_conversation_id(event: SlackEvent, *, thread_ts: str) -> st
         f"slack:{_safe_slack_text(event.team)}:"
         f"{_safe_slack_text(event.channel)}:{_safe_slack_text(thread_ts)}"
     )
+
+
+def _slack_node_chat_working_notice(node: str) -> str:
+    safe_node = _safe_slack_text(node).strip() or "grove-master"
+    return SLACK_NODE_CHAT_WORKING_NOTICE.format(node=safe_node)
 
 
 def _slack_assistant_request_id(event: SlackEvent) -> str:

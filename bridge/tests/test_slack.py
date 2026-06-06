@@ -1261,7 +1261,14 @@ def test_chat_routing_can_forward_addressed_turn_to_node(tmp_path: Path) -> None
     assert handled is True
     assert assistant.calls == []
     assert chat.calls == [("slack:T1:C123:111.222", "channel-node", "summarize status")]
-    assert slack.posts == [("C123", "grove reply", "111.222")]
+    assert slack.posts == [
+        (
+            "C123",
+            "접수했습니다. channel-node에 전달했고 처리 중입니다. 완료되면 이 스레드에 답변합니다.",
+            "111.222",
+        ),
+        ("C123", "grove reply", "111.222"),
+    ]
 
 
 def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
@@ -1293,7 +1300,14 @@ def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
 
     assert handled is True
     assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "summarize status")]
-    assert slack.posts == [("C123", "grove reply", "111.222")]
+    assert slack.posts == [
+        (
+            "C123",
+            "접수했습니다. grove-master에 전달했고 처리 중입니다. 완료되면 이 스레드에 답변합니다.",
+            "111.222",
+        ),
+        ("C123", "grove reply", "111.222"),
+    ]
 
 
 def test_chat_routing_splits_long_assistant_response_in_thread(tmp_path: Path) -> None:

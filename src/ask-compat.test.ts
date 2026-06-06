@@ -12,6 +12,7 @@ import { sendLiteral } from "./tmux.js";
 import { sessionDir } from "./util/paths.js";
 
 vi.mock("./tmux.js", () => ({
+  capturePane: vi.fn(async () => ""),
   sendEnter: vi.fn(async () => undefined),
   sendLiteral: vi.fn(async () => undefined),
 }));
