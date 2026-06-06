@@ -111,18 +111,28 @@ export function App() {
     () =>
       api
         .listProjects()
-        .then((list) => {
+        .then(async (list) => {
           const ps = Array.isArray(list) ? list : [];
           setProjects(ps);
-          // Adopt the first project as the default context on first load.
+          // Default context on first load: prefer the backend session's project
+          // (/api/status.project — fetched with no header here, so it resolves to
+          // the server default) over a blind alphabetical ps[0], so the operator
+          // lands on the intended project's board rather than an empty base-*
+          // board. Fall back to ps[0] when status is unavailable.
+          let def: string | null = ps[0]?.name ?? null;
+          try {
+            const sp = (await api.getStatus())?.project ?? null;
+            if (sp && ps.some((p) => p.name === sp)) def = sp;
+          } catch {
+            /* status unavailable — keep the ps[0] fallback */
+          }
           setActiveProject((prev) => {
             if (prev) return prev;
-            const first = ps[0]?.name ?? null;
-            if (first) {
-              setProject(first);
+            if (def) {
+              setProject(def);
               setProjectTick((x) => x + 1);
             }
-            return first;
+            return def;
           });
         })
         .catch(() => setProjects([])),
@@ -468,7 +478,7 @@ export function App() {
               roots={orgRoots}
             />
             <section className="dr-stage">
-              {view === "board" && boardId ? (
+              {view === "board" && boardId && project ? (
                 <BoardView
                   boardId={boardId}
                   nodes={nodes}
@@ -479,7 +489,10 @@ export function App() {
                   onOpenTask={setOpenTaskId}
                 />
               ) : view === "board" ? (
-                <div className="dr-stage__empty">{t("stage.noBoards")}</div>
+                // Project not adopted yet: hold the board until a project (and its
+                // X-Grove-Project header) is set, so the first fetch never falls
+                // back to the server-default project's board.
+                <div className="dr-stage__empty">{t("stage.loading")}</div>
               ) : view === "team" ? (
                 <OrgChart
                   liveTick={liveTick}

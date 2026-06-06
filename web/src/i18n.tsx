@@ -33,6 +33,7 @@ const KO: Dict = {
   "auth.secured": "보안",
   "auth.local": "로컬",
   "stage.noBoards": "사용 가능한 목록이 없습니다",
+  "stage.loading": "프로젝트 불러오는 중…",
 
   "nodes.title": "노드",
   "nodes.live": "{live}/{total} 실시간",
@@ -833,6 +834,7 @@ const EN: Dict = {
   "auth.secured": "secured",
   "auth.local": "local",
   "stage.noBoards": "no lists available",
+  "stage.loading": "Loading project…",
 
   "nodes.title": "Nodes",
   "nodes.live": "{live}/{total} live",
