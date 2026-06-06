@@ -738,6 +738,8 @@ button {
   border: 1px solid transparent;
   border-radius: 8px;
   padding: 6px 12px;
+  /* Never let the "+ 추가" label break to a second line when the toolbar tightens. */
+  white-space: nowrap;
   transition: filter 0.15s ease;
 }
 
@@ -3104,6 +3106,20 @@ button {
 
 .dr-board__group-filter {
   min-width: 132px;
+}
+
+@media (max-width: 600px) {
+  /* On narrow screens the title + group filter + add button can't share one row
+     without cramming (the add button wrapped). Let the toolbar wrap and drop the
+     actions onto their own full-width row, right-aligned, below the title. */
+  .dr-board__toolbar {
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+  .dr-board__actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
 }
 
 .dr-board__msg {
@@ -5643,11 +5659,29 @@ button {
 }
 
 .dr-term__send { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1; min-width: 200px; margin-left: auto; }
-.dr-term__send-input { flex: 1; min-width: 140px; font-family: var(--mono); font-size: 12px; }
+/* Leading prompt caret marks the row as a command input (echoes the terminal
+   "$"/tree prompts in the mirror above and the ❯ terminal nav icon) without any
+   extra markup. Decorative — the input keeps its own placeholder/label. */
+.dr-term__send::before { content: "\276F"; flex: none; align-self: center; font-family: var(--mono); font-size: 12px; line-height: 1; color: var(--teal); opacity: 0.75; }
+/* Sunken field so the composer reads clearly as "type a command here" against the
+   footer, with smooth focus transition. */
+.dr-term__send-input { flex: 1; min-width: 140px; font-family: var(--mono); font-size: 12px; background: rgba(4, 6, 10, 0.55); transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.dr-term__send-input::placeholder { color: var(--faint); }
+/* Clear, on-theme focus affordance: solid amber edge + soft amber ring so the
+   active composer is obvious even in a dense grid of cells. */
+.dr-term__send-input:focus { border-color: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
 .dr-term__send-btn { flex: none; font-size: 11.5px; padding: 5px 13px; }
 .dr-term__send-err { font-family: var(--mono); font-size: 10.5px; color: var(--coral); flex-basis: 100%; }
 .dr-term__send-ok { font-family: var(--mono); font-size: 10.5px; color: var(--teal); flex-basis: 100%; }
 .dr-term__send-viewer { font-size: 11px; color: var(--faint); font-style: italic; margin-left: auto; }
+
+/* Compact grid cells: slimmer composer so the read-only mirror keeps most of the
+   cell height while every cell still has its own usable command input. */
+.dr-term--compact .dr-term__tools { padding: 6px 8px; gap: 6px; }
+.dr-term--compact .dr-term__send { min-width: 0; gap: 6px; }
+.dr-term--compact .dr-term__send::before { font-size: 11px; }
+.dr-term--compact .dr-term__send-input { font-size: 11px; padding: 4px 8px; min-width: 90px; }
+.dr-term--compact .dr-term__send-btn { font-size: 11px; padding: 4px 10px; }
 
 .dr-addform__assignee { min-width: 0; }
 
