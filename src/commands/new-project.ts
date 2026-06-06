@@ -129,7 +129,7 @@ const TemplateSchema = z
 
 const PROJECT_LEAD_NODE_NAME = "lead";
 const PROJECT_LEAD_ROLE_SUFFIX =
-  " Keep future project growth in mind: own this project's full tree, keep other projects visible at their lead level unless details are needed, and prefer compact context for repeated node-to-node communication while using full context only for bootstrap, handoff, external intake, or explicit refresh.";
+  " Keep future project growth in mind: start with `grove org --all --json`, own this project's full tree, keep other projects visible at their lead level unless details are needed, and prefer compact context for repeated node-to-node communication while using full context only for bootstrap, handoff, external intake, or explicit refresh.";
 
 function required(value: string, label: string): string {
   const trimmed = value.trim();

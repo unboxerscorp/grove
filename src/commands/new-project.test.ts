@@ -161,7 +161,7 @@ describe("createNewProject", () => {
           agent: "claude",
           group: "core",
           name: "lead",
-          role: "Project lead for alpha. Coordinate direct node communication and use human-facing list items only for operator TODO, feedback, and ask-human records. Keep future project growth in mind: own this project's full tree, keep other projects visible at their lead level unless details are needed, and prefer compact context for repeated node-to-node communication while using full context only for bootstrap, handoff, external intake, or explicit refresh.",
+          role: "Project lead for alpha. Coordinate direct node communication and use human-facing list items only for operator TODO, feedback, and ask-human records. Keep future project growth in mind: start with `grove org --all --json`, own this project's full tree, keep other projects visible at their lead level unless details are needed, and prefer compact context for repeated node-to-node communication while using full context only for bootstrap, handoff, external intake, or explicit refresh.",
           session_id: "session-lead",
         },
       ],
@@ -170,6 +170,7 @@ describe("createNewProject", () => {
     });
     expect(savedRegistry.nodes["lead"]?.role).not.toContain("project board");
     expect(savedRegistry.nodes["lead"]?.role).toContain("future project growth");
+    expect(savedRegistry.nodes["lead"]?.role).toContain("grove org --all --json");
     expect(savedRegistry.nodes["lead"]?.role).toContain("compact context");
   });
 
