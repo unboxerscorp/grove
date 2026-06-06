@@ -1,6 +1,7 @@
 # grove v1.20 Slack 봇 고도화 브레인스토밍
 
-작성일: 2026-06-04
+> Status: historical v1 brainstorm; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
+> 작성일: 2026-06-04
 
 ## 근거와 전제
 

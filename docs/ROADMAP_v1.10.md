@@ -1,6 +1,6 @@
 # grove v1.10 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.9.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Ideas: `docs/V1_10_BRAINSTORM.md`. v1.10 = **safe self-direction** — let an idle node
 > pick up suitable work on its own (heavily guarded + audited), and let nodes self-reflect.
 

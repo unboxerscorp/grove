@@ -1,7 +1,9 @@
 # grove v1.27 — Roadmap
 
-> Status: autonomous build (after v1.26.0). Headline = **drive nodes from the web** (user's
-> "ideal picture"): a per-node command input + a per-node "SSH connect" copy button. Safety-first.
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
+> Historical headline: drive nodes from the web (user's "ideal picture"): a per-node command input
+>
+> - a per-node "SSH connect" copy button. Safety-first.
 
 ## Workstreams
 

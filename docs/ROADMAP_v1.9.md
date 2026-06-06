@@ -1,6 +1,6 @@
 # grove v1.9 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.8.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Ideas: `docs/V1.9_BRAINSTORM.md`. v1.9 = **portable, easy-to-start team room** — share a
 > project as a bundle, onboard in a wizard, and let nodes self-reflect.
 

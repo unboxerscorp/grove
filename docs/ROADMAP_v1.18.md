@@ -1,6 +1,6 @@
 # grove v1.18 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.17.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > **Headline = explicit user request**: let people on the same Tailscale tailnet open my grove
 > dashboard, **start new projects**, and use my Mac mini's local CLIs (codex/agy/claude) — with
 > **easy connection setup**. Other ideas: `docs/V1_18_BRAINSTORM.md`.

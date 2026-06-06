@@ -1,6 +1,6 @@
 # grove v1.1 "Stable" — Roadmap
 
-> Status: **autonomous build in progress** (started 2026-06-04, overnight run).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > v1.0 shipped (local dev-room: project lifecycle, Slack, auth-status, per-project
 > WS isolation). v1.1 makes it **STABLE**: every known bug fixed, comprehensively
 > tested (unit + integration + e2e), reliable for daily multi-member use.

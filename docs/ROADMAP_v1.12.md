@@ -1,6 +1,6 @@
 # grove v1.12 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.11.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Ideas: `docs/V1_12_BRAINSTORM.md`. v1.12 = **act on the recommendations** — turn the
 > v1.11 read-only planner + autonomy signals into explicit, human-initiated actions
 > (control the pickup opt-in; delegate a recommended node in one click).

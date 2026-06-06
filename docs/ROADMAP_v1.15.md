@@ -1,6 +1,6 @@
 # grove v1.15 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.14.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Design: `docs/V1_15_BRAINSTORM.md`. v1.15 = **observe & report** — see the execution loop as
 > a timeline and roll up cost/usage over time. Read-only; a calmer version after the
 > safety-heavy v1.13/v1.14.

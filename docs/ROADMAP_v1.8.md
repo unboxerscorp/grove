@@ -1,6 +1,6 @@
 # grove v1.8 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.7.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Ideas: `docs/V1.8_BRAINSTORM.md`. v1.8 = **complete the team room** — presence + a
 > notification layer so people know who's around and get pinged when a decision needs them.
 

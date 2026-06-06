@@ -1,6 +1,6 @@
 # grove v1.16 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.15.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Design: `docs/V1_16_BRAINSTORM.md`. v1.16 = **see many rooms in one view** — a signed,
 > read-only, privacy-first summary a grove can export, and an aggregator that consumes several
 > into one view with trust + freshness badges.

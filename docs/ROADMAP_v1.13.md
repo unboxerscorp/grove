@@ -1,6 +1,6 @@
 # grove v1.13 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.12.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Design: `docs/V1_13_BRAINSTORM.md`. v1.13 = **the guarded autonomous execution loop** —
 > the big, safety-critical feature, built safety-first: default OFF, approval-gated, every
 > transition audited, kill-switch at every level.

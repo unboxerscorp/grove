@@ -1,6 +1,6 @@
 # grove v1.21 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.20.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Design: `docs/V1_21_BRAINSTORM.md`. v1.21 = **the Slack bot converses** — thread context +
 > natural-language status queries. Read-only (no new mutation); continues the v1.20 Slack work
 > the user has been steering.

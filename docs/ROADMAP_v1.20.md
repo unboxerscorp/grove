@@ -1,6 +1,6 @@
 # grove v1.20 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.19.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > **Headline = explicit user request**: advance the Slack bot — submit bug reports / dev feedback
 > from Slack, and let the bot read a free-form message and **judge** whether to file it as a task
 > or just answer. Design: `docs/V1_20_SLACK_BRAINSTORM.md` (+ docs/V1_20_BRAINSTORM.md).

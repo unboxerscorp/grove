@@ -1,6 +1,6 @@
 # grove v1.6 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.5.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Ideas: `docs/V1.6_BRAINSTORM.md`. v1.6 = **reliability + delegation visibility** — keep
 > the 24/7 room self-healing and make delegation chains traceable.
 

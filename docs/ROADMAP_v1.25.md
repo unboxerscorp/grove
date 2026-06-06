@@ -1,6 +1,6 @@
 # grove v1.25 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.24.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Design: `docs/V1_25_BRAINSTORM.md`. v1.25 = **reach + summarize** — a **command palette** (Cmd-K)
 > over the now-many views (complements the v1.24 sidebar) + a **Slack digest/reminder** (scheduled
 > board/status summary, reusing the v1.20 live-announcement chat.update). Tracked on the dev-room

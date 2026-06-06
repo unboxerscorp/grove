@@ -1,6 +1,6 @@
 # grove v1.22 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.21.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Design: `docs/V1_22_BRAINSTORM.md`. v1.22 = **retro analytics** — turn the v1.10 self-retro
 > lane + completed-task history into read-only, advisory insights. Observe + suggest, never act.
 

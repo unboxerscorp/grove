@@ -1,7 +1,6 @@
 # grove v1.2 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 right after
-> v1.1.0 shipped, per the standing 24/7 directive — no user gate between versions).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Source of ideas: `docs/V1.2_BRAINSTORM.md`. v1.1 = security/reliability/test
 > hardening of v1.0. v1.2 = **reliability core + team-mode foundation + observability**.
 

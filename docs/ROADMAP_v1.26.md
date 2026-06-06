@@ -1,6 +1,6 @@
 # grove v1.26 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.25.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Design: `docs/V1_26_BRAINSTORM.md`. v1.26 = **find anything on the board** — filter + full-text
 > search + saved views over the (now busy) kanban board. Read-only query; default-friendly.
 

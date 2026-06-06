@@ -1,6 +1,6 @@
 # grove v1.4 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.3.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > v1.3 built the multi-orchestrator backend (delegate + team auth + audit + node detail).
 > **v1.4 = the team-facing surfaces** — make the new backend visible + usable, plus the
 > cost/credit view and a couple of safety follow-ups. Source: docs/DESIGN_audit_and_cost.md.

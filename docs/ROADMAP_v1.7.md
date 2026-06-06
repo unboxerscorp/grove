@@ -1,6 +1,6 @@
 # grove v1.7 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.6.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Ideas: `docs/V1.7_BRAINSTORM.md`. v1.7 = **the collaborative team room** — surface the
 > decisions a human must make, show who's present, and finish the board-replay polish.
 

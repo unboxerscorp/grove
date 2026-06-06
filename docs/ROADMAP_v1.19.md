@@ -1,6 +1,6 @@
 # grove v1.19 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.18.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > Design: `docs/V1_19_BRAINSTORM.md`. v1.19 = **fair sharing** — now that tailnet peers share
 > one host's agent capacity (v1.18), give it a per-user resource ledger + soft quotas so one
 > peer can't starve the others, and surface host pressure. Observe + soft-limit, not hard-kill.

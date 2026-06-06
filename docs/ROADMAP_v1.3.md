@@ -1,7 +1,6 @@
 # grove v1.3 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 right after
-> v1.2.0 shipped). v1.0 = product; v1.1 = security/test hardening; v1.2 = reliability
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > core + observability. **v1.3 = the multi-orchestrator team OS made real** — the
 > headline the user asked for ("오케스트레이터를 여러명 써서").
 

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 import { describe, expect, test } from "vitest";
 
@@ -55,6 +55,25 @@ describe("current design docs", () => {
     );
     expect(legacyMaster).toContain("Slack and web");
     expect(legacyMaster).toContain("human-facing list items only");
+  });
+
+  test("legacy v1 roadmap and brainstorm docs are clearly historical", () => {
+    const legacyRoadmaps = readdirSync("docs").filter((name) => /^ROADMAP_v1\.\d+\.md$/.test(name));
+    const legacyBrainstorms = readdirSync("docs").filter((name) =>
+      /^V1[._].*BRAINSTORM\.md$/.test(name),
+    );
+
+    expect(legacyRoadmaps.length).toBeGreaterThan(0);
+    expect(legacyBrainstorms.length).toBeGreaterThan(0);
+    for (const name of legacyRoadmaps) {
+      const body = doc(`docs/${name}`);
+      expect(body).toContain("Status: historical v1 roadmap");
+      expect(body).not.toContain("autonomous build in progress");
+    }
+    for (const name of legacyBrainstorms) {
+      const body = doc(`docs/${name}`);
+      expect(body).toContain("Status: historical v1 brainstorm");
+    }
   });
 
   test("grove agent skill surfaces use item wording", () => {

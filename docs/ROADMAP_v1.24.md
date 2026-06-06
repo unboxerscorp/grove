@@ -1,6 +1,6 @@
 # grove v1.24 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.23.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > **FE headline = explicit user UI feedback**: the top nav has too many menus — move navigation
 > to a clean, grouped **left sidebar**. Plus notification routing v2 (backend). Ideas:
 > `docs/V1_24_BRAINSTORM.md`.

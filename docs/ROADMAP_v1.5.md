@@ -1,6 +1,6 @@
 # grove v1.5 — Roadmap
 
-> Status: **autonomous build in progress** (auto-started 2026-06-04 after v1.4.0).
+> Status: historical v1 roadmap; superseded by the current v2 live cockpit model documented in `docs/design/MASTER_NODE.md` and `docs/agents/LEAD-HANDOFF.md`.
 > v1.5 = harden the test net (close the mock-drift gap systemically), finish the small
 > v1.4 polish, and make delegation usable from the dashboard (not just the CLI).
 
