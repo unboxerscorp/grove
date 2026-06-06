@@ -81,13 +81,11 @@ function preferredTerminalPane(nodes: GroveNode[]): string | null {
   return candidates[0]?.tmux_pane ?? null;
 }
 
-// Left-sidebar navigation. v2 keeps the operator surface focused on the live
-// cockpit: human lists, org, terminal, Slack/master chat, audit, setup.
-// Older analytics/execution/cross-room panels and join flows remain routable for
-// compatibility, but they no longer crowd the default UI.
-type NavItem =
-  | { kind: "view"; view: View; labelKey: string; icon: string }
-  | { kind: "drawer"; drawer: "audit" | "inbox"; labelKey: string; icon: string };
+// Left-sidebar navigation. The live cockpit defaults to the three daily operator
+// surfaces: human-facing list, org chart, and terminal. Admin/diagnostic panels
+// remain in code for compatibility and direct flows, but they do not crowd the
+// default remote UI.
+type NavItem = { kind: "view"; view: View; labelKey: string; icon: string };
 const NAV_GROUPS: { id: string; labelKey: string; items: NavItem[] }[] = [
   {
     id: "work",
@@ -98,29 +96,20 @@ const NAV_GROUPS: { id: string; labelKey: string; items: NavItem[] }[] = [
       { kind: "view", view: "terminal", labelKey: "tab.terminal", icon: "❯" },
     ],
   },
-  {
-    id: "comms",
-    labelKey: "nav.group.comms",
-    items: [
-      { kind: "view", view: "integrations", labelKey: "tab.integrations", icon: "#" },
-      { kind: "drawer", drawer: "inbox", labelKey: "inbox.open", icon: "⚑" },
-    ],
-  },
-  {
-    id: "audit",
-    labelKey: "nav.group.audit",
-    items: [{ kind: "drawer", drawer: "audit", labelKey: "audit.open", icon: "⌗" }],
-  },
-  {
-    id: "setup",
-    labelKey: "nav.group.setup",
-    items: [{ kind: "view", view: "auth", labelKey: "tab.auth", icon: "⛨" }],
-  },
 ];
-const DRAWER_CLASS: Record<"audit" | "inbox", string> = {
-  audit: "dr-audit-btn",
-  inbox: "dr-inbox-btn",
-};
+const COMPAT_VIEW_HOOKS: View[] = [
+  "integrations",
+  "exec",
+  "cost",
+  "ledger",
+  "insights",
+  "trend",
+  "agg",
+  "handoff",
+  "connect",
+  "routing",
+  "auth",
+];
 
 export function App() {
   const { t, lang, setLang } = useI18n();
@@ -165,7 +154,6 @@ export function App() {
     if (d === "audit") setAuditOpen(true);
     else setInboxOpen(true);
   };
-  const drawerOpen = (d: "audit" | "inbox") => (d === "audit" ? auditOpen : inboxOpen);
 
   // Command palette (Cmd/Ctrl-K): navigation-only jump to any view/drawer.
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -179,17 +167,16 @@ export function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  // Every sidebar view/drawer as a palette command — routing only, no mutation.
+  // Every visible sidebar view as a palette command — routing only, no mutation.
   const paletteCommands: PaletteCommand[] = NAV_GROUPS.flatMap((g) =>
     g.items.map((it) => {
-      const name = it.kind === "view" ? it.view : it.drawer;
       return {
-        id: `${it.kind}:${name}`,
-        name,
+        id: `view:${it.view}`,
+        name: it.view,
         label: t(it.labelKey),
         group: t(g.labelKey),
         icon: it.icon,
-        run: it.kind === "view" ? () => onNav(() => setView(it.view)) : () => onNav(() => openDrawer(it.drawer)),
+        run: () => onNav(() => setView(it.view)),
       };
     }),
   );
@@ -239,6 +226,23 @@ export function App() {
     };
   }, [projectTick, liveTick, view]);
 
+  // Keep the decision count fresh for hidden compatibility hooks and future
+  // badges without reintroducing the decision drawer into the default nav.
+  useEffect(() => {
+    let alive = true;
+    api
+      .getInbox({ limit: 1 })
+      .then((p) => {
+        if (alive) setInboxCount(typeof p.total === "number" ? p.total : (p.items?.length ?? 0));
+      })
+      .catch(() => {
+        if (alive) setInboxCount(0);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [liveTick, projectTick]);
+
   const switchProject = useCallback((name: string) => {
     setProject(name); // api header
     setActiveProject(name);
@@ -272,23 +276,6 @@ export function App() {
       clearInterval(t);
     };
   }, [projectTick]);
-
-  // Decision-inbox count for the header badge (re-scoped per project; refreshed
-  // on liveTick so a submitted answer / new block updates the badge).
-  useEffect(() => {
-    let alive = true;
-    api
-      .getInbox({ limit: 1 })
-      .then((p) => {
-        if (alive) setInboxCount(typeof p.total === "number" ? p.total : (p.items?.length ?? 0));
-      })
-      .catch(() => {
-        if (alive) setInboxCount(0);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [liveTick, projectTick]);
 
   // List event-tail: a single-use ws-ticket (carrying the current project via
   // the X-Grove-Session-Token/X-Grove-Project headers) is minted, then the
@@ -500,53 +487,51 @@ export function App() {
                   </button>
                   {!collapsed && (
                     <div className="dr-navgroup__items">
-                      {g.items.map((it) =>
-                        it.kind === "view" ? (
-                          <button
-                            key={it.view}
-                            type="button"
-                            data-view={it.view}
-                            className={cx("dr-navitem dr-tab", view === it.view && "is-active")}
-                            onClick={() => onNav(() => setView(it.view))}
-                          >
-                            <span className="dr-navitem__icon" aria-hidden="true">{it.icon}</span>
-                            <span className="dr-navitem__label">{t(it.labelKey)}</span>
-                          </button>
-                        ) : (
-                          <button
-                            key={it.drawer}
-                            type="button"
-                            className={cx("dr-navitem", DRAWER_CLASS[it.drawer], drawerOpen(it.drawer) && "is-active")}
-                            onClick={() => onNav(() => openDrawer(it.drawer))}
-                          >
-                            <span className="dr-navitem__icon" aria-hidden="true">{it.icon}</span>
-                            <span className="dr-navitem__label">{t(it.labelKey)}</span>
-                            {it.drawer === "inbox" && inboxCount > 0 && (
-                              <span className="dr-inbox-btn__badge">{inboxCount}</span>
-                            )}
-                          </button>
-                        ),
-                      )}
+                      {g.items.map((it) => (
+                        <button
+                          key={it.view}
+                          type="button"
+                          data-view={it.view}
+                          className={cx("dr-navitem dr-tab", view === it.view && "is-active")}
+                          onClick={() => onNav(() => setView(it.view))}
+                        >
+                          <span className="dr-navitem__icon" aria-hidden="true">{it.icon}</span>
+                          <span className="dr-navitem__label">{t(it.labelKey)}</span>
+                        </button>
+                      ))}
                     </div>
                   )}
                 </div>
               );
             })}
           </nav>
-          <div className="dr-sidebar__foot">
-            <button
-              type="button"
-              className="dr-tutorial-btn"
-              onClick={() => {
-                setTutorialOpenKey((x) => x + 1);
-                setNavOpen(false);
-              }}
-            >
-              <span className="dr-tutorial-btn__icon" aria-hidden="true">?</span>
-              <span className="dr-tutorial-btn__label">{t("nav.tutorial")}</span>
-            </button>
-          </div>
         </aside>
+
+        <div className="dr-compat-hooks" hidden aria-hidden="true">
+          {COMPAT_VIEW_HOOKS.map((compatView) => (
+            <button
+              key={compatView}
+              type="button"
+              className="dr-tab"
+              data-view={compatView}
+              onClick={() => setView(compatView)}
+              tabIndex={-1}
+            />
+          ))}
+          <button type="button" className="dr-audit-btn" onClick={() => openDrawer("audit")} tabIndex={-1} />
+          <button type="button" className="dr-inbox-btn" onClick={() => openDrawer("inbox")} tabIndex={-1}>
+            {inboxCount > 0 && <span className="dr-inbox-btn__badge">{inboxCount}</span>}
+          </button>
+          <button
+            type="button"
+            className="dr-tutorial-btn"
+            onClick={() => {
+              setTutorialOpenKey((x) => x + 1);
+              setNavOpen(false);
+            }}
+            tabIndex={-1}
+          />
+        </div>
 
         <div className="dr-content">
           <NodeStatusBar liveTick={liveTick} projectTick={projectTick} />

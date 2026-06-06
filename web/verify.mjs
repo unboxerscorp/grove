@@ -268,8 +268,8 @@ async function verifyRetiredLegacySurfaces(browser) {
   await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
   await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
 
-  const hiddenViews = ["connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
-  const visibleViews = ["board", "team", "terminal", "integrations", "auth"];
+  const hiddenViews = ["integrations", "auth", "connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
+  const visibleViews = ["board", "team", "terminal"];
   const defaultSurface = await page.evaluate(
     ({ hiddenViews, visibleViews }) => {
       const inSidebar = (selector) => !!document.querySelector(`.dr-sidebar ${selector}`);
@@ -278,7 +278,7 @@ async function verifyRetiredLegacySurfaces(browser) {
         hiddenViewsAbsent: hiddenViews.every((v) => !inSidebar(`.dr-tab[data-view="${v}"]`)),
         hiddenViewsPresent: hiddenViews.filter((v) => inSidebar(`.dr-tab[data-view="${v}"]`)),
         chainAbsent: !inSidebar(".dr-chain-btn"),
-        drawersOk: inSidebar(".dr-audit-btn") && inSidebar(".dr-inbox-btn"),
+        drawersAbsent: !inSidebar(".dr-audit-btn") && !inSidebar(".dr-inbox-btn"),
       };
     },
     { hiddenViews, visibleViews },
@@ -296,7 +296,7 @@ async function verifyRetiredLegacySurfaces(browser) {
       return {
         options: cmds.length,
         visibleViewsOk: visibleViews.every((v) => cmds.includes(`view:${v}`)),
-        drawersOk: cmds.includes("drawer:audit") && cmds.includes("drawer:inbox") && !cmds.includes("drawer:chain"),
+        drawersAbsent: !cmds.includes("drawer:audit") && !cmds.includes("drawer:inbox") && !cmds.includes("drawer:chain"),
         hiddenCommands: hiddenViews.filter((v) => cmds.includes(`view:${v}`)),
       };
     },
@@ -366,10 +366,10 @@ async function verifyRetiredLegacySurfaces(browser) {
     defaultSurface.visibleViewsOk &&
     defaultSurface.hiddenViewsAbsent &&
     defaultSurface.chainAbsent &&
-    defaultSurface.drawersOk &&
-    palette.options === 7 &&
+    defaultSurface.drawersAbsent &&
+    palette.options === 3 &&
     palette.visibleViewsOk &&
-    palette.drawersOk &&
+    palette.drawersAbsent &&
     palette.hiddenCommands.length === 0 &&
     joinPrefill.connectVisible &&
     joinPrefill.connectTabHidden &&
@@ -477,13 +477,13 @@ async function coreMain() {
       const groups = Array.from(document.querySelectorAll(".dr-sidebar .dr-navgroup")).map((g) =>
         g.getAttribute("data-group"),
       );
-      const visibleViews = ["board", "team", "terminal", "integrations", "auth"];
-      const hiddenViews = ["connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
+      const visibleViews = ["board", "team", "terminal"];
+      const hiddenViews = ["integrations", "auth", "connect", "exec", "cost", "ledger", "insights", "trend", "agg", "handoff", "routing"];
       return {
         groups,
         visibleViewsOk: visibleViews.every((v) => inSidebar(`.dr-tab[data-view="${v}"]`)),
         hiddenViewsAbsent: hiddenViews.every((v) => !inSidebar(`.dr-tab[data-view="${v}"]`)),
-        drawersOk: inSidebar(".dr-audit-btn") && inSidebar(".dr-inbox-btn") && !inSidebar(".dr-chain-btn"),
+        drawersAbsent: !inSidebar(".dr-audit-btn") && !inSidebar(".dr-inbox-btn") && !inSidebar(".dr-chain-btn"),
         liveStat: (document.querySelector(".dr-stat__n")?.textContent ?? "").trim(),
         liveMeta: (document.querySelector(".dr-rail__meta")?.textContent ?? "").replace(/\s+/g, " ").trim(),
       };
@@ -537,17 +537,17 @@ async function coreMain() {
       // #N7 full-label i18n snapshot: core tabs, board panels, and add-item form
       // switch language immediately and persist through reload.
       i18nKo.htmlLang === "ko" &&
-      i18nKo.navGroups.includes("작업") &&
-      i18nKo.navGroups.includes("커뮤니케이션") &&
+      JSON.stringify(i18nKo.navGroups) === JSON.stringify(["작업"]) &&
       i18nKo.tabs.some((t) => /목록/.test(t)) &&
+      i18nKo.tabs.some((t) => /팀/.test(t)) &&
       i18nKo.tabs.some((t) => /터미널/.test(t)) &&
       i18nKo.boardTitle === "사람용 목록" &&
       i18nKo.boardLists.join("|").includes("피드백 및 할 일") &&
       i18nEn.htmlLang === "en" &&
       i18nEn.stored === "en" &&
-      i18nEn.navGroups.includes("Work") &&
-      i18nEn.navGroups.includes("Comms") &&
+      JSON.stringify(i18nEn.navGroups) === JSON.stringify(["Work"]) &&
       i18nEn.tabs.some((t) => /Lists/.test(t)) &&
+      i18nEn.tabs.some((t) => /Team/.test(t)) &&
       i18nEn.tabs.some((t) => /Terminal/.test(t)) &&
       i18nEn.boardTitle === "Human lists" &&
       i18nEn.boardLists.join("|").includes("Feedback and to-dos") &&
@@ -685,7 +685,7 @@ async function coreMain() {
       modeLabel: (document.querySelector(".dr-term__ro")?.textContent ?? "").trim(),
     }));
 
-    await page.$eval('.dr-sidebar .dr-tab[data-view="integrations"]', (el) => el.click());
+    await page.$eval('.dr-tab[data-view="integrations"]', (el) => el.click());
     await page.waitForSelector(".slack-guide", { timeout: 8000 });
     const slackGuide = await page.evaluate(() => {
       const text = document.querySelector(".slack")?.textContent ?? "";
@@ -803,10 +803,10 @@ async function coreMain() {
       n2Drawer.threadMeta.includes("1780700000.123456");
 
     const ok =
-      JSON.stringify(sidebar.groups) === JSON.stringify(["work", "comms", "audit", "setup"]) &&
+      JSON.stringify(sidebar.groups) === JSON.stringify(["work"]) &&
       sidebar.visibleViewsOk &&
       sidebar.hiddenViewsAbsent &&
-      sidebar.drawersOk &&
+      sidebar.drawersAbsent &&
       sidebar.liveStat === "4" &&
       /4\/6/.test(sidebar.liveMeta) &&
       statusActiveAliasOk &&
@@ -966,10 +966,11 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
 
     // Onboarding is manual-only: it must not cover the live cockpit on first
-    // paint, but the sidebar tutorial button should still launch the wizard.
+    // paint. The public sidebar no longer shows a tutorial button, but a hidden
+    // compatibility hook still launches the wizard for regression coverage.
     const wizInitiallyAbsent = await page.evaluate(() => !document.querySelector(".onb-wizard"));
     const sidebarTutorial = await page.evaluate(() => !!document.querySelector(".dr-tutorial-btn"));
-    await page.click(".dr-tutorial-btn");
+    await page.$eval(".dr-tutorial-btn", (el) => el.click());
     await page.waitForSelector(".onb-wizard", { timeout: 8000 });
     const wizStep0 = await page.evaluate(() => ({
       visible: !!document.querySelector(".onb-wizard"),
@@ -1011,7 +1012,7 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll(".dr-node").length >= 1, { timeout: 8000 });
     await page.waitForFunction(() => document.querySelectorAll(".dr-card").length >= 1, { timeout: 8000 });
     const wizAfterReload = await page.evaluate(() => !!document.querySelector(".onb-wizard"));
-    await page.click(".dr-tutorial-btn");
+    await page.$eval(".dr-tutorial-btn", (el) => el.click());
     await page.waitForSelector(".onb-wizard", { timeout: 5000 });
     const sidebarTutorialOpen = await page.evaluate(
       () => document.querySelector(".onb-step")?.getAttribute("data-step") === "0",
@@ -3850,14 +3851,10 @@ async function main() {
     const mobileOk =
       mobile.execTabActive && mobile.gateFits && mobile.ksBtn && mobile.nodestat && mobile.noHOverflow && detailFits;
 
-    // V24-W1 left sidebar nav: all panels/drawers moved from the top strip into a
-    // grouped, collapsible left sidebar; top bar minimized; mobile hamburger
-    // drawer. Every panel stays reachable (legacy hook classes preserved), so the
-    // flags above don't regress. (Viewport is back to desktop after mobileOk.)
-    const SIDEBAR_VIEWS = [
-      "board", "team", "terminal", "integrations", "exec", "cost",
-      "ledger", "insights", "trend", "agg", "handoff", "connect", "routing", "auth",
-    ];
+    // Focused left sidebar nav: daily operator views stay visible; advanced
+    // panels remain hidden compatibility hooks. Top bar stays minimized and
+    // mobile hamburger still opens the same focused drawer.
+    const SIDEBAR_VIEWS = ["board", "team", "terminal"];
     const sidebar = await page.evaluate((views) => {
       const sb = document.querySelector(".dr-sidebar");
       const inSb = (sel) => !!sb?.querySelector(sel);
@@ -3865,10 +3862,14 @@ async function main() {
         present: !!sb,
         groups: document.querySelectorAll(".dr-sidebar .dr-navgroup").length,
         groupIds: Array.from(document.querySelectorAll(".dr-sidebar .dr-navgroup")).map((g) => g.getAttribute("data-group")),
-        // every view panel is reachable from the sidebar
+        // every daily operator view is reachable from the sidebar
         allViews: views.every((v) => inSb(`.dr-tab[data-view="${v}"]`)),
-        // the three drawer triggers moved here too
-        drawers: inSb(".dr-audit-btn") && inSb(".dr-chain-btn") && inSb(".dr-inbox-btn"),
+        advancedAbsent:
+          !inSb('.dr-tab[data-view="integrations"]') &&
+          !inSb('.dr-tab[data-view="auth"]') &&
+          !inSb(".dr-audit-btn") &&
+          !inSb(".dr-chain-btn") &&
+          !inSb(".dr-inbox-btn"),
         // top bar is minimized: no nav tabs / drawer buttons left in the header...
         topNoNav: document.querySelectorAll(".dr-top .dr-tab, .dr-top .dr-audit-btn, .dr-top .dr-chain-btn, .dr-top .dr-inbox-btn").length === 0,
         // ...but the essentials remain in the header.
@@ -3880,16 +3881,16 @@ async function main() {
       };
     }, SIDEBAR_VIEWS);
     // active highlight via a sidebar item.
-    await page.$eval('.dr-sidebar .dr-tab[data-view="ledger"]', (el) => el.click());
-    await page.waitForSelector('.dr-sidebar .dr-tab[data-view="ledger"].is-active', { timeout: 6000 });
-    const sidebarActive = await page.evaluate(() => !!document.querySelector('.dr-sidebar .dr-tab[data-view="ledger"].is-active'));
+    await page.$eval('.dr-sidebar .dr-tab[data-view="terminal"]', (el) => el.click());
+    await page.waitForSelector('.dr-sidebar .dr-tab[data-view="terminal"].is-active', { timeout: 6000 });
+    const sidebarActive = await page.evaluate(() => !!document.querySelector('.dr-sidebar .dr-tab[data-view="terminal"].is-active'));
     // collapse a group -> its items hide; re-expand -> they return.
-    await page.$eval('.dr-navgroup[data-group="ops"] .dr-navgroup__head', (el) => el.click());
-    await page.waitForFunction(() => !document.querySelector('.dr-navgroup[data-group="ops"] .dr-tab[data-view="trend"]'), { timeout: 6000 });
-    const groupCollapsed = await page.evaluate(() => !document.querySelector('.dr-navgroup[data-group="ops"] .dr-tab[data-view="trend"]'));
-    await page.$eval('.dr-navgroup[data-group="ops"] .dr-navgroup__head', (el) => el.click());
-    await page.waitForSelector('.dr-navgroup[data-group="ops"] .dr-tab[data-view="trend"]', { timeout: 6000 });
-    const groupReexpanded = await page.evaluate(() => !!document.querySelector('.dr-navgroup[data-group="ops"] .dr-tab[data-view="trend"]'));
+    await page.$eval('.dr-navgroup[data-group="work"] .dr-navgroup__head', (el) => el.click());
+    await page.waitForFunction(() => !document.querySelector('.dr-navgroup[data-group="work"] .dr-tab[data-view="terminal"]'), { timeout: 6000 });
+    const groupCollapsed = await page.evaluate(() => !document.querySelector('.dr-navgroup[data-group="work"] .dr-tab[data-view="terminal"]'));
+    await page.$eval('.dr-navgroup[data-group="work"] .dr-navgroup__head', (el) => el.click());
+    await page.waitForSelector('.dr-navgroup[data-group="work"] .dr-tab[data-view="terminal"]', { timeout: 6000 });
+    const groupReexpanded = await page.evaluate(() => !!document.querySelector('.dr-navgroup[data-group="work"] .dr-tab[data-view="terminal"]'));
     // mobile: hamburger visible + sidebar off-canvas; opening it slides in.
     await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
     // the sidebar animates to translateX(-100%) on the desktop->mobile switch;
@@ -3925,9 +3926,10 @@ async function main() {
     await page.setViewport({ width: 1320, height: 860, deviceScaleFactor: 2 }); // restore
     const sidebarNavOk =
       sidebar.present &&
-      sidebar.groups >= 6 &&
-      sidebar.allViews && // all 13 panels reachable from the sidebar
-      sidebar.drawers && // audit/chain/inbox drawers reachable too
+      sidebar.groups === 1 &&
+      JSON.stringify(sidebar.groupIds) === JSON.stringify(["work"]) &&
+      sidebar.allViews &&
+      sidebar.advancedAbsent &&
       sidebar.topNoNav && // top bar minimized
       sidebar.topKeeps && // brand/project/presence/lang stay up top
       sidebarActive &&
@@ -3940,8 +3942,8 @@ async function main() {
       drawerNav.onScreen &&
       drawerNav.scrim;
 
-    // V25-W1 command palette (Cmd-K): open via keyboard + button, list every
-    // view/drawer, fuzzy filter → keyboard select → navigate. NAVIGATION-ONLY
+    // V25-W1 command palette (Cmd-K): open via keyboard + button, list visible
+    // daily views, fuzzy filter → keyboard select → navigate. NAVIGATION-ONLY
     // (no mutation), Esc closes + restores focus. (Viewport is desktop here.)
     // a snapshot of mutation markers proves the palette never mutates.
     const MUT_KEYS = ["routingPosted", "quotaSet", "handoffAccepted", "execApprove", "execAbort", "aggregated", "joined", "shareIssued", "slackConfig", "createdTask"];
@@ -3956,18 +3958,18 @@ async function main() {
     const paletteOpened = await page.evaluate(() => ({
       panel: !!document.querySelector('.cmdk__panel[role="dialog"]'),
       listbox: !!document.querySelector('.cmdk__list[role="listbox"]'),
-      // every sidebar view + drawer is listed
+      // every visible sidebar view is listed
       options: document.querySelectorAll('.cmdk__item[role="option"]').length,
       // focus moved into the palette input (focus trap)
       inputFocused: document.activeElement === document.querySelector(".cmdk__input"),
     }));
     // fuzzy filter (works regardless of KO/EN labels via the english keyword) +
     // keyboard select -> view switch.
-    await page.type(".cmdk__input", "ledger");
-    // wait until the filter narrowed so the top match is ledger (don't let Enter
+    await page.type(".cmdk__input", "terminal");
+    // wait until the filter narrowed so the top match is terminal (don't let Enter
     // fire against the still-unfiltered list).
     await page.waitForFunction(
-      () => document.querySelector('.cmdk__item[role="option"]')?.getAttribute("data-cmd") === "view:ledger",
+      () => document.querySelector('.cmdk__item[role="option"]')?.getAttribute("data-cmd") === "view:terminal",
       { timeout: 6000 },
     );
     const filtered = await page.evaluate(() => ({
@@ -3975,23 +3977,11 @@ async function main() {
       first: document.querySelector('.cmdk__item[role="option"]')?.getAttribute("data-cmd") ?? "",
     }));
     await page.keyboard.press("Enter"); // run the active (top) command
-    await page.waitForSelector('.dr-tab[data-view="ledger"].is-active', { timeout: 6000 });
-    const navLedger = await page.evaluate(() => ({
-      active: !!document.querySelector('.dr-tab[data-view="ledger"].is-active'),
+    await page.waitForSelector('.dr-sidebar .dr-tab[data-view="terminal"].is-active', { timeout: 6000 });
+    const navTerminal = await page.evaluate(() => ({
+      active: !!document.querySelector('.dr-sidebar .dr-tab[data-view="terminal"].is-active'),
       closed: !document.querySelector(".cmdk__panel"), // palette closes after select
     }));
-    // reach a DRAWER via the palette (audit).
-    await page.keyboard.down("Control");
-    await page.keyboard.press("KeyK");
-    await page.keyboard.up("Control");
-    await page.waitForSelector(".cmdk__panel", { timeout: 6000 });
-    await page.type(".cmdk__input", "audit");
-    await page.waitForFunction(() => !!document.querySelector('.cmdk__item[data-cmd="drawer:audit"]'), { timeout: 6000 });
-    await page.$eval('.cmdk__item[data-cmd="drawer:audit"]', (el) => el.click());
-    await page.waitForSelector(".audit-drawer", { timeout: 6000 });
-    const navDrawer = await page.evaluate(() => !!document.querySelector(".audit-drawer"));
-    await page.$eval(".audit-drawer .dr-drawer__close", (el) => el.click());
-    await page.waitForFunction(() => !document.querySelector(".audit-drawer"), { timeout: 6000 });
     // ↑/↓ keyboard nav changes the active option.
     await page.keyboard.down("Control");
     await page.keyboard.press("KeyK");
@@ -4015,13 +4005,12 @@ async function main() {
     const commandPaletteOk =
       paletteOpened.panel &&
       paletteOpened.listbox &&
-      paletteOpened.options === 17 && // 14 views + 3 drawers
+      paletteOpened.options === 3 &&
       paletteOpened.inputFocused &&
       filtered.count >= 1 &&
-      filtered.first === "view:ledger" &&
-      navLedger.active &&
-      navLedger.closed &&
-      navDrawer && // drawer reachable via palette
+      filtered.first === "view:terminal" &&
+      navTerminal.active &&
+      navTerminal.closed &&
       firstActive !== "" &&
       afterDown !== firstActive && // ↓ moved the selection
       escClosed &&
@@ -4650,7 +4639,7 @@ async function main() {
       sidebarNavOk,
       sidebar: { ...sidebar, active: sidebarActive, collapsed: groupCollapsed, reexpanded: groupReexpanded, mobileNav, drawerNav },
       commandPaletteOk,
-      cmdk: { ...paletteOpened, filtered, navLedger, navDrawer, firstActive, afterDown, escClosed, focusRestored, mutClean: palMutBefore === palMutAfter },
+      cmdk: { ...paletteOpened, filtered, navTerminal, firstActive, afterDown, escClosed, focusRestored, mutClean: palMutBefore === palMutAfter },
       delegationEdgesOk,
       deleg: { offBefore: delegOffBefore, current: delegCurrent, history: delegHistory, offAfter: delegOffAfter },
       delegateOk,
