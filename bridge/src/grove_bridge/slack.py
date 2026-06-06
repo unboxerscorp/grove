@@ -30,6 +30,7 @@ from grove_bridge.assistant import (
     classify_for_task,
 )
 from grove_bridge.auth_status import redact_secret_text
+from grove_bridge.chat_runtime import ChatWorkerPool, chat_bridge_runtime_enabled
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
 from grove_bridge.master import MasterChatResponse, MasterChatResponseType
@@ -652,6 +653,14 @@ class SlackConnector:
         self._node_chat_queue_lock = threading.Lock()
         self._seen_event_keys: set[str] = set()
         self._seen_event_order: deque[str] = deque()
+        # Bridge-native chat runtime (Stage0): constructed ONLY when the operator
+        # has enabled the flag (default OFF). When None, the existing chat path is
+        # byte-identical — no new component, no guarded branch taken.
+        self._chat_bridge_runtime: ChatWorkerPool | None = (
+            ChatWorkerPool()
+            if chat_bridge_runtime_enabled(self.store, board=self.human_gate.board)
+            else None
+        )
 
     def poll_human_gates(self) -> int:
         channel = self.human_gate.channel
@@ -2267,6 +2276,12 @@ class SlackConnector:
         return self.store.slack_chat_queue_summary(board=self.human_gate.board, now=now)
 
     def _process_node_chat_queue_item(self, item: SlackChatQueueItem, *, now: int) -> None:
+        if self._chat_bridge_runtime is not None:
+            # Flag ON only: bridge-native runtime takes the turn. Never entered
+            # when the flag is OFF (self._chat_bridge_runtime is None) → the
+            # existing path below is byte-identical.
+            self._process_chat_bridge_runtime_item(item, now=now)
+            return
         item = self.store.mark_slack_chat_message_running(item.id, now=now)
         if self._process_node_chat_task_intake(item, now=now):
             return
@@ -2328,6 +2343,37 @@ class SlackConnector:
             )
             return
         self.store.complete_slack_chat_message(item.id, now=now)
+
+    def _process_chat_bridge_runtime_item(self, item: SlackChatQueueItem, *, now: int) -> None:
+        """Stage0 bridge-native runtime entry — flag-gated; reached only when the
+        runtime flag is ON (``self._chat_bridge_runtime`` constructed). With the
+        flag OFF this is never called and the existing path is byte-identical.
+
+        Stage0 scaffold: generation is not yet wired, so the turn is held on the
+        durable queue (defer/retry) with **no** user-facing publish and **no**
+        drop (design §4 — no fabricated answers). Real processing lands later.
+        """
+        runtime = self._chat_bridge_runtime
+        if runtime is None:  # defensive; the caller already guards on this
+            return
+        conversation_id = _slack_chat_queue_conversation_id(item)
+        if not runtime.try_acquire_session(conversation_id):
+            self.store.defer_slack_chat_message(
+                item.id,
+                error="chat_bridge_runtime:session_busy",
+                next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                now=now,
+            )
+            return
+        try:
+            self.store.defer_slack_chat_message(
+                item.id,
+                error="chat_bridge_runtime:stage0_hold",
+                next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                now=now,
+            )
+        finally:
+            runtime.release_session(conversation_id)
 
     def _process_node_chat_task_intake(self, item: SlackChatQueueItem, *, now: int) -> bool:
         if self.command_config is None or self.confirmations is None:
