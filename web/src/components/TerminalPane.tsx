@@ -15,9 +15,9 @@ type ConnState = "connecting" | "live" | "reconnecting" | "error";
 
 const FONT = '"Spline Sans Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
 
-// Clear screen + scrollback + home cursor. Written before each snapshot so the
-// pane is mirrored (replaced), never appended — the backend sends the full
-// `capture-pane -e -J` snapshot only when the pane changes.
+// Clear screen + scrollback + home cursor. Written before a full-screen
+// "snapshot" frame (the pipe-pane stream's initial seed, or a legacy/fallback
+// capture frame) so it mirrors; "chunk" frames append incrementally instead.
 const CLEAR = "\x1b[2J\x1b[3J\x1b[H";
 const XTERM_DISABLE_STDIN = true;
 
@@ -158,6 +158,7 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
     let backoff = 1000;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let lastSeq = -1;
+    let capacityNotified = false; // show the "at capacity" notice once, not per retry
 
     setState("connecting");
     setBytes(0);
@@ -219,15 +220,22 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
             } catch {
               return;
             }
+            if (frame.type === "error") return; // surfaced via onclose; nothing to render
             if (frame.pane_id && frame.pane_id !== target.tmux_pane) return;
             if (typeof frame.seq === "number") {
               if (frame.seq <= lastSeq) return; // drop duplicates / out-of-order
               lastSeq = frame.seq;
             }
             const data = b64ToBytes(frame.bytes_base64);
-            // Replace the screen with the new full snapshot (mirror, not append).
-            term.write(CLEAR);
-            term.write(data);
+            // "chunk" = incremental pipe-pane output → append. "snapshot" (or a
+            // legacy/fallback capture frame with no type) = full screen → mirror
+            // (CLEAR then write) so the capture fallback renders exactly as before.
+            if (frame.type === "chunk") {
+              term.write(data);
+            } else {
+              term.write(CLEAR);
+              term.write(data);
+            }
             setBytes((b) => b + data.length);
             setState("live");
           };
@@ -250,6 +258,17 @@ export function TerminalPane({ node }: { node: GroveNode | null }) {
             if (ev.code === 1008) {
               setState("error");
               term.write(`\r\n\x1b[38;5;203m${tRef.current("term.paneError")}\x1b[0m\r\n`);
+              return;
+            }
+            // 4429 (custom, mirrors HTTP 429) / 1013 = stream cap reached. Not
+            // terminal: a slot may free, so notice once + retry with backoff.
+            if (ev.code === 4429 || ev.code === 1013) {
+              setState("reconnecting");
+              if (!capacityNotified) {
+                capacityNotified = true;
+                term.write(`\r\n\x1b[38;5;203m${tRef.current("term.capacity")}\x1b[0m\r\n`);
+              }
+              scheduleReconnect();
               return;
             }
             setState("reconnecting");

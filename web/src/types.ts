@@ -227,6 +227,13 @@ export interface TerminalFrame {
   pane_id: string;
   bytes_base64: string;
   ts: number;
+  // v2 pipe-pane stream: "snapshot" = initial full capture seed (one per
+  // connection), "chunk" = incremental pipe-pane output (append). Absent = legacy
+  // capture frame (treated as a full-screen snapshot, so the capture fallback
+  // renders unchanged). "error" frames carry code/message and are non-rendering.
+  type?: "snapshot" | "chunk" | "error";
+  code?: string;
+  message?: string;
 }
 
 /** List event-tail message; cursor advances the client's tail position. */
