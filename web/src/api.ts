@@ -27,7 +27,14 @@ export type { NodeHealth, NodeHealthStatus } from "./types";
 // Canonical FE status keys (v1.29). The canonical "in progress" key is "running"
 // — matching the backend's stored vocabulary (grove-py) so the FE and bridge
 // agree on one word. The board groups + transitions use these keys directly.
-export const CANONICAL_STATUSES = ["ready", "running", "review", "blocked", "ask_human", "done"] as const;
+export const CANONICAL_STATUSES = [
+  "ready",
+  "running",
+  "review",
+  "blocked",
+  "ask_human",
+  "done",
+] as const;
 
 // Mirrors web_app.py WORKFLOW_ALIASES. Used as a fallback when the live workflow
 // payload is unavailable; otherwise prefer the workflow's own alias map. "running"
@@ -686,7 +693,11 @@ export interface AggregateResult {
     projects?: string[];
     boards?: { total?: number };
     tasks?: { total?: number; by_status?: Record<string, number> };
-    nodes?: { total?: number; by_status?: Record<string, number>; by_agent?: Record<string, number> };
+    nodes?: {
+      total?: number;
+      by_status?: Record<string, number>;
+      by_agent?: Record<string, number>;
+    };
     runs?: { total?: number; by_status?: Record<string, number> };
   };
   limitations?: string[];
@@ -1044,11 +1055,29 @@ export const api = {
     return (await res.json()) as Task;
   },
 
+  // Reassign a task to an executor-eligible node (operator only); null clears the
+  // assignee. The backend restricts targets to lead/worker-group nodes and rejects
+  // master/chat-master/services/advisor/audit with 400.
+  async setTaskAssignee(taskId: string, assignee: string | null): Promise<Task> {
+    const res = await fetch(`/api/tasks/${enc(taskId)}/assignee`, {
+      method: "PATCH",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify({ assignee }),
+    });
+    if (!res.ok) throw new Error(`task assignee: HTTP ${res.status}`);
+    return (await res.json()) as Task;
+  },
+
   // Web equivalent of `grove delegate`: create a human-facing item assigned to
   // a node. Reuses POST /api/boards/{board}/tasks (project-scoped via the
   // X-Grove-Project header on the shared client); status defaults to "ready".
   // The backend records audit.task.assign for compatibility.
-  delegate(boardId: string, node: string, payload: { title: string; body?: string }): Promise<Task> {
+  delegate(
+    boardId: string,
+    node: string,
+    payload: { title: string; body?: string },
+  ): Promise<Task> {
     return api.createTask(boardId, {
       title: payload.title,
       body: payload.body,
@@ -1070,7 +1099,10 @@ export const api = {
   // is off — toggled in the Setup panel; 429 rate-limited). The live terminal
   // streams the result. Distinct statuses map to FIXED FE messages; the raw cause
   // is never surfaced.
-  async sendNode(node: string, text: string): Promise<{ ok?: boolean; node?: string; tmux_pane?: string }> {
+  async sendNode(
+    node: string,
+    text: string,
+  ): Promise<{ ok?: boolean; node?: string; tmux_pane?: string }> {
     const res = await fetch(`/api/nodes/${enc(node)}/send`, {
       method: "POST",
       headers: headers({ "Content-Type": "application/json" }),
@@ -1181,7 +1213,11 @@ export const api = {
   getExecutionGate: () => getJSON<ExecutionGate>("/api/execution"),
 
   // Set global/board execution gate or kill-switch (partial). 403 for viewers.
-  async setExecutionGate(patch: Partial<Pick<ExecutionGate, "enabled" | "kill_switch" | "board_enabled" | "board_kill_switch">>): Promise<ExecutionGate> {
+  async setExecutionGate(
+    patch: Partial<
+      Pick<ExecutionGate, "enabled" | "kill_switch" | "board_enabled" | "board_kill_switch">
+    >,
+  ): Promise<ExecutionGate> {
     const res = await fetch("/api/execution", {
       method: "POST",
       headers: headers({ "Content-Type": "application/json" }),
@@ -1192,7 +1228,8 @@ export const api = {
     return (await res.json()) as ExecutionGate;
   },
 
-  getNodeExecution: (node: string) => getJSON<NodeExecutionState>(`/api/nodes/${enc(node)}/execution`),
+  getNodeExecution: (node: string) =>
+    getJSON<NodeExecutionState>(`/api/nodes/${enc(node)}/execution`),
 
   async setNodeExecution(node: string, enabled: boolean): Promise<NodeExecutionState> {
     const res = await fetch(`/api/nodes/${enc(node)}/execution`, {
@@ -1205,7 +1242,8 @@ export const api = {
     return (await res.json()) as NodeExecutionState;
   },
 
-  getTaskExecution: (taskId: string) => getJSON<TaskExecution>(`/api/tasks/${enc(taskId)}/execution`),
+  getTaskExecution: (taskId: string) =>
+    getJSON<TaskExecution>(`/api/tasks/${enc(taskId)}/execution`),
 
   // Approve a task awaiting approval (no body). 409 if gate blocked / not pending.
   async approveTask(taskId: string): Promise<TaskExecution> {
@@ -1247,7 +1285,15 @@ export const api = {
   },
 
   // Read-only audit log (cursor-paged; filter by action/node/task_id).
-  getAudit: (params: { cursor?: string | number; limit?: number; action?: string; node?: string; task_id?: string } = {}) => {
+  getAudit: (
+    params: {
+      cursor?: string | number;
+      limit?: number;
+      action?: string;
+      node?: string;
+      task_id?: string;
+    } = {},
+  ) => {
     const q = new URLSearchParams();
     if (params.cursor !== undefined && params.cursor !== "") q.set("cursor", String(params.cursor));
     if (params.limit) q.set("limit", String(params.limit));
@@ -1372,7 +1418,9 @@ export const api = {
   // Planner: read-only ranked node recommendations for an item+role. Never
   // assigns/claims — for manual assignment only.
   getPlan: (params: { role: string; task_id: string }) =>
-    getJSON<PlanResult>(`/api/plan?${new URLSearchParams({ role: params.role, task_id: params.task_id }).toString()}`),
+    getJSON<PlanResult>(
+      `/api/plan?${new URLSearchParams({ role: params.role, task_id: params.task_id }).toString()}`,
+    ),
 
   // Decision inbox: blocked + ask-human tasks awaiting a human (project-scoped).
   getInbox: (params: { cursor?: number; limit?: number } = {}) => {
@@ -1500,7 +1548,11 @@ export const api = {
   // POST a message to GROVE MASTER. request_id = clientId (optimistic id);
   // conversation_id threads the session (assigned by the backend, reused on the
   // next send). Returns the raw MasterChatResponse — see masterReplyText().
-  async sendMasterChat(text: string, clientId: string, conversationId?: string): Promise<MasterChatResponse> {
+  async sendMasterChat(
+    text: string,
+    clientId: string,
+    conversationId?: string,
+  ): Promise<MasterChatResponse> {
     const body: MasterChatSendBody = {
       message: text,
       request_id: clientId,

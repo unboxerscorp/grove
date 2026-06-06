@@ -560,6 +560,70 @@ class SQLiteBoardStore:
             raise KeyError(task_id)
         return _task_from_row(updated)
 
+    def set_task_assignee(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        assignee: str | None,
+        actor: Mapping[str, object],
+    ) -> Task:
+        now = _now()
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            previous_assignee = _row_optional_str(row, "assignee")
+            conn.execute(
+                """
+                UPDATE tasks
+                SET assignee = ?, updated_at = ?
+                WHERE board_id = ? AND id = ?
+                """,
+                (assignee, now, board_id, task_id),
+            )
+            action = "assignee-clear" if assignee is None else "assignee-set"
+            if previous_assignee is not None and assignee is not None:
+                action = "assignee-change"
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="task.updated",
+                payload={"assignee": assignee, "previous_assignee": previous_assignee},
+                now=now,
+            )
+            self._add_event(
+                conn,
+                board_id=board_id,
+                task_id=task_id,
+                run_id=None,
+                kind="audit.task.assign",
+                payload=_audit_payload(
+                    actor=actor,
+                    action=action,
+                    target={"type": "task", "id": task_id, "node": assignee or ""},
+                    board=board,
+                    status="ok",
+                    summary=_row_str(row, "title"),
+                    ts=now,
+                    extra={"from_assignee": previous_assignee, "to_assignee": assignee},
+                ),
+                now=now,
+            )
+            updated = conn.execute(
+                "SELECT * FROM tasks WHERE board_id = ? AND id = ?",
+                (board_id, task_id),
+            ).fetchone()
+        if updated is None:
+            raise KeyError(task_id)
+        return _task_from_row(updated)
+
     def accept_handoff_task(
         self,
         *,

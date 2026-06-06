@@ -5,13 +5,28 @@ import type { AuditEvent } from "../api";
 import { cx, initials, MANUAL_STATUS_COLUMNS, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
-import type { AssigneeCandidate, Comment, Run, SlackThread, Task } from "../types";
+import type { AssigneeCandidate, Comment, GroveNode, Run, SlackThread, Task } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
 
-/** v1.29 workflow controls: status transition + reviewer (operator only). Both
- *  PATCH the board store and bubble the updated task up to refresh the board. */
-function TaskWorkflow({ task, onUpdated, t }: { task: Task; onUpdated: (task: Task) => void; t: TFn }) {
+// Reassignment targets are executor-eligible nodes only (lead + worker groups);
+// the backend rejects master/chat-master/services/advisor/audit with 400. Mirror
+// that here so the dropdown never offers a node the PATCH would reject.
+const EXECUTOR_GROUPS = new Set(["lead", "workers"]);
+
+/** v1.29 workflow controls: status transition + assignee + reviewer (operator
+ *  only). Each PATCHes the board store and bubbles the updated task up to refresh
+ *  the board. */
+function TaskWorkflow({
+  task,
+  onUpdated,
+  t,
+}: {
+  task: Task;
+  onUpdated: (task: Task) => void;
+  t: TFn;
+}) {
   const [reviewerCands, setReviewerCands] = useState<AssigneeCandidate[]>([]);
+  const [assigneeCands, setAssigneeCands] = useState<string[]>([]);
   const [isViewer, setIsViewer] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -19,7 +34,15 @@ function TaskWorkflow({ task, onUpdated, t }: { task: Task; onUpdated: (task: Ta
     let alive = true;
     api
       .getOrg()
-      .then((o) => alive && setReviewerCands(o.reviewer_candidates ?? o.assignee_candidates ?? []))
+      .then((o) => {
+        if (!alive) return;
+        setReviewerCands(o.reviewer_candidates ?? o.assignee_candidates ?? []);
+        setAssigneeCands(
+          (o.nodes ?? [])
+            .filter((n: GroveNode) => EXECUTOR_GROUPS.has(n.group ?? ""))
+            .map((n) => n.name),
+        );
+      })
       .catch(() => {});
     api
       .getMe()
@@ -60,6 +83,28 @@ function TaskWorkflow({ task, onUpdated, t }: { task: Task; onUpdated: (task: Ta
             {MANUAL_STATUS_COLUMNS.map((c) => (
               <option key={c.key} value={c.key}>
                 {statusLabel(t, c.key)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="dr-workflow__field">
+          <span className="dr-workflow__k">{t("fact.assignee")}</span>
+          <select
+            className="dr-select dr-workflow__assignee"
+            value={task.assignee ?? ""}
+            disabled={busy}
+            onChange={(e) => run(api.setTaskAssignee(task.id, e.target.value || null))}
+          >
+            {/* Executor-eligible nodes only (lead + workers); the backend rejects
+                master/services/advisor/audit. The current value is shown even if
+                it's a legacy non-executor assignee, so reassigning off it works. */}
+            <option value="">{t("review.unassigned")}</option>
+            {task.assignee && !assigneeCands.includes(task.assignee) && (
+              <option value={task.assignee}>{task.assignee}</option>
+            )}
+            {assigneeCands.map((name) => (
+              <option key={name} value={name}>
+                {name}
               </option>
             ))}
           </select>
@@ -126,7 +171,9 @@ function ExecutionTimeline({ taskId, t }: { taskId: string; t: TFn }) {
       .then((page) => {
         if (!alive) return;
         const items = Array.isArray(page.items) ? page.items : [];
-        setEvents(items.filter((e) => typeof e.type === "string" && e.type.startsWith("audit.execution.")));
+        setEvents(
+          items.filter((e) => typeof e.type === "string" && e.type.startsWith("audit.execution.")),
+        );
         setLoaded(true);
       })
       .catch(() => {
@@ -145,15 +192,26 @@ function ExecutionTimeline({ taskId, t }: { taskId: string; t: TFn }) {
     // duration = time spent in this phase before the next transition; null for
     // the latest (current/terminal) phase.
     const duration = next ? Math.max(0, tsOf(next) - tsOf(e)) : null;
-    return { key: e.cursor ?? i, phase: e.action, duration, actor: e.actor, current: i === events.length - 1 };
+    return {
+      key: e.cursor ?? i,
+      phase: e.action,
+      duration,
+      actor: e.actor,
+      current: i === events.length - 1,
+    };
   });
-  const total = events.length >= 2 ? Math.max(0, tsOf(events[events.length - 1]!) - tsOf(events[0]!)) : 0;
+  const total =
+    events.length >= 2 ? Math.max(0, tsOf(events[events.length - 1]!) - tsOf(events[0]!)) : 0;
 
   return (
     <section className="dr-drawer__section exec-timeline">
       <h3 className="dr-drawer__h">
         {t("exec.timeline")} <span className="dr-drawer__hn">{events.length}</span>
-        {total > 0 && <span className="exec-timeline__total">{t("exec.totalDuration", { d: fmtDuration(total) })}</span>}
+        {total > 0 && (
+          <span className="exec-timeline__total">
+            {t("exec.totalDuration", { d: fmtDuration(total) })}
+          </span>
+        )}
       </h3>
 
       {/* gantt: each bar proportional to its phase duration */}
@@ -181,7 +239,9 @@ function ExecutionTimeline({ taskId, t }: { taskId: string; t: TFn }) {
             </span>
             <span className="exec-timeline__phase">{t(`exec.phase.${s.phase}`)}</span>
             <span className="exec-timeline__actor">{actorLabel(s.actor)}</span>
-            <span className="exec-timeline__dur">{s.duration !== null ? fmtDuration(s.duration) : t("exec.current")}</span>
+            <span className="exec-timeline__dur">
+              {s.duration !== null ? fmtDuration(s.duration) : t("exec.current")}
+            </span>
           </li>
         ))}
       </ol>
@@ -207,7 +267,12 @@ function TaskSlackThreads({ threads, t }: { threads: SlackThread[]; t: TFn }) {
       <div className="dr-slack-thread-list">
         {humanThreads.map((thread) => (
           <div key={`${thread.channel_id}:${thread.thread_ts}`} className="dr-slack-thread-row">
-            <a className="dr-slack-thread" href={slackThreadUrl(thread)} target="_blank" rel="noreferrer">
+            <a
+              className="dr-slack-thread"
+              href={slackThreadUrl(thread)}
+              target="_blank"
+              rel="noreferrer"
+            >
               {t("drawer.slackThreadOpen")}
             </a>
             <span className="dr-slack-thread__meta">
@@ -288,19 +353,39 @@ export function TaskDrawer(props: {
   return (
     <div className="dr-drawer">
       <div className="dr-drawer__scrim" onClick={onClose} />
-      <aside className="dr-drawer__panel" role="dialog" aria-modal="true" aria-label="item detail" tabIndex={-1} ref={panelRef}>
+      <aside
+        className="dr-drawer__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="item detail"
+        tabIndex={-1}
+        ref={panelRef}
+      >
         <header className="dr-drawer__head">
           <div className="dr-drawer__id">
-            <span className="dr-drawer__ticket" style={{ color: statusColor(canonicalStatus(task?.status)) }}>
+            <span
+              className="dr-drawer__ticket"
+              style={{ color: statusColor(canonicalStatus(task?.status)) }}
+            >
               {task?.id ?? taskId}
             </span>
             {task?.status && (
-              <span className="dr-pill" style={{ "--accent": statusColor(canonicalStatus(task.status)) } as React.CSSProperties}>
+              <span
+                className="dr-pill"
+                style={
+                  { "--accent": statusColor(canonicalStatus(task.status)) } as React.CSSProperties
+                }
+              >
                 {statusLabel(t, canonicalStatus(task.status))}
               </span>
             )}
           </div>
-          <button type="button" className="dr-drawer__close" onClick={onClose} aria-label={t("drawer.close")}>
+          <button
+            type="button"
+            className="dr-drawer__close"
+            onClick={onClose}
+            aria-label={t("drawer.close")}
+          >
             ✕
           </button>
         </header>
@@ -353,7 +438,10 @@ export function TaskDrawer(props: {
               {runs.length === 0 && <div className="dr-drawer__empty">{t("drawer.noRuns")}</div>}
               {runs.map((r) => (
                 <div key={r.id} className="dr-run">
-                  <span className="dr-run__dot" style={{ background: statusColor(r.status ?? "") }} />
+                  <span
+                    className="dr-run__dot"
+                    style={{ background: statusColor(r.status ?? "") }}
+                  />
                   <span className="dr-run__body">
                     <span className="dr-run__top">
                       <span className="dr-run__id">{r.id}</span>
@@ -370,7 +458,9 @@ export function TaskDrawer(props: {
               <h3 className="dr-drawer__h">
                 {t("drawer.comments")} <span className="dr-drawer__hn">{comments.length}</span>
               </h3>
-              {comments.length === 0 && <div className="dr-drawer__empty">{t("drawer.noComments")}</div>}
+              {comments.length === 0 && (
+                <div className="dr-drawer__empty">{t("drawer.noComments")}</div>
+              )}
               {comments.map((c) => (
                 <div key={c.id} className="dr-comment">
                   <span className="dr-comment__who">{c.author ?? "—"}</span>

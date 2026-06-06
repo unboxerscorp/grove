@@ -204,6 +204,11 @@ WILDCARD_BIND_HOSTS = frozenset({"0.0.0.0", "::"})
 TICKET_KINDS = frozenset({"board", "terminal"})
 PROJECT_BOARD_ALIASES = frozenset({"main", "default"})
 DELEGATE_BOARD_ALIASES = frozenset({"dev-room"})
+# Node groups whose members may execute dev work, i.e. valid targets for an
+# operator task reassignment. Master/chat-master (group "master"), service nodes
+# (group "services"), the advisor (ungrouped), and audit/whip (group "audit") are
+# deliberately excluded so dev work is owned by the lead and worker groups only.
+EXECUTOR_ASSIGNEE_GROUPS = frozenset({"lead", "workers"})
 DELEGATE_BOARD_OWNER_PROJECT = "dev10"
 LEAD_NODE_NAME = "lead"
 GROVE_MASTER_NODE_NAME = "grove-master"
@@ -450,6 +455,10 @@ class TaskStatusPayload(BaseModel):
 
 class TaskReviewerPayload(BaseModel):
     reviewer: str | None = Field(default=None, max_length=500)
+
+
+class TaskAssigneePayload(BaseModel):
+    assignee: str | None = Field(default=None, max_length=500)
 
 
 class NodeHealthPayload(BaseModel):
@@ -1872,6 +1881,28 @@ def create_app(
             board=board,
             task_id=task.id,
             reviewer=reviewer,
+            actor=_actor_payload(auth),
+        )
+        return _task_payload(updated)
+
+    @app.patch("/api/tasks/{task_id}/assignee")
+    def update_task_assignee_endpoint(
+        request: Request,
+        task_id: str,
+        payload: TaskAssigneePayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="task assignee mutation requires operator role",
+        )
+        project = resolve_project(request)
+        task = _task_for_project(_store(request), task_id, project=project)
+        board = _store(request).board_slug_for_id(task.board_id)
+        assignee = _validated_task_executor_assignee(payload.assignee, project=project)
+        updated = _store(request).set_task_assignee(
+            board=board,
+            task_id=task.id,
+            assignee=assignee,
             actor=_actor_payload(auth),
         )
         return _task_payload(updated)
@@ -7828,6 +7859,33 @@ def _validated_task_reviewer(value: str | None, *, project: ProjectContext) -> s
     if reviewer not in allowed:
         raise HTTPException(status_code=400, detail="reviewer is not in project")
     return reviewer
+
+
+def _executor_eligible_assignees(config: WebAppConfig) -> set[str]:
+    """Names of nodes that may own dev work — members of the lead/worker groups.
+    Master, service, advisor, and audit nodes are excluded by group."""
+    return {
+        str(node["name"])
+        for node in _registry_node_records(config)
+        if str(node.get("group") or "") in EXECUTOR_ASSIGNEE_GROUPS
+    }
+
+
+def _validated_task_executor_assignee(value: str | None, *, project: ProjectContext) -> str | None:
+    """Validate an operator task-reassignment target. Empty/None clears the
+    assignee; otherwise the node must be executor-eligible (lead/worker group),
+    rejecting master/chat-master/services/advisor/audit with 400. Reassignment is
+    project-local in v1 (no cross-project `project:node` targets)."""
+    if value is None:
+        return None
+    assignee = value.strip()
+    if not assignee:
+        return None
+    if NODE_NAME_RE.fullmatch(assignee) is None:
+        raise HTTPException(status_code=400, detail="invalid assignee")
+    if assignee not in _executor_eligible_assignees(project.config):
+        raise HTTPException(status_code=400, detail="assignee is not an executor-eligible node")
+    return assignee
 
 
 def _project_qualified_node_ref(value: str) -> tuple[str, str] | None:

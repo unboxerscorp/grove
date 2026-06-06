@@ -88,6 +88,27 @@ def test_task_reviewer_column_migrates_and_status_reviewer_updates_audit(
     assert store.list_audit_events(board="main", action="reviewer-change")
 
 
+def test_set_task_assignee_reassigns_clears_and_records_audit(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    task = store.create_task(board="main", title="Reassign me", body=None, assignee="grove-master")
+    actor = {"kind": "local", "id": "lead", "login": "lead", "role": "none"}
+
+    changed = store.set_task_assignee(
+        board="main", task_id=task.id, assignee="board-worker", actor=actor
+    )
+    cleared = store.set_task_assignee(board="main", task_id=task.id, assignee=None, actor=actor)
+    restored = store.set_task_assignee(board="main", task_id=task.id, assignee="lead", actor=actor)
+
+    assert task.assignee == "grove-master"
+    assert changed.assignee == "board-worker"
+    assert cleared.assignee is None
+    assert restored.assignee == "lead"
+    assert store.get_task(board="main", task_id=task.id).assignee == "lead"
+    assert store.list_audit_events(board="main", action="assignee-change")  # master -> worker
+    assert store.list_audit_events(board="main", action="assignee-clear")  # worker -> none
+    assert store.list_audit_events(board="main", action="assignee-set")  # none -> lead
+
+
 def test_slack_chat_queue_response_text_column_migrates(tmp_path: Path) -> None:
     db_path = tmp_path / "board.db"
     with sqlite3.connect(db_path) as conn:

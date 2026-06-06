@@ -1485,6 +1485,85 @@ def test_task_reviewer_payloads_list_detail_query_and_update(
     assert store.list_audit_events(board="dev10", action="reviewer-change")
 
 
+def test_task_assignee_patch_reassigns_clears_and_rejects_non_executors(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "lead": {"name": "lead", "agent": "claude", "group": "lead", "tmux_pane": "dev10:2.0"},
+            "board-worker": {
+                "name": "board-worker",
+                "agent": "claude",
+                "group": "workers",
+                "tmux_pane": "dev10:2.2",
+            },
+            "grove-master": {
+                "name": "grove-master",
+                "agent": "codex",
+                "group": "master",
+                "tmux_pane": "dev10:0.0",
+            },
+            "web": {
+                "name": "web",
+                "agent": "codex",
+                "group": "services",
+                "kind": "service",
+                "tmux_pane": "dev10:1.0",
+            },
+            "whip": {"name": "whip", "agent": "claude", "group": "audit", "tmux_pane": "dev10:2.6"},
+        },
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    # Reproduce the gap: a dev task still owned by grove-master.
+    created = client.post(
+        "/api/boards/main/tasks",
+        headers=headers,
+        json={"title": "Own this", "assignee": "grove-master"},
+    )
+    assert created.status_code == 200
+    task_id = created.json()["id"]
+
+    # Reassign master -> executor-eligible worker.
+    to_worker = client.patch(
+        f"/api/tasks/{task_id}/assignee", headers=headers, json={"assignee": "board-worker"}
+    )
+    assert to_worker.status_code == 200
+    assert to_worker.json()["assignee"] == "board-worker"
+
+    # Non-executor targets are rejected (master / service / audit) and do not mutate.
+    for bad in ("grove-master", "web", "whip"):
+        rejected = client.patch(
+            f"/api/tasks/{task_id}/assignee", headers=headers, json={"assignee": bad}
+        )
+        assert rejected.status_code == 400, bad
+    assert store.get_task(board="dev10", task_id=task_id).assignee == "board-worker"
+
+    # null clears the assignee.
+    cleared = client.patch(
+        f"/api/tasks/{task_id}/assignee", headers=headers, json={"assignee": None}
+    )
+    assert cleared.status_code == 200
+    assert cleared.json().get("assignee") in (None, "")
+    assert store.get_task(board="dev10", task_id=task_id).assignee is None
+
+    # Reassign from cleared -> executor-eligible lead.
+    to_lead = client.patch(
+        f"/api/tasks/{task_id}/assignee", headers=headers, json={"assignee": "lead"}
+    )
+    assert to_lead.status_code == 200
+    assert to_lead.json()["assignee"] == "lead"
+    assert store.get_task(board="dev10", task_id=task_id).assignee == "lead"
+
+    assert store.list_audit_events(board="dev10", action="assignee-change")  # master -> worker
+    assert store.list_audit_events(board="dev10", action="assignee-clear")  # worker -> none
+    assert store.list_audit_events(board="dev10", action="assignee-set")  # none -> lead
+
+
 def test_manual_task_status_transition_is_scoped_audited_and_emits_event(
     tmp_path: Path,
 ) -> None:
