@@ -653,6 +653,48 @@ button {
   color: var(--text);
 }
 
+/* ---- Korean eyebrow/label tracking --------------------------------------- */
+/* The overline/eyebrow labels are tracked out (letter-spacing 0.12–0.18em) for
+   the uppercase Latin aesthetic ("FEEDBACK AND TO-DOS"). Korean is the default
+   locale, and that same tracking visually splits Korean syllable blocks apart
+   ("피 드 백  필 요"), hurting legibility. Reset tracking to normal for these
+   labels when the document is Korean (i18n sets <html lang="ko">). The GROVE
+   wordmark (.dr-brand__title) and the terminal labels (.dr-term*, owned by the
+   terminal redesign) are intentionally left out. */
+:lang(ko) .dr-stat__l,
+:lang(ko) .nodestat__label,
+:lang(ko) .nodestat-row__status,
+:lang(ko) .nodestat-row__inferred,
+:lang(ko) .dr-pill,
+:lang(ko) .auth-badge,
+:lang(ko) .auth-hint__label,
+:lang(ko) .dr-navgroup__head,
+:lang(ko) .dr-rail__title,
+:lang(ko) .dr-node__status,
+:lang(ko) .dr-board__title,
+:lang(ko) .dr-col__name,
+:lang(ko) .dr-run__status,
+:lang(ko) .inbox-type,
+:lang(ko) .org__title,
+:lang(ko) .org-legend__label,
+:lang(ko) .org-node__group,
+:lang(ko) .org-node__auto,
+:lang(ko) .dr-drawer__h,
+:lang(ko) .dr-fact__k,
+:lang(ko) .dr-conn,
+:lang(ko) .proj-menu__label,
+:lang(ko) .proj-item__status,
+:lang(ko) .dr-auth,
+:lang(ko) .chat-provider__title,
+:lang(ko) .setup-features__title,
+:lang(ko) .pickup-toggle__label,
+:lang(ko) .exec-toggle__label,
+:lang(ko) .dr-addform__head,
+:lang(ko) .node-form__head,
+:lang(ko) .node-form__role-preview-label {
+  letter-spacing: normal;
+}
+
 .dr-board-select {
   min-width: 140px;
 }
