@@ -115,6 +115,29 @@ function assertNoStaleDelegationCopy() {
   }
 }
 
+function assertNoLedgerRunningTaskCopy() {
+  const sources = [
+    readFileSync(path.join(root, "src", "api.ts"), "utf8"),
+    readFileSync(path.join(root, "src", "i18n.tsx"), "utf8"),
+    readFileSync(path.join(root, "mock", "harness.ts"), "utf8"),
+  ].join("\n");
+  const bundle = existsSync(path.join(root, "mock", "harness.js"))
+    ? readFileSync(path.join(root, "mock", "harness.js"), "utf8")
+    : "";
+  const forbidden = new RegExp(
+    [
+      `running ${"tasks"} not killed`,
+      `running ${"tasks"} are not killed`,
+      `running ${"tasks"} are never killed`,
+      `hard-kills running ${"tasks"}`,
+    ].join("|"),
+    "i",
+  );
+  if (forbidden.test(`${sources}\n${bundle}`)) {
+    throw new Error("ledger copy must describe running work, not running tasks");
+  }
+}
+
 function assertNoLegacyProjectMasterE2eFixtures() {
   const fixtures = [
     readFileSync(path.join(root, "e2e", "tier1", "fixtures.mjs"), "utf8"),
@@ -352,6 +375,7 @@ async function coreMain() {
   assertNoLegacyProjectMasterMock();
   assertNoStaleItemTitleCopy();
   assertNoStaleDelegationCopy();
+  assertNoLedgerRunningTaskCopy();
   assertNoLegacyProjectMasterE2eFixtures();
   assertLiveE2eDefaultsCurrentPort();
   assertLiveE2eAvoidsReentrantMasterChatPost();
@@ -871,6 +895,7 @@ async function main() {
     assertNoLegacyProjectMasterMock();
     assertNoStaleItemTitleCopy();
     assertNoStaleDelegationCopy();
+    assertNoLedgerRunningTaskCopy();
     assertNoLegacyProjectMasterE2eFixtures();
     assertLiveE2eDefaultsCurrentPort();
     assertLiveE2eAvoidsReentrantMasterChatPost();

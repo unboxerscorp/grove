@@ -403,7 +403,7 @@ export interface UsageReport {
 // Per-member ledger (web_app.py /api/ledger). Reuses UsageTotals (runs/tokens/
 // cost as CostMetric — cost + agy credit stay honestly unknown, never invented).
 // scope "self" (viewer = own only) vs "all" (operator). A SOFT quota only warns:
-// `hard_kill` is always false and running tasks are never killed.
+// `hard_kill` is always false and running work is never stopped.
 export interface LedgerMember {
   id: string;
   name?: string | null;

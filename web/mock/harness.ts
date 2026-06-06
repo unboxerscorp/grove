@@ -845,7 +845,7 @@ function ledgerRollup(memberId: string, runs: number, totalTokens: number | null
   const warnings: string[] = [];
   if (agy) warnings.push("agy credit is unknown because no reliable local credit source is configured");
   const throttle = quota.soft_throttle as { active?: boolean } | undefined;
-  if (throttle?.active) warnings.push("soft quota exceeded; new work may be delayed, running tasks are not killed");
+  if (throttle?.active) warnings.push("soft quota exceeded; new work may be delayed, running work is not stopped");
   if (typeof quota.cost_warning === "string") warnings.push(quota.cost_warning);
   const meta = LEDGER_MEMBERS[memberId] ?? { name: "", role: "unknown" };
   const rollup: Record<string, unknown> = {
@@ -1823,7 +1823,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         host_pressure: hostPressurePayload(),
         limitations: [
           "ledger uses explicit run metadata and task creator attribution only",
-          "soft quota never hard-kills running tasks",
+          "soft quota never stops running work",
           "agy credit and missing cost fields remain unknown; no costs are invented",
         ],
       }),
