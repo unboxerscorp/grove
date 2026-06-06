@@ -45,4 +45,13 @@ describe("current design docs", () => {
     );
     expect(teamAuth).not.toContain("상태: v1.2 설계안. 구현은 후속 작업에서 진행한다.");
   });
+
+  test("grove agent skill surfaces use item wording", () => {
+    const generated = doc("scripts/generate_grove_skills.py");
+    const harness = doc("skills-src/grove-harness/SKILL.md");
+
+    expect(`${generated}\n${harness}`).toContain("human-facing item");
+    expect(`${generated}\n${harness}`).not.toContain("human-facing task");
+    expect(harness).not.toContain("Human task API");
+  });
 });

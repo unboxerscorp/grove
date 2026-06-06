@@ -36,7 +36,7 @@ This directory mirrors grove skills for agent runtimes that read `.agents/skills
 
 1. Read the project-root `AGENTS.md`.
 2. Load the relevant skill from `.agents/skills/*/SKILL.md` before acting.
-3. Start with `grove:harness` for org lookup, direct node communication, group work, human-facing task actions, or routing.
+3. Start with `grove:harness` for org lookup, direct node communication, group work, human-facing item actions, or routing.
 
 ## Runtime parity
 

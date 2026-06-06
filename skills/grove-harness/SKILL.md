@@ -1,13 +1,13 @@
 ---
 name: grove-harness
-description: Use when a request involves grove org structure, direct node communication, human-facing tasks, groups, or routing work.
+description: Use when a request involves grove org structure, direct node communication, human-facing items, groups, or routing work.
 ---
 
 # grove-harness (alias: grove:harness)
 
 ## Start here
 
-Use this skill first for any grove org lookup, direct node communication, group, human-facing task, or routing action. After loading it, select the additional grove skill that matches the action:
+Use this skill first for any grove org lookup, direct node communication, group, human-facing item, or routing action. After loading it, select the additional grove skill that matches the action:
 
 - `grove:org` before asking, sending, or routing.
 - `grove:delegate` when context or work is handed directly to another node.
@@ -32,7 +32,7 @@ grove org --json
 grove status
 ```
 
-Human task API:
+Human-facing item API:
 
 ```http
 GET /api/org
