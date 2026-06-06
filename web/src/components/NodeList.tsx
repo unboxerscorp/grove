@@ -89,8 +89,8 @@ export function NodeList(props: {
             style={
               {
                 "--depth": depth,
-                "--indent": `${depth * 14}px`,
-                "--branch": `${Math.max(0, depth - 1) * 14}px`,
+                "--indent": `${depth * 18}px`,
+                "--branch": `${Math.max(0, depth - 1) * 18}px`,
                 animationDelay: `${Math.min(i, 14) * 26}ms`,
               } as React.CSSProperties
             }
