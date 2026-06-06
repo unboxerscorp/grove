@@ -459,7 +459,7 @@ async function verifyTaskBodyEscaped(page, taskId) {
   await page.waitForSelector(".dr-drawer__body", { visible: true, timeout: 15_000 });
   const bodyText = await textContent(page, ".dr-drawer__body");
   const xss = await page.evaluate(() => window.__p2LiveXss === 1);
-  check("task drawer renders body text", bodyText.includes("<img src=x"), bodyText);
+  check("item drawer renders body text", bodyText.includes("<img src=x"), bodyText);
   assertCheck("task body injection probe does not execute", !xss);
   await page.click(".dr-drawer__close");
   await page.waitForSelector(".dr-drawer__panel", { hidden: true, timeout: 10_000 }).catch(() => {});

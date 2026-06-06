@@ -47,6 +47,7 @@ function assertNoStaleItemTitleCopy() {
     readFileSync(path.join(root, "src", "types.ts"), "utf8"),
     readFileSync(path.join(root, "src", "styles.css"), "utf8"),
     readFileSync(path.join(root, "mock", "harness.ts"), "utf8"),
+    readFileSync(path.join(root, "e2e", "live.mjs"), "utf8"),
     readFileSync(path.join(root, "verify.mjs"), "utf8"),
   ].join("\n");
   const verify = readFileSync(path.join(root, "verify.mjs"), "utf8");
