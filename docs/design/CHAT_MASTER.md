@@ -54,6 +54,10 @@ Two ways to satisfy "CHAT MASTER":
 This doc designs for **(A)**. Choosing (B) is an operator decision; flag before
 any node creation.
 
+**Decision (2026-06, grove-master/operator): Model A** — realize CHAT MASTER as
+the bridge-edge function + grove-master, no new persistent `chat-master` node. A
+distinct chat-master node and the B-impl route changes remain approval-gated.
+
 ## First-Pass Target (function model)
 
 Close the two gaps without changing the existing route:
