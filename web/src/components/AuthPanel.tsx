@@ -13,7 +13,6 @@ const GUI_FEATURES: { key: GuiFeatureKey; labelKey: string; noteKey: string }[] 
     labelKey: "setup.feature.chatRuntime",
     noteKey: "setup.feature.chatRuntime.note",
   },
-  { key: "intake", labelKey: "setup.feature.intake", noteKey: "setup.feature.intake.note" },
 ];
 
 // Features whose ENABLE direction is consequential. Enabling requires a 2-step
