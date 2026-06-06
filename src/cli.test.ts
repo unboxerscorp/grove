@@ -32,6 +32,13 @@ describe("CLI help text", () => {
     );
   });
 
+  test("compatibility board flag is described as a list slug", () => {
+    const source = readFileSync(join(here, "cli.ts"), "utf8");
+
+    expect(source).toContain('option("--board <board>", "target human-facing list slug"');
+    expect(source).not.toContain("target board slug");
+  });
+
   test("task compatibility command describes human-facing items", () => {
     const source = readFileSync(join(here, "cli.ts"), "utf8");
 

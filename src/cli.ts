@@ -157,7 +157,7 @@ program
   .command("delegate <node> <title...>")
   .description("create a human-facing TODO/feedback item associated with a grove node")
   .option("--body <text>", "human-facing item body")
-  .option("--board <board>", "target board slug", "default")
+  .option("--board <board>", "target human-facing list slug", "default")
   .option("--session <session>", "target grove session/project")
   .option("--allow-remote", "allow sending the dashboard token to a non-loopback grove-web URL")
   .option("-c, --config <file>", "path to grove.yaml")
@@ -176,7 +176,7 @@ function taskTransitionCommand(action: TaskAction, description: string): void {
   taskCommand
     .command(`${action} <item_id>`)
     .description(description)
-    .option("--board <board>", "target board slug", "default")
+    .option("--board <board>", "target human-facing list slug", "default")
     .option("--session <session>", "target grove session/project")
     .option("--allow-remote", "allow sending the dashboard token to a non-loopback grove-web URL")
     .option("--from-status <status>", "expected previous item status")
