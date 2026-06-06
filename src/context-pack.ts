@@ -19,6 +19,10 @@ export interface ContextPackNode {
   role?: string;
   workInstructions?: string;
   tmuxPane?: string;
+  // Owning project (registry session). Used ONLY by collapseForeignProjects to
+  // decide visibility — never rendered, so it does not affect pack bytes. Unset
+  // means "treat as home project" (legacy single-project packs).
+  project?: string;
 }
 
 export interface GroveContextPackInput {
@@ -105,6 +109,62 @@ function nodeLine(node: ContextPackNode): string {
   return `- ${parent} -> ${clean(node.name)} (${parts.join("; ")})`;
 }
 
+const INFRA_GROUPS = new Set(["master", "services"]);
+
+/** Shared control-plane nodes — master/services groups, plus the advisor — are
+ *  always shown regardless of project; they are not part of any one project's
+ *  worker tree. */
+function isInfraNode(node: ContextPackNode): boolean {
+  const group = node.group?.trim() ?? "";
+  return (group !== "" && INFRA_GROUPS.has(group)) || node.name === "advisor";
+}
+
+/** Lead of a foreign project, found among its own nodes — mirrors projectLead's
+ *  heuristic (a node named "lead", else a root node whose name contains
+ *  "lead"). Returns undefined when neither matches. */
+function foreignProjectLeadName(nodes: readonly ContextPackNode[]): string | undefined {
+  const named = nodes.find((node) => node.name === "lead");
+  if (named) return named.name;
+  const rootLead = nodes.find((node) => !node.parent && node.name.includes("lead"));
+  return rootLead?.name;
+}
+
+/**
+ * Collapse the visible org so OTHER projects surface only their lead node
+ * (task_dd4). Home-project nodes — and nodes with no project, i.e. legacy
+ * single-project packs — are kept in full; shared control-plane nodes are
+ * exempt; each foreign project keeps only its lead (dropped entirely if it has
+ * none). Node SELECTION only: input order is preserved and the renderer is
+ * untouched, so the byte-parity fixtures are unaffected. A single-project pack
+ * is an inert no-op. Mirror of context_pack.py:collapse_foreign_projects.
+ */
+export function collapseForeignProjects(
+  nodes: readonly ContextPackNode[],
+  homeProject: string,
+): ContextPackNode[] {
+  const home = homeProject.trim();
+  const foreignByProject = new Map<string, ContextPackNode[]>();
+  for (const node of nodes) {
+    const project = node.project?.trim() ?? "";
+    if (project !== "" && project !== home && !isInfraNode(node)) {
+      const group = foreignByProject.get(project) ?? [];
+      group.push(node);
+      foreignByProject.set(project, group);
+    }
+  }
+  const keptForeignLeads = new Set<string>();
+  for (const [project, group] of foreignByProject) {
+    const leadName = foreignProjectLeadName(group);
+    if (leadName !== undefined) keptForeignLeads.add(`${project} ${leadName}`);
+  }
+  return nodes.filter((node) => {
+    const project = node.project?.trim() ?? "";
+    if (project === "" || project === home) return true;
+    if (isInfraNode(node)) return true;
+    return keptForeignLeads.has(`${project} ${node.name}`);
+  });
+}
+
 export function contextPackNodesFromRegistry(registry: Registry): ContextPackNode[] {
   return Object.entries(registry.nodes)
     .map(([key, node]) => ({
@@ -142,7 +202,7 @@ export function contextPackNodesFromContext(ctx: Context): ContextPackNode[] {
 }
 
 export function buildGroveContextPack(input: GroveContextPackInput): string {
-  const nodes = [...(input.nodes ?? [])].slice(0, MAX_NODE_LINES);
+  const nodes = collapseForeignProjects(input.nodes ?? [], input.project).slice(0, MAX_NODE_LINES);
   const lead = projectLead(nodes, input.projectLead);
   const targetNode = input.targetNode?.trim();
   const targetRole = firstLine(input.targetRole);

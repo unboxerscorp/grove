@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   buildGroveContextPack,
+  collapseForeignProjects,
   type ContextPackNode,
   contextPackNodesFromContext,
   GROVE_CONTEXT_PACK_HEADER,
@@ -233,5 +234,108 @@ describe("buildGroveContextPack work_instructions", () => {
 
     expect(pack).toContain(`Target work instructions (advisory): ${"a".repeat(500)}…`);
     expect(pack).not.toContain("a".repeat(501));
+  });
+});
+
+// task_dd4: collapse OTHER projects to their lead node only in the visible org.
+// Collapse is node-SELECTION, applied upstream of the renderer, so the locked
+// renderer + PARITY fixtures stay byte-identical. The fixture + expected
+// selection below are mirrored verbatim in bridge/tests/test_context_pack.py —
+// the TS and Python filters MUST select the same nodes for the same input.
+function cn(name: string, project: string, extra: Partial<ContextPackNode> = {}): ContextPackNode {
+  return { agent: "claude", name, project, ...extra };
+}
+
+// Mixed multi-project org: home (dev10), shared control plane, and three foreign
+// projects (alpha has a "lead"; delta has a root "delta-lead"; beta has none).
+const COLLAPSE_FIXTURE: ContextPackNode[] = [
+  cn("lead", "dev10"),
+  cn("org-worker", "dev10", { parent: "lead" }),
+  cn("grove-master", "control", { group: "master" }),
+  cn("web", "control", { group: "services" }),
+  cn("advisor", "control"),
+  cn("lead", "alpha"),
+  cn("alpha-worker", "alpha", { parent: "lead" }),
+  cn("delta-lead", "delta"),
+  cn("delta-worker", "delta", { parent: "delta-lead" }),
+  cn("beta-worker", "beta"),
+];
+const COLLAPSE_EXPECTED = [
+  "dev10/lead",
+  "dev10/org-worker",
+  "control/grove-master",
+  "control/web",
+  "control/advisor",
+  "alpha/lead",
+  "delta/delta-lead",
+];
+
+describe("collapseForeignProjects", () => {
+  test("keeps every node unchanged when none are foreign (single-project no-op)", () => {
+    const nodes = [cn("lead", "dev10"), cn("org-worker", "dev10", { parent: "lead" })];
+
+    expect(collapseForeignProjects(nodes, "dev10")).toEqual(nodes);
+  });
+
+  test("treats nodes without a project as home (legacy single-project packs)", () => {
+    const nodes: ContextPackNode[] = [
+      { agent: "claude", name: "lead" },
+      { agent: "claude", name: "maker" },
+    ];
+
+    expect(collapseForeignProjects(nodes, "dev10")).toEqual(nodes);
+  });
+
+  test("collapses foreign projects to their lead, keeps home + infra, drops lead-less foreign", () => {
+    const result = collapseForeignProjects(COLLAPSE_FIXTURE, "dev10");
+
+    expect(result.map((node) => `${node.project ?? ""}/${node.name}`)).toEqual(COLLAPSE_EXPECTED);
+  });
+
+  test("preserves the input order of the surviving nodes", () => {
+    const result = collapseForeignProjects(COLLAPSE_FIXTURE, "dev10");
+    const survivors = COLLAPSE_FIXTURE.filter((node) =>
+      COLLAPSE_EXPECTED.includes(`${node.project ?? ""}/${node.name}`),
+    );
+
+    expect(result).toEqual(survivors);
+  });
+
+  test("the project field is render-inert — it never appears in the pack output", () => {
+    const pack = buildGroveContextPack({
+      callerNode: "lead",
+      communicationProtocol: "direct comms",
+      nodes: [
+        {
+          agent: "codex",
+          cwd: "/repo",
+          group: "product",
+          name: "maker",
+          parent: "lead",
+          project: "dev10",
+          role: "Builder",
+          tmuxPane: "dev10:1.3",
+        },
+      ],
+      project: "dev10",
+      projectLead: "lead",
+      targetNode: "maker",
+      targetRole: "Builder",
+    });
+
+    expect(pack).not.toContain("project=");
+    expect(pack).toBe(
+      [
+        "GROVE CONTEXT PACK",
+        "Caller node: lead",
+        "Project: dev10",
+        "Project lead: lead",
+        "Target node: maker",
+        "Target role: Builder",
+        "Communication protocol: direct comms",
+        "Visible org summary:",
+        "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder)",
+      ].join("\n"),
+    );
   });
 });

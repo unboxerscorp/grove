@@ -4,6 +4,7 @@ from grove_bridge.context_pack import (
     GROVE_CONTEXT_PACK_HEADER,
     ContextPackNode,
     build_grove_context_pack,
+    collapse_foreign_projects,
     prepend_grove_context_pack,
 )
 
@@ -157,3 +158,103 @@ def test_work_instructions_caps_pathologically_long_text() -> None:
 
     assert f"Target work instructions (advisory): {'a' * 500}…" in pack
     assert "a" * 501 not in pack
+
+
+# task_dd4: collapse OTHER projects to their lead node only. The fixture +
+# expected selection below are mirrored verbatim in src/context-pack.test.ts —
+# the Python and TypeScript filters MUST select the same nodes for the same
+# input. Collapse is node-SELECTION upstream of the renderer, so PARITY_PACK is
+# unaffected.
+def _cn(name: str, project: str, **extra: str) -> ContextPackNode:
+    return ContextPackNode(name=name, agent="claude", project=project, **extra)
+
+
+COLLAPSE_FIXTURE = (
+    _cn("lead", "dev10"),
+    _cn("org-worker", "dev10", parent="lead"),
+    _cn("grove-master", "control", group="master"),
+    _cn("web", "control", group="services"),
+    _cn("advisor", "control"),
+    _cn("lead", "alpha"),
+    _cn("alpha-worker", "alpha", parent="lead"),
+    _cn("delta-lead", "delta"),
+    _cn("delta-worker", "delta", parent="delta-lead"),
+    _cn("beta-worker", "beta"),
+)
+COLLAPSE_EXPECTED = [
+    "dev10/lead",
+    "dev10/org-worker",
+    "control/grove-master",
+    "control/web",
+    "control/advisor",
+    "alpha/lead",
+    "delta/delta-lead",
+]
+
+
+def test_collapse_is_noop_for_single_project() -> None:
+    nodes = (_cn("lead", "dev10"), _cn("org-worker", "dev10", parent="lead"))
+
+    assert collapse_foreign_projects(nodes, "dev10") == list(nodes)
+
+
+def test_collapse_treats_missing_project_as_home() -> None:
+    nodes = (
+        ContextPackNode(name="lead", agent="claude"),
+        ContextPackNode(name="maker", agent="claude"),
+    )
+
+    assert collapse_foreign_projects(nodes, "dev10") == list(nodes)
+
+
+def test_collapse_foreign_projects_to_lead_keeps_home_and_infra() -> None:
+    result = collapse_foreign_projects(COLLAPSE_FIXTURE, "dev10")
+
+    assert [f"{node.project}/{node.name}" for node in result] == COLLAPSE_EXPECTED
+
+
+def test_collapse_preserves_input_order_of_survivors() -> None:
+    result = collapse_foreign_projects(COLLAPSE_FIXTURE, "dev10")
+    survivors = [
+        node for node in COLLAPSE_FIXTURE if f"{node.project}/{node.name}" in COLLAPSE_EXPECTED
+    ]
+
+    assert result == survivors
+
+
+def test_collapse_project_field_is_render_inert() -> None:
+    pack = build_grove_context_pack(
+        caller_node="lead",
+        communication_protocol="direct comms",
+        nodes=(
+            ContextPackNode(
+                name="maker",
+                agent="codex",
+                cwd="/repo",
+                parent="lead",
+                group="product",
+                role="Builder",
+                tmux_pane="dev10:1.3",
+                project="dev10",
+            ),
+        ),
+        project="dev10",
+        project_lead="lead",
+        target_node="maker",
+        target_role="Builder",
+    )
+
+    assert "project=" not in pack
+    assert pack == "\n".join(
+        [
+            "GROVE CONTEXT PACK",
+            "Caller node: lead",
+            "Project: dev10",
+            "Project lead: lead",
+            "Target node: maker",
+            "Target role: Builder",
+            "Communication protocol: direct comms",
+            "Visible org summary:",
+            "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder)",
+        ]
+    )

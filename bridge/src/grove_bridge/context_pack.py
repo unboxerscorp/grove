@@ -23,6 +23,10 @@ class ContextPackNode:
     role: str = ""
     work_instructions: str = ""
     tmux_pane: str = ""
+    # Owning project (registry session). Used ONLY by collapse_foreign_projects
+    # to decide visibility — never rendered, so it does not affect pack bytes.
+    # Empty means "treat as home project" (legacy single-project packs).
+    project: str = ""
 
 
 def redact_grove_context_text(value: str) -> str:
@@ -106,6 +110,62 @@ def _node_line(node: ContextPackNode) -> str:
     return f"- {parent} -> {_clean(node.name)} ({'; '.join(parts)})"
 
 
+_INFRA_GROUPS = frozenset({"master", "services"})
+
+
+def _is_infra_node(node: ContextPackNode) -> bool:
+    """Shared control-plane nodes — master/services groups, plus the advisor —
+    are always shown regardless of project. Mirror of context-pack.ts
+    isInfraNode."""
+    group = node.group.strip()
+    return (group != "" and group in _INFRA_GROUPS) or node.name == "advisor"
+
+
+def _foreign_project_lead_name(nodes: Sequence[ContextPackNode]) -> str | None:
+    """Lead of a foreign project among its own nodes — mirrors _project_lead
+    (a node named "lead", else a root node whose name contains "lead")."""
+    for node in nodes:
+        if node.name == "lead":
+            return node.name
+    for node in nodes:
+        if not node.parent and "lead" in node.name:
+            return node.name
+    return None
+
+
+def collapse_foreign_projects(
+    nodes: Sequence[ContextPackNode], home_project: str
+) -> list[ContextPackNode]:
+    """Collapse the visible org so OTHER projects surface only their lead node
+    (task_dd4). Home-project nodes — and nodes with no project, i.e. legacy
+    single-project packs — are kept in full; shared control-plane nodes are
+    exempt; each foreign project keeps only its lead (dropped entirely if it has
+    none). Node SELECTION only: input order is preserved and the renderer is
+    untouched, so the byte-parity fixtures are unaffected. A single-project pack
+    is an inert no-op. Mirror of context-pack.ts:collapseForeignProjects."""
+    home = home_project.strip()
+    foreign_by_project: dict[str, list[ContextPackNode]] = {}
+    for node in nodes:
+        project = node.project.strip()
+        if project != "" and project != home and not _is_infra_node(node):
+            foreign_by_project.setdefault(project, []).append(node)
+    kept_foreign_leads: set[str] = set()
+    for project, group in foreign_by_project.items():
+        lead_name = _foreign_project_lead_name(group)
+        if lead_name is not None:
+            kept_foreign_leads.add(f"{project} {lead_name}")
+    result: list[ContextPackNode] = []
+    for node in nodes:
+        project = node.project.strip()
+        if project in ("", home):
+            result.append(node)
+        elif _is_infra_node(node):
+            result.append(node)
+        elif f"{project} {node.name}" in kept_foreign_leads:
+            result.append(node)
+    return result
+
+
 def build_grove_context_pack(
     *,
     project: str,
@@ -118,7 +178,7 @@ def build_grove_context_pack(
     target_role: str | None = None,
     target_work_instructions: str | None = None,
 ) -> str:
-    visible_nodes = tuple(nodes[:MAX_NODE_LINES])
+    visible_nodes = tuple(collapse_foreign_projects(nodes, project)[:MAX_NODE_LINES])
     lead = _project_lead(visible_nodes, project_lead)
     target = target_node.strip() if target_node is not None and target_node.strip() else "(none)"
     role = _first_line(target_role)
