@@ -901,6 +901,8 @@ export function OrgChart(props: {
               <div
                 key={node.name}
                 data-name={node.name}
+                role="group"
+                aria-label={`${node.name} ${node.agent} ${statusLabel(t, node.status)}`}
                 className={cx(
                   "org-node",
                   isDrag && "is-dragging",
@@ -967,6 +969,7 @@ export function OrgChart(props: {
                   type="button"
                   className="org-node__plus"
                   title={t("org.addNode")}
+                  aria-label={`${t("org.addNode")} · ${node.name}`}
                   onPointerDown={stopPD}
                   onClick={() => setAddChild(node.name)}
                 >

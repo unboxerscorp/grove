@@ -455,6 +455,24 @@ async function coreMain() {
       nodes: document.querySelectorAll(".org-node").length,
       sub: (document.querySelector(".org__sub")?.textContent ?? "").trim(),
     }));
+    const orgA11y = await page.evaluate(() => {
+      // #N8 org accessibility snapshot: org nodes expose accessible grouping,
+      // action buttons have names, and edge-cut controls are keyboard reachable.
+      const nodes = Array.from(document.querySelectorAll(".org-node"));
+      const visibleActions = Array.from(document.querySelectorAll(".org-node__actions button"));
+      return {
+        nodeCount: nodes.length,
+        nodeGroups: nodes.every((n) => n.getAttribute("role") === "group"),
+        nodeNames: nodes.every((n) => (n.getAttribute("aria-label") ?? "").includes(n.getAttribute("data-name") ?? "")),
+        actionButtonsNamed: visibleActions.every((b) => (b.textContent ?? "").trim().length > 0),
+        plusButtonsNamed: Array.from(document.querySelectorAll(".org-node__plus")).every((b) =>
+          /\S/.test(b.getAttribute("aria-label") ?? ""),
+        ),
+        edgeCutKeyboard: Array.from(document.querySelectorAll(".org-edge-cut")).every(
+          (e) => e.getAttribute("role") === "button" && e.getAttribute("tabindex") === "0" && /\S/.test(e.getAttribute("aria-label") ?? ""),
+        ),
+      };
+    });
 
     await page.click('.dr-sidebar .dr-tab[data-view="terminal"]');
     await page.waitForSelector(".dr-term .xterm", { timeout: 8000 });
@@ -507,6 +525,12 @@ async function coreMain() {
       teamLoading.nodes === 0 &&
       !teamLoading.emptyCopy &&
       teamFinal.nodes >= 1 &&
+      orgA11y.nodeCount >= 1 &&
+      orgA11y.nodeGroups &&
+      orgA11y.nodeNames &&
+      orgA11y.actionButtonsNamed &&
+      orgA11y.plusButtonsNamed &&
+      orgA11y.edgeCutKeyboard &&
       terminal.name === "root" &&
       /terminal/.test(terminal.ticketKind) &&
       /ws\/terminal/.test(terminal.wsUrl) &&
@@ -531,6 +555,7 @@ async function coreMain() {
             sidebar,
             teamLoading,
             teamFinal,
+            orgA11y,
             terminal,
             slackGuide,
             board,
