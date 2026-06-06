@@ -292,7 +292,9 @@ All of §8, **plus**:
   answer | task-proposal + fields + card text; parse fail → defer, never raw fabricate).
 - **Pool size N** — **Rec:** small default (e.g. N=4), configurable, per-surface cap; **Stage1:** tune from
   shadow/canary saturation **[A5]**.
-- **Web queue parity** — **Rec:** unified `chat_turn_queue` mirroring `slack_chat_queue`; **Stage1:** Slack first,
-  web parity additive fast-follow.
+- **Web queue parity** — **Rec:** a **dedicated web queue + web worker**; **Stage1:** Slack first, web parity is
+  a separate post-MVP gate. **⚠ CAVEAT (operator-blocked 2026-06-06):** web turns MUST NOT be enqueued onto
+  `slack_chat_queue` (e.g. `team_id="web"`) for the shared Slack worker to drain — that cross-surface contamination
+  risks fake Slack-channel posts. Web parity needs its own queue/worker, not slack_chat_queue reuse.
 - **Provider backend** — **Rec:** official `anthropic` SDK (fallback: `AnthropicAssistantClient` raw-HTTP);
   `claude-opus-4-8` + adaptive thinking + streaming + effort per the `claude-api` skill; confirm at impl.
