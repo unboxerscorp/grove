@@ -6,14 +6,15 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
-- 2026-06-06 10:03 KST 기준 최신 live 운영:
+- 2026-06-06 10:59 KST 기준 최신 live 운영:
   - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
   - 단일 tmux 세션 `dev10`만 사용한다. panes: `dev10:0.0 grove-master`, `dev10:1.0 web`, `dev10:2.0 slack`, `dev10:3.0 advisor`.
-  - web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`로 실행한다. 명령은 `0.0.0.0:8765`, `--unsafe-bind`, `--enable-node-input`, `--enable-intake`, `--allow-host 100.100.90.87,192.168.1.186`를 포함한다. 2026-06-06 10:03 KST 기준 `started_at=1780707710`이며 N6/N10/N2 UI 변경이 live에 반영됐다.
+  - web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`로 실행한다. 명령은 `0.0.0.0:8765`, `--unsafe-bind`, `--enable-node-input`, `--enable-intake`, `--allow-host 100.100.90.87,192.168.1.186`를 포함한다. 2026-06-06 10:59 KST 기준 `started_at=1780711102`이며 N6/N10/N2 UI 변경과 `32ffdf9` board-listing fix가 live에 반영됐다.
   - 원격 접속 URL은 tailnet `http://100.100.90.87:8765`, LAN `http://192.168.1.186:8765`이다. remote terminal은 tailnet URL에서 실제 Chrome smoke로 `.dr-conn is-live`, xterm 렌더, 기본 선택 `grove-master`/`dev10:0.0`을 확인했다. `~/.grove/dev10/web.json`도 `allowed_hosts`와 `remote_urls`를 노출한다.
   - Slack은 `dev10:2.0`에서 `/Users/chopin/.grove/dev10/run-slack-loop.sh`로 실행한다. `/api/slack/config/status`는 `socket_connected`, `~/.grove/dev10/slack-runtime.json` heartbeat가 갱신된다. 2026-06-06 09:54 KST 기준 Slack pane은 `dev10:2.0`, runtime pid는 `59036`, heartbeat fresh이다. `a9f8478` Slack control item copy cleanup 반영을 위해 같은 pane을 respawn했으며 socket 재연결을 확인했다.
   - advisor는 `dev10:3.0`의 Claude 노드이며 약 5분마다 `grove-master`를 점검한다. 사용자가 명시 중단하기 전까지 루프를 멈추지 않는다.
   - `/api/projects`는 `dev10` 하나만 반환해야 한다. `/api/boards`는 프로젝트 헤더가 없어도 현재 active project board만 반환해야 하며, 과거 `p2-test` 같은 stale board가 섞이면 회귀다. `/api/org`의 `default_assignee`와 `master_org.project_master.name`은 `grove-master`여야 하며 advisor가 default가 되면 회귀다.
+  - 최신 live API contract fix는 `32ffdf9 fix: hide legacy dev-room alias from board listing`이다. `/api/boards`가 `X-Grove-Project: dev10` 헤더에서도 active project board `dev10`만 반환하도록 정렬했다. legacy `/api/boards/dev-room/*` 직접 접근은 dev10 소유 compatibility endpoint로 유지하되 목록에는 노출하지 않는다. RED(`['dev-room','dev10']`)→GREEN targeted pytest, `pnpm check` green(TS/Vitest 56 files 292 tests, bridge pytest 453), web graceful 재배포 후 live smoke: no-header `/api/boards=[dev10]`, dev10-header `/api/boards=[dev10]`, `/api/boards/dev-room/tasks` 200 `[]`, `/api/status running=4`, `/api/projects=[dev10]`, `/api/org` 4 nodes `pane_exists:true`, Slack pid `59036` heartbeat fresh.
   - `~/.grove/boards/board.db`의 stale `p2-test` board/task 찌꺼기는 삭제했다. 삭제 전 백업은 `~/.grove/boards/board.db.bak.pre-p2-cleanup-1780682270`이다. 이후 DB 전체 `tasks=0`, live `/api/boards/default/tasks=[]`, `/api/inbox.total=0`을 확인했다.
   - 최신 UI 기능 product-code 커밋은 `99ce1f8 feat: add board group bulk assignment`이다. 이후 safety/docs/test 정합 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD와 UI 기능 HEAD를 구분한다.
   - 최신 current-model 정합 커밋은 `0191223 docs: mark legacy team auth design historical`이다. top-level `docs/DESIGN_team_auth.md`는 historical v1.2 design으로 명확히 표시하고 현행 live auth 문서는 `docs/design/AUTH_AND_PROJECTS.md`라고 안내한다. `src/current-docs.test.ts`가 이 historical marker를 가드한다. 검증: `pnpm vitest run src/current-docs.test.ts`, `pnpm check` green(TS/Vitest 56 files 292 tests, bridge pytest 453).
