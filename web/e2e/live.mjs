@@ -839,14 +839,17 @@ async function main() {
     });
 
     await runStep(page, "Slack settings panel and secret redaction", async () => {
+      await selectProject(page, REAL_PROJECT, REAL_PROJECT_LABEL_RE);
       await nav(page, "integrations");
       await page.waitForSelector(".slack-guide__command", { visible: true, timeout: 15_000 });
       const commandCount = await page.$$eval(".slack-guide__command", (items) => items.length);
       check("Slack usage guide renders command examples", commandCount >= 4, String(commandCount));
       const intakeState = await page.$eval(".slack-intake__badge", (el) => el.getAttribute("data-enabled") ?? "");
       check("Slack intake state is shown", ["on", "off", "unknown"].includes(intakeState), intakeState);
-      const status = await apiFetch(page, "/api/slack/config/status", { project: TEST_PROJECT });
+      const status = await apiFetch(page, "/api/slack/config/status", { project: REAL_PROJECT });
       assertCheck("/api/slack/config/status returns 2xx", status.ok, `HTTP ${status.status}`);
+      check("Slack status reports socket connection", status.json?.status === "socket_connected", safeJson(status.json));
+      check("Slack routes direct chat to grove-master", status.json?.tokens?.default_node === "grove-master", safeJson(status.json));
       check("Slack status network payload does not expose raw tokens", !hasRawSecret(status.json), "raw token pattern present in /api/slack/config/status");
       const domText = await textContent(page, ".slack");
       check("Slack DOM does not expose raw tokens", !hasRawSecret(domText));

@@ -198,6 +198,17 @@ function assertLiveE2eChecksMasterSshConnect() {
   }
 }
 
+function assertLiveE2eChecksSlackMasterRoute() {
+  const live = readFileSync(path.join(root, "e2e", "live.mjs"), "utf8");
+  if (
+    !/Slack status reports socket connection/.test(live) ||
+    !/status\.json\?\.status\s*===\s*["']socket_connected["']/.test(live) ||
+    !/status\.json\?\.tokens\?\.default_node\s*===\s*["']grove-master["']/.test(live)
+  ) {
+    throw new Error("live e2e must verify Slack is socket-connected and routes to grove-master");
+  }
+}
+
 function assertTerminalPaneDisablesXtermStdin() {
   // #N9 xterm stdin disabled: terminal panes are mirrors; typed input goes only
   // through the explicit node send form when that feature is available.
@@ -400,6 +411,7 @@ async function coreMain() {
   assertLiveE2eAvoidsReentrantMasterChatPost();
   assertLiveE2eCleansOwnBoardFixtures();
   assertLiveE2eChecksMasterSshConnect();
+  assertLiveE2eChecksSlackMasterRoute();
   assertTerminalPaneDisablesXtermStdin();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
@@ -921,6 +933,7 @@ async function main() {
     assertLiveE2eAvoidsReentrantMasterChatPost();
     assertLiveE2eCleansOwnBoardFixtures();
     assertLiveE2eChecksMasterSshConnect();
+    assertLiveE2eChecksSlackMasterRoute();
     assertTerminalPaneDisablesXtermStdin();
     await verifyRetiredLegacySurfaces(browser);
     // The historical full-panel script below is intentionally archived. It
