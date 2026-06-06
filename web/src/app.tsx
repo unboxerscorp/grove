@@ -4,27 +4,13 @@ import { api, AUTH_REQUIRED, setProject, wsUrl } from "./api";
 import type { Project } from "./api";
 import { BoardView } from "./components/BoardView";
 import { NodeList } from "./components/NodeList";
-import { AuditDrawer } from "./components/AuditDrawer";
 import { InboxDrawer } from "./components/InboxDrawer";
 import { PresenceIndicator } from "./components/PresenceIndicator";
-import { OnboardingWizard } from "./components/OnboardingWizard";
 import { AuthPanel } from "./components/AuthPanel";
-import { AggregationPanel } from "./components/AggregationPanel";
-import { CommandPalette } from "./components/CommandPalette";
-import type { PaletteCommand } from "./components/CommandPalette";
-import { ConnectPanel } from "./components/ConnectPanel";
-import { CostPanel } from "./components/CostPanel";
-import { ExecutionPanel } from "./components/ExecutionPanel";
-import { HandoffPanel } from "./components/HandoffPanel";
-import { InsightsPanel } from "./components/InsightsPanel";
-import { RoutingPanel } from "./components/RoutingPanel";
-import { TrendPanel } from "./components/TrendPanel";
-import { LedgerPanel } from "./components/LedgerPanel";
 import { HealthDot } from "./components/HealthDot";
 import { NodeStatusBar } from "./components/NodeStatusBar";
 import { OrgChart } from "./components/OrgChart";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
-import { SlackPanel } from "./components/SlackPanel";
 import { TaskDrawer } from "./components/TaskDrawer";
 import { TerminalPane } from "./components/TerminalPane";
 import { MasterChat } from "./components/MasterChat";
@@ -34,33 +20,7 @@ import { useI18n } from "./i18n";
 import { liveNodeCount } from "./nodeLive";
 import type { GroveNode } from "./types";
 
-type View = "board" | "team" | "terminal" | "integrations" | "exec" | "cost" | "ledger" | "insights" | "trend" | "agg" | "handoff" | "connect" | "routing" | "auth";
-
-// A share URL deep-links as <index>?join=<code> (web_app.py _share_url). Read the
-// code once at startup so opening a share link lands on the join screen with the
-// code pre-filled — the core "easy connection" path for a peer.
-function initialJoinCode(): string | null {
-  try {
-    const c = new URLSearchParams(window.location.search).get("join");
-    return c && c.trim() ? c.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-// The join code is a ONE-TIME secret: once it's read into state, strip it from
-// the address bar + browser history (replaceState, no new entry) so a refresh,
-// shared screenshot, or back/forward never re-exposes it. State keeps the value.
-function scrubJoinFromUrl(): void {
-  try {
-    const url = new URL(window.location.href);
-    if (!url.searchParams.has("join")) return;
-    url.searchParams.delete("join");
-    window.history.replaceState(window.history.state, "", url.toString());
-  } catch {
-    /* history API unavailable — best-effort */
-  }
-}
+type View = "board" | "team" | "terminal" | "auth";
 
 function terminalCandidate(node: GroveNode): boolean {
   return node.terminal_allowed !== false && Boolean(node.tmux_pane);
@@ -102,19 +62,6 @@ const NAV_GROUPS: { id: string; labelKey: string; items: NavItem[] }[] = [
     items: [{ kind: "view", view: "auth", labelKey: "tab.auth", icon: "⚙" }],
   },
 ];
-const COMPAT_VIEW_HOOKS: View[] = [
-  "integrations",
-  "exec",
-  "cost",
-  "ledger",
-  "insights",
-  "trend",
-  "agg",
-  "handoff",
-  "connect",
-  "routing",
-  "auth",
-];
 
 export function App() {
   const { t, lang, setLang } = useI18n();
@@ -129,13 +76,11 @@ export function App() {
   const [orgChildren, setOrgChildren] = useState<Record<string, string[]>>({});
   const [orgRoots, setOrgRoots] = useState<string[]>([]);
   const [selectedPane, setSelectedPane] = useState<string | null>(null);
-  const [joinCode] = useState<string | null>(initialJoinCode);
-  const [view, setView] = useState<View>(joinCode ? "connect" : "board");
+  const [view, setView] = useState<View>("board");
   // Current member role: member null (local-token) = operator; only a team
   // "viewer" loses project-create + share. Re-confirmed on navigation / refresh.
   const [isViewer, setIsViewer] = useState(false);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
-  const [auditOpen, setAuditOpen] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [inboxCount, setInboxCount] = useState(0);
   const [liveTick, setLiveTick] = useState(0);
@@ -148,7 +93,6 @@ export function App() {
   // Left sidebar: mobile drawer open + per-group collapse (all expanded default).
   const [navOpen, setNavOpen] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
-  const [tutorialOpenKey, setTutorialOpenKey] = useState(0);
   const toggleGroup = (id: string) =>
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
@@ -161,36 +105,7 @@ export function App() {
     fn();
     setNavOpen(false);
   };
-  const openDrawer = (d: "audit" | "inbox") => {
-    if (d === "audit") setAuditOpen(true);
-    else setInboxOpen(true);
-  };
-
-  // Command palette (Cmd/Ctrl-K): navigation-only jump to any view/drawer.
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setPaletteOpen((o) => !o);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-  // Every visible sidebar view as a palette command — routing only, no mutation.
-  const paletteCommands: PaletteCommand[] = NAV_GROUPS.flatMap((g) =>
-    g.items.map((it) => {
-      return {
-        id: `view:${it.view}`,
-        name: it.view,
-        label: t(it.labelKey),
-        group: t(g.labelKey),
-        icon: it.icon,
-        run: () => onNav(() => setView(it.view)),
-      };
-    }),
-  );
+  const openInbox = () => setInboxOpen(true);
 
   const loadProjects = useCallback(
     () =>
@@ -217,12 +132,6 @@ export function App() {
   useEffect(() => {
     void loadProjects();
   }, [loadProjects]);
-
-  // Scrub the one-time join code from the URL right after it's captured into
-  // state, so the secret never lingers in the address bar / history.
-  useEffect(() => {
-    scrubJoinFromUrl();
-  }, []);
 
   // Role for control-gating (project create + share). Re-confirmed on navigation
   // and after a join (liveTick) so a freshly-joined member's role takes effect.
@@ -465,16 +374,6 @@ export function App() {
 
         {/* Minimal top bar: command palette / presence / health / auth / language. */}
         <div className="dr-top__right">
-          <button
-            type="button"
-            className="cmdk-trigger"
-            onClick={() => setPaletteOpen(true)}
-            aria-label={t("cmdk.open")}
-            aria-keyshortcuts="Meta+K Control+K"
-            title={t("cmdk.open")}
-          >
-            <span className="cmdk-trigger__icon" aria-hidden="true">⌘K</span>
-          </button>
           <PresenceIndicator liveTick={liveTick} projectTick={projectTick} />
           <HealthDot />
           <span className={cx("dr-auth", AUTH_REQUIRED ? "is-secured" : "is-local")}>
@@ -549,7 +448,7 @@ export function App() {
             <button
               type="button"
               className="dr-navitem dr-tab dr-navitem--inbox"
-              onClick={() => onNav(() => openDrawer("inbox"))}
+              onClick={() => onNav(openInbox)}
             >
               <span className="dr-navitem__icon" aria-hidden="true">✉</span>
               <span className="dr-navitem__label">{t("inbox.open")}</span>
@@ -557,32 +456,6 @@ export function App() {
             </button>
           </nav>
         </aside>
-
-        <div className="dr-compat-hooks" hidden aria-hidden="true">
-          {COMPAT_VIEW_HOOKS.map((compatView) => (
-            <button
-              key={compatView}
-              type="button"
-              className="dr-tab"
-              data-view={compatView}
-              onClick={() => setView(compatView)}
-              tabIndex={-1}
-            />
-          ))}
-          <button type="button" className="dr-audit-btn" onClick={() => openDrawer("audit")} tabIndex={-1} />
-          <button type="button" className="dr-inbox-btn" onClick={() => openDrawer("inbox")} tabIndex={-1}>
-            {inboxCount > 0 && <span className="dr-inbox-btn__badge">{inboxCount}</span>}
-          </button>
-          <button
-            type="button"
-            className="dr-tutorial-btn"
-            onClick={() => {
-              setTutorialOpenKey((x) => x + 1);
-              setNavOpen(false);
-            }}
-            tabIndex={-1}
-          />
-        </div>
 
         <div className="dr-content">
           <NodeStatusBar liveTick={liveTick} projectTick={projectTick} />
@@ -597,61 +470,32 @@ export function App() {
               roots={orgRoots}
             />
             <section className="dr-stage">
-          {view === "board" && boardId ? (
-            <BoardView
-              boardId={boardId}
-              nodes={nodes}
-              liveTick={liveTick}
-              projectTick={projectTick}
-              boardLive={boardLive}
-              project={project}
-              onOpenTask={setOpenTaskId}
-            />
-          ) : view === "board" ? (
-            <div className="dr-stage__empty">{t("stage.noBoards")}</div>
-          ) : view === "team" ? (
-            <OrgChart
-              liveTick={liveTick}
-              projectTick={projectTick}
-              onOpenTerminal={pickNode}
-              onOpenMasterChat={openMasterChat}
-              onSwitchProject={switchProject}
-            />
-          ) : view === "integrations" ? (
-            <SlackPanel projectTick={projectTick} />
-          ) : view === "exec" ? (
-            <ExecutionPanel
-              boardId={boardId}
-              liveTick={liveTick}
-              projectTick={projectTick}
-              onChanged={() => setLiveTick((x) => x + 1)}
-            />
-          ) : view === "cost" ? (
-            <CostPanel projectTick={projectTick} />
-          ) : view === "ledger" ? (
-            <LedgerPanel projectTick={projectTick} onChanged={() => setLiveTick((x) => x + 1)} />
-          ) : view === "insights" ? (
-            <InsightsPanel projectTick={projectTick} />
-          ) : view === "trend" ? (
-            <TrendPanel projectTick={projectTick} />
-          ) : view === "agg" ? (
-            <AggregationPanel projectTick={projectTick} />
-          ) : view === "handoff" ? (
-            <HandoffPanel projectTick={projectTick} onAccepted={() => setLiveTick((x) => x + 1)} />
-          ) : view === "connect" ? (
-            <ConnectPanel
-              projectTick={projectTick}
-              initialJoinCode={joinCode}
-              onJoined={() => setLiveTick((x) => x + 1)}
-            />
-          ) : view === "routing" ? (
-            <RoutingPanel projectTick={projectTick} />
-          ) : view === "auth" ? (
-            <AuthPanel />
-          ) : (
-            <TerminalPane node={selected} />
-          )}
-        </section>
+              {view === "board" && boardId ? (
+                <BoardView
+                  boardId={boardId}
+                  nodes={nodes}
+                  liveTick={liveTick}
+                  projectTick={projectTick}
+                  boardLive={boardLive}
+                  project={project}
+                  onOpenTask={setOpenTaskId}
+                />
+              ) : view === "board" ? (
+                <div className="dr-stage__empty">{t("stage.noBoards")}</div>
+              ) : view === "team" ? (
+                <OrgChart
+                  liveTick={liveTick}
+                  projectTick={projectTick}
+                  onOpenTerminal={pickNode}
+                  onOpenMasterChat={openMasterChat}
+                  onSwitchProject={switchProject}
+                />
+              ) : view === "auth" ? (
+                <AuthPanel />
+              ) : (
+                <TerminalPane node={selected} />
+              )}
+            </section>
           </main>
         </div>
       </div>
@@ -662,25 +506,11 @@ export function App() {
         onChanged={() => setLiveTick((x) => x + 1)}
         onClose={() => setOpenTaskId(null)}
       />
-      <AuditDrawer open={auditOpen} projectTick={projectTick} onClose={() => setAuditOpen(false)} />
       <InboxDrawer
         open={inboxOpen}
         projectTick={projectTick}
         onAnswered={() => setLiveTick((x) => x + 1)}
         onClose={() => setInboxOpen(false)}
-      />
-      {/* Mount fresh per open so query/selection always start clean. */}
-      {paletteOpen && (
-        <CommandPalette open onClose={() => setPaletteOpen(false)} commands={paletteCommands} />
-      )}
-      <OnboardingWizard
-        openKey={tutorialOpenKey}
-        projectCount={projects.length}
-        onProjectReady={(name) => {
-          void loadProjects();
-          switchProject(name);
-        }}
-        onNavigate={(v) => setView(v)}
       />
       {/* Floating chat to GROVE MASTER (bottom-right). */}
       <MasterChat openSignal={masterChatOpenSignal} />
