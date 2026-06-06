@@ -6,6 +6,14 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 15:05 KST Slack response delivery no-drop 보강:
+  - 최신 product-code HEAD는 `ac0bc39 fix: retry slack response delivery`다. Slack routed chat queue가 master 응답을 받은 뒤 Slack thread 게시에 실패하면, 이제 queue item을 `done` 처리하지 않고 pending으로 되돌린다.
+  - `slack_chat_queue.response_text` 컬럼에 생성된 응답을 저장하므로 delivery retry가 master에게 같은 ask를 다시 보내지 않는다. 즉 일시적 Slack API/post 실패는 답변 유실 없이 같은 응답을 thread delivery만 재시도한다.
+  - live DB migration 확인: `slack_chat_queue`에 `response_text` 컬럼 존재, `queue_total/pending/failed=0/0/0`, board residue `tasks/comments/p2-test=0/0/0`.
+  - Slack service만 재시작했다. runtime pid `75126 -> 83004`, `socket_connected=true`, heartbeat fresh. tmux window `2 slack` pane은 유지됐다.
+  - main web `8765`와 remote web `5173`은 재시작하지 않았고 health ok다. `8765 started_at=1780721628`, `5173 started_at=1780721854` 유지.
+  - 검증: `uv run --project bridge pytest bridge/tests/test_slack.py -k "chat_routing"` 14 passed, `uv run --project bridge pytest bridge/tests/test_slack.py bridge/tests/test_store.py` 111 passed, `pnpm check` green(TS/Vitest 305, bridge pytest 459), `grove org --json` 5노드 전부 `pane_exists=true`.
+
 - 2026-06-06 14:56 KST Slack/web/org soak 샘플:
   - `46f5a78` Slack timeout retry 배포 후 2회 연속 샘플(14:54, 14:56 KST)에서 Slack pid `75126` 유지, `socket_connected=true`, heartbeat fresh.
   - `slack_chat_queue`는 `total/pending/failed=0/0/0`, live board residue는 `tasks=0`, `comments=0`, `p2-test=0` 유지.
