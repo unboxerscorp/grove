@@ -1,10 +1,12 @@
 # Context-Pack Foreign-Project Collapse (task_dd4)
 
-Status: DESIGN (design-only, plan-first). No code, no parity-surface edits.
-Priority: LOW (grove-dev lead, 2026-06-06). The renderer parity surface
-(`src/context-pack.ts`, `bridge/src/grove_bridge/context_pack.py`, and the
-byte-identical PARITY fixtures) stays untouched until the lead agrees the
-"Open Decisions" below. Owner: org-worker. Reports to grove-dev lead.
+Status: IMPLEMENTED (Phase 1 committed d4833a2; Phase 2 deferred). The lead
+agreed every Open Decision below on 2026-06-06. Phase 1 shipped the collapse
+filter + render-inert `project` field in `src/context-pack.ts` and
+`bridge/src/grove_bridge/context_pack.py`, with byte-parity re-verified by the
+lead (TS 13/13, Py 11/11, PARITY_PACK byte-identical). It is an inert no-op
+until a second project exists (Phase 2). Owner: org-worker. Reports to
+grove-dev lead.
 
 This proposes how the context-pack "Visible org summary" should, once multiple
 projects exist, show **other** projects collapsed to their **lead node only**,
@@ -82,7 +84,7 @@ exercise; here the scope is bounded because only the filter consumes it.)
 3. Preserve current ordering (sort by `name`, as today) after selection.
 4. Single-project input → returns the list unchanged (inert no-op).
 
-## Open Decisions (need lead agreement before any code)
+## Open Decisions (RESOLVED — lead adopted every recommendation, 2026-06-06)
 
 1. **Foreign-project lead identification.** Reuse the existing `_project_lead`
    heuristic (node named `lead`, else a root node whose name contains `lead`)?
@@ -113,15 +115,20 @@ exercise; here the scope is bounded because only the filter consumes it.)
 
 ## Phased rollout
 
-- **Phase 0 (this doc):** design agreement on Open Decisions. No code.
-- **Phase 1:** additive `project` field (render-inert, parity-proven) + pure
-  `collapseForeignProjects` filter (TS + mirrored Python) + tests. Inert for
-  single-project; no behavior change to current dispatches.
+- **Phase 0 — DONE:** design agreement on Open Decisions.
+- **Phase 1 — DONE (committed d4833a2):** additive `project` field
+  (render-inert, parity-proven) + pure `collapseForeignProjects` filter
+  (TS + mirrored Python) + selection-parity tests. Inert for single-project;
+  no behavior change to current dispatches.
 - **Phase 2 (future):** wire the filter into node-sourcing wherever multi-project
-  aggregation is introduced. Out of scope until that aggregation exists.
+  aggregation is introduced — sourcing must set `node.project` to the registry
+  session and pass the same string as the pack's home `project`. Out of scope
+  until a second project exists.
 
-## Constraint restated
+## Constraint (Phase 1 — satisfied)
 
-No edits to `src/context-pack.ts`, `bridge/src/grove_bridge/context_pack.py`, or
-the PARITY fixtures until the lead agrees the Open Decisions. This document is
-the plan-first deliverable; implementation is on HOLD pending that agreement.
+Phase 1 touched `src/context-pack.ts` and `bridge/src/grove_bridge/context_pack.py`
+only by adding the render-inert `project` field and the upstream filter; the
+locked renderer + PARITY fixtures were unchanged and re-verified byte-identical.
+Any future rendering change to the parity surface still requires explicit lead
+agreement before edits.
