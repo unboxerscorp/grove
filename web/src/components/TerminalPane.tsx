@@ -8,7 +8,6 @@ import { api, b64ToBytes, wsUrl } from "../api";
 import { agentGlyph, cx } from "../constants";
 import { useI18n } from "../i18n";
 import type { TFn } from "../i18n";
-import type { NodeConnect } from "../api";
 import type { GroveNode, TerminalFrame } from "../types";
 import { NodeHealthBadge } from "./NodeHealthBadge";
 
@@ -50,51 +49,6 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/** Copyable "SSH/connect" command for a node (GET /api/nodes/{node}/connect). */
-function SshConnect({ node, t }: { node: GroveNode; t: TFn }) {
-  const [connect, setConnect] = useState<NodeConnect | null>(null);
-  const [state, setState] = useState<"idle" | "loading" | "error">("idle");
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    setConnect(null);
-    setState("idle");
-  }, [node.name]);
-  const load = () => {
-    setState("loading");
-    api
-      .getNodeConnect(node.name)
-      .then((c) => {
-        setConnect(c);
-        setState("idle");
-      })
-      .catch(() => setState("error"));
-  };
-  const cmd = connect?.commands?.attach ?? "";
-  const copy = () => {
-    void navigator.clipboard?.writeText(cmd).catch(() => {});
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
-  };
-  return (
-    <div className="dr-term__connect" data-node={node.name}>
-      {!connect ? (
-        <button type="button" className="dr-btn dr-btn--ghost dr-term__connect-btn" disabled={state === "loading"} onClick={load}>
-          🔌 {state === "loading" ? t("term.connect.loading") : t("term.connect.btn")}
-        </button>
-      ) : (
-        <span className="dr-term__connect-cmd">
-          {connect.label && <span className="dr-term__connect-label">{connect.label}</span>}
-          <code className="dr-term__connect-code">{cmd}</code>
-          <button type="button" className="dr-term__connect-copy" onClick={copy}>
-            {copied ? t("term.connect.copied") : t("term.connect.copy")}
-          </button>
-        </span>
-      )}
-      {state === "error" && <span className="dr-term__connect-err">{t("term.connect.error")}</span>}
-    </div>
-  );
 }
 
 /** Operator-only web→node command input → POST /api/nodes/{node}/send. The live
@@ -149,7 +103,7 @@ function NodeSendBox({ node, t }: { node: GroveNode; t: TFn }) {
   );
 }
 
-/** Footer tools for a node: SSH connect + operator-only send box (viewer locked). */
+/** Footer tools for a node: operator-only send box (viewer locked). */
 function TerminalTools({ node, t }: { node: GroveNode; t: TFn }) {
   const [isViewer, setIsViewer] = useState(false);
   useEffect(() => {
@@ -162,18 +116,15 @@ function TerminalTools({ node, t }: { node: GroveNode; t: TFn }) {
       alive = false;
     };
   }, [node.name]);
-  const canConnect = node.terminal_allowed !== false;
   if (node.input_allowed === false) {
     return (
       <div className="dr-term__tools">
-        {canConnect && !isViewer && <SshConnect node={node} t={t} />}
         <div className="dr-term__send-viewer" data-viewonly="1">{t("term.send.viewOnly")}</div>
       </div>
     );
   }
   return (
     <div className="dr-term__tools">
-      {canConnect && <SshConnect node={node} t={t} />}
       {isViewer ? (
         <div className="dr-term__send-viewer">{t("term.send.viewer")}</div>
       ) : (
