@@ -6,6 +6,15 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 13:57 KST 최신 live 운영(아래 13:14 기록보다 우선):
+  - 최신 product-code HEAD는 `5d01154 fix: pin web tmux commands to session socket`이다. bridge tmux subprocess와 node connect payload가 pane/session에서 `tmux -L <session>`을 유도하므로 tmux 밖 launchd/SSH/headless 컨텍스트에서도 default socket이 아니라 `dev10` named socket을 결정적으로 본다.
+  - main web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`가 관리하며 `0.0.0.0:8765`로 실행 중이다. 2026-06-06 13:57 KST 기준 child pid `34459`, `started_at=1780721628`, health ok.
+  - 원격 실시간 UI용 보조 web은 tmux 조직 pane에 올리지 않는다. `~/Library/LaunchAgents/local.grove.client-web-5173.plist`가 tmux 밖 LaunchAgent로 `0.0.0.0:5173`을 실행한다. 2026-06-06 13:57 KST 기준 pid `36987`, `started_at=1780721854`, health ok. plist는 `PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin`, `GROVE_HOME=/Users/chopin/.grove`, `--session dev10`, `--unsafe-bind`, `--enable-node-input`, `--enable-intake`, `--allow-host 100.100.90.87,192.168.1.186`를 명시한다. `$TMUX` 하드코딩은 제거했으며, liveness는 코드의 `tmux -L dev10` 경로로 검증한다.
+  - 운영자 접속 URL은 `http://100.100.90.87:5173/`이다. 자동 local-token bootstrap이 HTML에 주입되고, `/api/status`는 `running=4`, `/api/org`는 `default_assignee=grove-master`, 4개 노드 모두 `pane_exists=true`를 반환한다. `8765`와 `5173`의 `/api/nodes/grove-master/connect`는 둘 다 `ssh 100.100.90.87 'tmux -L dev10 select-pane -t dev10:0.0 && tmux -L dev10 attach -t dev10'`를 반환한다.
+  - 현재 tmux 조직은 `dev10` 단일 세션의 windows `0 grove-master`, `1 web`, `2 slack`, `3 advisor`만 사용한다. 5173 보조 서버는 이 조직도에 노드/window로 추가하지 않는다.
+  - Slack은 재시작하지 않았고 runtime pid `59036`, `socket_connected=true`, heartbeat fresh를 유지한다.
+  - 검증: `pnpm check` green(TS/Vitest 56 files 302 tests, bridge pytest 454), `node web/e2e/live.mjs` 94/94 green(`LIVE_E2E_CLEANUP matched=2`), DB residue `tasks=0`, `comments=0`, `p2-test` board row 0, `~/.grove/p2-test/registry.json` absent, git tree clean.
+
 - 2026-06-06 13:14 KST 기준 최신 live 운영:
   - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
   - 단일 tmux 세션 `dev10`만 사용한다. panes: `dev10:0.0 grove-master`, `dev10:1.0 web`, `dev10:2.0 slack`, `dev10:3.0 advisor`.
