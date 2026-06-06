@@ -65,6 +65,29 @@ function assertNoStaleItemTitleCopy() {
   }
 }
 
+function assertNoStaleDelegationCopy() {
+  const sources = [
+    readFileSync(path.join(root, "src", "api.ts"), "utf8"),
+    readFileSync(path.join(root, "src", "styles.css"), "utf8"),
+    readFileSync(path.join(root, "mock", "harness.ts"), "utf8"),
+  ].join("\n");
+  const bundle = existsSync(path.join(root, "mock", "harness.js"))
+    ? readFileSync(path.join(root, "mock", "harness.js"), "utf8")
+    : "";
+  const forbidden = new RegExp(
+    [
+      `Current ${"delegation"}`,
+      `${"Delegation"} history`,
+      `delegation ${"recommendations"}`,
+      `delegation ${"edge"}`,
+    ].join("|"),
+    "i",
+  );
+  if (forbidden.test(`${sources}\n${bundle}`)) {
+    throw new Error("web copy/comments must describe assignments or ownership, not delegation protocol");
+  }
+}
+
 function assertNoLegacyProjectMasterE2eFixtures() {
   const fixtures = [
     readFileSync(path.join(root, "e2e", "tier1", "fixtures.mjs"), "utf8"),
@@ -301,6 +324,7 @@ async function coreMain() {
   assertNoDelegateTaskCopy();
   assertNoLegacyProjectMasterMock();
   assertNoStaleItemTitleCopy();
+  assertNoStaleDelegationCopy();
   assertNoLegacyProjectMasterE2eFixtures();
   assertLiveE2eDefaultsCurrentPort();
   assertLiveE2eAvoidsReentrantMasterChatPost();
@@ -819,6 +843,7 @@ async function main() {
     assertNoDelegateTaskCopy();
     assertNoLegacyProjectMasterMock();
     assertNoStaleItemTitleCopy();
+    assertNoStaleDelegationCopy();
     assertNoLegacyProjectMasterE2eFixtures();
     assertLiveE2eDefaultsCurrentPort();
     assertLiveE2eAvoidsReentrantMasterChatPost();

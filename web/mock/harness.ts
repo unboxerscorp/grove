@@ -321,7 +321,7 @@ function buildSoloOrg() {
 
 // v1.29 cross-project org metadata — mirrors web_app.py _org_payload additions:
 // project {name,board,display_name}, GROVE MASTER root, project_leads (current +
-// switch targets), reviewer_candidates, delegations {current(open tasks), history}.
+// switch targets), reviewer_candidates, delegations {current(open items), history}.
 function mockCanon(raw: string): string {
   const s = (raw ?? "").trim().toLowerCase().replace(/-/g, "_");
   return MOCK_WORKFLOW_ALIASES[s] ?? s;
@@ -333,21 +333,21 @@ function mockOrgExtras(proj: string): Record<string, unknown> {
   const edges: Record<string, Edge> = {};
   const add = (from: string, to: string, kind: string, id: string) => {
     const key = `${from}|${to}|${kind}`;
-    const e = (edges[key] ??= { from, to, kind, task_ids: [], count: 0, latest_assigned_at: AUDIT_TS0, oldest_open_updated_at: AUDIT_TS0, stale: false, label: "Current delegation: open tasks" });
+    const e = (edges[key] ??= { from, to, kind, task_ids: [], count: 0, latest_assigned_at: AUDIT_TS0, oldest_open_updated_at: AUDIT_TS0, stale: false, label: "Current assignment: open items" });
     e.task_ids.push(id);
     e.count += 1;
   };
   // The mock org's orchestrator node is "root" (grove:0.0) — use it as the edge
-  // source so current-delegation edges resolve against real graph nodes.
+  // source so current assignment edges resolve against real graph nodes.
   for (const t of open) {
     if (t.assignee) add("root", t.assignee, "implementation", t.id);
     if (t.reviewer) add(t.assignee ?? "root", t.reviewer, "review_pool", t.id);
   }
   const current = Object.values(edges).sort((a, b) => (a.from + a.to).localeCompare(b.from + b.to));
   const history = [
-    { event_id: "de1", cursor: 2, action: "delegate", from: "lead", to: "backend", ts: AUDIT_TS0 + 30, label: "Delegation history: delegate" },
-    { event_id: "de2", cursor: 5, action: "assign", from: "lead", to: "frontend", ts: AUDIT_TS0 + 100, label: "Delegation history: assign" },
-    { event_id: "de3", cursor: 8, action: "reviewer-set", from: "backend", to: "researcher", ts: AUDIT_TS0 + 150, label: "Delegation history: reviewer-set" },
+    { event_id: "de1", cursor: 2, action: "delegate", from: "lead", to: "backend", ts: AUDIT_TS0 + 30, label: "Assignment history: delegate" },
+    { event_id: "de2", cursor: 5, action: "assign", from: "lead", to: "frontend", ts: AUDIT_TS0 + 100, label: "Assignment history: assign" },
+    { event_id: "de3", cursor: 8, action: "reviewer-set", from: "backend", to: "researcher", ts: AUDIT_TS0 + 150, label: "Assignment history: reviewer-set" },
   ];
   return {
     project: { name: proj, board, display_name: projectDisplayName(proj) },
@@ -379,7 +379,7 @@ function mockOrgExtras(proj: string): Record<string, unknown> {
     delegations: {
       current,
       history,
-      mode_labels: { current: "Current delegation: open tasks only", history: "Delegation history: audit trail summary" },
+      mode_labels: { current: "Current assignments: open items only", history: "Assignment history: audit trail summary" },
     },
   };
 }

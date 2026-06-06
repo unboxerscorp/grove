@@ -1019,7 +1019,7 @@ button {
   stroke-width: 2;
 }
 
-/* delegation overlay (V4-W2): who delegated work to whom — distinct from the
+/* assignment overlay (V4-W2): who assigned work to whom — distinct from the
    parent/group edges via colour, dashes, and a direction arrowhead. */
 .org__tools {
   display: flex;
@@ -5720,7 +5720,7 @@ button {
 .org-plead.is-current { color: var(--teal); border-color: rgba(84, 199, 184, 0.5); cursor: default; }
 .org-plead__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--teal); }
 
-/* delegation mode (current vs history) */
+/* assignment mode (current vs history) */
 .org-deleg-mode { display: inline-flex; gap: 2px; border: 1px solid var(--line); border-radius: 999px; padding: 2px; margin-right: 8px; }
 .org-deleg-mode__btn { font-family: var(--mono); font-size: 10px; color: var(--faint); background: transparent; border: 0; border-radius: 999px; padding: 2px 9px; }
 .org-deleg-mode__btn.is-on { color: var(--ink); background: var(--teal); font-weight: 700; }

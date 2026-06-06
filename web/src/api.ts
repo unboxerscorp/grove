@@ -226,7 +226,7 @@ export function actorLabel(actor: AuditActor): string {
   return actor.login ?? actor.id ?? actor.kind ?? "";
 }
 
-/** The node identity of an actor (delegation edge source); null if not a node. */
+/** The node identity of an actor (assignment edge source); null if not a node. */
 export function actorId(actor: AuditActor): string | null {
   if (typeof actor === "string") return actor;
   if (!actor) return null;
@@ -240,7 +240,7 @@ export function targetLabel(target: AuditTarget): string {
   return target.label ?? target.task ?? target.id ?? target.node ?? "";
 }
 
-/** The node an event delegates/assigns to, if any (delegation edge endpoint). */
+/** The node an event assigns work to, if any (assignment edge endpoint). */
 export function targetNode(target: AuditTarget): string | null {
   if (!target || typeof target === "string") return null;
   return target.node ?? null;
@@ -723,7 +723,7 @@ export interface InboxPage {
   total?: number;
 }
 
-// Planner (web_app.py _plan_payload): READ-ONLY delegation recommendations.
+// Planner (web_app.py _plan_payload): READ-ONLY assignment recommendations.
 // Ranked candidate nodes with per-factor metrics (source/confidence). The
 // endpoint never claims/assigns — `read_only` is always true; the FE surfaces
 // the ranking for manual assignment only. Metrics reuse the CostMetric shape.
@@ -1366,7 +1366,7 @@ export const api = {
   // count for local-token). Project-scoped via headers.
   getPresence: () => getJSON<Presence>("/api/presence"),
 
-  // Planner: read-only ranked node recommendations for a task+role. Never
+  // Planner: read-only ranked node recommendations for an item+role. Never
   // assigns/claims — for manual assignment only.
   getPlan: (params: { role: string; task_id: string }) =>
     getJSON<PlanResult>(`/api/plan?${new URLSearchParams({ role: params.role, task_id: params.task_id }).toString()}`),
