@@ -165,8 +165,12 @@ function parseSpawnRequest(ctx: Context, input: SpawnInput): SpawnRequest {
   const rolePresetKey = trimmed(input.rolePreset);
   const rolePreset = rolePresetKey ? expandRolePreset(rolePresetKey) : undefined;
   const session = validateGroveName(trimmed(input.session) ?? ctx.config.session, "--session");
-  const tmuxSession = validateGroveName(trimmed(input.tmuxSession) ?? session, "--tmux-session");
-  const window = trimmed(input.window);
+  const tmuxSession = validateGroveName(
+    trimmed(input.tmuxSession) ?? ctx.registry.tmuxSession ?? session,
+    "--tmux-session",
+  );
+  const sharedTmuxSession = tmuxSession !== session;
+  const window = trimmed(input.window) ?? (sharedTmuxSession ? session : undefined);
   return {
     agent,
     cwd: defaultSpawnCwd(ctx, input.cwd),

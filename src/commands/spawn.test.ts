@@ -247,6 +247,42 @@ describe("spawnNode", () => {
     expect(result.cwd).toBe("/project/workspace");
   });
 
+  test("uses shared registry tmux session and project window when omitted", async () => {
+    const reg = registry();
+    reg.cwd = "/project/alpha";
+    reg.session = "alpha";
+    reg.tmuxSession = "dev10";
+    const base = makeContext(reg);
+    const ctx = {
+      ...base,
+      config: {
+        ...base.config,
+        cwd: "/project/alpha",
+        session: "alpha",
+      },
+    };
+    const state = deps();
+
+    const result = await spawnNode(
+      ctx,
+      {
+        agent: "claude",
+        name: "alpha-maker",
+        operatorManaged: true,
+      },
+      state.deps,
+    );
+
+    expect(state.paneRequests[0]).toMatchObject({
+      cwd: "/project/alpha",
+      name: "alpha-maker",
+      session: "dev10",
+      window: "alpha",
+    });
+    expect(result.session).toBe("alpha");
+    expect(result.tmuxSession).toBe("dev10");
+  });
+
   test("uses explicit --cwd before registry cwd while preserving role preset expansion", async () => {
     const reg = registry();
     reg.cwd = "/project/workspace";
