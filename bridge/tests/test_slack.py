@@ -26,6 +26,7 @@ from grove_bridge.master import (
 )
 from grove_bridge.slack import (
     GROVE_CHAT_TIMEOUT_SECONDS,
+    SLACK_NODE_CHAT_RUNNING_STALE_SECONDS,
     ChatRouteConfig,
     FakeStatusProbe,
     GroveServeChatFacade,
@@ -1569,6 +1570,80 @@ def test_chat_routing_retries_failed_response_delivery_without_duplicate_ask(
     assert connector.poll_node_chat_queue() == 1
     assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "summarize status")]
     assert slack.posts[-1] == ("C123", "grove reply", "111.222")
+    assert (
+        store.list_due_slack_chat_messages(
+            board="main",
+            now=9999999999,
+            running_stale_before=9999999999,
+            limit=10,
+        )
+        == []
+    )
+
+
+def test_chat_routing_reclaims_stale_running_item_after_worker_restart(
+    tmp_path: Path,
+) -> None:
+    slack = FakeSlackClient()
+    chat = FakeChatFacade()
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-master"),
+        assistant_broker=FakeAssistantBroker("assistant should not run"),
+        route_chat_to_node=True,
+    )
+
+    handled = connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="<@BOT> summarize status",
+            ts="111.222",
+            thread_ts=None,
+            event_type="app_mention",
+        )
+    )
+    assert handled is True
+
+    queued = store.list_due_slack_chat_messages(
+        board="main",
+        now=9999999999,
+        running_stale_before=0,
+        limit=10,
+    )
+    assert len(queued) == 1
+    responded = store.store_slack_chat_message_response(
+        queued[0].id,
+        response_text="cached grove reply",
+        now=90,
+    )
+    running = store.mark_slack_chat_message_running(responded.id, now=100)
+
+    assert SLACK_NODE_CHAT_RUNNING_STALE_SECONDS > GROVE_CHAT_TIMEOUT_SECONDS * 2
+    assert (
+        store.list_due_slack_chat_messages(
+            board="main",
+            now=101,
+            running_stale_before=99,
+            limit=10,
+        )
+        == []
+    )
+    assert store.list_due_slack_chat_messages(
+        board="main",
+        now=401,
+        running_stale_before=100,
+        limit=10,
+    ) == [running]
+
+    assert connector.poll_node_chat_queue() == 1
+    assert chat.calls == []
+    assert slack.posts[-1] == ("C123", "cached grove reply", "111.222")
     assert (
         store.list_due_slack_chat_messages(
             board="main",
