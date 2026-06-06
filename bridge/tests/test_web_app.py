@@ -101,6 +101,14 @@ def test_app_metadata_uses_cockpit_name(tmp_path: Path) -> None:
 
     app = cast(FastAPI, client.app)
     assert app.title == "grove cockpit"
+    startup = "\n".join(
+        web_app._startup_connect_lines(
+            WebAppConfig(grove_home=tmp_path / ".grove", board_db_path=tmp_path / "board.db")
+        )
+    )
+    assert "Grove cockpit is starting." in startup
+    assert "dev-room" not in startup
+    assert "dev room" not in startup
 
 
 def payload_contains_number(value: object, needle: int | float) -> bool:

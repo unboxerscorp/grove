@@ -115,14 +115,27 @@ describe("current design docs", () => {
 
   test("web metadata describes the current cockpit model", () => {
     const webMetadata = [
+      doc("web/index.html"),
       doc("web/package.json"),
       doc("web/build.mjs"),
       doc("web/src/styles.css"),
+      doc("web/src/i18n.tsx"),
       doc("web/mock/index.html"),
     ].join("\n");
 
     expect(webMetadata).toContain("cockpit");
     expect(webMetadata).not.toContain("Grove Dev Room");
     expect(webMetadata).not.toContain("Dev Room SPA");
+    expect(webMetadata).not.toContain("dev room · live cockpit");
+    expect(webMetadata).not.toContain("grove is a dev room");
+  });
+
+  test("bridge web startup copy describes the current cockpit model", () => {
+    const bridgeWeb = doc("bridge/src/grove_bridge/web_app.py");
+
+    expect(bridgeWeb).toContain('FastAPI(title="grove cockpit")');
+    expect(bridgeWeb).not.toContain("Grove dev-room web server");
+    expect(bridgeWeb).not.toContain("Grove dev-room is starting.");
+    expect(bridgeWeb).not.toContain("Run the grove dev-room web server.");
   });
 });

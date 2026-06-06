@@ -12,7 +12,7 @@ type Dict = Record<string, string>;
 
 const KO: Dict = {
   "brand.title": "GROVE",
-  "brand.sub": "개발실 · 실시간 콕핏",
+  "brand.sub": "실시간 콕핏",
   "tab.board": "목록",
   "nav.label": "탐색",
   "cmdk.open": "명령 팔레트 열기 (⌘K)",
@@ -481,7 +481,7 @@ const KO: Dict = {
   "onb.next": "다음",
   "onb.finish": "완료",
   "onb.welcome.title": "grove에 오신 걸 환영합니다",
-  "onb.welcome.body": "grove는 여러 에이전트를 한 화면에서 조율하는 개발실입니다. 보드·조직도·터미널·결정함을 한곳에서.",
+  "onb.welcome.body": "grove는 여러 에이전트를 한 화면에서 조율하는 실시간 콕핏입니다. 목록·조직도·터미널·결정함을 한곳에서.",
   "onb.project.title": "프로젝트 만들기 / 불러오기",
   "onb.project.body": "새 프로젝트를 만들거나 기존 워크스페이스를 불러오세요.",
   "onb.project.namePh": "새 프로젝트 이름",
@@ -773,7 +773,7 @@ const KO: Dict = {
 
 const EN: Dict = {
   "brand.title": "GROVE",
-  "brand.sub": "dev room · live cockpit",
+  "brand.sub": "live cockpit",
   "tab.board": "Lists",
   "nav.label": "Navigation",
   "cmdk.open": "Open command palette (⌘K)",
@@ -1241,7 +1241,7 @@ const EN: Dict = {
   "onb.next": "Next",
   "onb.finish": "Finish",
   "onb.welcome.title": "Welcome to grove",
-  "onb.welcome.body": "grove is a dev room for orchestrating multiple agents — board, org chart, terminals and a decision inbox in one place.",
+  "onb.welcome.body": "grove is a live cockpit for orchestrating multiple agents — lists, org chart, terminals and a decision inbox in one place.",
   "onb.project.title": "Create / load a project",
   "onb.project.body": "Spin up a new project or load an existing workspace.",
   "onb.project.namePh": "new project name",

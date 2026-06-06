@@ -26,7 +26,7 @@ export default tseslint.config(
       // Dashboard plugins ship their own self-contained build/lint (see
       // plugins/*/dashboard); keep them out of the root TS check.
       "plugins/**",
-      // The Dev Room web SPA has its own self-contained build/lint (see web/).
+      // The cockpit web SPA has its own self-contained build/lint (see web/).
       "web/**",
     ],
   },

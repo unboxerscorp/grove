@@ -1,4 +1,4 @@
-"""Grove dev-room web server."""
+"""Grove cockpit web server."""
 
 from __future__ import annotations
 
@@ -6789,7 +6789,7 @@ def _startup_connect_lines(config: WebAppConfig) -> list[str]:
     tailnet_ip = _detect_tailnet_ip()
     local_url = _http_url("127.0.0.1", config.port)
     lines = [
-        "Grove dev-room is starting.",
+        "Grove cockpit is starting.",
         f"Local dashboard: {local_url}",
     ]
     if _is_shared_remote_bind(config.host):
@@ -6835,7 +6835,7 @@ def _print_startup_connect_hint(config: WebAppConfig) -> None:
 
 def _print_bind_refusal_hint(host: str) -> None:
     print(
-        "Grove dev-room refused shared-access on a non-loopback bind without "
+        "Grove cockpit refused shared-access on a non-loopback bind without "
         "--allow-host. Add trusted tailnet/LAN hosts explicitly.",
         file=sys.stderr,
         flush=True,
@@ -9199,7 +9199,7 @@ def _audit_event_payload(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the grove dev-room web server.")
+    parser = argparse.ArgumentParser(description="Run the grove cockpit web server.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--dist-dir", type=Path, default=_repo_root() / "web" / "dist")
