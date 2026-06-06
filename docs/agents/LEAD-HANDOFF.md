@@ -6,6 +6,13 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 15:31 KST remote 5173 live soak sample:
+  - 운영자가 쓰는 tailnet URL `http://100.100.90.87:5173/`를 직접 대상으로 live-safe 검증을 돌렸다. `GROVE_LIVE_URL=http://100.100.90.87:5173 node web/e2e/tier1/runner.mjs --live`는 7/7 passed, `GROVE_LIVE_URL=http://100.100.90.87:5173 node web/e2e/live.mjs`는 94/94 passed.
+  - full live run은 disposable `p2-test` registry와 `dev10:5.0` terminal fixture를 잠깐 만들었고, finally cleanup 후 baseline으로 복귀했다.
+  - cleanup 확인: `~/.grove/p2-test/registry.json` absent, tmux windows `0/1/2/3/4`, DB residue `tasks/comments/p2-test=0/0/0`, Slack queue `total/pending/running/failed=0/0/0/0`.
+  - live services는 steady다. Slack runtime pid `98577`, `socket_connected=true`, `node_chat_queue.oldest_pending_age_seconds=null`; main web `8765 started_at=1780721628`, remote web `5173 started_at=1780721854`, 둘 다 health ok.
+  - log scan: remote `client-web-5173.log`에서 예상된 invalid join 404 외 5xx/Traceback/Exception 없음. Slack log는 마지막 의도된 deploy restart `15:26:31` 이후 추가 restart/wedge-log 없음.
+
 - 2026-06-06 15:27 KST Slack queue runtime observability:
   - 최신 product-code HEAD는 `e0a0962 fix: expose slack queue runtime metrics`다. Slack routed chat queue의 backpressure를 SQLite 직접 조회 없이 `~/.grove/dev10/slack-runtime.json`에서 볼 수 있게 했다.
   - runtime payload는 `node_chat_queue` object를 항상 포함한다. 안정 필드는 `total`, `pending`, `running`, `failed`, `oldest_pending_age_seconds`이며, 빈 큐도 명시적으로 `0/0/0/0`과 `oldest_pending_age_seconds:null`을 기록한다.
