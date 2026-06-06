@@ -563,6 +563,10 @@ async function coreMain() {
       return await res.json();
     });
     const mockBoardsOk = mockBoards.length === 1 && mockBoards[0]?.id === "grove";
+    const mockGhostBoardHidden = await page.evaluate(async () => {
+      const res = await fetch("/api/boards/infra/tasks", { headers: { "X-Grove-Project": "dev10" } });
+      return res.status === 404;
+    });
     const boardGroupFilter = { initial: board.totalCards, filtered: 0, values: [] };
     if (board.groupFilter) {
       boardGroupFilter.values = await page.$$eval(".dr-board__group-filter option", (els) =>
@@ -658,6 +662,7 @@ async function coreMain() {
       i18nFullOk &&
       projectLoadRebindOk &&
       mockBoardsOk &&
+      mockGhostBoardHidden &&
       statusLoading.loading &&
       statusLoading.noFalseZero &&
       teamLoading.nodes === 0 &&
@@ -718,6 +723,7 @@ async function coreMain() {
             projectLoadRebindOk,
             mockBoards,
             mockBoardsOk,
+            mockGhostBoardHidden,
             errors,
           },
           null,

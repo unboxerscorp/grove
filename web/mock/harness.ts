@@ -45,11 +45,6 @@ const TASKS: Record<string, MockTask[]> = {
     { id: "G-7", title: "Pane resize policy (mirror beta)", status: "blocked", assignee: "frontend" },
     { id: "G-3", title: "Node registry + tmux pane exposure", status: "done", assignee: "backend" },
   ],
-  infra: [
-    { id: "I-1", title: "Static build pipeline", status: "ready", assignee: "docs" },
-    { id: "I-2", title: "Reverse proxy + TLS", status: "running", assignee: "root" },
-    { id: "I-3", title: "Nightly backups", status: "done", assignee: "docs" },
-  ],
   // N1: a distinct, isolated project so a switch swaps the whole context and
   // leaves no residue from the default project's boards/tasks.
   "solo-x": [{ id: "S-1", title: "solo task", status: "running", assignee: "solo" }],
@@ -1203,6 +1198,23 @@ function json(body: unknown): Response {
   });
 }
 
+function jsonError(status: number, detail: string): Response {
+  return new Response(JSON.stringify({ detail }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function mockProjectBoard(project: string): string {
+  return project === SOLO_PROJECT ? "solo-x" : "grove";
+}
+
+function resolveMockBoard(rawBoard: string, project: string): string | null {
+  const projectBoard = mockProjectBoard(project);
+  if (rawBoard === "default" || rawBoard === "main" || rawBoard === projectBoard) return projectBoard;
+  return null;
+}
+
 // PR1 watchdog: per-node health, mirroring web_app.py _node_health_payload
 // (GET /api/node-health -> { project, session, nodes: [...] }). Covers a spread
 // of the six real statuses; nodes absent here render a neutral "unknown" badge.
@@ -2215,8 +2227,9 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const boardProj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
     // Mirror web_app.py _resolve_board_id: the "default"/"main" alias resolves to
     // the active project's single board (project.board) for both reads and writes.
-    const projectBoard = boardProj === SOLO_PROJECT ? "solo-x" : "grove";
-    const board = rawBoard === "default" || rawBoard === "main" ? projectBoard : rawBoard;
+    // Hidden/legacy mock boards must not be silently addressable.
+    const board = resolveMockBoard(rawBoard, boardProj);
+    if (!board) return Promise.resolve(jsonError(404, `board '${rawBoard}' not in project '${boardProj}'`));
     if (method === "POST") {
       const payload = (init?.body ? JSON.parse(init.body as string) : {}) as Partial<MockTask>;
       const created: MockTask = {
@@ -2258,8 +2271,8 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     // Mirror web_app.py board_workflow_endpoint/_workflow_payload.
     const rawBoard = decodeURIComponent(m[1]!);
     const boardProj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
-    const projectBoard = boardProj === SOLO_PROJECT ? "solo-x" : "grove";
-    const board = rawBoard === "default" || rawBoard === "main" ? projectBoard : rawBoard;
+    const board = resolveMockBoard(rawBoard, boardProj);
+    if (!board) return Promise.resolve(jsonError(404, `board '${rawBoard}' not in project '${boardProj}'`));
     diag.workflowFetched = board;
     return Promise.resolve(json(mockWorkflowPayload(boardProj, board)));
   }
