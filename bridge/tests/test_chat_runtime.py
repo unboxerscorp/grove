@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -18,11 +20,13 @@ from grove_bridge.chat_runtime import (
     RedactingProviderAdapter,
     RuntimeMetrics,
     TurnParseError,
+    build_get_project_tasks_tool,
     chat_bridge_runtime_enabled,
     guard_answer_channel,
     load_chat_bridge_persona,
     parse_structured_turn,
 )
+from grove_bridge.store import SQLiteBoardStore
 
 
 class _FakeFlags:
@@ -240,3 +244,92 @@ def test_load_chat_bridge_persona_present_returns_source_text(tmp_path: Path) ->
     persona = tmp_path / "chat-persona.md"
     persona.write_text("You are the real chat-master persona.\n", encoding="utf-8")
     assert load_chat_bridge_persona(persona) == "You are the real chat-master persona."
+
+
+# --------------------------------------------------------------------------- #
+# Tool / action layer (read-only) + Gemini function-calling loop
+# --------------------------------------------------------------------------- #
+def test_get_project_tasks_tool_returns_real_board_tasks(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.create_task(board="dev10", title="open one", body=None, assignee="worker")
+    tool = build_get_project_tasks_tool(store, default_board="dev10")
+
+    assert tool.name == "get_project_tasks"
+    result = tool.handler({})
+    assert result["board"] == "dev10"
+    assert result["count"] == 1
+    rows = result["tasks"]
+    assert isinstance(rows, list) and rows[0]["title"] == "open one"
+    assert rows[0]["assignee"] == "worker"
+
+
+def test_gemini_function_calling_executes_tool_then_returns_text(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.create_task(board="dev10", title="open one", body=None, assignee=None)
+    tool = build_get_project_tasks_tool(store, default_board="dev10")
+    captured: list[dict[str, object]] = []
+    payloads: list[dict[str, object]] = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"functionCall": {"name": "get_project_tasks", "args": {}}}]
+                    }
+                }
+            ]
+        },
+        {"candidates": [{"content": {"parts": [{"text": "남은 태스크 1건: open one"}]}}]},
+    ]
+
+    def fake_urlopen(request: urllib.request.Request, *, timeout: float) -> _FakeGeminiResponse:
+        _ = timeout
+        body = request.data
+        assert isinstance(body, (bytes, bytearray))
+        captured.append(json.loads(body))
+        return _FakeGeminiResponse(payloads[len(captured) - 1])
+
+    adapter = GeminiChatProviderAdapter(api_key="k", urlopen=fake_urlopen)
+    out = adapter.generate(
+        ProviderRequest(system_prompt="persona", user_text="남은 태스크?"), tools=[tool]
+    )
+
+    assert out == "남은 태스크 1건: open one"
+    assert len(captured) == 2  # tool-call round-trip happened
+    # the 2nd request fed the model the REAL tool result (no hallucination).
+    assert "functionResponse" in json.dumps(captured[1])
+    assert "open one" in json.dumps(captured[1])
+
+
+def test_gemini_unknown_tool_call_defers_no_hallucination(tmp_path: Path) -> None:
+    _ = tmp_path
+    payload: dict[str, object] = {
+        "candidates": [{"content": {"parts": [{"functionCall": {"name": "nope", "args": {}}}]}}]
+    }
+
+    def fake_urlopen(request: urllib.request.Request, *, timeout: float) -> _FakeGeminiResponse:
+        _ = (request, timeout)
+        return _FakeGeminiResponse(payload)
+
+    adapter = GeminiChatProviderAdapter(api_key="k", urlopen=fake_urlopen)
+    # No matching tool → raise (caller defers); never fabricate an answer.
+    with pytest.raises(AssistantTransportError):
+        adapter.generate(ProviderRequest(system_prompt="p", user_text="x"), tools=[])
+
+
+def test_gemini_tool_loop_is_bounded_and_defers_when_no_text(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    tool = build_get_project_tasks_tool(store, default_board="dev10")
+    payload: dict[str, object] = {
+        "candidates": [
+            {"content": {"parts": [{"functionCall": {"name": "get_project_tasks", "args": {}}}]}}
+        ]
+    }
+
+    def fake_urlopen(request: urllib.request.Request, *, timeout: float) -> _FakeGeminiResponse:
+        _ = (request, timeout)
+        return _FakeGeminiResponse(payload)
+
+    adapter = GeminiChatProviderAdapter(api_key="k", urlopen=fake_urlopen)
+    # Model never converges to text → bounded loop → raise (defer), no hallucination.
+    with pytest.raises(AssistantTransportError):
+        adapter.generate(ProviderRequest(system_prompt="p", user_text="x"), tools=[tool])

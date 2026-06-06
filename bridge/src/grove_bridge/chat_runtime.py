@@ -26,7 +26,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
@@ -37,12 +37,17 @@ from grove_bridge.assistant import (
     AssistantTransportError,
 )
 from grove_bridge.auth_status import redact_secret_text
+from grove_bridge.store import SQLiteBoardStore
 
 # GUI feature flag name (default OFF). Distinct from the ``intake`` flag, which
 # stays FALSE independently — enabling the runtime does NOT enable intake.
 CHAT_BRIDGE_RUNTIME_FLAG = "chat_bridge_runtime"
 CHAT_PROVIDER_DEFAULT_PROVIDER = "gemini"
 CHAT_PROVIDER_DEFAULT_MODEL = "gemini-2.5-flash"
+
+# Upper bound on provider function-calling round-trips per turn. A model that
+# never converges to a text answer raises (caller defers) rather than looping.
+_GEMINI_MAX_TOOL_ITERATIONS = 5
 
 # Marker prefix for chat-master's structured task-proposal turn. The final
 # contract (marker + field schema) is chat-master-owned; this is the Stage0
@@ -181,6 +186,22 @@ class ProviderRequest:
     user_text: str
 
 
+@dataclass(frozen=True)
+class ChatTool:
+    """A READ-ONLY tool the chat runtime exposes to the provider's function-calling.
+
+    ``parameters`` is a JSON Schema (the provider ``functionDeclaration.parameters``).
+    ``handler`` runs the tool against real grove state and returns a JSON-able dict
+    fed back to the model verbatim — never a fabricated/placeholder value. Tools here
+    are read-only; writes (task create/update) stay confirm-gated elsewhere.
+    """
+
+    name: str
+    description: str
+    parameters: dict[str, object]
+    handler: Callable[[Mapping[str, object]], Mapping[str, object]]
+
+
 @runtime_checkable
 class ChatProviderAdapter(Protocol):
     """Bridge-native LLM call boundary. Concrete impls call the Claude API
@@ -252,19 +273,66 @@ class GeminiChatProviderAdapter:
     timeout_seconds: float = 30.0
     urlopen: UrlOpen = urllib.request.urlopen
 
-    def generate(self, request: ProviderRequest) -> str:
+    def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
         key = self.api_key.strip()
         if not key:
             raise AssistantTransportError("gemini api key is not configured")
         model = self.model.strip() or CHAT_PROVIDER_DEFAULT_MODEL
         clean_model = model.removeprefix("models/")
         encoded_model = urllib.parse.quote(clean_model, safe="")
-        body = {
-            "systemInstruction": {"parts": [{"text": request.system_prompt}]},
-            "contents": [{"role": "user", "parts": [{"text": request.user_text}]}],
-        }
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{encoded_model}:generateContent"
+        )
+        # No tools → single round-trip (backward-compatible with the plain path).
+        # With tools → bounded function-calling loop: declare tools, run any
+        # functionCall against real state, feed the result back, repeat until the
+        # model returns text. The loop never fabricates an answer (no text and no
+        # call, an unknown tool, or non-convergence all raise → caller defers).
+        contents: list[dict[str, object]] = [
+            {"role": "user", "parts": [{"text": request.user_text}]}
+        ]
+        declarations = [
+            {"name": t.name, "description": t.description, "parameters": t.parameters}
+            for t in tools
+        ]
+        by_name = {t.name: t for t in tools}
+        for _ in range(_GEMINI_MAX_TOOL_ITERATIONS):
+            body: dict[str, object] = {
+                "systemInstruction": {"parts": [{"text": request.system_prompt}]},
+                "contents": contents,
+            }
+            if declarations:
+                body["tools"] = [{"functionDeclarations": declarations}]
+            decoded = self._generate_content(url=url, key=key, body=body)
+            call = _gemini_function_call(decoded)
+            if call is None:
+                text = _gemini_response_text(decoded)
+                if not text:
+                    raise AssistantTransportError("gemini returned no text")
+                return text
+            name, fn_args = call
+            tool = by_name.get(name)
+            if tool is None:
+                raise AssistantTransportError(f"gemini called unknown tool: {name}")
+            result = tool.handler(fn_args)
+            contents.append(
+                {
+                    "role": "model",
+                    "parts": [{"functionCall": {"name": name, "args": dict(fn_args)}}],
+                }
+            )
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": [{"functionResponse": {"name": name, "response": dict(result)}}],
+                }
+            )
+        raise AssistantTransportError("gemini tool loop did not converge")
+
+    def _generate_content(self, *, url: str, key: str, body: dict[str, object]) -> object:
         http_request = urllib.request.Request(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{encoded_model}:generateContent",
+            url,
             data=json.dumps(body).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
@@ -282,13 +350,9 @@ class GeminiChatProviderAdapter:
         except urllib.error.URLError as exc:
             raise AssistantTransportError("gemini generateContent unavailable") from exc
         try:
-            decoded = json.loads(raw.decode("utf-8"))
+            return json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise AssistantTransportError("gemini returned invalid JSON") from exc
-        text = _gemini_response_text(decoded)
-        if not text:
-            raise AssistantTransportError("gemini returned no text")
-        return text
 
 
 def _gemini_response_text(payload: object) -> str:
@@ -311,6 +375,33 @@ def _gemini_response_text(payload: object) -> str:
             if isinstance(part, dict) and isinstance(part.get("text"), str):
                 parts.append(part["text"])
     return "\n".join(part.strip() for part in parts if part.strip()).strip()
+
+
+def _gemini_function_call(payload: object) -> tuple[str, dict[str, object]] | None:
+    """Extract the first ``functionCall`` (name, args) from a generateContent
+    response, or ``None`` when the model returned a normal (text) turn."""
+    if not isinstance(payload, dict):
+        return None
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        return None
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content")
+        if not isinstance(content, dict):
+            continue
+        raw_parts = content.get("parts")
+        if not isinstance(raw_parts, list):
+            continue
+        for part in raw_parts:
+            if not isinstance(part, dict):
+                continue
+            call = part.get("functionCall")
+            if isinstance(call, dict) and isinstance(call.get("name"), str):
+                args = call.get("args")
+                return call["name"], dict(args) if isinstance(args, dict) else {}
+    return None
 
 
 def load_gemini_provider_config(
@@ -360,6 +451,60 @@ def load_chat_bridge_persona(path: Path | None) -> str:
     except (FileNotFoundError, OSError):
         return CHAT_BRIDGE_SHADOW_PERSONA
     return text or CHAT_BRIDGE_SHADOW_PERSONA
+
+
+def build_get_project_tasks_tool(store: SQLiteBoardStore, *, default_board: str) -> ChatTool:
+    """READ-ONLY tool: list real tasks on a grove project board (a store query).
+
+    Answers "what work/tasks remain / are running / are assigned" with actual
+    board data. Performs no writes — task creation/update stays confirm-gated
+    elsewhere. The result is fed back to the model verbatim (no fabrication)."""
+
+    def handler(args: Mapping[str, object]) -> Mapping[str, object]:
+        board_arg = args.get("board") or args.get("project")
+        board = (
+            board_arg.strip() if isinstance(board_arg, str) and board_arg.strip() else default_board
+        )
+        status_arg = args.get("status")
+        status = status_arg.strip() if isinstance(status_arg, str) and status_arg.strip() else None
+        tasks = store.list_tasks(board=board, status=status, limit=50)
+        return {
+            "board": board,
+            "status": status or "all",
+            "count": len(tasks),
+            "tasks": [
+                {"id": t.id, "title": t.title, "status": t.status, "assignee": t.assignee}
+                for t in tasks
+            ],
+        }
+
+    return ChatTool(
+        name="get_project_tasks",
+        description=(
+            "List tasks on a grove project board. Use this to answer questions about "
+            "what work/tasks remain, are in progress, done, or who they are assigned to. "
+            "Returns real board data — do not guess task state."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "board": {
+                    "type": "string",
+                    "description": (
+                        "Project/board id, e.g. 'dev10'. Defaults to the current project."
+                    ),
+                },
+                "status": {
+                    "type": "string",
+                    "description": (
+                        "Optional status filter (e.g. 'ready','running','done','ask-human'). "
+                        "Omit for all."
+                    ),
+                },
+            },
+        },
+        handler=handler,
+    )
 
 
 # --------------------------------------------------------------------------- #
