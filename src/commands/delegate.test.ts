@@ -208,6 +208,15 @@ describe("delegateTask", () => {
     expect(state.calls).toEqual([]);
   });
 
+  test("describes missing titles as item titles", async () => {
+    const state = deps();
+
+    await expect(delegateTask("maker", "   ", {}, state.deps)).rejects.toThrow(
+      "item title is required",
+    );
+    expect(state.calls).toEqual([]);
+  });
+
   test("reports web connection failures with session guidance", async () => {
     const state = deps({ fetchError: new Error("connect ECONNREFUSED") });
 

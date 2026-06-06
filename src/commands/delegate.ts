@@ -214,7 +214,7 @@ export async function delegateTask(
 ): Promise<DelegateResult> {
   const node = validateGroveName(nodeName.trim(), "node");
   const title = titleInput.trim();
-  if (!title) throw new Error("delegate title is required");
+  if (!title) throw new Error("item title is required");
 
   const session = resolveSession(input, deps);
   const board = validateGroveName(trimmed(input.board) ?? DEFAULT_BOARD, "--board");
