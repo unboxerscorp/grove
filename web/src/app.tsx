@@ -81,10 +81,10 @@ function preferredTerminalPane(nodes: GroveNode[]): string | null {
   return candidates[0]?.tmux_pane ?? null;
 }
 
-// Left-sidebar navigation. The live cockpit defaults to the three daily operator
-// surfaces: human-facing list, org chart, and terminal. Admin/diagnostic panels
-// remain in code for compatibility and direct flows, but they do not crowd the
-// default remote UI.
+// Left-sidebar navigation. The live cockpit defaults to the MVP operator
+// surfaces: task list, org chart, terminal, and setup for chat/node controls.
+// Admin/diagnostic panels remain addressable for compatibility, but they do not
+// crowd the default remote UI.
 type NavItem = { kind: "view"; view: View; labelKey: string; icon: string };
 const NAV_GROUPS: { id: string; labelKey: string; items: NavItem[] }[] = [
   {
@@ -95,6 +95,11 @@ const NAV_GROUPS: { id: string; labelKey: string; items: NavItem[] }[] = [
       { kind: "view", view: "team", labelKey: "tab.team", icon: "⊚" },
       { kind: "view", view: "terminal", labelKey: "tab.terminal", icon: "❯" },
     ],
+  },
+  {
+    id: "setup",
+    labelKey: "nav.group.setup",
+    items: [{ kind: "view", view: "auth", labelKey: "tab.auth", icon: "⚙" }],
   },
 ];
 const COMPAT_VIEW_HOOKS: View[] = [

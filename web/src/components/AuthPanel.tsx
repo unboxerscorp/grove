@@ -7,18 +7,13 @@ import { useI18n } from "../i18n";
 import type { GuiFeatureKey, GuiFeatureState } from "../types";
 
 const GUI_FEATURES: { key: GuiFeatureKey; labelKey: string; noteKey: string }[] = [
-  { key: "quota", labelKey: "setup.feature.quota", noteKey: "setup.feature.quota.note" },
-  { key: "intake", labelKey: "setup.feature.intake", noteKey: "setup.feature.intake.note" },
   { key: "node-input", labelKey: "setup.feature.nodeInput", noteKey: "setup.feature.nodeInput.note" },
-  { key: "digest", labelKey: "setup.feature.digest", noteKey: "setup.feature.digest.note" },
-  { key: "summary", labelKey: "setup.feature.summary", noteKey: "setup.feature.summary.note" },
-  { key: "usage-trend", labelKey: "setup.feature.usageTrend", noteKey: "setup.feature.usageTrend.note" },
-  { key: "retro-analytics", labelKey: "setup.feature.retro", noteKey: "setup.feature.retro.note" },
   {
     key: "chat_bridge_runtime",
     labelKey: "setup.feature.chatRuntime",
     noteKey: "setup.feature.chatRuntime.note",
   },
+  { key: "intake", labelKey: "setup.feature.intake", noteKey: "setup.feature.intake.note" },
 ];
 
 // Features whose ENABLE direction is consequential. Enabling requires a 2-step
@@ -199,6 +194,56 @@ export function AuthPanel() {
 
         {error && <div className="auth__msg is-error">{error}</div>}
 
+        <section className="chat-provider" aria-label={t("setup.chatProvider.title")}>
+          <div className="chat-provider__head">
+            <div>
+              <h3 className="chat-provider__title">{t("setup.chatProvider.title")}</h3>
+              <p className="chat-provider__note">{t("setup.chatProvider.note")}</p>
+            </div>
+            <span className={cx("auth-badge", chatProvider?.configured ? "is-ok" : "is-warn")}>
+              {chatProvider?.configured
+                ? t("setup.chatProvider.configured", { hint: chatProvider.key_hint ?? "" })
+                : t("setup.chatProvider.notConfigured")}
+            </span>
+          </div>
+          {chatProviderError && <div className="auth__msg is-error">{chatProviderError}</div>}
+          <form
+            className="chat-provider__form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              saveChatProvider();
+            }}
+          >
+            <label className="chat-provider__field">
+              <span>{t("setup.chatProvider.model")}</span>
+              <input
+                className="dr-input"
+                value={chatModel}
+                onChange={(e) => setChatModel(e.target.value)}
+                disabled={isViewer || chatProviderBusy}
+              />
+            </label>
+            <label className="chat-provider__field is-key">
+              <span>{t("setup.chatProvider.key")}</span>
+              <input
+                className="dr-input"
+                type="password"
+                value={chatKey}
+                onChange={(e) => setChatKey(e.target.value)}
+                disabled={isViewer || chatProviderBusy}
+                autoComplete="off"
+              />
+            </label>
+            <button
+              type="submit"
+              className="dr-btn dr-btn--primary"
+              disabled={isViewer || chatProviderBusy}
+            >
+              {chatProviderBusy ? t("setup.chatProvider.saving") : t("setup.chatProvider.save")}
+            </button>
+          </form>
+        </section>
+
         <section className="setup-features" aria-label={t("setup.features.title")}>
           <div className="setup-features__head">
             <div>
@@ -267,56 +312,6 @@ export function AuthPanel() {
               );
             })}
           </div>
-        </section>
-
-        <section className="chat-provider" aria-label={t("setup.chatProvider.title")}>
-          <div className="chat-provider__head">
-            <div>
-              <h3 className="chat-provider__title">{t("setup.chatProvider.title")}</h3>
-              <p className="chat-provider__note">{t("setup.chatProvider.note")}</p>
-            </div>
-            <span className={cx("auth-badge", chatProvider?.configured ? "is-ok" : "is-warn")}>
-              {chatProvider?.configured
-                ? t("setup.chatProvider.configured", { hint: chatProvider.key_hint ?? "" })
-                : t("setup.chatProvider.notConfigured")}
-            </span>
-          </div>
-          {chatProviderError && <div className="auth__msg is-error">{chatProviderError}</div>}
-          <form
-            className="chat-provider__form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              saveChatProvider();
-            }}
-          >
-            <label className="chat-provider__field">
-              <span>{t("setup.chatProvider.model")}</span>
-              <input
-                className="dr-input"
-                value={chatModel}
-                onChange={(e) => setChatModel(e.target.value)}
-                disabled={isViewer || chatProviderBusy}
-              />
-            </label>
-            <label className="chat-provider__field is-key">
-              <span>{t("setup.chatProvider.key")}</span>
-              <input
-                className="dr-input"
-                type="password"
-                value={chatKey}
-                onChange={(e) => setChatKey(e.target.value)}
-                disabled={isViewer || chatProviderBusy}
-                autoComplete="off"
-              />
-            </label>
-            <button
-              type="submit"
-              className="dr-btn dr-btn--primary"
-              disabled={isViewer || chatProviderBusy}
-            >
-              {chatProviderBusy ? t("setup.chatProvider.saving") : t("setup.chatProvider.save")}
-            </button>
-          </form>
         </section>
 
         <div className="auth-list">
