@@ -20,7 +20,10 @@
 
   --text: #d3d8e0;
   --dim: #8a93a3;
-  --faint: #58606f;
+  /* --faint is the lowest tier of text (hints, eyebrows, placeholders, timestamps).
+     Was #58606f (~2.9:1 on --panel — below WCAG AA); lifted to ~4.6:1 so faint
+     text stays legible in dark mode while remaining a clear step below --dim. */
+  --faint: #777f8e;
 
   --amber: #f0b860;
   --amber-soft: rgba(240, 184, 96, 0.12);
@@ -31,6 +34,18 @@
 
   --ui: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --mono: "Spline Sans Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Tell the UA this is a dark app so native form controls (the <select> option
+     popup, checkboxes, radios, date/number pickers, text caret/selection, and
+     default scrollbars) render dark instead of the browser's light defaults —
+     the classic "black text / invisible control on dark" bug. Belt-and-suspenders
+     with the <meta name="color-scheme"> in index.html: this travels with the
+     stylesheet, so it holds even if the app is embedded or the HTML is swapped. */
+  color-scheme: dark;
+  /* Themes checkbox / radio / range / progress to the teal "online" accent.
+     The color-scheme hint above does NOT cover these, so without this they keep
+     the browser's default (washed-out) accent on the dark surface. */
+  accent-color: var(--teal);
 }
 
 *,
@@ -628,6 +643,14 @@ button {
 .dr-select:focus,
 .dr-input:focus {
   border-color: rgba(240, 184, 96, 0.5);
+}
+
+/* Native <select> dropdown popups: color-scheme:dark already darkens these on
+   modern engines, but pin the colors so the option list never falls back to
+   black-on-white on browsers/embeds that ignore the scheme hint. */
+.dr-select option {
+  background: var(--panel);
+  color: var(--text);
 }
 
 .dr-board-select {
