@@ -8,7 +8,7 @@ approved.
 
 **라이브 중단금지 -> 클론테스트** is the operating rule for this track.
 
-- Do not touch live `dev10`, `~/.grove/dev10`, or port `9131`.
+- Do not touch live `dev10`, `~/.grove/dev10`, or live web ports `8765`/legacy `9131`.
 - All validation uses a cloned `GROVE_HOME`, a non-live session name, and a separate port.
 - Snapshot and restore tooling defaults to dry-run. Any mutation requires an explicit
   `--execute`.
@@ -73,7 +73,7 @@ The script does three things:
 
 1. Refuses live targets: session `dev10` and source `~/.grove` are not valid resilience-test
    inputs. The source `GROVE_HOME` may not be `~/.grove` or a child path under it. The paired
-   restore script also refuses live port `9131`.
+   restore script also refuses live web ports `8765` and legacy `9131`.
 2. Writes `dot-grove.tgz` from the cloned source `GROVE_HOME`.
 3. Runs `GROVE_HOME=<clone> grove export-project --session <session> --out <snapshot>/bundle`
    from the cloned project directory, unless the bundle already exists.
@@ -169,7 +169,8 @@ Required runtime environment:
 - `GROVE_WEB_PORT=<non-live-port>`
 
 The container defaults to `GROVE_HOME=/data/grove-home`, `GROVE_VIEWER_SESSION=grove-container`,
-and `GROVE_WEB_PORT=8765`. It must not be run with `dev10`, the host `~/.grove`, or port `9131`.
+and `GROVE_WEB_PORT=8765`. It must not be run with `dev10`, the host `~/.grove`, or host live web
+ports `8765`/legacy `9131`.
 
 ## Cloud-Portability Strategy
 

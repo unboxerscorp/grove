@@ -46,7 +46,11 @@ validate_port() {
   local value="$1"
   [[ "$value" =~ ^[0-9]+$ ]] || die "--web-port must be numeric"
   ((value >= 1 && value <= 65535)) || die "--web-port must be between 1 and 65535"
-  [[ "$value" != "9131" ]] || die "refusing live web port 9131; use a clone port"
+  case "$value" in
+    8765 | 9131)
+      die "refusing live web port $value; use a clone port"
+      ;;
+  esac
 }
 
 expand_path() {

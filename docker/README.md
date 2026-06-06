@@ -1,7 +1,8 @@
 # grove Docker Draft
 
 This image is for clone-to-test and cloud-portable experiments. It must not be built with or run
-against live `dev10`, the host `~/.grove`, or port `9131`.
+against live `dev10`, the host `~/.grove`, or host live web ports `8765`/legacy `9131`. Mapping a
+non-live host port to the container's internal `8765` is fine.
 
 Build:
 
