@@ -2156,6 +2156,47 @@ def test_master_chat_history_redacts_secrets_before_storing(tmp_path: Path) -> N
     assert secret not in json.dumps(history.json())
 
 
+def test_master_chat_history_persistence_is_additive_and_best_effort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backward-compat guard (advisor checkpoint): durable history is purely
+    additive — the live request/reply is unchanged, and a history-storage
+    failure must never break a chat turn or regress the existing path."""
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+
+    base = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={"message": "MASTER로 뭐 가능?", "conversation_id": "conv-be", "request_id": "req-1"},
+    )
+    assert base.status_code == 200
+    assert base.json()["response_type"] == "answer"
+    assert base.json()["answer"]["text"]
+    stored = client.get(
+        "/api/master/chat?conversation_id=conv-be", headers=auth_headers(client)
+    ).json()["messages"]
+    assert len(stored) == 2
+
+    # If the history backend fails, the live turn is unaffected (best-effort).
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("history backend down")
+
+    monkeypatch.setattr(store, "append_master_chat_message", boom)
+    degraded = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={"message": "MASTER로 뭐 가능?", "conversation_id": "conv-be", "request_id": "req-2"},
+    )
+    assert degraded.status_code == 200
+    assert degraded.json()["answer"]["text"]
+    # No new rows were written, and the earlier history is intact (no regression).
+    after = client.get(
+        "/api/master/chat?conversation_id=conv-be", headers=auth_headers(client)
+    ).json()["messages"]
+    assert len(after) == 2
+
+
 def test_master_chat_guides_feedback_actions_with_llm_text(tmp_path: Path) -> None:
     client = make_client(
         tmp_path,
