@@ -506,10 +506,9 @@ export function OrgChart(props: {
   liveTick: number;
   projectTick: number;
   onOpenTerminal: (pane: string) => void;
-  onOpenMasterChat?: () => void;
   onSwitchProject?: (project: string) => void;
 }) {
-  const { liveTick, projectTick, onOpenTerminal, onOpenMasterChat, onSwitchProject } = props;
+  const { liveTick, projectTick, onOpenTerminal, onSwitchProject } = props;
   const { t } = useI18n();
 
   const [nodes, setNodes] = useState<OrgNode[]>([]);
@@ -847,19 +846,10 @@ export function OrgChart(props: {
       {(master || projectLeads.length > 0) && (
         <div className="org-master-bar" role="navigation" aria-label={t("org.crossProject")}>
           {master && (
-            <button
-              type="button"
-              className="org-master"
-              data-master="1"
-              title={t("org.masterChat")}
-              onClick={() => {
-                onOpenMasterChat?.();
-                window.dispatchEvent(new CustomEvent("grove:master-chat:open"));
-              }}
-            >
+            <span className="org-master" data-master="1">
               <span className="org-master__glyph" aria-hidden="true">◆</span>
               {master.label || master.name}
-            </button>
+            </span>
           )}
           <span className="org-master-bar__arrow" aria-hidden="true">→</span>
           <div className="org-pleads">

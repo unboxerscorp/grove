@@ -13,7 +13,6 @@ import { OrgChart } from "./components/OrgChart";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
 import { TaskDrawer } from "./components/TaskDrawer";
 import { TerminalPane } from "./components/TerminalPane";
-import { MasterChat } from "./components/MasterChat";
 import { GroveMark } from "./components/GroveMark";
 import { cx } from "./constants";
 import { useI18n } from "./i18n";
@@ -87,7 +86,6 @@ export function App() {
   const [boardLive, setBoardLive] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [project, setActiveProject] = useState<string | null>(null);
-  const [masterChatOpenSignal, setMasterChatOpenSignal] = useState(0);
   // Bumped on project switch to re-scope boards + nodes to the new project.
   const [projectTick, setProjectTick] = useState(0);
   // Left sidebar: mobile drawer open + per-group collapse (all expanded default).
@@ -184,7 +182,6 @@ export function App() {
     setProjectTick((x) => x + 1);
     setLiveTick((x) => x + 1);
   }, []);
-  const openMasterChat = useCallback(() => setMasterChatOpenSignal((x) => x + 1), []);
 
   // 1 project = 1 board: the dashboard always targets the active project's single
   // board via the "default" alias — the backend (_resolve_board_id) maps it to
@@ -498,7 +495,6 @@ export function App() {
                   liveTick={liveTick}
                   projectTick={projectTick}
                   onOpenTerminal={pickNode}
-                  onOpenMasterChat={openMasterChat}
                   onSwitchProject={switchProject}
                 />
               ) : view === "auth" ? (
@@ -523,8 +519,6 @@ export function App() {
         onAnswered={() => setLiveTick((x) => x + 1)}
         onClose={() => setInboxOpen(false)}
       />
-      {/* Floating chat to GROVE MASTER (bottom-right). */}
-      <MasterChat openSignal={masterChatOpenSignal} />
     </div>
   );
 }
