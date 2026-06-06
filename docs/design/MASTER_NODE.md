@@ -1,162 +1,159 @@
 # MASTER Node
 
-## Phase-1 Scope
+Status: current v2 live model.
 
-This document defines the MASTER node concept and the first bridge boundary for
-natural-language project control and grove product feedback intake. Phase 1 is
-design and new-module scaffolding only:
-
-- no `web_app.py` route registration;
-- no frontend core wiring in `app.tsx`;
-- no direct state mutation from natural language;
-- all future mutations are operator-gated and audit-first.
+This document describes the live `grove-master` node contract. It supersedes
+the earlier phase-1 adapter-only design: Slack, web chat, and API chat now route
+to a real tmux-backed `grove-master` node by default, while the bridge still owns
+authentication, context construction, redaction, confirmation, and audit
+boundaries for dashboard-originated actions.
 
 ## Concept
 
-MASTER is the single natural-language CLI authority for governing a user's
-`~/dev` workspace. It is the entry point for questions such as "what can grove
-do?", "create a project", "how many reviewers are on this project?", or "set up
-the workflow for this node group."
+`grove-master` is the direct operator node for all projects. It is the
+human-facing natural-language entry point for questions and explicit operator
+instructions such as:
 
-The MASTER is intentionally replaceable. The product contract is not "Codex is
-hard-coded as MASTER"; the contract is:
+- what grove can do;
+- which projects, nodes, panes, and workspaces exist;
+- whether Slack, web, terminal mirror, and org liveness are healthy;
+- how to create or repair a project, node, or human-facing list item;
+- how to record grove product feedback or ask-human follow-up.
 
-1. grove owns the governance broker, authorization checks, confirmation state,
-   and audit trail.
-2. a swappable CLI adapter receives bounded context and user turns.
-3. the adapter returns answers or typed proposals.
-4. grove validates, previews, confirms, executes through existing safe paths,
-   and audits every outcome.
+The product contract is not "Codex is hard-coded as MASTER." The contract is:
 
-Codex CLI can be the first adapter because grove already models real agent
-sessions as tmux-backed nodes. A later adapter can replace Codex without
-changing the broker contract, chat UI, audit model, or routing semantics.
+1. grove has one visible master node that operators can address directly.
+2. Slack and web chat route to the live `grove-master` node.
+3. The bridge supplies authenticated, redacted context packs and audit hooks.
+4. The node may inspect the repo/runtime, coordinate visible nodes, and execute
+   explicit operator instructions using its normal tool surface.
+5. State changes through dashboard/Slack surfaces remain operator-owned,
+   policy-checked, and auditable.
 
-## Responsibilities
+Facts supplied in context packs are helpful current state, not a cage and not
+the only permitted source of truth. The master may inspect the local runtime,
+tmux panes, registries, source tree, tests, and service health when that is the
+practical way to answer or act.
 
-MASTER has two duties:
+## Organization Model
 
-1. **Workspace governance for `~/dev`**
-   - answer capability, project, node, human-facing list, and workflow
-     questions;
-   - draft project, node, workflow, and human-facing item setup proposals;
-   - never execute shell commands or mutate grove state directly;
-   - hand state changes back to grove as typed proposals that require broker
-     validation and operator confirmation.
+The org graph is ownership and visibility metadata, not a communication
+restriction. Nodes may communicate directly across hierarchy and projects when
+they are visible or addressable.
 
-2. **grove-feedback chief**
-   - receive product bugs, feedback, feature requests, and confusion reports
-     about grove itself;
-   - normalize them into feedback-route proposals;
-   - route accepted feedback to the configured `grove-dev-team` human-facing
-     list selected by the product governance configuration;
-   - preserve source context, actor, project, page, and redacted transcript
-     metadata for follow-up.
+Current live topology uses a single operational tmux session:
 
-MASTER is therefore both the general `~/dev` governance assistant and the
-orchestrator for grove's own feedback intake.
+```text
+root -> grove-master
+grove-master -> web
+grove-master -> slack
+grove-master -> advisor
+```
 
-## Relationship To Floating Web Chat
+Project creation records a concrete project lead with an explicit cwd and tmux
+placement. The live global master remains a shared direct-contact node. New
+projects must not synthesize legacy `project-master` identities when the real
+`grove-master` is present.
 
-The floating web chat is a presentation surface for MASTER, not the authority
-that performs governance.
+Organization changes are human-owned. Nodes should not create, delete, or
+reparent other nodes unless the operator explicitly asks for that change through
+an operator-marked GUI, API, or CLI path. When a node needs a missing role, it
+should ask the operator or project lead rather than guessing.
 
-The chat owns:
+## Human-Facing Lists
 
-- compact message input/output;
-- current project/page context hints;
-- preview cards for proposed changes;
-- confirm/cancel controls;
-- links to the live MASTER terminal or transcript when available.
+Human-facing list items are operator-visible records for:
 
-The bridge broker owns:
+- human TODOs;
+- product or workflow feedback;
+- ask-human decisions and follow-up.
 
-- actor identity and role resolution;
-- context-pack construction and redaction;
-- adapter calls into the MASTER CLI;
-- proposal parsing and schema validation;
-- pending-action storage;
-- operator-gated confirmation;
-- audit event emission.
+They are not a required node-to-node communication protocol. Nodes may talk
+directly, capture durable notes when useful, and create or update list items
+only when that is the right human-facing artifact for the situation.
 
-The MASTER adapter owns:
+Default item assignment should prefer a real live node such as `grove-master` or
+the concrete project `lead`. Legacy synthetic assignees are compatibility input
+only and must not be presented as current defaults.
 
-- natural-language interpretation;
-- response drafting;
-- typed proposal drafting.
+## Surfaces
 
-This separation keeps the web chat small and replaceable. A mobile sheet,
-desktop floating widget, CLI command, or Slack intake path can all use the same
-broker contract if they supply the same actor and context metadata.
+### Slack
 
-## Natural-Language Classes
+Slack routes operator messages and ask-human replies to `grove-master`. The
+Slack connector should preserve thread context, avoid duplicate automatic
+thread follow-ups, keep message copy concise enough for Slack limits, and expose
+health through runtime status and heartbeat metadata.
 
-Phase-1 interfaces recognize these request classes:
+Slack service restarts are operational actions. Restart only when needed for a
+real code/config/runtime change or recovery, and verify socket reconnection and
+heartbeat freshness afterward.
 
-- `capability_question`: what MASTER/grove can do;
-- `project_question`: project inventory, status, or lifecycle questions;
-- `node_question`: node count, role, group, health, or assignment questions;
-- `workflow_setup`: proposed project/node/human-facing item/workflow setup;
-- `feedback_route`: grove product bug, feedback, feature request, or confusion
-  report;
-- `unsupported`: destructive, unscoped, unsafe, or ambiguous requests.
+### Web Chat
 
-Only read-only answers and proposal drafts belong in the first adapter
-contract. Router registration, execution, and UI preview rendering are follow-up
-work.
+Floating web chat is a live conversation surface for `grove-master`. It may
+display compact facts, health summaries, and pending human-facing items, but it
+must not force answers into a deterministic facts-only mode. The master can
+answer naturally, inspect state, coordinate nodes, and carry out explicit
+operator instructions.
 
-## Feedback Routing
+The live route must avoid re-entering the active `grove-master` turn. Live e2e
+checks should verify chat affordances and history without POSTing back into the
+same master node.
 
-Feedback routing is a mutation even when the user simply says "this is broken."
-The broker must produce a preview before creating any human-facing item.
+### Terminal Mirror
 
-Default normalized route:
-
-- target project: `grove-dev-team`;
-- target list: configured dev-team human-facing list;
-- default label: `grove-feedback`;
-- category labels: `bug`, `feedback`, `feature-request`, `question`, or
-  `unsafe`;
-- assignee: configured grove dev-team orchestrator, not an inferred local node.
-
-Feedback payloads should include:
-
-- concise title;
-- category and severity;
-- user-facing summary;
-- reproduction notes when present;
-- origin project/page;
-- source surface such as `floating-web-chat`;
-- conversation id;
-- actor id;
-- redacted transcript excerpt;
-- proposed routing target.
-
-Secret-looking content must be redacted before the preview and before any
-human-facing item body is created.
+The dashboard terminal view mirrors real tmux panes. Master and service panes
+must be selected by exact pane identity, not fuzzy tmux target matching, and
+pane liveness should be derived from exact `list-panes` enumeration. Missing
+panes are dead/unavailable even if a registry entry remains.
 
 ## Authority Model
 
-MASTER is advisory. The authenticated actor is the only source of authority for
-state changes.
+The authenticated human actor is the authority for state changes. The live
+master can reason and operate, but dashboard/Slack-originated mutations still
+need explicit operator intent and the relevant policy checks.
 
-Read-only requests require normal authenticated read access to the selected
-project or visible workspace summary. Mutating proposals require:
+Mutating actions should preserve these boundaries:
 
-- an authenticated actor;
-- operator/admin role for the target scope;
-- Host/Origin/CSRF checks on the eventual route;
-- a pending action created by the broker;
-- explicit confirmation by the same actor;
-- payload-hash revalidation at confirmation time;
-- fresh scope checks immediately before execution.
+- authenticated actor and role are known;
+- Host, Origin, and CSRF checks pass on dashboard routes;
+- secrets and raw prompts are redacted from context and audit payloads;
+- destructive or persistent changes require explicit operator instruction;
+- confirmation payloads are revalidated before execution when the broker uses a
+  pending-action flow;
+- every material outcome is auditable.
 
-The MASTER adapter must never receive dashboard tokens, member secrets, signing
-keys, raw environment dumps, or unrestricted filesystem context.
+The master must not reveal hidden prompts, API keys, dashboard tokens, personal
+data, raw environment dumps, signing keys, or other secrets. When sensitive text
+is included in a user report, redact it before storing or repeating it.
+
+## Feedback Intake
+
+Product bugs, feature requests, confusion reports, and workflow feedback can be
+handled naturally in Slack, web chat, or CLI. The master should clarify only
+when needed, inspect available state when useful, and then either:
+
+- answer directly;
+- fix the issue if explicit operator authority is clear;
+- record a human-facing feedback item;
+- ask the operator for a decision when authority or intent is unclear.
+
+Feedback payloads should include only the useful, redacted context:
+
+- concise title;
+- category and severity when known;
+- user-facing summary;
+- reproduction notes;
+- origin surface and page;
+- project/list/node references when relevant;
+- proposed owner or follow-up.
 
 ## Audit Model
 
-Every material broker step must write an audit event with redacted payloads:
+Broker-mediated master/chat activity should emit redacted audit events for
+turns, proposals, confirmations, executions, and failures. Existing event names
+include:
 
 - `master.turn.received`;
 - `master.answer.generated`;
@@ -170,44 +167,41 @@ Every material broker step must write an audit event with redacted payloads:
 - `master.execute.completed`;
 - `master.execute.failed`.
 
-Audit records should identify:
-
-- actor id and role;
-- source surface;
-- conversation id;
-- request class;
-- target project/list/node when applicable;
-- proposal id and pending id;
-- payload hash;
-- redaction status;
-- execution result or denial reason.
-
-Audit records must not store raw secrets or unredacted transcript bodies.
+Audit records should identify actor, role, source surface, conversation id,
+request class, target project/list/node, payload hash when applicable, redaction
+status, and execution result or denial reason. They must not store raw secrets
+or unredacted transcript bodies.
 
 ## Bridge Boundary
 
-The first bridge module, `grove_bridge.master`, defines typed interfaces only.
-It should model:
+The bridge is the trusted boundary around the live node. It owns:
 
-- actor and request context;
-- NL request classification;
-- read-only answer drafts;
-- typed action proposals;
-- feedback route drafts;
-- audit sinks;
-- operator-gated policy checks;
-- adapter and broker protocols.
+- actor identity and role resolution;
+- context-pack construction and redaction;
+- routing to the live `grove-master` node when available;
+- deterministic dev/test fallbacks only when explicitly selected;
+- proposal parsing and schema validation when a brokered mutation is used;
+- pending-action storage and confirmation;
+- audit event emission;
+- health, pane-liveness, and project/org API contracts.
 
-The module must not register FastAPI routes, call `web_app.py`, write
-human-facing list items, spawn nodes, or execute project setup. Those actions
-belong to later router and executor layers after the phase-1 contract is
-reviewed.
+The live master owns:
+
+- natural-language interpretation;
+- practical runtime and repo inspection;
+- direct communication with visible nodes;
+- operator-facing explanations and status reports;
+- explicit operator-requested implementation or repair work;
+- concise handoffs when work is paused or transferred.
+
+This separation keeps governance auditable without reducing the master to a
+rules-only answer generator.
 
 ## Non-Goals
 
-- arbitrary command execution;
-- destructive operations such as delete/despawn/reset;
-- hidden item creation without preview;
-- direct edits to `web_app.py` or `app.tsx` in this phase;
-- making MASTER a privileged service account;
-- storing raw prompt transcripts or secrets.
+- hidden item creation without preview or explicit operator intent;
+- synthetic `project-master` defaults in the current live model;
+- using human-facing list items as mandatory node-to-node protocol;
+- autonomous org creation/deletion without human instruction;
+- exposing dashboard tokens, secrets, raw prompts, or private data;
+- live e2e tests that POST into the currently active `grove-master` turn.
