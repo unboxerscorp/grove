@@ -46,6 +46,17 @@ describe("current design docs", () => {
     expect(teamAuth).not.toContain("상태: v1.2 설계안. 구현은 후속 작업에서 진행한다.");
   });
 
+  test("legacy master design is clearly marked as historical", () => {
+    const legacyMaster = doc("docs/V1_MASTER_DESIGN.md");
+
+    expect(legacyMaster).toContain("Status: historical v1 master design");
+    expect(legacyMaster).toMatch(
+      /Current live master-node behavior is\s+>\s+documented in `docs\/design\/MASTER_NODE\.md`/,
+    );
+    expect(legacyMaster).toContain("Slack and web");
+    expect(legacyMaster).toContain("human-facing list items only");
+  });
+
   test("grove agent skill surfaces use item wording", () => {
     const generated = doc("scripts/generate_grove_skills.py");
     const harness = doc("skills-src/grove-harness/SKILL.md");

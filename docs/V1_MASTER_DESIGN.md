@@ -1,5 +1,12 @@
 # GROVE MASTER 설계
 
+> Status: historical v1 master design. Current live master-node behavior is
+> documented in `docs/design/MASTER_NODE.md`. Current grove routes Slack and web
+> chat to the live `grove-master` node, uses direct node communication, and uses
+> human-facing list items only for operator TODO/feedback/ask-human records.
+> Board-task/delegation wording below is historical design context and legacy
+> backing API vocabulary, not the current node-to-node coordination model.
+
 작성일: 2026-06-04
 
 ## 0. 전제와 근거
