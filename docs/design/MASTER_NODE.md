@@ -45,10 +45,17 @@ Current live topology uses a single operational tmux session:
 
 ```text
 root -> grove-master
-grove-master -> web
-grove-master -> slack
-grove-master -> advisor
+grove-master -> lead@dev10
+lead@dev10 -> web
+lead@dev10 -> slack
+lead@dev10 -> advisor
+lead@dev10 -> jester
 ```
+
+The registry may still contain legacy or service nodes whose raw parent is
+`grove-master`, but `/api/org` projects the cockpit view as
+`GROVE MASTER -> project lead -> selected project nodes`. Other visible project
+leads stay collapsed until the operator switches projects.
 
 Project creation records a concrete project lead with an explicit cwd and tmux
 placement. The live global master remains a shared direct-contact node. New
@@ -59,6 +66,39 @@ Organization changes are human-owned. Nodes should not create, delete, or
 reparent other nodes unless the operator explicitly asks for that change through
 an operator-marked GUI, API, or CLI path. When a node needs a missing role, it
 should ask the operator or project lead rather than guessing.
+
+## Node Communication Transport
+
+The live node-to-node path is direct communication, not a list-item handoff.
+Nodes use `grove send`, `grove ask`, tmux capture, or operator-authorized tmux
+input depending on whether they need one-way context, a reply, inspection, or a
+literal terminal action.
+
+Current direct delivery targets real tmux panes by exact session/window/pane
+identity. The bridge and CLI must use the configured session socket, not the
+default tmux socket, so headless launchd and SSH contexts see the same org
+panes as the in-session services. Before writing to a human-facing target pane,
+the input guard checks the prompt line: real typed input blocks injection so
+node messages cannot merge with a human draft, while dim CLI ghost suggestions
+are not treated as typed input.
+
+The older output-file style is not the primary live transport. It is useful as a
+durable queue or audit pattern when a surface needs decoupling, but ordinary
+node collaboration should not regress to polling files before a simpler direct
+message will do. Human-facing list items remain operator-visible records, not
+the required transport for implementation, review, or blocker traffic.
+
+External chat surfaces add buffering at the edge:
+
+- Slack mentions are accepted by the Slack connector, immediately acknowledged
+  in the originating thread, and stored in the durable `slack_chat_queue`.
+  A background worker routes them to `grove-master`, retries while the master
+  pane is busy, caches generated responses for idempotent thread delivery, and
+  exposes queue age/count metrics through `slack-runtime.json`.
+- Floating web chat carries a `conversation_id` through `/api/master/chat` and
+  routes to the live `grove-master`. It is a live request/reply surface today;
+  do not assume it has the Slack durable queue semantics unless that queue is
+  explicitly implemented and tested.
 
 ## Human-Facing Lists
 

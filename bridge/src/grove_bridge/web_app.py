@@ -7795,9 +7795,7 @@ def _manual_task_status(value: str) -> str:
 
 def _org_node_records(config: WebAppConfig) -> list[NodeRecord]:
     nodes = _registry_node_records(config)
-    if not any(node["name"] == LEAD_NODE_NAME for node in nodes) and not _contains_grove_master(
-        nodes
-    ):
+    if not any(node["name"] == LEAD_NODE_NAME for node in nodes):
         nodes.append(_external_lead_node(config))
     return sorted(nodes, key=lambda node: node["name"])
 
@@ -7820,6 +7818,8 @@ def _org_graph_records(config: WebAppConfig) -> list[OrgGraphRecord]:
         raw_names = {node["name"] for node in project_nodes}
         for node in project_nodes:
             if node["name"] == GROVE_MASTER_NODE_NAME:
+                continue
+            if project_name != config.registry_session and node["name"] != LEAD_NODE_NAME:
                 continue
             records.append(
                 _org_graph_record_for_project(
@@ -7942,7 +7942,7 @@ def _org_graph_parent(
         return GROVE_MASTER_NODE_NAME
     if raw_parent:
         if raw_parent == GROVE_MASTER_NODE_NAME:
-            return GROVE_MASTER_NODE_NAME
+            return _project_lead_node_name(project)
         if raw_parent in raw_names:
             return _org_display_node_name(raw_parent, project=project, current=current)
     return _project_lead_node_name(project)

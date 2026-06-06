@@ -13,6 +13,13 @@ describe("current design docs", () => {
     expect(masterNode).toContain("Status: current v2 live model");
     expect(masterNode).toContain("Slack and web chat route to the live `grove-master` node");
     expect(masterNode).toContain("Human-facing list items are operator-visible records");
+    expect(masterNode).toContain("grove-master -> lead@dev10");
+    expect(masterNode).toContain("lead@dev10 -> jester");
+    expect(masterNode).toContain("GROVE MASTER -> project lead -> selected project nodes");
+    expect(masterNode).toContain("## Node Communication Transport");
+    expect(masterNode).toContain("Before writing to a human-facing target pane");
+    expect(masterNode).toContain("durable `slack_chat_queue`");
+    expect(masterNode).toContain("live request/reply surface today");
     expect(masterNode).not.toContain("## Phase-1 Scope");
     expect(masterNode).not.toContain("no `web_app.py` route registration");
     expect(masterNode).not.toContain(

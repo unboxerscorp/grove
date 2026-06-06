@@ -164,6 +164,8 @@ grove org
 
 사람용 목록은 operator TODO, 피드백, ask-human/판단 대기 기록을 담는 컨테이너입니다. 노드 간 구현, 리뷰, 차단 보고를 반드시 이 목록으로 주고받는 모델이 아닙니다. 노드는 `grove send`, `grove ask`, tmux capture/input 등으로 직접 대화할 수 있습니다.
 
+현재 live 통신 경로는 tmux pane을 직접 대상으로 합니다. 사람이나 operator가 입력 중인 pane에는 메시지가 섞이지 않도록 input guard가 실제 입력줄을 감지해 전송을 막고, CLI가 미리 보여주는 흐릿한 자동 추천 문구는 실제 입력으로 보지 않습니다. Slack에서 들어온 mention/chat은 별도 durable queue가 즉시 thread ack를 남기고 순차적으로 `grove-master`에 전달하지만, 일반 노드 간 협업은 list item이나 파일 polling을 거치지 않아도 됩니다.
+
 호환성 때문에 저장소와 일부 API 이름에는 여전히 board/task가 남아 있습니다. 각 list store는 `slug`로 식별되며, 같은 이름을 다시 쓰면 기존 store를 재사용합니다. 기본 저장소는 SQLite 파일인 `~/.grove/boards/board.db`이고, `grove-web --board-db-path <path>`로 다른 경로를 줄 수 있습니다.
 
 새 항목은 REST API, UI, Slack, executor가 같은 store에 기록합니다. 주요 값은 `title`, `body`, `assignee`, `status`, `priority`입니다. 기본 status는 `ready`, 기본 priority는 `0`입니다.

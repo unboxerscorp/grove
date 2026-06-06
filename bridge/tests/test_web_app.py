@@ -5602,7 +5602,7 @@ def test_org_includes_master_and_cross_project_leads(
     assert "xoxb-" not in rendered
 
 
-def test_org_does_not_synthesize_project_lead_when_grove_master_is_real(
+def test_org_projects_nodes_under_lead_even_when_grove_master_is_real(
     tmp_path: Path,
 ) -> None:
     write_registry(
@@ -5637,9 +5637,13 @@ def test_org_does_not_synthesize_project_lead_when_grove_master_is_real(
     assert response.status_code == 200
     payload = response.json()
     nodes = {node["name"]: node for node in payload["nodes"]}
-    assert set(nodes) == {"grove-master", "slack", "web"}
-    assert nodes["grove-master"]["children"] == ["slack", "web"]
-    assert "lead@dev10" not in nodes
+    assert set(nodes) == {"grove-master", "lead@dev10", "slack", "web"}
+    assert nodes["grove-master"]["children"] == ["lead@dev10"]
+    assert nodes["lead@dev10"]["parent"] == "grove-master"
+    assert nodes["lead@dev10"]["children"] == ["slack", "web"]
+    assert nodes["lead@dev10"]["kind"] == "meta"
+    assert nodes["slack"]["parent"] == "lead@dev10"
+    assert nodes["web"]["parent"] == "lead@dev10"
     assert [candidate["name"] for candidate in payload["assignee_candidates"]] == [
         "grove-master",
         "slack",
@@ -5775,8 +5779,8 @@ def test_org_nodes_use_grove_master_as_cross_project_root(
     assert nodes["lead@dev10"]["children"] == ["worker"]
     assert nodes["worker"]["parent"] == "lead@dev10"
     assert nodes["lead@base-voca"]["parent"] == "grove-master"
-    assert nodes["lead@base-voca"]["children"] == ["maker@base-voca"]
-    assert nodes["maker@base-voca"]["parent"] == "lead@base-voca"
+    assert nodes["lead@base-voca"]["children"] == []
+    assert "maker@base-voca" not in nodes
     assert nodes["lead@base-voca"]["project"] == "base-voca"
     assert nodes["lead@base-voca"]["click_action"] == {
         "type": "switch_project",
