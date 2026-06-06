@@ -227,15 +227,11 @@ export function TerminalPane({ node, compact = false }: { node: GroveNode | null
               lastSeq = frame.seq;
             }
             const data = b64ToBytes(frame.bytes_base64);
-            // "chunk" = incremental pipe-pane output → append. "snapshot" (or a
-            // legacy/fallback capture frame with no type) = full screen → mirror
-            // (CLEAR then write) so the capture fallback renders exactly as before.
-            if (frame.type === "chunk") {
-              term.write(data);
-            } else {
-              term.write(CLEAR);
-              term.write(data);
-            }
+            // Capture-only: each frame is a full-screen snapshot → mirror (CLEAR
+            // then write). The pipe-pane streaming path was dropped (it can freeze
+            // the operator's pane), so there are no incremental "chunk" frames.
+            term.write(CLEAR);
+            term.write(data);
             setBytes((b) => b + data.length);
             setState("live");
           };
@@ -306,20 +302,20 @@ export function TerminalPane({ node, compact = false }: { node: GroveNode | null
 
   return (
     <section className={cx("dr-term", compact && "dr-term--compact")}>
-      <header className="dr-term__bar">
-        <div className="dr-term__id">
-          <span className={cx("dr-led", conn.cls)} />
-          <span className="dr-term__name">{node ? node.name : t("term.noNode")}</span>
-          {node && <NodeHealthBadge health={node.health} />}
-          {node && !compact && (
-            <span className="dr-term__pane">
-              {agentGlyph(node.agent)} {node.agent} · {node.tmux_pane}
-            </span>
-          )}
-        </div>
-        {/* Compact (grid cell) hides the verbose meta + send box; the grid
-            cell bar carries the node picker + full-view affordance instead. */}
-        {!compact && (
+      {/* Compact (grid cell) drops the whole header — the grid cell bar carries
+          the node name + full-view/close controls — leaving just screen + composer. */}
+      {!compact && (
+        <header className="dr-term__bar">
+          <div className="dr-term__id">
+            <span className={cx("dr-led", conn.cls)} />
+            <span className="dr-term__name">{node ? node.name : t("term.noNode")}</span>
+            {node && <NodeHealthBadge health={node.health} />}
+            {node && (
+              <span className="dr-term__pane">
+                {agentGlyph(node.agent)} {node.agent} · {node.tmux_pane}
+              </span>
+            )}
+          </div>
           <div className="dr-term__meta">
             <span className="dr-term__ro" title={t("term.readOnly")}>
               {t("term.readOnly")}
@@ -327,8 +323,8 @@ export function TerminalPane({ node, compact = false }: { node: GroveNode | null
             <span className={cx("dr-conn", conn.cls)}>{conn.label}</span>
             <span className="dr-term__bytes">{t("term.streamed", { x: formatBytes(bytes) })}</span>
           </div>
-        )}
-      </header>
+        </header>
+      )}
       <div className="dr-term__screen">
         {node && viewable ? (
           <div className="dr-term__host" data-xterm-stdin={XTERM_DISABLE_STDIN ? "disabled" : "enabled"} ref={hostRef} />
@@ -344,7 +340,9 @@ export function TerminalPane({ node, compact = false }: { node: GroveNode | null
           </div>
         )}
       </div>
-      {node && viewable && !compact && <TerminalTools node={node} t={t} />}
+      {/* Composer (send box) is present in EVERY view — compact grid cells AND the
+          full single view — so each node has its own bottom input (operator UX). */}
+      {node && viewable && <TerminalTools node={node} t={t} />}
     </section>
   );
 }

@@ -45,33 +45,17 @@ test.describe("cockpit smoke", () => {
     await expect(page.locator(".dr-card").first()).toBeVisible();
   });
 
-  test("terminal grid mode renders cells, node picker, and a non-collapsed layout", async ({
-    page,
-    server,
-  }) => {
+  test("terminal view mounts the dynamic grid (no single/grid toggle)", async ({ page, server }) => {
     await page.goto(server.baseUrl, { waitUntil: "domcontentloaded" });
     // Visible terminal nav item (the hidden compat hooks are plain .dr-tab).
     await page.locator(".dr-navitem[data-view='terminal']").click();
-    await expect(page.locator(".dr-termview__modes")).toBeVisible();
-    // Switch single -> grid (second mode button).
-    await page.locator(".dr-termview__mode").nth(1).click();
-    // Grid container + default 2x2 = 4 cells render.
+    // New UX: the terminal view is the read-only dynamic grid (cells when the SPA
+    // has terminal nodes, else the empty "+" state). The old single|grid toggle is
+    // gone. The deep flow (cell render, +button modal, expand->full single view
+    // with send box, ×-close, non-collapsed layout) is verified against real nodes
+    // in verify.mjs; this isolated server doesn't expose terminal nodes/streams.
     await expect(page.locator(".dr-termgrid")).toBeVisible();
-    await expect(page.locator(".dr-termgrid__cell")).toHaveCount(4);
-    // Per-cell node picker renders with >=1 option (the "none" option when empty).
-    const pick = page.locator(".dr-termgrid__pick").first();
-    await expect(pick).toBeVisible();
-    expect(await pick.locator("option").count()).toBeGreaterThan(0);
-    // Layout not collapsed: a cell has real height + width (the flex/grid
-    // min-height:0 chain holds, so xterm hosts are measurable).
-    const box = await page.locator(".dr-termgrid__cell").first().boundingBox();
-    expect(box?.height ?? 0).toBeGreaterThan(20);
-    expect(box?.width ?? 0).toBeGreaterThan(20);
-    // Row/col selectors drive the cell count (1x1 -> 1 cell).
-    const dims = page.locator(".dr-termgrid__dim select");
-    await dims.nth(0).selectOption("1");
-    await dims.nth(1).selectOption("1");
-    await expect(page.locator(".dr-termgrid__cell")).toHaveCount(1);
+    await expect(page.locator(".dr-termview__modes")).toHaveCount(0);
   });
 
   test("API helper reaches health + list items with the operator token", async ({ request, server }) => {

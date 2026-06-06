@@ -578,20 +578,25 @@ async function coreMain() {
     });
 
     await page.click('.dr-sidebar .dr-tab[data-view="terminal"]');
+    // New UX: the terminal view is the read-only dynamic grid (default 1 cell =
+    // the selected node). Capture-only mirror (streaming dropped). Each cell has a
+    // slim header (the grid cell bar with the node name + controls) and its OWN
+    // bottom composer (send box -> POST /api/nodes/{node}/send).
+    await page.waitForSelector(".dr-termgrid", { timeout: 8000 });
     await page.waitForSelector(".dr-term .xterm", { timeout: 8000 });
     await page.waitForFunction(() => /#\d+/.test(document.querySelector(".dr-term .xterm-rows")?.textContent ?? ""), {
       timeout: 8000,
     });
-    await page.waitForSelector(".dr-led.is-live", { timeout: 8000 });
+    await page.waitForSelector(".dr-term__send-input", { timeout: 8000 });
     const terminal = await page.evaluate(() => ({
-      name: (document.querySelector(".dr-term__name")?.textContent ?? "").trim(),
-      pane: (document.querySelector(".dr-term__pane")?.textContent ?? "").trim(),
+      name: (document.querySelector(".dr-termgrid__cellname")?.textContent ?? "").trim(),
       chars: (document.querySelector(".dr-term .xterm-rows")?.textContent ?? "").trim().length,
       ticketKind: window.__MOCK__?.terminalTicketKind ?? "",
       wsUrl: window.__MOCK__?.terminalWsUrl ?? "",
-      sendBox: document.querySelectorAll(".dr-term__send-input").length,
+      grid: !!document.querySelector(".dr-termgrid"),
+      cells: document.querySelectorAll(".dr-termgrid__cell").length,
+      sendBox: document.querySelectorAll(".dr-term__send-input").length, // per-cell composer
       viewOnly: document.querySelectorAll('.dr-term__send-viewer[data-viewonly="1"]').length,
-      modeLabel: (document.querySelector(".dr-term__ro")?.textContent ?? "").trim(),
     }));
 
     const slackGuide = await page.evaluate(() => {
@@ -737,9 +742,10 @@ async function coreMain() {
       /terminal/.test(terminal.ticketKind) &&
       /ws\/terminal/.test(terminal.wsUrl) &&
       terminal.chars > 0 &&
+      terminal.grid &&
+      terminal.cells >= 1 &&
       terminal.sendBox === 1 &&
       terminal.viewOnly === 0 &&
-      !/(read-only|읽기 전용)/i.test(terminal.modeLabel) &&
       slackGuide.hiddenFromMvp &&
       slackGuide.noLegacySlackPanel &&
       /사람용|Human/i.test(board.title) &&
@@ -796,7 +802,7 @@ async function coreMain() {
         sidebarGroups: sidebar.groups,
         teamLoading,
         teamFinal,
-        terminal: { name: terminal.name, pane: terminal.pane, chars: terminal.chars },
+        terminal: { name: terminal.name, chars: terminal.chars, cells: terminal.cells, sendBox: terminal.sendBox },
         statusInitial,
         statusActiveAlias,
         statusLoading,

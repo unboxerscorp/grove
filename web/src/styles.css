@@ -5790,22 +5790,41 @@ button {
 .org-deleg-legend__label { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
 .org-deleg-edge.is-current { opacity: 0.95; }
 
-/* Interactive-terminal read-only grid (multi-window). Scoped: .dr-termview /
-   .dr-termgrid / .dr-term--compact only — appended to avoid touching shared rules. */
-.dr-termview { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: 8px; }
-.dr-termview__modes { display: flex; gap: 6px; flex: 0 0 auto; }
-.dr-termview__mode { font-family: var(--mono); font-size: 11px; color: var(--dim); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
-.dr-termview__mode.is-active { color: var(--ink); border-color: var(--teal); }
-.dr-termgrid { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: 8px; }
-.dr-termgrid__toolbar { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
-.dr-termgrid__dim { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; color: var(--dim); }
-.dr-termgrid__count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--dim); }
-.dr-termgrid__grid { display: grid; flex: 1; min-height: 0; min-width: 0; gap: 8px; }
-.dr-termgrid__cell { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-.dr-termgrid__cellbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-bottom: 4px; }
-.dr-termgrid__pick { flex: 1; min-width: 0; }
-.dr-termgrid__full { flex: 0 0 auto; font-family: var(--mono); color: var(--dim); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 9px; cursor: pointer; }
-.dr-termgrid__full:disabled { opacity: 0.4; cursor: default; }
+/* Interactive-terminal read-only DYNAMIC grid (multi-window). Scoped:
+   .dr-termgrid* / .dr-termfull* / .dr-term--compact only — appended to avoid
+   touching shared rules. Right "+" adds a column (widens), bottom "+" adds a row. */
+.dr-termgrid { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: 6px; }
+.dr-termgrid__main { display: flex; flex: 1; min-height: 0; min-width: 0; gap: 6px; }
+.dr-termgrid__grid { display: grid; flex: 1; min-height: 0; min-width: 0; gap: 6px; grid-auto-rows: minmax(0, 1fr); }
+.dr-termgrid__cell { display: flex; flex-direction: column; min-height: 0; min-width: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.dr-termgrid__cellbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 3px 6px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
+.dr-termgrid__cellname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; color: var(--ink); }
+.dr-termgrid__icon { flex: 0 0 auto; font-family: var(--mono); color: var(--dim); background: transparent; border: 0; border-radius: 6px; padding: 1px 6px; cursor: pointer; }
+.dr-termgrid__icon:hover { color: var(--ink); }
+.dr-termgrid__icon:disabled { opacity: 0.4; cursor: default; }
 .dr-termgrid__screen { display: flex; flex: 1; min-height: 0; min-width: 0; }
+/* edge add buttons: right = tall (add column), bottom = wide (add row) */
+.dr-termgrid__addcol { flex: 0 0 26px; min-height: 0; font-family: var(--mono); font-size: 18px; color: var(--dim); background: var(--panel-2); border: 1px dashed var(--line); border-radius: 10px; cursor: pointer; }
+.dr-termgrid__addrow { flex: 0 0 26px; width: 100%; font-family: var(--mono); font-size: 18px; color: var(--dim); background: var(--panel-2); border: 1px dashed var(--line); border-radius: 10px; cursor: pointer; }
+.dr-termgrid__addcol:hover, .dr-termgrid__addrow:hover { color: var(--ink); border-color: var(--teal); }
+.dr-termgrid__addcol:disabled, .dr-termgrid__addrow:disabled { opacity: 0.3; cursor: default; }
+.dr-termgrid__empty { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--dim); }
+.dr-termgrid__empty-msg { font-family: var(--mono); font-size: 12px; }
+/* node-pick modal */
+.dr-termgrid__modal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 40; }
+.dr-termgrid__modal-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); }
+.dr-termgrid__modal-box { position: relative; z-index: 1; width: min(360px, 90%); max-height: 70%; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: 0 24px 60px -34px rgba(0, 0, 0, 0.9); }
+.dr-termgrid__modal-head { padding: 10px 14px; font-family: var(--mono); font-size: 12px; color: var(--ink); border-bottom: 1px solid var(--line); }
+.dr-termgrid__modal-list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.dr-termgrid__modal-item { display: flex; align-items: baseline; gap: 8px; text-align: left; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.dr-termgrid__modal-item:hover { border-color: var(--teal); }
+.dr-termgrid__modal-name { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--ink); }
+.dr-termgrid__modal-pane { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+.dr-termgrid__modal-empty { padding: 12px; font-family: var(--mono); font-size: 11px; color: var(--dim); text-align: center; }
+.dr-termgrid__modal-foot { padding: 8px 12px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; }
+/* full single view (expanded cell) */
+.dr-termfull { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: 6px; }
+.dr-termfull__back { flex: 0 0 auto; align-self: flex-start; font-family: var(--mono); font-size: 11px; color: var(--dim); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
+.dr-termfull__back:hover { color: var(--ink); border-color: var(--teal); }
 /* compact TerminalPane fills its grid cell with a slimmer header */
 .dr-term--compact .dr-term__bar { padding: 4px 8px; }

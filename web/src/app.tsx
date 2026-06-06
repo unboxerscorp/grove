@@ -77,8 +77,9 @@ export function App() {
   const [orgRoots, setOrgRoots] = useState<string[]>([]);
   const [selectedPane, setSelectedPane] = useState<string | null>(null);
   const [view, setView] = useState<View>("board");
-  // Terminal layout: "single" (default = no-regression) or the read-only grid.
-  const [termMode, setTermMode] = useState<"single" | "grid">("single");
+  // Terminal: the view is the read-only dynamic grid; a non-null pane here is the
+  // one cell expanded to the full single view (full TerminalPane + send box).
+  const [termFull, setTermFull] = useState<string | null>(null);
   // Current member role: member null (local-token) = operator; only a team
   // "viewer" loses project-create + share. Re-confirmed on navigation / refresh.
   const [isViewer, setIsViewer] = useState(false);
@@ -178,10 +179,12 @@ export function App() {
     setProject(name); // api header
     setActiveProject(name);
     setSelectedPane(null);
-    // Project-scope continuity: an open detail drawer / decision inbox belongs to
-    // the previous project's scope — close them so no stale, wrong-scope item lingers.
+    // Project-scope continuity: an open detail drawer / decision inbox / expanded
+    // terminal belongs to the previous project's scope — close them so no stale,
+    // wrong-scope item lingers.
     setOpenTaskId(null);
     setInboxOpen(false);
+    setTermFull(null);
     setProjectTick((x) => x + 1);
     setLiveTick((x) => x + 1);
   }, []);
@@ -337,6 +340,11 @@ export function App() {
   const selected = useMemo(
     () => nodes.find((n) => n.tmux_pane === selectedPane) ?? null,
     [nodes, selectedPane],
+  );
+  // The node whose grid cell is expanded to the full single view (termFull = pane).
+  const fullNode = useMemo(
+    () => (termFull ? (nodes.find((n) => n.tmux_pane === termFull) ?? null) : null),
+    [nodes, termFull],
   );
   const defaultTerminalPane = useMemo(() => preferredTerminalPane(nodes), [nodes]);
   const liveCount = liveNodeCount(nodes);
@@ -502,38 +510,21 @@ export function App() {
                 />
               ) : view === "auth" ? (
                 <AuthPanel />
-              ) : (
-                <div className="dr-termview">
-                  <div className="dr-termview__modes" role="group" aria-label={t("tab.terminal")}>
-                    <button
-                      type="button"
-                      className={cx("dr-termview__mode", termMode === "single" && "is-active")}
-                      aria-pressed={termMode === "single"}
-                      onClick={() => setTermMode("single")}
-                    >
-                      {t("term.mode.single")}
-                    </button>
-                    <button
-                      type="button"
-                      className={cx("dr-termview__mode", termMode === "grid" && "is-active")}
-                      aria-pressed={termMode === "grid"}
-                      onClick={() => setTermMode("grid")}
-                    >
-                      {t("term.mode.grid")}
-                    </button>
-                  </div>
-                  {termMode === "grid" ? (
-                    <TerminalGrid
-                      nodes={nodes}
-                      onFullView={(pane) => {
-                        pickNode(pane);
-                        setTermMode("single");
-                      }}
-                    />
-                  ) : (
-                    <TerminalPane node={selected} />
-                  )}
+              ) : termFull ? (
+                // One grid cell expanded to the full single view (full TerminalPane
+                // + send box). Back returns to the grid.
+                <div className="dr-termfull">
+                  <button type="button" className="dr-termfull__back" onClick={() => setTermFull(null)}>
+                    ← {t("termgrid.back")}
+                  </button>
+                  <TerminalPane node={fullNode} />
                 </div>
+              ) : (
+                <TerminalGrid
+                  nodes={nodes}
+                  initialNode={selected?.name ?? null}
+                  onExpand={(pane) => setTermFull(pane)}
+                />
               )}
             </section>
           </main>
