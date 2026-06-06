@@ -897,6 +897,18 @@ async function main() {
     });
 
     await runStep(page, "terminal view, connect command, operator send", async () => {
+      const masterConnect = await apiFetch(page, "/api/nodes/grove-master/connect", { project: REAL_PROJECT });
+      assertCheck("grove-master connect API returns 2xx", masterConnect.ok, `HTTP ${masterConnect.status} ${safeJson(masterConnect.json)}`);
+      check("grove-master connect uses SSH tmux attach", masterConnect.json?.mode === "ssh_tmux_attach", safeJson(masterConnect.json));
+      check(
+        "grove-master SSH attach command targets the master pane",
+        typeof masterConnect.json?.commands?.ssh_attach === "string" &&
+          masterConnect.json.commands.ssh_attach.includes("ssh ") &&
+          masterConnect.json.commands.ssh_attach.includes("tmux select-pane -t dev10:0.0") &&
+          masterConnect.json.commands.ssh_attach.includes("tmux attach -t dev10"),
+        safeJson(masterConnect.json),
+      );
+
       await selectProject(page, TEST_PROJECT, TEST_PROJECT_LABEL_RE);
       if (await page.$(".dr-mchat__panel")) {
         await page.click(".dr-mchat__x");

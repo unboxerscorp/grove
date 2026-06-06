@@ -187,6 +187,17 @@ function assertLiveE2eCleansOwnBoardFixtures() {
   }
 }
 
+function assertLiveE2eChecksMasterSshConnect() {
+  const live = readFileSync(path.join(root, "e2e", "live.mjs"), "utf8");
+  if (
+    !/\/api\/nodes\/grove-master\/connect/.test(live) ||
+    !/mode\s*===\s*["']ssh_tmux_attach["']/.test(live) ||
+    !/commands\?\.ssh_attach/.test(live)
+  ) {
+    throw new Error("live e2e must verify grove-master connect uses SSH tmux attach for headless access");
+  }
+}
+
 function assertTerminalPaneDisablesXtermStdin() {
   // #N9 xterm stdin disabled: terminal panes are mirrors; typed input goes only
   // through the explicit node send form when that feature is available.
@@ -388,6 +399,7 @@ async function coreMain() {
   assertLiveE2eDefaultsCurrentPort();
   assertLiveE2eAvoidsReentrantMasterChatPost();
   assertLiveE2eCleansOwnBoardFixtures();
+  assertLiveE2eChecksMasterSshConnect();
   assertTerminalPaneDisablesXtermStdin();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
@@ -908,6 +920,7 @@ async function main() {
     assertLiveE2eDefaultsCurrentPort();
     assertLiveE2eAvoidsReentrantMasterChatPost();
     assertLiveE2eCleansOwnBoardFixtures();
+    assertLiveE2eChecksMasterSshConnect();
     assertTerminalPaneDisablesXtermStdin();
     await verifyRetiredLegacySurfaces(browser);
     // The historical full-panel script below is intentionally archived. It
