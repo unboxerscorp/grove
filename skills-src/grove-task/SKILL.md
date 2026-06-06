@@ -10,11 +10,14 @@ Use `grove task` when a human-facing list item already exists and the operator-f
 ## Commands
 
 ```bash
+grove task list --session <project> --board <project> --assignee <node>
 grove task start <task_id> --run-id <run_id> --from-status ready
 grove task done <task_id> --comment "verified"
 grove task block <task_id> --comment "blocked on ..."
 grove task ask-human <task_id> --comment "need human decision"
 ```
+
+Use `grove task list` as a read-only check before acting on operator-visible work. Prefer `--assignee <node>` to keep the result scoped to the current node, and combine it with `--status ready` or `--status running` when needed.
 
 Status mapping:
 

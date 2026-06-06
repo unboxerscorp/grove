@@ -2,9 +2,13 @@ import { describe, expect, test, vi } from "vitest";
 
 import {
   cmdTask,
+  cmdTaskList,
   discoverTaskWebUrl,
   isLoopbackTaskWebUrl,
+  listTasks,
   renderTaskJson,
+  renderTaskListJson,
+  renderTaskListText,
   renderTaskText,
   statusForTaskAction,
   type TaskAction,
@@ -238,6 +242,69 @@ describe("updateTaskStatus", () => {
   });
 });
 
+describe("listTasks", () => {
+  test("gets human-facing items with auth headers and filters", async () => {
+    const state = deps({
+      env: { GROVE_WEB_URL: "http://127.0.0.1:9999" },
+      responseBody: [
+        {
+          assignee: "grove-master",
+          id: "task_1",
+          status: "running",
+          title: "Canonical audit",
+        },
+      ] as unknown as Record<string, unknown>,
+    });
+
+    const result = await listTasks(
+      {
+        assignee: "grove-master",
+        board: "dev10",
+        session: "dev10",
+        status: "running",
+      },
+      state.deps,
+    );
+
+    expect(state.calls).toHaveLength(1);
+    expect(state.calls[0]).toEqual({
+      init: {
+        headers: {
+          Origin: "http://127.0.0.1:9999",
+          "X-Grove-Project": "dev10",
+          "X-Grove-Session-Token": "token-123",
+        },
+        method: "GET",
+      },
+      url: "http://127.0.0.1:9999/api/boards/dev10/tasks?status=running&assignee=grove-master",
+    });
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0]?.["id"]).toBe("task_1");
+  });
+
+  test("renders listed human-facing items as text and JSON", async () => {
+    const result = {
+      board: "dev10",
+      session: "dev10",
+      tasks: [
+        {
+          assignee: "grove-master",
+          id: "task_1",
+          status: "running",
+          title: "Canonical audit",
+        },
+      ],
+      url: "http://127.0.0.1:8765",
+    };
+
+    expect(renderTaskListText(result)).toBe("task_1 [running] grove-master: Canonical audit");
+    expect(JSON.parse(renderTaskListJson(result))).toEqual(result.tasks);
+    expect(renderTaskListText({ ...result, tasks: [] })).toBe(
+      "no human-facing items on dev10 (dev10)",
+    );
+  });
+});
+
 describe("cmdTask", () => {
   test("prints updated task JSON when requested", async () => {
     const state = deps({ env: { GROVE_WEB_URL: "http://127.0.0.1:9999" } });
@@ -255,5 +322,28 @@ describe("cmdTask", () => {
         status: "running",
       }),
     );
+  });
+});
+
+describe("cmdTaskList", () => {
+  test("prints listed task JSON when requested", async () => {
+    const state = deps({
+      env: { GROVE_WEB_URL: "http://127.0.0.1:9999" },
+      responseBody: [{ id: "task_1", status: "running" }] as unknown as Record<string, unknown>,
+    });
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+
+    await cmdTaskList({ board: "dev10", json: true, session: "dev10" }, state.deps);
+
+    expect(JSON.parse(writes.join(""))).toEqual([
+      expect.objectContaining({
+        id: "task_1",
+        status: "running",
+      }),
+    ]);
   });
 });

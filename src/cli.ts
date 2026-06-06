@@ -20,7 +20,7 @@ import { cmdSession } from "./commands/session.js";
 import { cmdSpawn } from "./commands/spawn.js";
 import { cmdStatus } from "./commands/status.js";
 import { cmdTail } from "./commands/tail.js";
-import { cmdTask, type TaskAction } from "./commands/task.js";
+import { cmdTask, cmdTaskList, type TaskAction } from "./commands/task.js";
 import { cmdUp } from "./commands/up.js";
 import { cmdWaitCommand } from "./commands/wait.js";
 import { cmdWatch } from "./commands/watch.js";
@@ -171,6 +171,18 @@ program
 const taskCommand = program
   .command("task")
   .description("transition a human-facing grove TODO/feedback/ask-human item");
+
+taskCommand
+  .command("list")
+  .description("list human-facing items")
+  .option("--board <board>", "target human-facing list slug", "default")
+  .option("--session <session>", "target grove session/project")
+  .option("--allow-remote", "allow sending the dashboard token to a non-loopback grove-web URL")
+  .option("--status <status>", "filter by item status")
+  .option("--assignee <node>", "filter by assigned node")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .option("--json", "print human-facing items as JSON")
+  .action(run((opts: Record<string, unknown>) => cmdTaskList(withConfig(opts))));
 
 function taskTransitionCommand(action: TaskAction, description: string): void {
   taskCommand

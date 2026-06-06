@@ -6,10 +6,12 @@ This repo is growing into a cockpit product with multiple makers working at once
 
 1. Read `AGENTS.md`.
 2. Run `grove org --json` and pin a short self-context block before acting: current node name, project/session, parent, children, role, tmux pane, and working directory.
-3. Read `docs/agents/shared-context.md`.
-4. Read `docs/agents/workstream-registry.md` to understand ownership labels and likely experts. Streams are coordination metadata, not a hard permission boundary.
-5. Read `docs/engineering/coding-rules.md`.
-6. For handoffs, use `docs/agents/handoff-template.md`; for cross-stream coordination, use `docs/agents/coordination.md`.
+3. Check current operator-visible work assigned to you when a human-facing item may exist:
+   `grove task list --session <project> --board <project> --assignee <node>`.
+4. Read `docs/agents/shared-context.md`.
+5. Read `docs/agents/workstream-registry.md` to understand ownership labels and likely experts. Streams are coordination metadata, not a hard permission boundary.
+6. Read `docs/engineering/coding-rules.md`.
+7. For handoffs, use `docs/agents/handoff-template.md`; for cross-stream coordination, use `docs/agents/coordination.md`.
 
 ## Working Agreement
 
@@ -19,6 +21,7 @@ This repo is growing into a cockpit product with multiple makers working at once
 - Reviewer and QA roles describe default focus, not capability limits. They may still communicate directly, run checks, and make changes when explicitly asked or when it is the practical route.
 - Nodes may communicate across the visible org regardless of hierarchy or project. Use direct node messaging, tmux capture, or tmux input as appropriate.
 - Human-facing list items are operator TODO, feedback, and ask-human records. Do not use list items as the required node-to-node communication protocol.
+- Human-facing list items should still stay visible to the responsible node; use `grove task list` or the web board to inspect assigned ready/running/ask-human work before acting on operator-visible work.
 - Nodes must not autonomously spawn, terminate, or rearrange nodes. When the human explicitly asks for an org change, use the operator-marked GUI/API/CLI path and report what changed.
 - Before routing work or contacting another node, inspect the org so the target role, tmux pane, and cwd are known.
 - `agy`/`antigravity` nodes follow the same org-awareness and direct-communication model as `codex` and `claude`; `.agents/AGENTS.md` carries runtime-specific parity notes.

@@ -16,6 +16,7 @@ grove-web --enable-node-input     # optional: operator-gated web input to node p
 grove serve --port 8787          # optional local OpenAI-compatible chat facade
 grove send maker-1 "Please inspect the auth retry path and report risks."
 grove ask reviewer "Review the current diff"
+grove task list --assignee grove-master --status running
 grove task ask-human <item_id> --comment "Which branch should this use?"
 grove watchdog --json            # dry-run node health and recovery plan
 grove repair --all
@@ -52,9 +53,9 @@ grove repair --all
 - **Human-facing lists** - list/item records are for operator TODOs, feedback, and
   human decisions. They are not the required protocol for node-to-node implementation,
   review, or blocker traffic.
-- **Item self-status CLI** - v1.31 adds `grove task start|review|done|block|ask-human`
-  for updating an existing human-facing item when durable operator-visible state is
-  useful.
+- **Item self-status CLI** - v1.31 adds `grove task list` plus
+  `start|review|done|block|ask-human` for reading and updating existing
+  human-facing items when durable operator-visible state is useful.
 - **Project room model** - v1.27 makes the dashboard use one active project, one
   explicit workspace/registry, and one project-scoped human-facing list store. The old
   board selector is gone; the `"default"` board alias resolves to the active project's

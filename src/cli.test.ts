@@ -45,6 +45,9 @@ describe("CLI help text", () => {
     expect(source).toContain(
       'description("transition a human-facing grove TODO/feedback/ask-human item")',
     );
+    expect(source).toContain('.command("list")');
+    expect(source).toContain('description("list human-facing items")');
+    expect(source).toContain('option("--assignee <node>", "filter by assigned node")');
     expect(source).toContain(
       'taskTransitionCommand("start", "mark a human-facing item as running")',
     );

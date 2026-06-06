@@ -22,6 +22,7 @@ export type TaskAction = keyof typeof TASK_STATUS_BY_ACTION;
 
 export interface TaskInput {
   allowRemote?: boolean;
+  assignee?: string;
   board?: string;
   comment?: string;
   config?: string;
@@ -30,6 +31,7 @@ export interface TaskInput {
   reviewer?: string;
   runId?: string;
   session?: string;
+  status?: string;
 }
 
 export interface TaskTransitionResult {
@@ -41,10 +43,17 @@ export interface TaskTransitionResult {
   task: Record<string, unknown>;
 }
 
+export interface TaskListResult {
+  session: string;
+  board: string;
+  url: string;
+  tasks: Array<Record<string, unknown>>;
+}
+
 export interface TaskFetchInit {
-  method: "PATCH";
+  method: "GET" | "PATCH";
   headers: Record<string, string>;
-  body: string;
+  body?: string;
 }
 
 export interface TaskFetchResponse {
@@ -193,6 +202,21 @@ function parseTask(text: string): Record<string, unknown> {
   throw new Error("grove-web returned a malformed task response");
 }
 
+function parseTaskList(text: string): Array<Record<string, unknown>> {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === "object" && !Array.isArray(item),
+      );
+    }
+  } catch {
+    // Fall through to the uniform malformed response error below.
+  }
+  throw new Error("grove-web returned a malformed item list response");
+}
+
 function errorSnippet(text: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 300);
 }
@@ -269,6 +293,58 @@ export async function updateTaskStatus(
   };
 }
 
+export async function listTasks(
+  input: TaskInput = {},
+  deps: TaskDeps = defaultDeps,
+): Promise<TaskListResult> {
+  const session = resolveSession(input, deps);
+  const board = validateGroveName(trimmed(input.board) ?? DEFAULT_BOARD, "--board");
+  const baseUrl = discoverTaskWebUrl(session, deps);
+  assertRemoteAllowed(baseUrl, input, deps);
+  const { path: tokenPath, token } = readToken(session, deps);
+  const query = new URLSearchParams();
+  const status = trimmed(input.status);
+  const assignee = trimmed(input.assignee);
+  if (status) query.set("status", status);
+  if (assignee) query.set("assignee", assignee);
+  const queryText = query.toString();
+  const endpoint = `${baseUrl}/api/boards/${encodeURIComponent(board)}/tasks${
+    queryText ? `?${queryText}` : ""
+  }`;
+
+  let response: TaskFetchResponse;
+  try {
+    response = await deps.fetch(endpoint, {
+      headers: {
+        Origin: new URL(baseUrl).origin,
+        "X-Grove-Project": session,
+        "X-Grove-Session-Token": token,
+      },
+      method: "GET",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `could not reach grove-web at ${baseUrl} for session ${session}; start grove-web --session ${session} or set GROVE_WEB_URL (${message})`,
+    );
+  }
+
+  const responseText = await response.text();
+  if (!response.ok) {
+    const details = errorSnippet(responseText);
+    throw new Error(
+      `grove-web item list failed at ${endpoint} for session ${session} (HTTP ${response.status} ${response.statusText}; token ${tokenPath})${details ? `: ${details}` : ""}`,
+    );
+  }
+
+  return {
+    board,
+    session,
+    tasks: parseTaskList(responseText),
+    url: baseUrl,
+  };
+}
+
 export function renderTaskText(result: TaskTransitionResult): string {
   const actualStatus = result.task["status"];
   const status = typeof actualStatus === "string" ? actualStatus : result.status;
@@ -279,6 +355,25 @@ export function renderTaskJson(result: TaskTransitionResult): string {
   return JSON.stringify(result.task, null, 2);
 }
 
+export function renderTaskListText(result: TaskListResult): string {
+  if (result.tasks.length === 0) {
+    return `no human-facing items on ${result.board} (${result.session})`;
+  }
+  return result.tasks
+    .map((task) => {
+      const id = typeof task["id"] === "string" ? task["id"] : "(unknown-item)";
+      const status = typeof task["status"] === "string" ? task["status"] : "unknown";
+      const assignee = typeof task["assignee"] === "string" ? task["assignee"] : "unassigned";
+      const title = typeof task["title"] === "string" ? task["title"] : "(untitled)";
+      return `${id} [${status}] ${assignee}: ${title}`;
+    })
+    .join("\n");
+}
+
+export function renderTaskListJson(result: TaskListResult): string {
+  return JSON.stringify(result.tasks, null, 2);
+}
+
 export async function cmdTask(
   action: TaskAction,
   taskId: string,
@@ -287,4 +382,12 @@ export async function cmdTask(
 ): Promise<void> {
   const result = await updateTaskStatus(action, taskId, opts, deps);
   process.stdout.write(`${opts.json ? renderTaskJson(result) : renderTaskText(result)}\n`);
+}
+
+export async function cmdTaskList(
+  opts: TaskInput & { json?: boolean },
+  deps: TaskDeps = defaultDeps,
+): Promise<void> {
+  const result = await listTasks(opts, deps);
+  process.stdout.write(`${opts.json ? renderTaskListJson(result) : renderTaskListText(result)}\n`);
 }
