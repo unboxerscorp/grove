@@ -174,6 +174,20 @@ class SlackChatQueueItem:
 
 
 @dataclass(frozen=True)
+class MasterChatMessage:
+    """One durable turn of a web/master chat conversation (G5)."""
+
+    id: str
+    board_id: str
+    conversation_id: str
+    request_id: str | None
+    role: str
+    text: str
+    origin_surface: str | None
+    created_at: int
+
+
+@dataclass(frozen=True)
 class Board:
     id: str
     slug: str
@@ -2083,6 +2097,85 @@ class SQLiteBoardStore:
                 (error, now, item_id),
             )
 
+    def append_master_chat_message(
+        self,
+        *,
+        board: str,
+        conversation_id: str,
+        role: str,
+        text: str,
+        request_id: str | None = None,
+        origin_surface: str | None = None,
+    ) -> None:
+        """Persist one durable web/master chat turn (G5). Idempotent on
+        (board, conversation_id, request_id, role) so a retried turn does not
+        duplicate. Text is stored verbatim — callers must redact first."""
+        clean_conversation = conversation_id.strip()
+        clean_role = role.strip()
+        clean_text = text.strip()
+        if not clean_conversation or clean_role not in {"user", "assistant"} or not clean_text:
+            return
+        board_id = self._ensure_board(board)
+        with self._connect(immediate=True) as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO master_chat_messages (
+                    id, board_id, conversation_id, request_id, role, text,
+                    origin_surface, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _new_id("master_chat"),
+                    board_id,
+                    clean_conversation,
+                    request_id.strip() if request_id and request_id.strip() else None,
+                    clean_role,
+                    clean_text,
+                    origin_surface.strip() if origin_surface and origin_surface.strip() else None,
+                    _now(),
+                ),
+            )
+
+    def list_master_chat_messages(
+        self,
+        *,
+        board: str,
+        conversation_id: str,
+        limit: int = 200,
+    ) -> list[MasterChatMessage]:
+        clean_conversation = conversation_id.strip()
+        if not clean_conversation:
+            return []
+        board_id = self._board_id_for_slug(board)
+        if board_id is None:
+            return []
+        capped = max(1, min(limit, 500))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, board_id, conversation_id, request_id, role, text,
+                       origin_surface, created_at
+                FROM master_chat_messages
+                WHERE board_id = ? AND conversation_id = ?
+                ORDER BY created_at ASC, rowid ASC
+                LIMIT ?
+                """,
+                (board_id, clean_conversation, capped),
+            ).fetchall()
+        return [
+            MasterChatMessage(
+                id=_row_str(row, "id"),
+                board_id=_row_str(row, "board_id"),
+                conversation_id=_row_str(row, "conversation_id"),
+                request_id=_row_optional_str(row, "request_id"),
+                role=_row_str(row, "role"),
+                text=_row_str(row, "text"),
+                origin_surface=_row_optional_str(row, "origin_surface"),
+                created_at=_row_int(row, "created_at"),
+            )
+            for row in rows
+        ]
+
     def list_runs(self, *, board: str, task_id: str) -> list[Run]:
         board_id = self._ensure_board(board)
         with self._connect() as conn:
@@ -3491,6 +3584,21 @@ class SQLiteBoardStore:
 
             CREATE INDEX IF NOT EXISTS idx_slack_chat_queue_due
                 ON slack_chat_queue(board_id, status, next_attempt_at, created_at);
+
+            CREATE TABLE IF NOT EXISTS master_chat_messages (
+                id TEXT PRIMARY KEY,
+                board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+                conversation_id TEXT NOT NULL,
+                request_id TEXT,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL,
+                origin_surface TEXT,
+                created_at INTEGER NOT NULL,
+                UNIQUE(board_id, conversation_id, request_id, role)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_master_chat_messages_conv
+                ON master_chat_messages(board_id, conversation_id, created_at, id);
 
             CREATE TABLE IF NOT EXISTS node_health (
                 project TEXT NOT NULL,

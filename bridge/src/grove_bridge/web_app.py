@@ -70,6 +70,7 @@ from grove_bridge.store import (
     DecisionDispatchResult,
     DecisionProposal,
     DecisionVote,
+    MasterChatMessage,
     NodeHealth,
     NotifySub,
     Run,
@@ -1443,8 +1444,14 @@ def create_app(
     @app.get("/api/master/chat")
     def master_chat_history_endpoint(request: Request) -> dict[str, object]:
         _require_auth(request)
-        resolve_project(request)
-        return {"messages": []}
+        project = resolve_project(request)
+        conversation_id = request.query_params.get("conversation_id", "").strip()
+        if not conversation_id:
+            return {"messages": []}
+        messages = _store(request).list_master_chat_messages(
+            board=project.board, conversation_id=conversation_id
+        )
+        return {"messages": [_master_chat_message_payload(m) for m in messages]}
 
     @app.post("/api/master/chat", response_model=None)
     def master_chat_endpoint(
@@ -5987,7 +5994,58 @@ def _handle_master_chat_request(
     rendered = _jsonable(response)
     if not isinstance(rendered, dict):
         raise HTTPException(status_code=503, detail="master chat returned invalid response")
+    _persist_master_chat_turn(_store(request), payload, rendered, project=project)
     return rendered
+
+
+def _master_chat_message_payload(message: MasterChatMessage) -> dict[str, object]:
+    return {
+        "role": message.role,
+        "text": message.text,
+        "conversation_id": message.conversation_id,
+        "request_id": message.request_id,
+        "origin_surface": message.origin_surface,
+        "created_at": message.created_at,
+    }
+
+
+def _persist_master_chat_turn(
+    store: SQLiteBoardStore,
+    payload: MasterChatPayload,
+    rendered: Mapping[str, object],
+    *,
+    project: ProjectContext,
+) -> None:
+    """Durably store the user turn + the assistant's answer for web-chat history
+    (G5). `rendered` is already redacted; persistence never alters the live
+    request/reply and is best-effort — history must never break a chat turn."""
+    conversation_id = _mapping_string(rendered, "conversation_id")
+    if not conversation_id:
+        return
+    request_id = _mapping_string(rendered, "request_id") or None
+    origin_surface = payload.origin_surface
+    try:
+        store.append_master_chat_message(
+            board=project.board,
+            conversation_id=conversation_id,
+            role="user",
+            text=_safe_public_text(payload.message),
+            request_id=request_id,
+            origin_surface=origin_surface,
+        )
+        answer = rendered.get("answer")
+        answer_text = _mapping_string(answer, "text") if isinstance(answer, Mapping) else ""
+        if answer_text:
+            store.append_master_chat_message(
+                board=project.board,
+                conversation_id=conversation_id,
+                role="assistant",
+                text=answer_text,
+                request_id=request_id,
+                origin_surface=origin_surface,
+            )
+    except Exception as exc:  # history is best-effort; never fail a live turn
+        LOGGER.warning("event=master_chat_history_persist_failed error=%s", _safe_log_text(exc))
 
 
 def _handle_master_chat_confirm_request(

@@ -2091,6 +2091,71 @@ def test_master_chat_history_get_returns_empty_message_list(tmp_path: Path) -> N
     assert response.json() == {"messages": []}
 
 
+def test_master_chat_persists_and_returns_durable_web_chat_history(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+
+    post = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={
+            "message": "MASTER로 뭐 가능?",
+            "conversation_id": "conv-hist",
+            "request_id": "req-hist",
+            "origin_page": "/boards/dev10",
+        },
+    )
+    assert post.status_code == 200
+    answer_text = post.json()["answer"]["text"]
+
+    history = client.get("/api/master/chat?conversation_id=conv-hist", headers=auth_headers(client))
+    assert history.status_code == 200
+    messages = history.json()["messages"]
+    assert [(m["role"], m["text"]) for m in messages] == [
+        ("user", "MASTER로 뭐 가능?"),
+        ("assistant", answer_text),
+    ]
+    assert all(m["conversation_id"] == "conv-hist" for m in messages)
+
+    # A different conversation is isolated; no conversation_id still returns empty.
+    other = client.get("/api/master/chat?conversation_id=conv-other", headers=auth_headers(client))
+    assert other.json()["messages"] == []
+    assert client.get("/api/master/chat", headers=auth_headers(client)).json() == {"messages": []}
+
+    # Re-POSTing the same request_id is idempotent — history does not duplicate.
+    client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={
+            "message": "MASTER로 뭐 가능?",
+            "conversation_id": "conv-hist",
+            "request_id": "req-hist",
+        },
+    )
+    again = client.get("/api/master/chat?conversation_id=conv-hist", headers=auth_headers(client))
+    assert len(again.json()["messages"]) == 2
+
+
+def test_master_chat_history_redacts_secrets_before_storing(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    secret = "xoxb-" + ("z" * 44)
+
+    client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={
+            "message": f"MASTER로 뭐 가능? {secret}",
+            "conversation_id": "conv-redact",
+            "request_id": "req-redact",
+        },
+    )
+    history = client.get(
+        "/api/master/chat?conversation_id=conv-redact", headers=auth_headers(client)
+    )
+    assert secret not in json.dumps(history.json())
+
+
 def test_master_chat_guides_feedback_actions_with_llm_text(tmp_path: Path) -> None:
     client = make_client(
         tmp_path,

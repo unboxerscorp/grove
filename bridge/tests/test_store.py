@@ -1000,3 +1000,58 @@ def test_notify_subscriptions_are_stored_and_upserted(tmp_path: Path) -> None:
     assert subs[0].room_id == "ops"
     assert subs[0].thread_id == "thread-1"
     assert subs[0].user_id == "user-b"
+
+
+def test_master_chat_messages_roundtrip_idempotent_and_scoped(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+
+    store.append_master_chat_message(
+        board="dev10",
+        conversation_id="conv-1",
+        role="user",
+        text="hello",
+        request_id="req-1",
+        origin_surface="floating_web_chat",
+    )
+    store.append_master_chat_message(
+        board="dev10",
+        conversation_id="conv-1",
+        role="assistant",
+        text="hi there",
+        request_id="req-1",
+        origin_surface="floating_web_chat",
+    )
+    # Idempotent on (board, conversation, request_id, role): a retried user turn
+    # with the same request_id is ignored, not duplicated.
+    store.append_master_chat_message(
+        board="dev10",
+        conversation_id="conv-1",
+        role="user",
+        text="hello AGAIN",
+        request_id="req-1",
+    )
+
+    conv1 = store.list_master_chat_messages(board="dev10", conversation_id="conv-1")
+    assert [(m.role, m.text) for m in conv1] == [("user", "hello"), ("assistant", "hi there")]
+    assert conv1[0].origin_surface == "floating_web_chat"
+
+    # Conversation isolation: a different conversation_id is a separate thread.
+    store.append_master_chat_message(
+        board="dev10", conversation_id="conv-2", role="user", text="other", request_id="req-2"
+    )
+    assert [
+        m.text for m in store.list_master_chat_messages(board="dev10", conversation_id="conv-2")
+    ] == ["other"]
+    assert len(store.list_master_chat_messages(board="dev10", conversation_id="conv-1")) == 2
+
+    # Board scope + empty/unknown lookups return nothing (no board side effects).
+    assert store.list_master_chat_messages(board="other-board", conversation_id="conv-1") == []
+    assert store.list_master_chat_messages(board="dev10", conversation_id="") == []
+    # Empty/invalid role or text is a no-op, not an error.
+    store.append_master_chat_message(
+        board="dev10", conversation_id="conv-1", role="user", text="  "
+    )
+    store.append_master_chat_message(
+        board="dev10", conversation_id="conv-1", role="system", text="x"
+    )
+    assert len(store.list_master_chat_messages(board="dev10", conversation_id="conv-1")) == 2
