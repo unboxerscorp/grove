@@ -1000,6 +1000,11 @@ def create_app(
         )
         project = resolve_project(request)
         feature_name = _gui_feature_name(feature)
+        if feature_name == "intake" and payload.enabled:
+            raise HTTPException(
+                status_code=409,
+                detail="intake enable is gated until chat task confirmation is ready",
+            )
         if (
             feature_name == CHAT_BRIDGE_RUNTIME_FLAG
             and payload.enabled

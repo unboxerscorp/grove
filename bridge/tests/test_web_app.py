@@ -1113,7 +1113,6 @@ def test_gui_feature_toggles_wire_existing_feature_gates(
 
     for feature in (
         "quota",
-        "intake",
         "node-input",
         "digest",
         "summary",
@@ -1127,6 +1126,12 @@ def test_gui_feature_toggles_wire_existing_feature_gates(
             json={"enabled": True},
         )
         assert enabled.status_code == 200
+    intake = client.post(
+        "/api/gui-features/intake",
+        headers=headers,
+        json={"enabled": True},
+    )
+    assert intake.status_code == 409
 
     calls: list[list[str]] = []
 
@@ -1153,7 +1158,7 @@ def test_gui_feature_toggles_wire_existing_feature_gates(
     )
     assert client.get("/api/ledger", headers=headers).json()["quota_enabled"] is True
     assert client.get("/api/slack/config/status", headers=headers).json()["intake"] == {
-        "enabled": True
+        "enabled": False
     }
     assert (
         client.post(
