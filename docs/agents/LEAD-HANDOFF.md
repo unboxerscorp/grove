@@ -6,6 +6,14 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 15:27 KST Slack queue runtime observability:
+  - 최신 product-code HEAD는 `e0a0962 fix: expose slack queue runtime metrics`다. Slack routed chat queue의 backpressure를 SQLite 직접 조회 없이 `~/.grove/dev10/slack-runtime.json`에서 볼 수 있게 했다.
+  - runtime payload는 `node_chat_queue` object를 항상 포함한다. 안정 필드는 `total`, `pending`, `running`, `failed`, `oldest_pending_age_seconds`이며, 빈 큐도 명시적으로 `0/0/0/0`과 `oldest_pending_age_seconds:null`을 기록한다.
+  - 이 변경은 관찰성 전용이다. queue cap, drop, retry policy, routing behavior는 바꾸지 않았다. advisor/watch는 row count보다 `oldest_pending_age_seconds`를 우선 backpressure 신호로 보면 된다.
+  - Slack service만 재시작했다. runtime pid `87525 -> 98577`, `socket_connected=true`, heartbeat fresh. main web `8765 started_at=1780721628`과 remote web `5173 started_at=1780721854`는 재시작하지 않았고 둘 다 health ok다.
+  - live 확인: `slack-runtime.json`의 `node_chat_queue={"total":0,"pending":0,"running":0,"failed":0,"oldest_pending_age_seconds":null}`, DB queue `total/pending/running/failed=0/0/0/0`, board residue `tasks/comments/p2-test=0/0/0`, `grove org --json` 5노드 전부 `pane_exists=true`, tmux windows `0/1/2/3/4`.
+  - 검증: targeted `test_store.py -k slack_chat_queue_summary` green, targeted `test_slack.py -k "slack_main_connects_polls_and_closes_socket or chat_routing"` 16 passed, `pnpm check` green(TS/Vitest 305, bridge pytest 462).
+
 - 2026-06-06 15:18 KST Slack queue restart-crossing reclaim guard:
   - 최신 product-code HEAD는 `84a9480 test: guard slack queue reclaim`이다. 런타임 변경 없는 test-only guard다.
   - Slack queue worker/restart 도중 item이 `running` 상태로 남아도 `SLACK_NODE_CHAT_RUNNING_STALE_SECONDS` 이후 `list_due_slack_chat_messages`가 다시 due로 잡는 경로를 테스트로 고정했다.
