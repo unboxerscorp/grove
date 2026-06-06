@@ -88,6 +88,66 @@ def test_task_reviewer_column_migrates_and_status_reviewer_updates_audit(
     assert store.list_audit_events(board="main", action="reviewer-change")
 
 
+def test_slack_chat_queue_response_text_column_migrates(tmp_path: Path) -> None:
+    db_path = tmp_path / "board.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE boards (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                state TEXT NOT NULL,
+                settings_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE slack_chat_queue (
+                id TEXT PRIMARY KEY,
+                board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+                team_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                thread_ts TEXT NOT NULL,
+                message_ts TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                node TEXT NOT NULL,
+                text TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at INTEGER NOT NULL,
+                last_error TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(team_id, channel_id, message_ts)
+            )
+            """
+        )
+
+    store = SQLiteBoardStore(db_path)
+
+    with store._connect() as conn:
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(slack_chat_queue)").fetchall()
+        }
+    queued = store.enqueue_slack_chat_message(
+        board="main",
+        team_id="T1",
+        channel_id="C1",
+        thread_ts="111.222",
+        message_ts="111.222",
+        user_id="U1",
+        node="grove-master",
+        text="status",
+    )
+
+    assert "response_text" in columns
+    assert queued.response_text is None
+
+
 def test_legacy_running_statuses_normalize_filter_and_count_as_wip(tmp_path: Path) -> None:
     db_path = tmp_path / "board.db"
     store = SQLiteBoardStore(db_path)

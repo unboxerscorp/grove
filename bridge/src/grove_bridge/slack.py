@@ -2287,40 +2287,49 @@ class SlackConnector:
     def _process_node_chat_queue_item(self, item: SlackChatQueueItem, *, now: int) -> None:
         item = self.store.mark_slack_chat_message_running(item.id, now=now)
         session_id = _slack_chat_queue_conversation_id(item)
-        try:
-            response_text = self.chat_facade.send(
-                session_id=session_id,
-                node=item.node,
-                text=item.text,
-            )
-        except Exception as exc:
-            if _slack_node_chat_input_busy(exc):
-                LOGGER.info("Slack node chat deferred by input guard: %s", _safe_log_error(exc))
-                if item.attempts + 1 == SLACK_NODE_CHAT_INPUT_BUSY_NOTICE_ATTEMPT:
-                    self._post_node_chat_busy_notice(item)
-                self.store.defer_slack_chat_message(
+        response_text = item.response_text
+        terminal_failure = False
+        if response_text is None:
+            try:
+                response_text = self.chat_facade.send(
+                    session_id=session_id,
+                    node=item.node,
+                    text=item.text,
+                )
+            except Exception as exc:
+                if _slack_node_chat_input_busy(exc):
+                    LOGGER.info("Slack node chat deferred by input guard: %s", _safe_log_error(exc))
+                    if item.attempts + 1 == SLACK_NODE_CHAT_INPUT_BUSY_NOTICE_ATTEMPT:
+                        self._post_node_chat_busy_notice(item)
+                    self.store.defer_slack_chat_message(
+                        item.id,
+                        error=_safe_log_error(exc),
+                        next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                        now=now,
+                    )
+                    return
+                if _slack_node_chat_timed_out(exc):
+                    LOGGER.info("Slack node chat deferred by timeout: %s", _safe_log_error(exc))
+                    if item.attempts == 0:
+                        self._post_node_chat_timeout_notice(item)
+                    self.store.defer_slack_chat_message(
+                        item.id,
+                        error=_safe_log_error(exc),
+                        next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                        now=now,
+                    )
+                    return
+                LOGGER.warning("Slack node chat failed: %s", _safe_log_error(exc))
+                self.store.fail_slack_chat_message(item.id, error=_safe_log_error(exc), now=now)
+                terminal_failure = True
+                response_text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
+            else:
+                item = self.store.store_slack_chat_message_response(
                     item.id,
-                    error=_safe_log_error(exc),
-                    next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                    response_text=response_text,
                     now=now,
                 )
-                return
-            if _slack_node_chat_timed_out(exc):
-                LOGGER.info("Slack node chat deferred by timeout: %s", _safe_log_error(exc))
-                if item.attempts == 0:
-                    self._post_node_chat_timeout_notice(item)
-                self.store.defer_slack_chat_message(
-                    item.id,
-                    error=_safe_log_error(exc),
-                    next_attempt_at=now + self.node_chat_retry_delay_seconds,
-                    now=now,
-                )
-                return
-            LOGGER.warning("Slack node chat failed: %s", _safe_log_error(exc))
-            self.store.fail_slack_chat_message(item.id, error=_safe_log_error(exc), now=now)
-            response_text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
-        else:
-            self.store.complete_slack_chat_message(item.id, now=now)
+                response_text = item.response_text or ""
         try:
             for response_chunk in _slack_assistant_response_chunks(response_text):
                 self.slack_client.post_message(
@@ -2329,7 +2338,25 @@ class SlackConnector:
                     thread_ts=item.thread_ts,
                 )
         except Exception as exc:
-            LOGGER.warning("Slack node chat response could not be posted: %s", _safe_log_error(exc))
+            if terminal_failure:
+                LOGGER.warning(
+                    "Slack node chat fallback response could not be posted: %s",
+                    _safe_log_error(exc),
+                )
+                return
+            LOGGER.warning(
+                "Slack node chat response delivery deferred: %s",
+                _safe_log_error(exc),
+            )
+            self.store.defer_slack_chat_message(
+                item.id,
+                error=_safe_log_error(exc),
+                next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                now=now,
+            )
+            return
+        if not terminal_failure:
+            self.store.complete_slack_chat_message(item.id, now=now)
 
     def _post_node_chat_busy_notice(self, item: SlackChatQueueItem) -> None:
         try:

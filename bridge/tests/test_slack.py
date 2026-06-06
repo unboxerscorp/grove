@@ -1500,6 +1500,86 @@ def test_chat_routing_defers_timeout_and_retries(tmp_path: Path) -> None:
     )
 
 
+def test_chat_routing_retries_failed_response_delivery_without_duplicate_ask(
+    tmp_path: Path,
+) -> None:
+    slack = FakeSlackClient()
+    chat = SequenceChatFacade("grove reply")
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-master"),
+        assistant_broker=FakeAssistantBroker("assistant should not run"),
+        route_chat_to_node=True,
+        node_chat_retry_delay_seconds=0,
+    )
+
+    handled = connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="<@BOT> summarize status",
+            ts="111.222",
+            thread_ts=None,
+            event_type="app_mention",
+        )
+    )
+    assert handled is True
+
+    original_post_message = slack.post_message
+    failed_once = False
+
+    def fail_response_once(
+        *,
+        channel: str,
+        text: str,
+        thread_ts: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+        blocks: Sequence[Mapping[str, object]] | None = None,
+    ) -> str:
+        nonlocal failed_once
+        if text == "grove reply" and not failed_once:
+            failed_once = True
+            raise RuntimeError("slack api temporarily unavailable")
+        return original_post_message(
+            channel=channel,
+            text=text,
+            thread_ts=thread_ts,
+            metadata=metadata,
+            blocks=blocks,
+        )
+
+    slack.post_message = fail_response_once  # type: ignore[method-assign]
+
+    assert connector.poll_node_chat_queue() == 1
+    queued = store.list_due_slack_chat_messages(
+        board="main",
+        now=9999999999,
+        running_stale_before=9999999999,
+        limit=10,
+    )
+    assert len(queued) == 1
+    assert queued[0].status == "pending"
+    assert queued[0].last_error == "slack api temporarily unavailable"
+
+    assert connector.poll_node_chat_queue() == 1
+    assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "summarize status")]
+    assert slack.posts[-1] == ("C123", "grove reply", "111.222")
+    assert (
+        store.list_due_slack_chat_messages(
+            board="main",
+            now=9999999999,
+            running_stale_before=9999999999,
+            limit=10,
+        )
+        == []
+    )
+
+
 def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
     tmp_path: Path,
 ) -> None:
