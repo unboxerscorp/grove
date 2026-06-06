@@ -6,7 +6,7 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
-- 2026-06-06 12:33 KST 기준 최신 live 운영:
+- 2026-06-06 12:38 KST 기준 최신 live 운영:
   - 현재 노드는 `grove-master`이며 `dev10:0.0`, cwd `/Users/chopin/dev/grove`에서 실행된다.
   - 단일 tmux 세션 `dev10`만 사용한다. panes: `dev10:0.0 grove-master`, `dev10:1.0 web`, `dev10:2.0 slack`, `dev10:3.0 advisor`.
   - web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`로 실행한다. 명령은 `0.0.0.0:8765`, `--unsafe-bind`, `--enable-node-input`, `--enable-intake`, `--allow-host 100.100.90.87,192.168.1.186`를 포함한다. 2026-06-06 12:32 KST 기준 `started_at=1780716726`, child pid `77729`이며 N6/N10/N2 UI 변경, `32ffdf9` board-listing fix, `d5cdfea` planner limitation item-copy fix, `631f3f4`/`92c6046` frontend item-copy 정합 static build가 live에 반영됐다.
@@ -18,6 +18,7 @@
   - `~/.grove/boards/board.db`의 stale `p2-test` board/task 찌꺼기는 삭제했다. 삭제 전 백업은 `~/.grove/boards/board.db.bak.pre-p2-live-cleanup-1780711497`이다. `b19817a` 이후 live e2e는 자기 RUN_ID의 `p2-live-*` tasks/comments/events와 비어 있는 `p2-test` board row까지 finally에서 정리한다. 이후 DB 전체 `tasks=0`, `comments=0`, `p2-test` board/registry residue 0, live `/api/boards=[dev10]`, `/api/inbox.total=0`을 확인했다.
   - 최신 UI 기능 product-code 커밋은 `99ce1f8 feat: add board group bulk assignment`이다. 이후 safety/docs/test 정합 커밋이 HEAD에 추가될 수 있으므로 `git log --oneline -5`로 현재 HEAD와 UI 기능 HEAD를 구분한다.
   - 최신 current-model 정합 커밋은 `0191223 docs: mark legacy team auth design historical`이다. top-level `docs/DESIGN_team_auth.md`는 historical v1.2 design으로 명확히 표시하고 현행 live auth 문서는 `docs/design/AUTH_AND_PROJECTS.md`라고 안내한다. `src/current-docs.test.ts`가 이 historical marker를 가드한다. 검증: `pnpm vitest run src/current-docs.test.ts`, `pnpm check` green(TS/Vitest 56 files 292 tests, bridge pytest 453).
+  - 최신 README/current-doc 정합 커밋은 `e84a0a6 docs: align README with cockpit model`이다. README의 `dev-room web SPA`/`Web dev-room SPA`/`dev-room list access` current wording을 `web cockpit`/compatibility list access로 정렬하고, 프로젝트 모델도 `one project, one tmux session`이 아니라 project identity + explicit workspace/registry + project-scoped list store + shared host tmux session 가능 모델로 설명한다. `src/current-docs.test.ts`가 이 stale phrase 재유입을 막는다. 검증: RED→GREEN, `pnpm vitest run src/current-docs.test.ts`, `pnpm check` green(TS/Vitest 56 files 298 tests, bridge pytest 453).
   - 직전 current-model 정합 커밋은 `78d9f48 docs: align auth lifecycle design with live model`이다. `docs/design/AUTH_AND_PROJECTS.md`는 Phase-1 scaffold 문서가 아니라 live team-auth/share/join/CSRF/project lifecycle 모델을 설명한다. `src/current-docs.test.ts`가 `AUTH_AND_PROJECTS.md`의 `Status: current v2 live auth and project lifecycle model`, team-auth live bridge/web UI, shared access one-time join code 문구를 가드하고 `Phase 1 is design...`/`no web_app.py route registration`/`no app.tsx...`/phase-1 bridge module 회귀를 막는다. 검증: `pnpm vitest run src/current-docs.test.ts`, `pnpm check` green(TS/Vitest 56 files 291 tests, bridge pytest 453).
   - 직전 current-model 정합 커밋은 `64f8b02 docs: align master node design with live model`이다. `docs/design/MASTER_NODE.md`는 Phase-1 adapter-only/read-only proposal 문서가 아니라 live `grove-master` node-routed v2 모델을 설명한다. `src/current-docs.test.ts`가 `MASTER_NODE.md`의 `Status: current v2 live model`, Slack/web live route, human-facing list records 문구를 가드하고 `## Phase-1 Scope`/`no web_app.py route registration`/`Only read-only answers...` 회귀를 막는다. 검증: `pnpm vitest run src/current-docs.test.ts src/resilience-scripts.test.ts`, `pnpm check` green(TS/Vitest 56 files 290 tests, bridge pytest 453).
   - 최신 safety 스크립트 정합 커밋은 `508c2a6 fix: guard restore against live web port`이다. `scripts/restore.sh`가 현행 live web port `8765`와 legacy `9131`을 모두 거부하고, `docs/design/RESILIENCE.md`/`docker/README.md`도 live guard를 `8765` 중심으로 정렬했다. 검증: `pnpm vitest run src/resilience-scripts.test.ts`, `pnpm check` green(TS/Vitest 55 files 289 tests, bridge pytest 453).
@@ -33,7 +34,7 @@
 - 사용자가 Slack 재가동을 명시 승인했다. Slack은 `grove-master`와 직접 대화하도록 켜져 있으며, 긴 응답은 Slack thread 안에서 chunking한다.
 - web은 원격 접속을 위해 `0.0.0.0:8765`에 떠 있어야 한다. 현재 tailnet URL은 `http://100.100.90.87:8765`, LAN URL은 `http://192.168.1.186:8765`이다.
 - 사람용 목록 항목은 노드 간 통신 프로토콜이 아니다. 사람 TODO, 사람 피드백, ask-human/판단 대기 기록으로만 취급한다.
-- 2026-06-06 12:33 KST 기준 live board DB의 `tasks=0`, `comments=0`, `p2-test` fixture board row 잔존 0, 모든 남은 board slug의 `task_count=0`, `/api/boards == [dev10]`, `/api/inbox total=0`이다. 웹 보드는 "피드백 및 할 일" / "사람 판단 필요" 두 목록만 기본 노출한다.
+- 2026-06-06 12:38 KST 기준 live board DB의 `tasks=0`, `comments=0`, `p2-test` fixture board row 잔존 0, 모든 남은 board slug의 `task_count=0`, `/api/boards == [dev10]`, `/api/inbox total=0`이다. 웹 보드는 "피드백 및 할 일" / "사람 판단 필요" 두 목록만 기본 노출한다.
 - 노드 간 통신은 직접 대화, tmux capture/send, CLI ask/send 등 각 노드 판단에 맡긴다.
 - 조직도 변경은 사람 소유다. GUI/API/CLI에서 명시 operator 경로(`--operator`, `--operator-override`)로만 수행한다.
 - 모든 노드는 조직도, 역할, tmux pane, cwd를 볼 수 있어야 한다. `grove org --json`과 `/api/org`가 이 필드를 노출한다. tmux pane liveness는 `list-panes`의 canonical `session:window.pane` 목록과 완전 일치로 검증한다. missing pane은 CLI에서 `pane_exists:false/status:pane-missing`, web API에서 `status:dead/unavailable_reason:"tmux pane missing"`으로 보여야 한다.
