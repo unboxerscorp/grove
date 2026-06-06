@@ -6,6 +6,14 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 15:12 KST Slack socket wedged self-restart 보강:
+  - 최신 product-code HEAD는 `01782f4 fix: restart wedged slack socket`이다. Slack connector process가 살아 있지만 Socket Mode가 60초 연속 disconnected 상태이면 `Slack socket wedged >60s; exiting for fresh restart` 로그를 남기고 종료한다.
+  - transient disconnect는 기존처럼 같은 process 안에서 per-poll reconnect를 시도한다. reconnect가 성공해 `socket_connected=true`가 되면 disconnected timer는 즉시 reset된다.
+  - 목적은 같은 SDK socket client가 wedged된 채 process만 살아 있어 `run-slack-loop.sh`의 exit 기반 restart가 걸리지 않는 실패모드를 닫는 것이다. 종료 후 wrapper가 fresh socket client로 재시작한다.
+  - Slack service만 재시작했다. runtime pid `83004 -> 87525`, `socket_connected=true`, heartbeat fresh. tmux window `2 slack` pane은 유지됐다.
+  - main web `8765`와 remote web `5173`은 재시작하지 않았고 health ok다. queue/residue는 `total/pending/failed=0/0/0`, `tasks/comments/p2-test=0/0/0` 유지.
+  - 검증: `uv run --project bridge pytest bridge/tests/test_slack.py -k "reconnects_disconnected_socket or sustained_disconnected_socket or chat_routing"` 16 passed, `pnpm check` green(TS/Vitest 305, bridge pytest 460), `grove org --json` 5노드 전부 `pane_exists=true`.
+
 - 2026-06-06 15:05 KST Slack response delivery no-drop 보강:
   - 최신 product-code HEAD는 `ac0bc39 fix: retry slack response delivery`다. Slack routed chat queue가 master 응답을 받은 뒤 Slack thread 게시에 실패하면, 이제 queue item을 `done` 처리하지 않고 pending으로 되돌린다.
   - `slack_chat_queue.response_text` 컬럼에 생성된 응답을 저장하므로 delivery retry가 master에게 같은 ask를 다시 보내지 않는다. 즉 일시적 Slack API/post 실패는 답변 유실 없이 같은 응답을 thread delivery만 재시도한다.
