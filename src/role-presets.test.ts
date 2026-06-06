@@ -13,6 +13,8 @@ describe("role presets", () => {
       expect(expanded.body).toContain("노드 간 소통은 계층과 무관하게 직접 한다");
       expect(expanded.body).toContain("사람이 명시 지시한 경우");
       expect(expanded.body).toContain("사람용 목록 항목");
+      expect(expanded.body).toContain("프로젝트는 계속 추가될 수 있으므로");
+      expect(expanded.body).toContain("compact context");
       expect(expanded.body).not.toContain("보드 task");
     }
   });
