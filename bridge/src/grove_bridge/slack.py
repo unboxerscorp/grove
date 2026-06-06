@@ -34,10 +34,12 @@ from grove_bridge.chat_runtime import (
     CHAT_BRIDGE_SHADOW_PERSONA,
     ChatProviderAdapter,
     ChatWorkerPool,
-    ClaudeChatProviderAdapter,
+    GeminiChatProviderAdapter,
     ProviderRequest,
     RedactingProviderAdapter,
     chat_bridge_runtime_enabled,
+    guard_answer_channel,
+    load_gemini_provider_config,
 )
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
@@ -665,11 +667,21 @@ class SlackConnector:
         # has enabled the flag (default OFF). When None, the existing chat path is
         # byte-identical — no new component, no guarded branch taken.
         _chat_bridge_on = chat_bridge_runtime_enabled(self.store, board=self.human_gate.board)
+        _chat_bridge_provider = load_gemini_provider_config(
+            Path("~/.grove").expanduser() / self.human_gate.board / "chat-provider.json"
+        )
         self._chat_bridge_runtime: ChatWorkerPool | None = (
             ChatWorkerPool() if _chat_bridge_on else None
         )
         self._chat_bridge_adapter: ChatProviderAdapter | None = (
-            RedactingProviderAdapter(inner=ClaudeChatProviderAdapter()) if _chat_bridge_on else None
+            RedactingProviderAdapter(
+                inner=GeminiChatProviderAdapter(
+                    api_key=_chat_bridge_provider["api_key"],
+                    model=_chat_bridge_provider["model"],
+                )
+            )
+            if _chat_bridge_on and _chat_bridge_provider["api_key"]
+            else None
         )
 
     def poll_human_gates(self) -> int:
@@ -2287,11 +2299,12 @@ class SlackConnector:
 
     def _process_node_chat_queue_item(self, item: SlackChatQueueItem, *, now: int) -> None:
         if self._chat_bridge_runtime is not None:
-            # Flag ON only: bridge-native runtime takes the turn. Never entered
+            # Flag ON only: bridge-native runtime may take the turn. Never entered
             # when the flag is OFF (self._chat_bridge_runtime is None) → the
-            # existing path below is byte-identical. Stage1 SHADOW is
-            # observational only: it must not claim/complete/defer the live item.
-            self._process_chat_bridge_runtime_item(item, now=now)
+            # existing path below is byte-identical. If provider config is absent
+            # or generation fails, the existing node-routed path remains fallback.
+            if self._process_chat_bridge_runtime_item(item, now=now):
+                return
         item = self.store.mark_slack_chat_message_running(item.id, now=now)
         if self._process_node_chat_task_intake(item, now=now):
             return
@@ -2354,47 +2367,70 @@ class SlackConnector:
             return
         self.store.complete_slack_chat_message(item.id, now=now)
 
-    def _process_chat_bridge_runtime_item(self, item: SlackChatQueueItem, *, now: int) -> None:
-        """Stage1 SHADOW bridge-native runtime entry — flag-gated; reached only
+    def _process_chat_bridge_runtime_item(self, item: SlackChatQueueItem, *, now: int) -> bool:
+        """Bridge-native Slack runtime entry — flag-gated; reached only
         when the runtime flag is ON (``self._chat_bridge_runtime`` constructed).
         With the flag OFF this is never called → the existing path is byte-identical.
 
-        SHADOW: generate the turn via the provider adapter and LOG a redacted
-        preview for comparison, but **publish nothing and do not mutate the live
-        queue item**. The existing node-routed answer path still runs. On
-        generation failure → log only; never a fabricated answer and never a
-        dropped/deferred live turn (design §4). Real publish/cutover is a later,
-        separately-approved stage.
+        LIVE only when a provider key is configured: generate via Gemini, post the
+        generated answer, and complete the durable queue item. If provider config
+        is missing or generation fails, return False so the existing node-routed
+        path can answer; no fabricated/template response is posted.
         """
         runtime = self._chat_bridge_runtime
         adapter = self._chat_bridge_adapter
         if runtime is None or adapter is None:  # defensive; caller already guards
-            return
+            return False
         conversation_id = _slack_chat_queue_conversation_id(item)
         if not runtime.try_acquire_session(conversation_id):
             LOGGER.info(
-                "chat bridge SHADOW skipped conv=%s reason=session_busy",
+                "chat bridge runtime skipped conv=%s reason=session_busy",
                 conversation_id,
             )
-            return
+            return False
         try:
             try:
                 generated = adapter.generate(
                     ProviderRequest(system_prompt=CHAT_BRIDGE_SHADOW_PERSONA, user_text=item.text)
                 )
+                response_text = guard_answer_channel(
+                    generated,
+                    forbidden=frozenset(
+                        {ASSISTANT_TRANSPORT_FALLBACK_TEXT, "master chat is unavailable"}
+                    ),
+                )
             except Exception as exc:
                 LOGGER.warning(
-                    "chat bridge shadow generation failed (not published): %s",
+                    "chat bridge runtime generation failed; falling back to node route: %s",
                     _safe_log_error(exc),
                 )
-                return
-            # SHADOW: log a redacted, bounded preview for comparison — DO NOT publish.
-            LOGGER.info(
-                "chat bridge SHADOW generated (not published) conv=%s chars=%d preview=%s",
-                conversation_id,
-                len(generated),
-                redact_secret_text(generated)[:160],
+                return False
+            item = self.store.store_slack_chat_message_response(
+                item.id,
+                response_text=response_text,
+                now=now,
             )
+            try:
+                for response_chunk in _slack_assistant_response_chunks(item.response_text or ""):
+                    self.slack_client.post_message(
+                        channel=item.channel_id,
+                        text=response_chunk,
+                        thread_ts=item.thread_ts,
+                    )
+            except Exception as exc:
+                LOGGER.warning(
+                    "chat bridge runtime response delivery deferred: %s",
+                    _safe_log_error(exc),
+                )
+                self.store.defer_slack_chat_message(
+                    item.id,
+                    error=_safe_log_error(exc),
+                    next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                    now=now,
+                )
+                return True
+            self.store.complete_slack_chat_message(item.id, now=now)
+            return True
         finally:
             runtime.release_session(conversation_id)
 

@@ -21,12 +21,14 @@ Ownership notes:
 from __future__ import annotations
 
 import json
+import os
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
 from grove_bridge.assistant import (
@@ -39,6 +41,8 @@ from grove_bridge.auth_status import redact_secret_text
 # GUI feature flag name (default OFF). Distinct from the ``intake`` flag, which
 # stays FALSE independently — enabling the runtime does NOT enable intake.
 CHAT_BRIDGE_RUNTIME_FLAG = "chat_bridge_runtime"
+CHAT_PROVIDER_DEFAULT_PROVIDER = "gemini"
+CHAT_PROVIDER_DEFAULT_MODEL = "gemini-2.5-flash"
 
 # Marker prefix for chat-master's structured task-proposal turn. The final
 # contract (marker + field schema) is chat-master-owned; this is the Stage0
@@ -48,8 +52,12 @@ TASK_PROPOSAL_MARKER = "<<<GROVE_TASK_PROPOSAL>>>"
 # SHADOW-only placeholder persona (0 user exposure). The canonical persona/policy
 # is chat-master's deliverable, folded in before any canary/live publish.
 CHAT_BRIDGE_SHADOW_PERSONA = (
-    "You are grove's chat-master assistant. (SHADOW placeholder persona — not for "
-    "canary/live; the canonical persona is supplied by chat-master before cutover.)"
+    "You are Grove CHAT MASTER. Answer the user's chat directly when you can. "
+    "Use supplied Grove context, but do not invent node names, task ids, or hidden "
+    "capabilities. If the user asks for work to be created, explain that task "
+    "creation requires an explicit confirmation flow; do not claim a task was "
+    "created unless it was actually confirmed. Write concise Korean by default "
+    "unless the user uses another language."
 )
 
 ChatSurface = Literal["slack", "web"]
@@ -234,7 +242,7 @@ class GeminiChatProviderAdapter:
     """
 
     api_key: str
-    model: str = "gemini-2.5-flash"
+    model: str = CHAT_PROVIDER_DEFAULT_MODEL
     timeout_seconds: float = 30.0
     urlopen: UrlOpen = urllib.request.urlopen
 
@@ -242,7 +250,7 @@ class GeminiChatProviderAdapter:
         key = self.api_key.strip()
         if not key:
             raise AssistantTransportError("gemini api key is not configured")
-        model = self.model.strip() or "gemini-2.5-flash"
+        model = self.model.strip() or CHAT_PROVIDER_DEFAULT_MODEL
         clean_model = model.removeprefix("models/")
         encoded_model = urllib.parse.quote(clean_model, safe="")
         body = {
@@ -297,6 +305,37 @@ def _gemini_response_text(payload: object) -> str:
             if isinstance(part, dict) and isinstance(part.get("text"), str):
                 parts.append(part["text"])
     return "\n".join(part.strip() for part in parts if part.strip()).strip()
+
+
+def load_gemini_provider_config(
+    path: Path,
+    *,
+    env: Mapping[str, str] = os.environ,
+) -> dict[str, str]:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        loaded = {}
+    payload = loaded if isinstance(loaded, dict) else {}
+    provider = str(payload.get("provider") or CHAT_PROVIDER_DEFAULT_PROVIDER).strip().lower()
+    model = str(payload.get("model") or CHAT_PROVIDER_DEFAULT_MODEL).strip()
+    api_key = str(payload.get("api_key") or "").strip()
+    source = "file" if api_key else "none"
+    if not api_key:
+        api_key = env.get("GEMINI_API_KEY", "").strip()
+        if api_key:
+            provider = CHAT_PROVIDER_DEFAULT_PROVIDER
+            model = env.get("GEMINI_MODEL", model).strip() or CHAT_PROVIDER_DEFAULT_MODEL
+            source = "env"
+    clean_provider = (
+        provider if provider == CHAT_PROVIDER_DEFAULT_PROVIDER else CHAT_PROVIDER_DEFAULT_PROVIDER
+    )
+    return {
+        "provider": clean_provider,
+        "model": model or CHAT_PROVIDER_DEFAULT_MODEL,
+        "api_key": api_key,
+        "source": source,
+    }
 
 
 # --------------------------------------------------------------------------- #

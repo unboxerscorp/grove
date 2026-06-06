@@ -107,7 +107,7 @@ def test_flag_on_generation_failure_falls_through_to_existing_answer(tmp_path: P
     assert due == []
 
 
-def test_flag_on_shadow_generates_without_publish(tmp_path: Path) -> None:
+def test_flag_on_gemini_runtime_generates_and_publishes_without_cli_node(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "b.db")
     store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
     slack, facade = _FakeSlack(), _FakeFacade()
@@ -119,10 +119,11 @@ def test_flag_on_shadow_generates_without_publish(tmp_path: Path) -> None:
     _enqueue(store)
     conn.poll_node_chat_queue()
 
-    # SHADOW: generated via the adapter, but existing node answer remains live.
+    # Runtime live path: generated via the adapter and posted directly; the CLI
+    # node route is not called.
     assert adapter.calls == ["hi"]
-    assert facade.calls and facade.calls[0][1] == "chat-master"
-    assert slack.posts == [("C1", "node answer")]
+    assert facade.calls == []
+    assert slack.posts == [("C1", "shadow answer")]
     due = store.list_due_slack_chat_messages(
         board="dev10", now=9_999_999_999, running_stale_before=9_999_999_999, limit=10
     )

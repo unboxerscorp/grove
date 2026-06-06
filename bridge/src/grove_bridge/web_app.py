@@ -49,11 +49,15 @@ from grove_bridge.assistant import (
 from grove_bridge.auth import Account, DashboardRole
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
 from grove_bridge.chat_runtime import (
+    CHAT_BRIDGE_SHADOW_PERSONA,
+    CHAT_PROVIDER_DEFAULT_MODEL,
+    CHAT_PROVIDER_DEFAULT_PROVIDER,
     GeminiChatProviderAdapter,
     ProviderRequest,
     RedactingProviderAdapter,
     chat_bridge_runtime_enabled,
     guard_answer_channel,
+    load_gemini_provider_config,
 )
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
@@ -235,22 +239,12 @@ GUI_FEATURES = (
 GUI_FEATURE_SET = frozenset(GUI_FEATURES)
 MASTER_BOARD_STATUSES = ("ready", "running", "blocked", "done", "archived")
 CHAT_PROVIDER_CONFIG_FILENAME = "chat-provider.json"
-CHAT_PROVIDER_DEFAULT_PROVIDER = "gemini"
-CHAT_PROVIDER_DEFAULT_MODEL = "gemini-2.5-flash"
 CHAT_RUNTIME_FORBIDDEN_ANSWERS = frozenset(
     {
         ASSISTANT_TRANSPORT_FALLBACK_TEXT,
         "master chat runtime initializing",
         "master chat is unavailable",
     }
-)
-CHAT_BRIDGE_WEB_PERSONA = (
-    "You are Grove CHAT MASTER. Answer the user's chat directly when you can. "
-    "Use the supplied Grove project/org/task facts as context, but do not invent "
-    "node names, task ids, or hidden capabilities. If the user asks for work to "
-    "be created, explain that task creation requires an explicit confirmation "
-    "flow; do not claim a task was created unless it was actually confirmed. "
-    "Write concise Korean by default unless the user uses another language."
 )
 
 
@@ -2720,30 +2714,7 @@ def _chat_provider_config_path(config: WebAppConfig) -> Path:
 
 
 def _chat_provider_config(config: WebAppConfig) -> dict[str, str]:
-    try:
-        loaded = json.loads(_chat_provider_config_path(config).read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        loaded = {}
-    payload = loaded if isinstance(loaded, dict) else {}
-    provider = str(payload.get("provider") or CHAT_PROVIDER_DEFAULT_PROVIDER).strip().lower()
-    model = str(payload.get("model") or CHAT_PROVIDER_DEFAULT_MODEL).strip()
-    api_key = str(payload.get("api_key") or "").strip()
-    source = "file" if api_key else "none"
-    if not api_key:
-        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        if api_key:
-            provider = CHAT_PROVIDER_DEFAULT_PROVIDER
-            model = os.environ.get("GEMINI_MODEL", model).strip() or CHAT_PROVIDER_DEFAULT_MODEL
-            source = "env"
-    clean_provider = (
-        provider if provider == CHAT_PROVIDER_DEFAULT_PROVIDER else CHAT_PROVIDER_DEFAULT_PROVIDER
-    )
-    return {
-        "provider": clean_provider,
-        "model": model or CHAT_PROVIDER_DEFAULT_MODEL,
-        "api_key": api_key,
-        "source": source,
-    }
+    return load_gemini_provider_config(_chat_provider_config_path(config))
 
 
 def _chat_provider_status(config: WebAppConfig) -> dict[str, object]:
@@ -6238,7 +6209,7 @@ def _handle_chat_bridge_runtime_web_request(
     try:
         generated = adapter.generate(
             ProviderRequest(
-                system_prompt=CHAT_BRIDGE_WEB_PERSONA,
+                system_prompt=CHAT_BRIDGE_SHADOW_PERSONA,
                 user_text=_chat_bridge_web_user_text(
                     _store(request),
                     payload,
