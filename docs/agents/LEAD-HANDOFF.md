@@ -6,6 +6,12 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 14:46 KST Slack queue 비동기 분리 보강:
+  - `eba552d`의 durable queue 방향은 유지하되, enqueue 직후 event handler가 `poll_node_chat_queue()`를 동기 호출하던 약점을 제거했다. 이제 Slack inbound handler는 queue 저장 + thread ack만 하고 즉시 반환한다.
+  - queue drain은 별도 daemon worker thread(`grove-slack-node-chat-queue`)가 담당한다. 따라서 master 호출이 길어져도 Slack socket event handler와 main heartbeat loop가 같은 `ask` 호출에 묶이지 않는다.
+  - input guard busy가 반복되면 메시지는 계속 pending으로 유지하며 재시도한다. 6번째 busy defer 시 같은 Slack thread에 `아직 <node> 입력창에 작성 중인 내용이 있어 대기열에서 기다리고 있습니다. 메시지가 섞이지 않도록 계속 재시도합니다.` 안내를 1회 남긴다. silent drop하지 않는다.
+  - 검증: `uv run --group dev pytest tests/test_slack.py -q -k 'chat_routing'` 12 passed, bridge full `ruff/mypy/pytest` 456 passed, `pnpm check` green(TS/Vitest 305, bridge pytest 456).
+
 - 2026-06-06 14:40 KST Slack thread queue 안정화:
   - chat-master 노드 추가는 보류했다. 사용자/ advisor와 검토한 결론은 "새 노드로 Slack을 중계"가 아니라 Slack connector 내부 durable queue로 `blocking ask grove-master --timeout 120s` 경로를 decouple하는 것이다.
   - `slack_chat_queue` SQLite table을 추가했다. Slack routed chat은 `team/channel/thread_ts/message_ts` 단위로 queue에 저장하고, thread ack는 즉시 `전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.`라고 응답한다.

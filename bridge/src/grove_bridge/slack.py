@@ -53,6 +53,11 @@ SLACK_NODE_CHAT_WORKING_NOTICE = (
 )
 SLACK_NODE_CHAT_INPUT_BUSY_MARKER = "target pane has unsent prompt input"
 SLACK_NODE_CHAT_INPUT_BUSY_RETRY_SECONDS = 10
+SLACK_NODE_CHAT_INPUT_BUSY_NOTICE_ATTEMPT = 6
+SLACK_NODE_CHAT_INPUT_BUSY_NOTICE = (
+    "아직 {node} 입력창에 작성 중인 내용이 있어 대기열에서 기다리고 있습니다. "
+    "메시지가 섞이지 않도록 계속 재시도합니다."
+)
 SLACK_NODE_CHAT_RUNNING_STALE_SECONDS = 300
 SLACK_NODE_CHAT_QUEUE_LIMIT = 5
 SLACK_SCOPES = (
@@ -2252,7 +2257,6 @@ class SlackConnector:
                 "Slack node chat working notice could not be posted: %s",
                 _safe_log_error(exc),
             )
-        self.poll_node_chat_queue()
         return True
 
     def poll_node_chat_queue(self) -> int:
@@ -2288,6 +2292,8 @@ class SlackConnector:
         except Exception as exc:
             if _slack_node_chat_input_busy(exc):
                 LOGGER.info("Slack node chat deferred by input guard: %s", _safe_log_error(exc))
+                if item.attempts + 1 == SLACK_NODE_CHAT_INPUT_BUSY_NOTICE_ATTEMPT:
+                    self._post_node_chat_busy_notice(item)
                 self.store.defer_slack_chat_message(
                     item.id,
                     error=_safe_log_error(exc),
@@ -2309,6 +2315,19 @@ class SlackConnector:
                 )
         except Exception as exc:
             LOGGER.warning("Slack node chat response could not be posted: %s", _safe_log_error(exc))
+
+    def _post_node_chat_busy_notice(self, item: SlackChatQueueItem) -> None:
+        try:
+            self.slack_client.post_message(
+                channel=item.channel_id,
+                text=_slack_node_chat_busy_notice(item.node),
+                thread_ts=item.thread_ts,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "Slack node chat busy notice could not be posted: %s",
+                _safe_log_error(exc),
+            )
 
 
 def slack_manifest() -> dict[str, object]:
@@ -2549,6 +2568,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.session,
     )
     socket_client.connect()
+    stop_node_chat_queue = threading.Event()
+    node_chat_queue_thread: threading.Thread | None = None
+    if args.route_chat_to_node:
+        node_chat_queue_thread = threading.Thread(
+            target=_run_node_chat_queue_worker,
+            kwargs={
+                "connector": connector,
+                "stop_event": stop_node_chat_queue,
+                "poll_interval": args.poll_interval,
+            },
+            name="grove-slack-node-chat-queue",
+            daemon=True,
+        )
+        node_chat_queue_thread.start()
     try:
         while True:
             last_error: str | None = None
@@ -2569,14 +2602,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 connector.poll_digest()
             except Exception as exc:
                 LOGGER.warning("Slack digest poll failed: %s", _safe_log_error(exc))
-            try:
-                connector.poll_node_chat_queue()
-            except Exception as exc:
-                LOGGER.warning("Slack node chat queue poll failed: %s", _safe_log_error(exc))
             time.sleep(args.poll_interval)
     finally:
+        stop_node_chat_queue.set()
+        if node_chat_queue_thread is not None:
+            node_chat_queue_thread.join(timeout=1.0)
         _write_slack_runtime_status(runtime_status_path, socket_connected=False)
         socket_client.close()
+
+
+def _run_node_chat_queue_worker(
+    *,
+    connector: SlackConnector,
+    stop_event: threading.Event,
+    poll_interval: float,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            connector.poll_node_chat_queue()
+        except Exception as exc:
+            LOGGER.warning("Slack node chat queue poll failed: %s", _safe_log_error(exc))
+        stop_event.wait(poll_interval)
 
 
 def _socket_is_connected(socket_client: SocketClientProtocol) -> bool:
@@ -2898,6 +2944,11 @@ def _slack_chat_queue_conversation_id(item: SlackChatQueueItem) -> str:
 def _slack_node_chat_working_notice(node: str) -> str:
     safe_node = _safe_slack_text(node).strip() or "grove-master"
     return SLACK_NODE_CHAT_WORKING_NOTICE.format(node=safe_node)
+
+
+def _slack_node_chat_busy_notice(node: str) -> str:
+    safe_node = _safe_slack_text(node).strip() or "grove-master"
+    return SLACK_NODE_CHAT_INPUT_BUSY_NOTICE.format(node=safe_node)
 
 
 def _slack_node_chat_input_busy(exc: Exception) -> bool:
