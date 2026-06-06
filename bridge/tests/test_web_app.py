@@ -4379,6 +4379,10 @@ def test_ledger_rolls_up_members_quota_soft_throttle_and_host_pressure(
         "reasons": ["runs", "tokens", "cost"],
         "hard_kill": False,
     }
+    assert "soft quota never stops running work" in " ".join(payload["limitations"])
+    assert "running tasks" not in " ".join(payload["limitations"])
+    assert "running work is not stopped" in " ".join(alice["warnings"])
+    assert "running tasks" not in " ".join(alice["warnings"])
     bob = members["member-bob"]
     assert bob["member"]["name"] == "[pii]"
     assert bob["totals"]["total_tokens"]["value"] == 9

@@ -118,6 +118,8 @@ function assertNoStaleDelegationCopy() {
 
 function assertNoLedgerRunningTaskCopy() {
   const sources = [
+    readFileSync(path.join(root, "..", "bridge", "src", "grove_bridge", "web_app.py"), "utf8"),
+    readFileSync(path.join(root, "e2e", "api.mjs"), "utf8"),
     readFileSync(path.join(root, "src", "api.ts"), "utf8"),
     readFileSync(path.join(root, "src", "i18n.tsx"), "utf8"),
     readFileSync(path.join(root, "mock", "harness.ts"), "utf8"),

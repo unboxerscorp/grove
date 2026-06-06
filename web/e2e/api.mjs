@@ -3402,10 +3402,11 @@ async function run() {
       throttledMember && JSON.stringify(throttledMember.quota),
     );
     check(
-      "ledger quota warning says running tasks are not killed",
+      "ledger quota warning says running work is not stopped",
       Boolean(throttledMember) &&
         Array.isArray(throttledMember.warnings) &&
-        throttledMember.warnings.some((warning) => /running tasks are not killed/i.test(warning)),
+        throttledMember.warnings.some((warning) => /running work is not stopped/i.test(warning)) &&
+        !throttledMember.warnings.some((warning) => /running tasks/i.test(warning)),
       throttledMember && JSON.stringify(throttledMember.warnings),
     );
     const runningTaskAfterQuota = await reqAt(sharedBaseUrl, "GET", `/api/tasks/${runningLedgerTask.task_id}`, {

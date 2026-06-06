@@ -3422,7 +3422,7 @@ def _ledger_payload(
         "host_pressure": _host_pressure_payload(store, project=project, runs=runs),
         "limitations": [
             "ledger uses explicit run metadata and task creator attribution only",
-            "soft quota never hard-kills running tasks",
+            "soft quota never stops running work",
             "agy credit and missing cost fields remain unknown; no costs are invented",
         ],
     }
@@ -3880,9 +3880,7 @@ def _ledger_warnings(
         )
     throttle = quota.get("soft_throttle")
     if isinstance(throttle, Mapping) and throttle.get("active") is True:
-        warnings.append(
-            "soft quota exceeded; new work may be delayed, running tasks are not killed"
-        )
+        warnings.append("soft quota exceeded; new work may be delayed, running work is not stopped")
     cost_warning = quota.get("cost_warning")
     if isinstance(cost_warning, str):
         warnings.append(cost_warning)
