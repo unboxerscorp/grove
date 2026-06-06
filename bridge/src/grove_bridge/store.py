@@ -154,6 +154,25 @@ class SlackThread:
 
 
 @dataclass(frozen=True)
+class SlackChatQueueItem:
+    id: str
+    board_id: str
+    team_id: str
+    channel_id: str
+    thread_ts: str
+    message_ts: str
+    user_id: str
+    node: str
+    text: str
+    status: str
+    attempts: int
+    next_attempt_at: int
+    last_error: str | None
+    created_at: int
+    updated_at: int
+
+
+@dataclass(frozen=True)
 class Board:
     id: str
     slug: str
@@ -1854,6 +1873,154 @@ class SQLiteBoardStore:
             rows = conn.execute(sql, params).fetchall()
         return [_slack_thread_from_row(row) for row in rows]
 
+    def enqueue_slack_chat_message(
+        self,
+        *,
+        board: str,
+        team_id: str,
+        channel_id: str,
+        thread_ts: str,
+        message_ts: str,
+        user_id: str,
+        node: str,
+        text: str,
+    ) -> SlackChatQueueItem:
+        now = _now()
+        board_id = self._ensure_board(board)
+        clean_team = team_id.strip()
+        clean_channel = channel_id.strip()
+        clean_thread = thread_ts.strip()
+        clean_message = message_ts.strip()
+        clean_user = user_id.strip()
+        clean_node = node.strip()
+        clean_text = text.strip()
+        if not clean_team or not clean_channel or not clean_thread or not clean_message:
+            raise ValueError("team_id, channel_id, thread_ts, and message_ts are required")
+        if not clean_node or not clean_text:
+            raise ValueError("node and text are required")
+        with self._connect(immediate=True) as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO slack_chat_queue (
+                    id, board_id, team_id, channel_id, thread_ts, message_ts,
+                    user_id, node, text, status, attempts, next_attempt_at,
+                    last_error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, NULL, ?, ?)
+                """,
+                (
+                    _new_id("slack_chat"),
+                    board_id,
+                    clean_team,
+                    clean_channel,
+                    clean_thread,
+                    clean_message,
+                    clean_user,
+                    clean_node,
+                    clean_text,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT * FROM slack_chat_queue
+                WHERE team_id = ? AND channel_id = ? AND message_ts = ?
+                """,
+                (clean_team, clean_channel, clean_message),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("created slack chat queue item disappeared")
+        return _slack_chat_queue_item_from_row(row)
+
+    def list_due_slack_chat_messages(
+        self,
+        *,
+        board: str,
+        now: int,
+        running_stale_before: int,
+        limit: int,
+    ) -> list[SlackChatQueueItem]:
+        board_id = self._ensure_board(board)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM slack_chat_queue
+                WHERE board_id = ?
+                  AND (
+                    (status = 'pending' AND next_attempt_at <= ?)
+                    OR (status = 'running' AND updated_at <= ?)
+                  )
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (board_id, now, running_stale_before, limit),
+            ).fetchall()
+        return [_slack_chat_queue_item_from_row(row) for row in rows]
+
+    def mark_slack_chat_message_running(self, item_id: str, *, now: int) -> SlackChatQueueItem:
+        with self._connect(immediate=True) as conn:
+            conn.execute(
+                """
+                UPDATE slack_chat_queue
+                SET status = 'running', updated_at = ?
+                WHERE id = ?
+                  AND status IN ('pending', 'running')
+                """,
+                (now, item_id),
+            )
+            row = conn.execute("SELECT * FROM slack_chat_queue WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise RuntimeError("slack chat queue item disappeared")
+        return _slack_chat_queue_item_from_row(row)
+
+    def defer_slack_chat_message(
+        self,
+        item_id: str,
+        *,
+        error: str,
+        next_attempt_at: int,
+        now: int,
+    ) -> None:
+        with self._connect(immediate=True) as conn:
+            conn.execute(
+                """
+                UPDATE slack_chat_queue
+                SET status = 'pending',
+                    attempts = attempts + 1,
+                    next_attempt_at = ?,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (next_attempt_at, error, now, item_id),
+            )
+
+    def complete_slack_chat_message(self, item_id: str, *, now: int) -> None:
+        with self._connect(immediate=True) as conn:
+            conn.execute(
+                """
+                UPDATE slack_chat_queue
+                SET status = 'done', updated_at = ?
+                WHERE id = ?
+                """,
+                (now, item_id),
+            )
+
+    def fail_slack_chat_message(self, item_id: str, *, error: str, now: int) -> None:
+        with self._connect(immediate=True) as conn:
+            conn.execute(
+                """
+                UPDATE slack_chat_queue
+                SET status = 'failed',
+                    attempts = attempts + 1,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (error, now, item_id),
+            )
+
     def list_runs(self, *, board: str, task_id: str) -> list[Run]:
         board_id = self._ensure_board(board)
         with self._connect() as conn:
@@ -3240,6 +3407,28 @@ class SQLiteBoardStore:
             CREATE INDEX IF NOT EXISTS idx_slack_threads_task
                 ON slack_threads(task_id, mode);
 
+            CREATE TABLE IF NOT EXISTS slack_chat_queue (
+                id TEXT PRIMARY KEY,
+                board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+                team_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                thread_ts TEXT NOT NULL,
+                message_ts TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                node TEXT NOT NULL,
+                text TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at INTEGER NOT NULL,
+                last_error TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(team_id, channel_id, message_ts)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_slack_chat_queue_due
+                ON slack_chat_queue(board_id, status, next_attempt_at, created_at);
+
             CREATE TABLE IF NOT EXISTS node_health (
                 project TEXT NOT NULL,
                 session TEXT NOT NULL,
@@ -4131,6 +4320,26 @@ def _slack_thread_from_row(row: sqlite3.Row) -> SlackThread:
         thread_ts=_row_str(row, "thread_ts"),
         mode=_row_str(row, "mode"),
         node=_row_optional_str(row, "node"),
+        created_at=_row_int(row, "created_at"),
+        updated_at=_row_int(row, "updated_at"),
+    )
+
+
+def _slack_chat_queue_item_from_row(row: sqlite3.Row) -> SlackChatQueueItem:
+    return SlackChatQueueItem(
+        id=_row_str(row, "id"),
+        board_id=_row_str(row, "board_id"),
+        team_id=_row_str(row, "team_id"),
+        channel_id=_row_str(row, "channel_id"),
+        thread_ts=_row_str(row, "thread_ts"),
+        message_ts=_row_str(row, "message_ts"),
+        user_id=_row_str(row, "user_id"),
+        node=_row_str(row, "node"),
+        text=_row_str(row, "text"),
+        status=_row_str(row, "status"),
+        attempts=_row_int(row, "attempts"),
+        next_attempt_at=_row_int(row, "next_attempt_at"),
+        last_error=_row_optional_str(row, "last_error"),
         created_at=_row_int(row, "created_at"),
         updated_at=_row_int(row, "updated_at"),
     )

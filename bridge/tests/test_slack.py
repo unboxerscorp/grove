@@ -125,6 +125,21 @@ class FailingChatFacade:
         raise RuntimeError(self.message)
 
 
+class SequenceChatFacade:
+    def __init__(self, *results: str | Exception) -> None:
+        self.results = list(results)
+        self.calls: list[tuple[str, str, str]] = []
+
+    def send(self, *, session_id: str, node: str, text: str) -> str:
+        self.calls.append((session_id, node, text))
+        if not self.results:
+            raise RuntimeError("no queued chat result")
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
 class FakeAssistantBroker:
     def __init__(self, text: str = "assistant reply", notice_text: str | None = None) -> None:
         self.text = text
@@ -1264,26 +1279,29 @@ def test_chat_routing_can_forward_addressed_turn_to_node(tmp_path: Path) -> None
     assert slack.posts == [
         (
             "C123",
-            "접수했습니다. channel-node에 전달했고 처리 중입니다. 완료되면 이 스레드에 답변합니다.",
+            "접수했습니다. channel-node 전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.",
             "111.222",
         ),
         ("C123", "grove reply", "111.222"),
     ]
 
 
-def test_chat_routing_explains_busy_prompt_guard(tmp_path: Path) -> None:
+def test_chat_routing_defers_busy_prompt_guard_and_retries(tmp_path: Path) -> None:
     slack = FakeSlackClient()
-    chat = FailingChatFacade(
-        "target pane has unsent prompt input; refusing to inject a node message"
+    chat = SequenceChatFacade(
+        RuntimeError("target pane has unsent prompt input; refusing to inject a node message"),
+        "grove reply after retry",
     )
+    store = SQLiteBoardStore(tmp_path / "board.db")
     connector = SlackConnector(
-        store=SQLiteBoardStore(tmp_path / "board.db"),
+        store=store,
         slack_client=slack,
         chat_facade=chat,
         human_gate=HumanGateConfig(board="main", channel="C123"),
         chat_route=ChatRouteConfig(default_node="grove-master"),
         assistant_broker=FakeAssistantBroker("assistant should not run"),
         route_chat_to_node=True,
+        node_chat_retry_delay_seconds=0,
     )
 
     handled = connector.handle_event(
@@ -1303,17 +1321,35 @@ def test_chat_routing_explains_busy_prompt_guard(tmp_path: Path) -> None:
     assert slack.posts == [
         (
             "C123",
-            "접수했습니다. grove-master에 전달했고 처리 중입니다. 완료되면 이 스레드에 답변합니다.",
-            "111.222",
-        ),
-        (
-            "C123",
-            "지금 grove-master 입력창에 작성 중인 내용이 있어 "
-            "메시지를 섞지 않도록 전송하지 않았습니다. "
-            "입력창을 비운 뒤 다시 보내 주세요.",
+            "접수했습니다. grove-master 전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.",
             "111.222",
         ),
     ]
+    queued = store.list_due_slack_chat_messages(
+        board="main",
+        now=9999999999,
+        running_stale_before=9999999999,
+        limit=10,
+    )
+    assert len(queued) == 1
+    assert queued[0].status == "pending"
+    assert queued[0].attempts == 1
+
+    assert connector.poll_node_chat_queue() == 1
+    assert chat.calls == [
+        ("slack:T1:C123:111.222", "grove-master", "summarize status"),
+        ("slack:T1:C123:111.222", "grove-master", "summarize status"),
+    ]
+    assert slack.posts[-1] == ("C123", "grove reply after retry", "111.222")
+    assert (
+        store.list_due_slack_chat_messages(
+            board="main",
+            now=9999999999,
+            running_stale_before=9999999999,
+            limit=10,
+        )
+        == []
+    )
 
 
 def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
@@ -1348,7 +1384,7 @@ def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
     assert slack.posts == [
         (
             "C123",
-            "접수했습니다. grove-master에 전달했고 처리 중입니다. 완료되면 이 스레드에 답변합니다.",
+            "접수했습니다. grove-master 전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.",
             "111.222",
         ),
         ("C123", "grove reply", "111.222"),

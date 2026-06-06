@@ -6,6 +6,13 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 14:40 KST Slack thread queue 안정화:
+  - chat-master 노드 추가는 보류했다. 사용자/ advisor와 검토한 결론은 "새 노드로 Slack을 중계"가 아니라 Slack connector 내부 durable queue로 `blocking ask grove-master --timeout 120s` 경로를 decouple하는 것이다.
+  - `slack_chat_queue` SQLite table을 추가했다. Slack routed chat은 `team/channel/thread_ts/message_ts` 단위로 queue에 저장하고, thread ack는 즉시 `전달 대기열에 넣었습니다. 완료되면 이 스레드에 답변합니다.`라고 응답한다.
+  - connector dispatcher는 queue를 단일 lock으로 순차 처리한다. `target pane has unsent prompt input` 가드에 걸리면 메시지를 drop/fallback하지 않고 pending으로 되돌려 다음 poll에서 재시도한다. 다른 transport 실패는 기존 fallback 응답을 thread에 남기고 failed로 종료한다.
+  - thread 구분은 Slack `team_id`, `channel_id`, `thread_ts`, `message_ts`와 conversation id `slack:<team>:<channel>:<thread_ts>`로 유지한다. thread마다 노드를 만들지 않는다.
+  - 검증: `uv run --group dev pytest tests/test_slack.py -q -k 'chat_routing'` 11 passed, bridge full `ruff/mypy/pytest` 455 passed, `pnpm check` green(TS/Vitest 305, bridge pytest 455).
+
 - 2026-06-06 14:32 KST Slack loop 운영 안정화:
   - `~/.grove/dev10/run-slack-loop.sh`는 더 이상 `uv run ... | tee` 파이프라인으로 Slack child를 실행하지 않는다. 기존 구조에서는 `slack-runtime.json`의 child pid에 TERM을 보내면 loop/pane이 같이 사라져 `dev10:2` window를 수동 복구해야 했다.
   - 현재 runtime script는 bash `set -uo pipefail` + `uv run ... >> "$HOME/.grove/dev10/slack.log" 2>&1` 직접 리다이렉트 구조다. child exit status를 직접 받고 loop shell은 살아남는다.
