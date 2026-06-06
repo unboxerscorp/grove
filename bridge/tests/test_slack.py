@@ -1271,6 +1271,51 @@ def test_chat_routing_can_forward_addressed_turn_to_node(tmp_path: Path) -> None
     ]
 
 
+def test_chat_routing_explains_busy_prompt_guard(tmp_path: Path) -> None:
+    slack = FakeSlackClient()
+    chat = FailingChatFacade(
+        "target pane has unsent prompt input; refusing to inject a node message"
+    )
+    connector = SlackConnector(
+        store=SQLiteBoardStore(tmp_path / "board.db"),
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-master"),
+        assistant_broker=FakeAssistantBroker("assistant should not run"),
+        route_chat_to_node=True,
+    )
+
+    handled = connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="<@BOT> summarize status",
+            ts="111.222",
+            thread_ts=None,
+            event_type="app_mention",
+        )
+    )
+
+    assert handled is True
+    assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "summarize status")]
+    assert slack.posts == [
+        (
+            "C123",
+            "접수했습니다. grove-master에 전달했고 처리 중입니다. 완료되면 이 스레드에 답변합니다.",
+            "111.222",
+        ),
+        (
+            "C123",
+            "지금 grove-master 입력창에 작성 중인 내용이 있어 "
+            "메시지를 섞지 않도록 전송하지 않았습니다. "
+            "입력창을 비운 뒤 다시 보내 주세요.",
+            "111.222",
+        ),
+    ]
+
+
 def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
     tmp_path: Path,
 ) -> None:

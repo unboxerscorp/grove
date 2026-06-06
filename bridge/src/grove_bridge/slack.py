@@ -51,6 +51,11 @@ SLACK_ASSISTANT_RESPONSE_CHUNK_CHARS = 3000
 SLACK_NODE_CHAT_WORKING_NOTICE = (
     "접수했습니다. {node}에 전달했고 처리 중입니다. 완료되면 이 스레드에 답변합니다."
 )
+SLACK_NODE_CHAT_INPUT_BUSY_MARKER = "target pane has unsent prompt input"
+SLACK_NODE_CHAT_INPUT_BUSY_TEXT = (
+    "지금 {node} 입력창에 작성 중인 내용이 있어 메시지를 섞지 않도록 전송하지 않았습니다. "
+    "입력창을 비운 뒤 다시 보내 주세요."
+)
 SLACK_SCOPES = (
     "app_mentions:read",
     "channels:history",
@@ -2237,7 +2242,7 @@ class SlackConnector:
                 )
         except Exception as exc:
             LOGGER.warning("Slack node chat failed: %s", _safe_log_error(exc))
-            response_text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
+            response_text = _slack_node_chat_failure_text(exc, node=node)
         self.store.upsert_slack_thread(
             board=self.human_gate.board,
             task_id=None,
@@ -2835,6 +2840,13 @@ def _slack_assistant_conversation_id(event: SlackEvent, *, thread_ts: str) -> st
 def _slack_node_chat_working_notice(node: str) -> str:
     safe_node = _safe_slack_text(node).strip() or "grove-master"
     return SLACK_NODE_CHAT_WORKING_NOTICE.format(node=safe_node)
+
+
+def _slack_node_chat_failure_text(exc: Exception, *, node: str) -> str:
+    if SLACK_NODE_CHAT_INPUT_BUSY_MARKER in str(exc):
+        safe_node = _safe_slack_text(node).strip() or "grove-master"
+        return SLACK_NODE_CHAT_INPUT_BUSY_TEXT.format(node=safe_node)
+    return ASSISTANT_TRANSPORT_FALLBACK_TEXT
 
 
 def _slack_assistant_request_id(event: SlackEvent) -> str:
