@@ -188,6 +188,23 @@ class MasterChatMessage:
 
 
 @dataclass(frozen=True)
+class ChatSessionRow:
+    """A durable bridge-native chat session (Slack thread or web conversation).
+
+    Stage0 additive: written/read only by the flag-gated chat runtime; nothing in
+    the existing live route references this table.
+    """
+
+    id: str
+    board_id: str
+    conversation_id: str
+    surface: str
+    status: str
+    created_at: int
+    last_active_at: int
+
+
+@dataclass(frozen=True)
 class Board:
     id: str
     slug: str
@@ -2161,6 +2178,153 @@ class SQLiteBoardStore:
                 (error, now, item_id),
             )
 
+    # --- bridge-native chat runtime (Stage0 additive; flag-gated callers only) ---
+
+    def upsert_chat_session(
+        self,
+        *,
+        board: str,
+        conversation_id: str,
+        surface: str,
+        status: str = "active",
+    ) -> ChatSessionRow:
+        now = _now()
+        board_id = self._ensure_board(board)
+        conv = conversation_id.strip()
+        surf = surface.strip()
+        if not conv or not surf:
+            raise ValueError("conversation_id and surface are required")
+        with self._connect(immediate=True) as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id, board_id, conversation_id, surface, status, created_at, last_active_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(board_id, conversation_id, surface)
+                DO UPDATE SET last_active_at = excluded.last_active_at, status = excluded.status
+                """,
+                (
+                    _new_id("chat_session"),
+                    board_id,
+                    conv,
+                    surf,
+                    status.strip() or "active",
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT * FROM chat_sessions
+                WHERE board_id = ? AND conversation_id = ? AND surface = ?
+                """,
+                (board_id, conv, surf),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("created chat session disappeared")
+        return ChatSessionRow(
+            id=_row_str(row, "id"),
+            board_id=_row_str(row, "board_id"),
+            conversation_id=_row_str(row, "conversation_id"),
+            surface=_row_str(row, "surface"),
+            status=_row_str(row, "status"),
+            created_at=_row_int(row, "created_at"),
+            last_active_at=_row_int(row, "last_active_at"),
+        )
+
+    def get_chat_session(
+        self,
+        *,
+        board: str,
+        conversation_id: str,
+        surface: str,
+    ) -> ChatSessionRow | None:
+        board_id = self._ensure_board(board)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM chat_sessions
+                WHERE board_id = ? AND conversation_id = ? AND surface = ?
+                """,
+                (board_id, conversation_id.strip(), surface.strip()),
+            ).fetchone()
+        if row is None:
+            return None
+        return ChatSessionRow(
+            id=_row_str(row, "id"),
+            board_id=_row_str(row, "board_id"),
+            conversation_id=_row_str(row, "conversation_id"),
+            surface=_row_str(row, "surface"),
+            status=_row_str(row, "status"),
+            created_at=_row_int(row, "created_at"),
+            last_active_at=_row_int(row, "last_active_at"),
+        )
+
+    def claim_slack_chat_message(
+        self,
+        item_id: str,
+        *,
+        now: int,
+        running_stale_before: int,
+    ) -> SlackChatQueueItem | None:
+        """Atomically claim one due/stale queue item (per-item claim).
+
+        Returns the claimed item only if THIS call won the claim (a concurrent or
+        repeat claim of the same now-running item returns ``None``). Additive — the
+        existing ``mark_slack_chat_message_running`` path is unchanged.
+        """
+        with self._connect(immediate=True) as conn:
+            cur = conn.execute(
+                """
+                UPDATE slack_chat_queue
+                SET status = 'running', updated_at = ?
+                WHERE id = ?
+                  AND (
+                    (status = 'pending' AND next_attempt_at <= ?)
+                    OR (status = 'running' AND updated_at <= ?)
+                  )
+                """,
+                (now, item_id, now, running_stale_before),
+            )
+            claimed = cur.rowcount == 1
+            row = conn.execute("SELECT * FROM slack_chat_queue WHERE id = ?", (item_id,)).fetchone()
+        if not claimed or row is None:
+            return None
+        return _slack_chat_queue_item_from_row(row)
+
+    def claim_due_slack_chat_messages(
+        self,
+        *,
+        board: str,
+        now: int,
+        running_stale_before: int,
+        limit: int,
+    ) -> list[SlackChatQueueItem]:
+        """Bounded drain: claim up to ``limit`` due items via per-item claim so
+        concurrent drains never double-process the same item."""
+        candidates = self.list_due_slack_chat_messages(
+            board=board, now=now, running_stale_before=running_stale_before, limit=limit
+        )
+        claimed: list[SlackChatQueueItem] = []
+        for cand in candidates:
+            won = self.claim_slack_chat_message(
+                cand.id, now=now, running_stale_before=running_stale_before
+            )
+            if won is not None:
+                claimed.append(won)
+        return claimed
+
+    def chat_queue_metrics(self, *, board: str, now: int) -> dict[str, int | None]:
+        """Runtime observability view over the chat queue (depth/running/failed/
+        oldest age). Additive wrapper over ``slack_chat_queue_summary``."""
+        summary = self.slack_chat_queue_summary(board=board, now=now)
+        return {
+            "depth": summary["pending"],
+            "running": summary["running"],
+            "failed": summary["failed"],
+            "oldest_age_seconds": summary["oldest_pending_age_seconds"],
+        }
+
     def append_master_chat_message(
         self,
         *,
@@ -3663,6 +3827,20 @@ class SQLiteBoardStore:
 
             CREATE INDEX IF NOT EXISTS idx_master_chat_messages_conv
                 ON master_chat_messages(board_id, conversation_id, created_at, id);
+
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+                conversation_id TEXT NOT NULL,
+                surface TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                last_active_at INTEGER NOT NULL,
+                UNIQUE(board_id, conversation_id, surface)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_sessions_board
+                ON chat_sessions(board_id, last_active_at);
 
             CREATE TABLE IF NOT EXISTS node_health (
                 project TEXT NOT NULL,
