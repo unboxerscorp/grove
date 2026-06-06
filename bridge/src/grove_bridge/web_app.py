@@ -52,15 +52,16 @@ from grove_bridge.auth import Account, DashboardRole
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
 from grove_bridge.chat_runtime import (
     CHAT_BRIDGE_RUNTIME_FLAG,
-    CHAT_BRIDGE_SHADOW_PERSONA,
     CHAT_PROVIDER_DEFAULT_MODEL,
     CHAT_PROVIDER_DEFAULT_PROVIDER,
     GeminiChatProviderAdapter,
     ProviderRequest,
     RedactingProviderAdapter,
     TurnParseError,
+    build_get_project_tasks_tool,
     chat_bridge_runtime_enabled,
     guard_answer_channel,
+    load_chat_bridge_persona,
     load_gemini_provider_config,
     parse_structured_turn,
 )
@@ -2750,6 +2751,12 @@ def _web_companion_path(grove_home: Path, session: str) -> Path:
 
 def _chat_provider_config_path(config: WebAppConfig) -> Path:
     return config.grove_home / DEFAULT_SESSION / CHAT_PROVIDER_CONFIG_FILENAME
+
+
+def _chat_persona_path(config: WebAppConfig) -> Path:
+    # chat-master's persona/policy source — a runtime file (sibling to the chat
+    # provider config). Absent → loader returns the placeholder. Mirrors Slack.
+    return config.grove_home / DEFAULT_SESSION / "chat-persona.md"
 
 
 def _chat_provider_config(config: WebAppConfig) -> dict[str, str]:
@@ -6367,14 +6374,15 @@ def _handle_chat_bridge_runtime_web_request(
     try:
         generated = adapter.generate(
             ProviderRequest(
-                system_prompt=CHAT_BRIDGE_SHADOW_PERSONA,
+                system_prompt=load_chat_bridge_persona(_chat_persona_path(project.config)),
                 user_text=_chat_bridge_web_user_text(
                     _store(request),
                     payload,
                     conversation_id=conversation_id,
                     project=project,
                 ),
-            )
+            ),
+            tools=[build_get_project_tasks_tool(_store(request), default_board=project.board)],
         )
         turn = parse_structured_turn(generated)
         if turn.kind == "task_proposal":

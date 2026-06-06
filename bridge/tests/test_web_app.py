@@ -30,6 +30,7 @@ from grove_bridge.assistant import (
     NodeRoutedAssistantClient,
 )
 from grove_bridge.auth_status import ToolAuthStatus
+from grove_bridge.chat_runtime import ChatTool, ProviderRequest
 from grove_bridge.store import BoardEvent, SQLiteBoardStore
 from grove_bridge.team_auth import (
     CSRF_HEADER,
@@ -2393,7 +2394,7 @@ def test_master_chat_flag_on_uses_gemini_provider_answer(
             self.api_key = api_key
             self.model = model
 
-        def generate(self, request: object) -> str:
+        def generate(self, request: object, *, tools: object = ()) -> str:
             _ = request
             return "Gemini가 만든 답변입니다."
 
@@ -2418,6 +2419,50 @@ def test_master_chat_flag_on_uses_gemini_provider_answer(
     assert [item["role"] for item in history.json()["messages"]] == ["user", "assistant"]
 
 
+def test_master_chat_runtime_uses_persona_loader_and_get_project_tasks_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Web parity with Slack: the runtime uses chat-master's tuned persona from the
+    # runtime file (not the placeholder) and exposes the read-only get_project_tasks
+    # tool. [R] is automatic — the web path already wraps in RedactingProviderAdapter.
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+    client.post(
+        "/api/chat/provider",
+        headers=headers,
+        json={"provider": "gemini", "model": "gemini-test", "api_key": "AIza-test-key"},
+    )
+    persona_path = tmp_path / ".grove" / "dev10" / "chat-persona.md"
+    persona_path.parent.mkdir(parents=True, exist_ok=True)
+    persona_path.write_text("ROLE: tuned chat-master persona.", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class FakeGeminiAdapter:
+        def __init__(self, *, api_key: str, model: str) -> None:
+            _ = (api_key, model)
+
+        def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
+            captured["system_prompt"] = request.system_prompt
+            captured["tool_names"] = [tool.name for tool in tools]
+            return "ok"
+
+    monkeypatch.setattr(web_app, "GeminiChatProviderAdapter", FakeGeminiAdapter)
+
+    response = client.post(
+        "/api/master/chat",
+        headers=headers,
+        json={"message": "남은 태스크?", "conversation_id": "c1", "request_id": "r1"},
+    )
+
+    assert response.status_code == 200
+    # (2) persona loader: the tuned chat-master persona, NOT the placeholder.
+    assert captured["system_prompt"] == "ROLE: tuned chat-master persona."
+    # (1) tool wiring: the read-only get_project_tasks tool is exposed to the model.
+    assert captured["tool_names"] == ["get_project_tasks"]
+
+
 def test_master_chat_flag_on_runtime_task_proposal_confirms_to_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2436,7 +2481,7 @@ def test_master_chat_flag_on_runtime_task_proposal_confirms_to_task(
             self.api_key = api_key
             self.model = model
 
-        def generate(self, request: object) -> str:
+        def generate(self, request: object, *, tools: object = ()) -> str:
             _ = request
             return (
                 '<<<GROVE_TASK_PROPOSAL>>>{"title":"Alpha task",'
@@ -2512,7 +2557,7 @@ def test_master_chat_uses_shared_runtime_flag_from_foreign_project(
             self.api_key = api_key
             self.model = model
 
-        def generate(self, request: object) -> str:
+        def generate(self, request: object, *, tools: object = ()) -> str:
             _ = request
             return "Base 프로젝트에서도 Gemini가 답합니다."
 
