@@ -1341,6 +1341,7 @@ def test_chat_routing_task_like_message_posts_intake_confirm_before_node_route(
     tmp_path: Path,
 ) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
+    store.set_gui_feature_enabled(board="main", feature="intake", enabled=True)
     slack = FakeSlackClient()
     chat = FakeChatFacade()
     connector = SlackConnector(
@@ -2674,6 +2675,7 @@ def test_slack_intake_preview_confirm_creates_redacted_task(tmp_path: Path) -> N
         store,
         slack,
         intake_enabled=True,
+        gui_intake_enabled=True,
         intake_assignee="worker",
     )
     raw_message = (
@@ -2779,7 +2781,7 @@ def test_slack_intake_gui_flag_is_runtime_source_of_truth(tmp_path: Path) -> Non
 def test_slack_intake_dedupes_event_before_preview_and_task_creation(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
-    connector = command_connector(store, slack, intake_enabled=True)
+    connector = command_connector(store, slack, intake_enabled=True, gui_intake_enabled=True)
     event = slack_event("UOP", "/grove bug checkout crashes", event_id="Ev-intake-1")
 
     assert connector.handle_event(event)
@@ -2842,7 +2844,7 @@ def test_slack_mention_task_like_natural_language_uses_assistant_not_intake(
 def test_slack_intake_block_button_confirm_uses_same_one_shot_gate(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
-    connector = command_connector(store, slack, intake_enabled=True)
+    connector = command_connector(store, slack, intake_enabled=True, gui_intake_enabled=True)
 
     assert connector.handle_event(slack_event("UOP", "/grove task add board export"))
     confirm = confirmation_id(slack.posts[-1][1])
@@ -2869,7 +2871,7 @@ def test_slack_intake_block_button_confirm_uses_same_one_shot_gate(tmp_path: Pat
 def test_slack_intake_block_answer_only_button_consumes_without_task(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
-    connector = command_connector(store, slack, intake_enabled=True)
+    connector = command_connector(store, slack, intake_enabled=True, gui_intake_enabled=True)
 
     assert connector.handle_event(slack_event("UOP", "/grove feedback simplify setup"))
     confirm = confirmation_id(slack.posts[-1][1])
@@ -3108,7 +3110,7 @@ def test_slack_nl_status_injection_uses_safe_ambiguous_reply(tmp_path: Path) -> 
 def test_slack_intake_task_creation_does_not_publish_live_board_post(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
-    connector = command_connector(store, slack, intake_enabled=True)
+    connector = command_connector(store, slack, intake_enabled=True, gui_intake_enabled=True)
 
     assert connector.handle_event(slack_event("UOP", "/grove bug checkout crashes"))
     confirm = confirmation_id(slack.posts[-1][1])

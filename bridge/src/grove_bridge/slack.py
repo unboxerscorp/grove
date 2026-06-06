@@ -785,7 +785,8 @@ class SlackConnector:
                 cursor=self.store.latest_event_cursor(board=board),
             )
             return 0
-        cursor = int(cursor_state["cursor"])
+        cursor_raw = cursor_state["cursor"]
+        cursor = cursor_raw if isinstance(cursor_raw, int) else 0
         max_cursor = cursor
         posted = 0
         for event in self.store.list_events_after(cursor=cursor, board=board, limit=100):
