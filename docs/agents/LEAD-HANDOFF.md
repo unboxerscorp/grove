@@ -6,6 +6,16 @@
 
 이 섹션이 아래의 과거 인수인계보다 우선한다.
 
+- 2026-06-06 15:52 KST canonical task visibility / read-only task list CLI:
+  - 현재 운영자 canonical item `task_1989f403bc19417a8e21ed4ebd6b9500`은 `grove-master`에 배정되어 `running` 상태다. title은 `What is GROVE? 이 문서대로 구현 안 된 부분이 있다면 빠짐없이 구현하고 안정화시킬 것. Canonical Doc임`이다.
+  - 최신 HEAD는 `5fb1f18 feat: add read-only task list CLI`다. `grove task list` 서브커맨드를 추가해 노드가 본인 배정 human-facing item을 읽기 전용으로 확인할 수 있게 했다.
+  - 이 변경은 자동 polling, auto-executor, 자동 착수 로직을 추가하지 않는다. AGENTS/CLAUDE/skills/README 프레이밍도 "작업 전 본인 배정 item 인지/가시성"으로 제한했고, 사람/마스터가 배정과 착수 판단을 소유하는 current model은 유지한다.
+  - CLI는 `GET /api/boards/<board>/tasks`만 호출한다. `--session dev10 --board dev10 --assignee <node> --status <status>`로 현재 live board에 스코프하며, write/lock/mutation 경로는 없다.
+  - live smoke: `grove task list --session dev10 --board dev10 --assignee grove-master --status running --json`은 위 canonical running item을 반환한다. text mode도 같은 item을 `[running] grove-master`로 렌더한다.
+  - 검증: `pnpm vitest run src/commands/task.test.ts src/cli.test.ts` 21 passed, `pnpm check:skills`, `pnpm build`, full `pnpm check` green(TS/Vitest 56 files 308 tests, bridge pytest 462). `GROVE_LIVE_URL=http://100.100.90.87:5173 node web/e2e/tier1/runner.mjs --live` 7/7 passed.
+  - 배포 영향: CLI/docs/tests only라 web/slack 재시작 불필요. main web `8765 started_at=1780721628`, remote web `5173 started_at=1780721854`, Slack pid `98577`/queue `0/0/0/0 oldest=null`, 5노드 전부 `pane_exists=true`, `/api/boards`는 8765/5173 모두 `[dev10 task_count=1]`.
+  - 다음 canonical gap 후보(예: web chat durable queue/chat-master 분리, SSH public key registration, canonical org shape)는 behavior/org/security 영향이 크므로 적용 전 advisor 자문과 별도 bounded audit가 필요하다.
+
 - 2026-06-06 15:31 KST remote 5173 live soak sample:
   - 운영자가 쓰는 tailnet URL `http://100.100.90.87:5173/`를 직접 대상으로 live-safe 검증을 돌렸다. `GROVE_LIVE_URL=http://100.100.90.87:5173 node web/e2e/tier1/runner.mjs --live`는 7/7 passed, `GROVE_LIVE_URL=http://100.100.90.87:5173 node web/e2e/live.mjs`는 94/94 passed.
   - full live run은 disposable `p2-test` registry와 `dev10:5.0` terminal fixture를 잠깐 만들었고, finally cleanup 후 baseline으로 복귀했다.
