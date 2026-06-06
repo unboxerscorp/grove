@@ -60,7 +60,23 @@ function assertNoStaleItemTitleCopy() {
     "i",
   );
   const staleSourceCopy = new RegExp(
-    [`Task ${"drawer"}`, `Board ${"event-tail"}`, `solo ${"task"}`, `Blocked ${"tasks"}`, `차단된 ${"태스크"}`].join("|"),
+    [
+      `Task ${"drawer"}`,
+      `Board ${"event-tail"}`,
+      `solo ${"task"}`,
+      `Blocked ${"tasks"}`,
+      `active ${"task"}\\(s\\)`,
+      `no ${"tasks"} awaiting approval`,
+      `cross-room ${"task"} handoff`,
+      `local ${"task"}`,
+      `Accept this ${"task"}`,
+      `차단된 ${"태스크"}`,
+      `현재 ${"작업"}`,
+      `룸 간 ${"작업"} 인계`,
+      `승인 대기 ${"작업"} 없음`,
+      `로컬 ${"작업"}`,
+      `이 ${"작업"} 수락`,
+    ].join("|"),
     "i",
   );
   const staleVerifyWait = new RegExp(`includes\\(["']${`solo ${"task"}`}["']\\)`, "i");
@@ -2958,7 +2974,7 @@ async function main() {
 
     // V17-W2 handoff ACCEPT (receiver-local = human decision): paste the SIGNED
     // package exported above -> local preview (title + freshness) -> an EXPLICIT
-    // accept (confirm) is the ONLY path that creates a local task. Nothing is
+    // accept (confirm) is the ONLY path that creates a local item. Nothing is
     // created/run before the confirm. Re-accepting the same package is idempotent
     // (existing, not a 2nd task). A tampered package is rejected with a FIXED
     // message and never records an acceptance. Default-OFF degrades gracefully.
@@ -2989,7 +3005,7 @@ async function main() {
     await page.$eval(".handoff-accept__btn", (el) => el.click());
     await page.waitForSelector(".handoff-accept__yes", { timeout: 6000 });
     const hPreConfirm = await page.evaluate(() => window.__MOCK__?.handoffAccepted ?? null);
-    // confirm -> POST -> created (local task).
+    // confirm -> POST -> created (local item).
     await page.$eval(".handoff-accept__yes", (el) => el.click());
     await page.waitForSelector('.handoff-result.is-trusted[data-status="created"]', { timeout: 8000 });
     const hCreated = await page.evaluate(() => ({

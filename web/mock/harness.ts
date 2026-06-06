@@ -1655,7 +1655,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 
   if (p === "/api/handoff/accept" && method === "POST") {
     // Mirrors web_app.py /api/handoff/accept: verify trust (key_id allowlist +
-    // signature) and freshness, then create a local task ONLY on this explicit
+    // signature) and freshness, then create a local item ONLY on this explicit
     // call. tampered/unknown-key -> 403; expired -> 410; disabled -> 404. The
     // reason strings mirror _verify_handoff_envelope; fixed-message only, no raw
     // payload/secret echoed. Idempotent by handoff_id (created vs existing).
@@ -1690,7 +1690,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         handoff_id: hid,
         task: { id: "H-" + hid.slice(-4), title: ptask.title ?? "", status: "ready" },
         limitations: [
-          "accept created a local task only; nothing was executed",
+          "accept created a local item only; nothing was executed",
           "the receiver controls the local lifecycle from here",
         ],
       }),
