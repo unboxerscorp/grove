@@ -554,6 +554,7 @@ async function coreMain() {
     const board = await page.evaluate(() => ({
       title: (document.querySelector(".dr-board__title")?.textContent ?? "").trim(),
       lists: Array.from(document.querySelectorAll(".dr-col__title")).map((el) => (el.textContent ?? "").trim()),
+      titles: Array.from(document.querySelectorAll(".dr-card__title")).map((el) => (el.textContent ?? "").trim()),
       totalCards: document.querySelectorAll(".dr-card").length,
       groupFilter: !!document.querySelector(".dr-board__group-filter"),
       noStatusFilters: document.querySelectorAll(".dr-board__filters, .dr-filter").length === 0,
@@ -583,6 +584,7 @@ async function coreMain() {
       boardGroupFilter.values.includes("build") &&
       boardGroupFilter.initial > boardGroupFilter.filtered &&
       boardGroupFilter.filtered > 0;
+    const mockItemTitlesOk = board.titles.every((title) => !/Task drawer|Board event-tail/i.test(title));
 
     // #N10 group bulk assignment: the add form offers group targets and creates
     // one human-facing item per current member of the selected org group.
@@ -689,6 +691,7 @@ async function coreMain() {
       /사람용|Human/i.test(board.title) &&
       board.lists.length === 2 &&
       boardGroupFilterOk &&
+      mockItemTitlesOk &&
       n2Ok &&
       board.noStatusFilters &&
       errors.length === 0;
@@ -707,6 +710,7 @@ async function coreMain() {
             board,
             boardGroupFilter,
             boardGroupFilterOk,
+            mockItemTitlesOk,
             n2Drawer,
             n2Ok,
             statusInitial,

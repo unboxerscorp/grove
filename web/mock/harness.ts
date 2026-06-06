@@ -31,7 +31,7 @@ const BOARDS = [
 const TASKS: Record<string, MockTask[]> = {
   grove: [
     { id: "G-6", title: "Triage incoming agent reports", status: "ready", assignee: "root" },
-    { id: "G-5", title: "Task drawer: comments + runs", status: "ready", assignee: "frontend" },
+    { id: "G-5", title: "Item drawer: comments + runs", status: "ready", assignee: "frontend" },
     {
       id: "G-1",
       // raw stored status "running" is the canonical "running" column key.
@@ -40,14 +40,14 @@ const TASKS: Record<string, MockTask[]> = {
       assignee: "frontend",
       latest_summary: "wiring the live xterm stream into the cockpit",
     },
-    { id: "G-2", title: "Board event-tail over WebSocket", status: "review", assignee: "backend", reviewer: "researcher" },
+    { id: "G-2", title: "List event-tail over WebSocket", status: "review", assignee: "backend", reviewer: "researcher" },
     { id: "G-4", title: "Single-use ws-ticket auth", status: "ready", assignee: "backend" },
     { id: "G-7", title: "Pane resize policy (mirror beta)", status: "blocked", assignee: "frontend" },
     { id: "G-3", title: "Node registry + tmux pane exposure", status: "done", assignee: "backend" },
   ],
   // N1: a distinct, isolated project so a switch swaps the whole context and
   // leaves no residue from the default project's boards/tasks.
-  "solo-x": [{ id: "S-1", title: "solo task", status: "running", assignee: "solo" }],
+  "solo-x": [{ id: "S-1", title: "solo item", status: "running", assignee: "solo" }],
 };
 
 const SLACK_THREADS: MockSlackThread[] = [
