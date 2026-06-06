@@ -213,3 +213,86 @@ node-per-thread; no user-facing templates; live route untouched until an approve
 
 No live route change; no chat-master node removal; no intake re-enable; no per-thread node spawning; no
 user-facing templates; no fabricated answers on failure; no flip/canary/cutover without separate approval.
+
+## 13. Integrated Implementation Plan (advisor SIGNED OFF 2026-06-06)
+
+> Single consolidated plan. Implementation HELD until lead review/sequencing + edit windows + the approval gates
+> in §13.5. Absorbs advisor's 5 stability acceptance criteria as guards/tests (mapped inline **[A1]–[A5]**) plus
+> the advisor forward-note **[R]** (provider redaction). advisor signed off the 5 criteria; this section finalizes
+> the plan in grove-master format.
+
+### 13.1 Stages (flag-gated; each independently gated; rollback = flag OFF at any stage)
+
+- **Stage 0 — inert (flag default OFF).** Land `ChatSessionStore`, `ChatWorkerPool`, the bridge-native provider
+  adapter, the durable-queue extension, observability counters, and the kill-switch — constructed **only when the
+  flag is on**. Flag OFF ⇒ existing Slack daemon / web path byte-identical, **live route untouched**, 0 behavior
+  change. DB additions are additive. **[A3]** `intake_enabled` stays FALSE throughout.
+- **Stage 1 — shadow.** Flag on, shadow mode: process + generate but **do not post**; log/compare vs the live CLI
+  path; baseline latency/saturation/error metrics.
+- **Stage 2 — canary.** Flag on for a single thread/conversation (real user-facing); metrics watched.
+- **Stage 3 — cutover.** Flag on for all external chat; live CLI path retired only after canary metrics clear.
+  Separate master/operator approval. **Independent of intake-enable — intake stays DARK.** **[A3]**
+
+### 13.2 Touched files (explicit)
+
+- `bridge/src/grove_bridge/store.py` — `chat_sessions` table (additive); `slack_chat_queue`/`node_chat_queue`
+  **reused, not replaced** **[A2]**; bounded concurrent drain with **per-item claim** **[A2]**; metrics
+  extension (depth/oldest_age/active workers/saturation/error rate) **[A5]**.
+- `bridge/src/grove_bridge/assistant.py` — bridge-native **provider adapter** (new; reuse/extend
+  `AnthropicAssistantClient` raw-HTTP or official `anthropic` SDK), persona system prompt, structured-turn parse +
+  safe-fallback (parse fail → defer, never fabricate), **redaction of secrets/PII before any provider call** **[R]**.
+  Not the abandoned node-routed/predicate code.
+- `bridge/src/grove_bridge/slack.py` — worker-pool integration behind flag; shadow/canary gating; kill-switch;
+  demote `working/busy/timeout/ASSISTANT_TRANSPORT_FALLBACK_TEXT` to ops-log **[A4]**; reaction ack. (HELD until
+  grove-master stabilizes slack.py + lead window.)
+- `bridge/src/grove_bridge/web_app.py` — web `ChatSession` + queue parity + flag-gated runtime. (HELD until the
+  board-worker window.)
+- Tests: `bridge/tests/test_{slack,assistant,web_app,store}.py` (see 13.4).
+- Config (operator/fleet-owned, NOT chat-worker): rollout flag + kill-switch (gui feature flag / env) + Stage-3
+  cutover. `intake` gui flag stays FALSE.
+
+### 13.3 Live-flip + kill-switch
+
+- **Live-flip** = the rollout flag advanced shadow→canary→cutover, master/operator-approved per stage.
+- **Kill-switch** (first-class, separate from the rollout flag) = emergency stop → immediately revert to the live
+  path (or defer/system-status mid-cutover), no restart, no user-facing template. A **circuit-breaker** on the
+  error-rate metric **[A5]** trips it automatically. Tested.
+
+### 13.4 Minimal verification (§8 + advisor 3 guard tests + redaction)
+
+All of §8, **plus**:
+
+- **[A1] bounded/no-spawn:** assert the org/registry node count is **unchanged** by the runtime and the pool honors
+  its cap (no per-thread node, no unbounded workers).
+- **[A2] concurrency idempotency:** under concurrent drain, the **same thread is never double-processed** (per-item
+  claim); no-drop + reclaim-on-stale preserved.
+- **[A4] template-detector — ANSWER channel only:** feed **varying inputs** to the free-chat answer channel; assert
+  it **never** emits a fixed bridge string (fixed output across varying inputs ⇒ FAIL); backpressure = durable
+  **HOLD/defer**, not a fake "busy". **Confirm-flow §7 fixed copy is chat-master-authored and EXCLUDED** from this
+  detector (per chat-master semantic ownership).
+- **[R] provider redaction:** assert secrets/PII (e.g. `xoxb-…` tokens, paths, emails) in the session transcript
+  are **redacted before** any direct Claude API call — the provider request never carries raw secrets (mirror the
+  existing `build_assistant_facts` redaction test style).
+- Plus observability assertions (metrics per-poll) + circuit-breaker→kill-switch path **[A5]**.
+
+### 13.5 Remaining approval gates (in order)
+
+1. **advisor sign-off** — ✅ done (5 criteria, 2026-06-06).
+2. **lead review + commit sequencing** (chat-worker reports diffs; lead commits) + edit **windows** (slack.py after
+   grove-master stabilization; web_app.py after the board-worker window).
+3. **master/operator cutover approval** (Stage 3).
+4. **intake-enable = SEPARATE consult-gate** — `intake_enabled` stays FALSE through cutover; re-enable is gated on
+   G2 **Caveat-1/2 green** (`docs/superpowers/plans/2026-06-06-g2-free-chat-task-intake.md` §8) + its own approval.
+
+### 13.6 §10 open items — resolution (chat-master-owned items resolved at impl)
+
+- **Persona/policy doc** — **chat-master-owned deliverable**, submitted at the Stage0 window (3 canonical modes +
+  answer↔task judgment + tone + propose-only). → adapter system prompt.
+- **Structured-turn contract** — **chat-master-owned deliverable**, finalized at the Stage0 window (marker/JSON for
+  answer | task-proposal + fields + card text; parse fail → defer, never raw fabricate).
+- **Pool size N** — **Rec:** small default (e.g. N=4), configurable, per-surface cap; **Stage1:** tune from
+  shadow/canary saturation **[A5]**.
+- **Web queue parity** — **Rec:** unified `chat_turn_queue` mirroring `slack_chat_queue`; **Stage1:** Slack first,
+  web parity additive fast-follow.
+- **Provider backend** — **Rec:** official `anthropic` SDK (fallback: `AnthropicAssistantClient` raw-HTTP);
+  `claude-opus-4-8` + adaptive thinking + streaming + effort per the `claude-api` skill; confirm at impl.
