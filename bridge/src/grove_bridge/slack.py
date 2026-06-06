@@ -36,7 +36,6 @@ from grove_bridge.chat_runtime import (
     GeminiChatProviderAdapter,
     ProviderRequest,
     RedactingProviderAdapter,
-    TurnParseError,
     chat_bridge_runtime_enabled,
     guard_answer_channel,
     load_chat_bridge_persona,
@@ -2531,43 +2530,58 @@ class SlackConnector:
                     )
                     turn = parse_structured_turn(generated)
                     if turn.kind == "task_proposal":
-                        if turn.proposal is None:
-                            raise TurnParseError("task proposal is missing payload")
-                        preview = self._chat_bridge_runtime_task_preview(
-                            item,
-                            card_text=turn.card_text or "",
-                            title=turn.proposal.title,
-                            body=turn.proposal.body,
-                            worktree=turn.proposal.worktree,
-                        )
-                        if preview is None:
-                            raise TurnParseError("task proposal cannot be confirmed")
-                        response_text = preview.text
-                        self.slack_client.post_message(
-                            channel=item.channel_id,
-                            text=preview.text,
-                            thread_ts=item.thread_ts,
-                            blocks=preview.blocks,
-                        )
-                        if item.response_text is None:
-                            item = self.store.store_slack_chat_message_response(
-                                item.id,
-                                response_text=response_text,
-                                now=now,
+                        preview = None
+                        if turn.proposal is not None:
+                            preview = self._chat_bridge_runtime_task_preview(
+                                item,
+                                card_text=turn.card_text or "",
+                                title=turn.proposal.title,
+                                body=turn.proposal.body,
+                                worktree=turn.proposal.worktree,
                             )
-                        self._persist_chat_bridge_slack_turn(
-                            item,
-                            conversation_id=conversation_id,
-                            response_text=response_text,
+                        if preview is not None:
+                            response_text = preview.text
+                            self.slack_client.post_message(
+                                channel=item.channel_id,
+                                text=preview.text,
+                                thread_ts=item.thread_ts,
+                                blocks=preview.blocks,
+                            )
+                            if item.response_text is None:
+                                item = self.store.store_slack_chat_message_response(
+                                    item.id,
+                                    response_text=response_text,
+                                    now=now,
+                                )
+                            self._persist_chat_bridge_slack_turn(
+                                item,
+                                conversation_id=conversation_id,
+                                response_text=response_text,
+                            )
+                            self.store.complete_slack_chat_message(item.id, now=now)
+                            return True
+                        # SAFE DEGRADE: a task_proposal that cannot be turned into a
+                        # confirmable preview MUST NOT raise/defer here — that produced an
+                        # infinite-retry stuck queue (pending forever, chatbot dead). Fall
+                        # back to the LLM-authored text as a plain answer and complete via
+                        # the shared tail below. No task is created (confirm-before-create
+                        # preserved); the queue item is consumed, not repeatedly deferred.
+                        fallback = ""
+                        if turn.proposal is not None:
+                            fallback = turn.card_text or turn.proposal.title or ""
+                        response_text = fallback.strip() or generated
+                        LOGGER.info(
+                            "chat bridge proposal degraded to plain answer "
+                            "(unconfirmable, no task created) conv=%s",
+                            conversation_id,
                         )
-                        self.store.complete_slack_chat_message(item.id, now=now)
-                        return True
-                    response_text = guard_answer_channel(
-                        turn.answer_text or "",
-                        forbidden=frozenset(
-                            {ASSISTANT_TRANSPORT_FALLBACK_TEXT, "master chat is unavailable"}
-                        ),
-                    )
+                    else:
+                        response_text = guard_answer_channel(
+                            turn.answer_text or "",
+                            forbidden=frozenset(
+                                {ASSISTANT_TRANSPORT_FALLBACK_TEXT, "master chat is unavailable"}
+                            ),
+                        )
             except Exception as exc:
                 LOGGER.warning(
                     "chat bridge runtime generation failed; deferred without CLI fallback: %s",

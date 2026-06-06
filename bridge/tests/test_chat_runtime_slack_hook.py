@@ -127,6 +127,39 @@ def test_flag_on_generation_failure_defers_without_cli_fallback(tmp_path: Path) 
     assert due[0].last_error == "provider unavailable"
 
 
+class _ProposalAdapter:
+    def generate(self, request: ProviderRequest) -> str:
+        _ = request
+        return '<<<GROVE_TASK_PROPOSAL>>>{"title": "정리", "card_text": "태스크로 만들까요?"}'
+
+
+def test_flag_on_unconfirmable_proposal_degrades_to_plain_and_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A task_proposal turn whose confirmable preview cannot be built MUST degrade to
+    # a plain answer + COMPLETE — never raise→defer→infinite-retry (the live stuck-queue).
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    slack, facade = _FakeSlack(), _FakeFacade()
+    conn = _connector(store, slack, facade)
+    assert conn._chat_bridge_runtime is not None
+    conn._chat_bridge_adapter = _ProposalAdapter()
+    # Force the confirmable-preview build to fail.
+    monkeypatch.setattr(conn, "_chat_bridge_runtime_task_preview", lambda *a, **k: None)
+
+    _enqueue(store)
+    conn.poll_node_chat_queue()
+
+    # Degraded to a plain answer (LLM-authored text) + posted; no CLI fallback.
+    assert facade.calls == []
+    assert slack.posts and slack.posts[0][0] == "C1"
+    # Completed — NOT left on the durable queue (no infinite-retry stuck).
+    due = store.list_due_slack_chat_messages(
+        board="dev10", now=9_999_999_999, running_stale_before=9_999_999_999, limit=10
+    )
+    assert due == []
+
+
 def test_flag_on_missing_provider_defers_without_cli_fallback(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "b.db")
     store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
