@@ -6193,7 +6193,7 @@ def _handle_master_chat_request(
     auth: AuthContext,
     project: ProjectContext,
 ) -> dict[str, object] | Response:
-    if chat_bridge_runtime_enabled(
+    if not requires_master_chat_action_gate(payload.message) and chat_bridge_runtime_enabled(
         _store(request),
         board=_gui_feature_board(project, CHAT_BRIDGE_RUNTIME_FLAG),
     ):

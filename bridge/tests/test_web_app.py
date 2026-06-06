@@ -2418,6 +2418,48 @@ def test_master_chat_flag_on_uses_gemini_provider_answer(
     assert [item["role"] for item in history.json()["messages"]] == ["user", "assistant"]
 
 
+def test_master_chat_flag_on_keeps_action_preview_confirmation_path(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    llm = SequenceAssistantLLMClient(
+        json.dumps(
+            {
+                "action_type": "create_project",
+                "target": "alpha",
+                "params": {"title": "Alpha cockpit"},
+            }
+        ),
+        "Alpha 프로젝트 생성을 MASTER 검토함에 올릴까요? `confirm {confirmation_id}`",
+    )
+    client = make_client(tmp_path, store, assistant_client=llm)
+    headers = auth_headers(client)
+    client.post(
+        "/api/chat/provider",
+        headers=headers,
+        json={"provider": "gemini", "model": "gemini-test", "api_key": "AIza-test-key"},
+    )
+
+    response = client.post(
+        "/api/master/chat",
+        headers=headers,
+        json={
+            "message": "Alpha 프로젝트 만들어줘",
+            "conversation_id": "conv-runtime-preview",
+            "request_id": "req-runtime-preview",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    confirmation_id = payload["proposal"]["proposal_id"]
+    assert payload["response_type"] == "preview"
+    assert payload["requires_confirmation"] is True
+    assert payload["answer"]["text"] == (
+        f"Alpha 프로젝트 생성을 MASTER 검토함에 올릴까요? `confirm {confirmation_id}`"
+    )
+    assert confirmation_id.startswith("assistant_")
+
+
 def test_master_chat_uses_shared_runtime_flag_from_foreign_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
