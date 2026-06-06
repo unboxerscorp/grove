@@ -22,11 +22,18 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
-from grove_bridge.assistant import AnthropicAssistantClient, AssistantLLMClient
+from grove_bridge.assistant import (
+    AnthropicAssistantClient,
+    AssistantLLMClient,
+    AssistantTransportError,
+)
 from grove_bridge.auth_status import redact_secret_text
 
 # GUI feature flag name (default OFF). Distinct from the ``intake`` flag, which
@@ -204,6 +211,92 @@ class ClaudeChatProviderAdapter:
             system_prompt=request.system_prompt,
             user_prompt=request.user_text,
         )
+
+
+class UrlOpenResponse(Protocol):
+    def __enter__(self) -> UrlOpenResponse: ...
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> object: ...
+
+    def read(self) -> bytes: ...
+
+
+UrlOpen = Callable[..., UrlOpenResponse]
+
+
+@dataclass
+class GeminiChatProviderAdapter:
+    """Concrete bridge-native adapter for Google Gemini's REST generateContent API.
+
+    It uses the official API-key header (``x-goog-api-key``) and does not route
+    through any persistent CLI node. Wrap in :class:`RedactingProviderAdapter`
+    before live use so secrets are stripped before the request leaves the bridge.
+    """
+
+    api_key: str
+    model: str = "gemini-2.5-flash"
+    timeout_seconds: float = 30.0
+    urlopen: UrlOpen = urllib.request.urlopen
+
+    def generate(self, request: ProviderRequest) -> str:
+        key = self.api_key.strip()
+        if not key:
+            raise AssistantTransportError("gemini api key is not configured")
+        model = self.model.strip() or "gemini-2.5-flash"
+        clean_model = model.removeprefix("models/")
+        encoded_model = urllib.parse.quote(clean_model, safe="")
+        body = {
+            "systemInstruction": {"parts": [{"text": request.system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": request.user_text}]}],
+        }
+        http_request = urllib.request.Request(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{encoded_model}:generateContent",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": key,
+            },
+            method="POST",
+        )
+        try:
+            with self.urlopen(http_request, timeout=self.timeout_seconds) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            raise AssistantTransportError(
+                f"gemini generateContent failed: HTTP {exc.code}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise AssistantTransportError("gemini generateContent unavailable") from exc
+        try:
+            decoded = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AssistantTransportError("gemini returned invalid JSON") from exc
+        text = _gemini_response_text(decoded)
+        if not text:
+            raise AssistantTransportError("gemini returned no text")
+        return text
+
+
+def _gemini_response_text(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    parts: list[str] = []
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        return ""
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content")
+        if not isinstance(content, dict):
+            continue
+        raw_parts = content.get("parts")
+        if not isinstance(raw_parts, list):
+            continue
+        for part in raw_parts:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+    return "\n".join(part.strip() for part in parts if part.strip()).strip()
 
 
 # --------------------------------------------------------------------------- #

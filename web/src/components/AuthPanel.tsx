@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
-import type { AuthTool } from "../api";
+import type { AuthTool, ChatProviderStatus } from "../api";
 import { cx } from "../constants";
 import { useI18n } from "../i18n";
 import type { GuiFeatureKey, GuiFeatureState } from "../types";
@@ -14,11 +14,16 @@ const GUI_FEATURES: { key: GuiFeatureKey; labelKey: string; noteKey: string }[] 
   { key: "summary", labelKey: "setup.feature.summary", noteKey: "setup.feature.summary.note" },
   { key: "usage-trend", labelKey: "setup.feature.usageTrend", noteKey: "setup.feature.usageTrend.note" },
   { key: "retro-analytics", labelKey: "setup.feature.retro", noteKey: "setup.feature.retro.note" },
+  {
+    key: "chat_bridge_runtime",
+    labelKey: "setup.feature.chatRuntime",
+    noteKey: "setup.feature.chatRuntime.note",
+  },
 ];
 
 // Features whose ENABLE direction is consequential. Enabling requires a 2-step
 // confirm (arm -> confirm/cancel); disabling stays a single immediate POST.
-const RISK_FEATURES = new Set<GuiFeatureKey>(["node-input", "intake"]);
+const RISK_FEATURES = new Set<GuiFeatureKey>(["node-input", "intake", "chat_bridge_runtime"]);
 
 function AuthMark() {
   return (
@@ -48,6 +53,11 @@ export function AuthPanel() {
   const [featureBusy, setFeatureBusy] = useState<GuiFeatureKey | null>(null);
   const [armed, setArmed] = useState<GuiFeatureKey | null>(null); // P1 risk-enable confirm
   const [isViewer, setIsViewer] = useState(false);
+  const [chatProvider, setChatProvider] = useState<ChatProviderStatus | null>(null);
+  const [chatKey, setChatKey] = useState("");
+  const [chatModel, setChatModel] = useState("gemini-2.5-flash");
+  const [chatProviderBusy, setChatProviderBusy] = useState(false);
+  const [chatProviderError, setChatProviderError] = useState<string | null>(null);
 
   // Keep the translator in a ref so `load` is stable — a language toggle must
   // NOT re-trigger /api/auth-status (same pattern as TerminalPane's tRef).
@@ -78,9 +88,21 @@ export function AuthPanel() {
       .finally(() => setFeaturesLoading(false));
   }, []);
 
+  const loadChatProvider = useCallback(() => {
+    api
+      .getChatProvider()
+      .then((payload) => {
+        setChatProvider(payload);
+        setChatModel(payload.model || "gemini-2.5-flash");
+        setChatProviderError(null);
+      })
+      .catch(() => setChatProviderError(tRef.current("setup.chatProvider.loadError")));
+  }, []);
+
   useEffect(() => {
     load();
     loadFeatures();
+    loadChatProvider();
     let alive = true;
     api
       .getMe()
@@ -93,7 +115,7 @@ export function AuthPanel() {
     return () => {
       alive = false;
     };
-  }, [load, loadFeatures]);
+  }, [load, loadFeatures, loadChatProvider]);
 
   const toggle = (tool: string) =>
     setRevealed((prev) => {
@@ -142,6 +164,25 @@ export function AuthPanel() {
   };
 
   const cancelFeature = () => setArmed(null); // no POST
+
+  const saveChatProvider = () => {
+    const apiKey = chatKey.trim();
+    if (!apiKey) {
+      setChatProviderError(tRef.current("setup.chatProvider.keyRequired"));
+      return;
+    }
+    setChatProviderBusy(true);
+    setChatProviderError(null);
+    api
+      .setChatProvider({ api_key: apiKey, model: chatModel.trim() || "gemini-2.5-flash" })
+      .then((payload) => {
+        setChatProvider(payload);
+        setChatKey("");
+        setChatModel(payload.model || "gemini-2.5-flash");
+      })
+      .catch(() => setChatProviderError(tRef.current("setup.chatProvider.saveError")))
+      .finally(() => setChatProviderBusy(false));
+  };
 
   return (
     <section className="auth">
@@ -226,6 +267,56 @@ export function AuthPanel() {
               );
             })}
           </div>
+        </section>
+
+        <section className="chat-provider" aria-label={t("setup.chatProvider.title")}>
+          <div className="chat-provider__head">
+            <div>
+              <h3 className="chat-provider__title">{t("setup.chatProvider.title")}</h3>
+              <p className="chat-provider__note">{t("setup.chatProvider.note")}</p>
+            </div>
+            <span className={cx("auth-badge", chatProvider?.configured ? "is-ok" : "is-warn")}>
+              {chatProvider?.configured
+                ? t("setup.chatProvider.configured", { hint: chatProvider.key_hint ?? "" })
+                : t("setup.chatProvider.notConfigured")}
+            </span>
+          </div>
+          {chatProviderError && <div className="auth__msg is-error">{chatProviderError}</div>}
+          <form
+            className="chat-provider__form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              saveChatProvider();
+            }}
+          >
+            <label className="chat-provider__field">
+              <span>{t("setup.chatProvider.model")}</span>
+              <input
+                className="dr-input"
+                value={chatModel}
+                onChange={(e) => setChatModel(e.target.value)}
+                disabled={isViewer || chatProviderBusy}
+              />
+            </label>
+            <label className="chat-provider__field is-key">
+              <span>{t("setup.chatProvider.key")}</span>
+              <input
+                className="dr-input"
+                type="password"
+                value={chatKey}
+                onChange={(e) => setChatKey(e.target.value)}
+                disabled={isViewer || chatProviderBusy}
+                autoComplete="off"
+              />
+            </label>
+            <button
+              type="submit"
+              className="dr-btn dr-btn--primary"
+              disabled={isViewer || chatProviderBusy}
+            >
+              {chatProviderBusy ? t("setup.chatProvider.saving") : t("setup.chatProvider.save")}
+            </button>
+          </form>
         </section>
 
         <div className="auth-list">

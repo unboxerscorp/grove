@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import pytest
 
+from grove_bridge.assistant import AssistantTransportError
 from grove_bridge.chat_runtime import (
     CHAT_BRIDGE_RUNTIME_FLAG,
     ChatProviderAdapter,
     ChatWorkerPool,
     ClaudeChatProviderAdapter,
+    GeminiChatProviderAdapter,
     KillSwitch,
     NoTemplateViolation,
     ProviderRequest,
@@ -174,3 +176,47 @@ def test_claude_provider_adapter_redaction_composes() -> None:
     sent_system, sent_user = llm.calls[0]
     assert secret not in sent_system
     assert secret not in sent_user
+
+
+class _FakeGeminiResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    def __enter__(self) -> _FakeGeminiResponse:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> object:
+        return False
+
+    def read(self) -> bytes:
+        import json
+
+        return json.dumps(self.payload).encode("utf-8")
+
+
+def test_gemini_provider_adapter_posts_and_parses_text() -> None:
+    seen: list[object] = []
+
+    def fake_urlopen(request: object, *, timeout: float) -> _FakeGeminiResponse:
+        seen.append((request, timeout))
+        return _FakeGeminiResponse(
+            {"candidates": [{"content": {"parts": [{"text": "Gemini answer"}]}}]}
+        )
+
+    adapter = GeminiChatProviderAdapter(api_key="test-key", urlopen=fake_urlopen)
+
+    out = adapter.generate(ProviderRequest(system_prompt="persona", user_text="hello"))
+
+    assert out == "Gemini answer"
+    assert seen
+
+
+def test_gemini_provider_adapter_requires_text() -> None:
+    def fake_urlopen(request: object, *, timeout: float) -> _FakeGeminiResponse:
+        _ = (request, timeout)
+        return _FakeGeminiResponse({"candidates": []})
+
+    adapter = GeminiChatProviderAdapter(api_key="test-key", urlopen=fake_urlopen)
+
+    with pytest.raises(AssistantTransportError):
+        adapter.generate(ProviderRequest(system_prompt="persona", user_text="hello"))

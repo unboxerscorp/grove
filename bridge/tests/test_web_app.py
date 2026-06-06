@@ -2221,9 +2221,8 @@ def test_master_chat_flag_off_runtime_inert_existing_path(tmp_path: Path) -> Non
 
 
 def test_master_chat_flag_on_runtime_holds_with_unavailable_status(tmp_path: Path) -> None:
-    # Flag ON: the runtime owns web chat. Stage0 = not yet generating, so an
-    # explicit non-chat unavailable status — never a fabricated answer/template,
-    # and the existing broker path is not taken.
+    # Flag ON without provider config: the runtime owns web chat, but fails closed
+    # until an operator saves a provider key — never a fabricated answer/template.
     store = SQLiteBoardStore(tmp_path / "board.db")
     store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
     client = make_client(tmp_path, store)
@@ -2238,7 +2237,74 @@ def test_master_chat_flag_on_runtime_holds_with_unavailable_status(tmp_path: Pat
         },
     )
     assert response.status_code == 503
-    assert "runtime" in str(response.json().get("detail", "")).lower()
+    assert "provider" in str(response.json().get("detail", "")).lower()
+
+
+def test_chat_provider_config_status_and_save_redacts_key(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    empty = client.get("/api/chat/provider", headers=headers)
+    assert empty.status_code == 200
+    assert empty.json()["configured"] is False
+
+    saved = client.post(
+        "/api/chat/provider",
+        headers=headers,
+        json={"provider": "gemini", "model": "gemini-2.5-flash", "api_key": "AIza-test-key"},
+    )
+
+    assert saved.status_code == 200
+    payload = saved.json()
+    assert payload["configured"] is True
+    assert payload["provider"] == "gemini"
+    assert payload["model"] == "gemini-2.5-flash"
+    assert "api_key" not in payload
+    assert "AIza-test-key" not in json.dumps(payload)
+
+
+def test_master_chat_flag_on_uses_gemini_provider_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+    client.post(
+        "/api/chat/provider",
+        headers=headers,
+        json={"provider": "gemini", "model": "gemini-test", "api_key": "AIza-test-key"},
+    )
+
+    class FakeGeminiAdapter:
+        def __init__(self, *, api_key: str, model: str) -> None:
+            self.api_key = api_key
+            self.model = model
+
+        def generate(self, request: object) -> str:
+            _ = request
+            return "Gemini가 만든 답변입니다."
+
+    monkeypatch.setattr(web_app, "GeminiChatProviderAdapter", FakeGeminiAdapter)
+
+    response = client.post(
+        "/api/master/chat",
+        headers=headers,
+        json={
+            "message": "안녕?",
+            "conversation_id": "conv-gemini",
+            "request_id": "req-gemini",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response_type"] == "answer"
+    assert payload["answer"]["text"] == "Gemini가 만든 답변입니다."
+    assert payload["answer"]["metadata"]["provider"] == "gemini"
+    history = client.get("/api/master/chat?conversation_id=conv-gemini", headers=headers)
+    assert [item["role"] for item in history.json()["messages"]] == ["user", "assistant"]
 
 
 def test_master_chat_history_get_returns_empty_message_list(tmp_path: Path) -> None:

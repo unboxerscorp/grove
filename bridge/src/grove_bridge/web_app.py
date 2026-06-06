@@ -32,6 +32,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from grove_bridge.assistant import (
+    ASSISTANT_TRANSPORT_FALLBACK_TEXT,
     AssistantActor,
     AssistantBroker,
     AssistantContentBlocked,
@@ -47,7 +48,13 @@ from grove_bridge.assistant import (
 )
 from grove_bridge.auth import Account, DashboardRole
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
-from grove_bridge.chat_runtime import chat_bridge_runtime_enabled
+from grove_bridge.chat_runtime import (
+    GeminiChatProviderAdapter,
+    ProviderRequest,
+    RedactingProviderAdapter,
+    chat_bridge_runtime_enabled,
+    guard_answer_channel,
+)
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
 from grove_bridge.slack import (
@@ -223,9 +230,28 @@ GUI_FEATURES = (
     "handoff",
     "usage-trend",
     "retro-analytics",
+    "chat_bridge_runtime",
 )
 GUI_FEATURE_SET = frozenset(GUI_FEATURES)
 MASTER_BOARD_STATUSES = ("ready", "running", "blocked", "done", "archived")
+CHAT_PROVIDER_CONFIG_FILENAME = "chat-provider.json"
+CHAT_PROVIDER_DEFAULT_PROVIDER = "gemini"
+CHAT_PROVIDER_DEFAULT_MODEL = "gemini-2.5-flash"
+CHAT_RUNTIME_FORBIDDEN_ANSWERS = frozenset(
+    {
+        ASSISTANT_TRANSPORT_FALLBACK_TEXT,
+        "master chat runtime initializing",
+        "master chat is unavailable",
+    }
+)
+CHAT_BRIDGE_WEB_PERSONA = (
+    "You are Grove CHAT MASTER. Answer the user's chat directly when you can. "
+    "Use the supplied Grove project/org/task facts as context, but do not invent "
+    "node names, task ids, or hidden capabilities. If the user asks for work to "
+    "be created, explain that task creation requires an explicit confirmation "
+    "flow; do not claim a task was created unless it was actually confirmed. "
+    "Write concise Korean by default unless the user uses another language."
+)
 
 
 class AuthMode(StrEnum):
@@ -591,6 +617,30 @@ class ExecutionGatePayload(BaseModel):
 
 class GuiFeatureTogglePayload(BaseModel):
     enabled: bool
+
+
+class ChatProviderPayload(BaseModel):
+    provider: str = Field(default=CHAT_PROVIDER_DEFAULT_PROVIDER, max_length=50)
+    api_key: str = Field(min_length=1, max_length=5000)
+    model: str = Field(default=CHAT_PROVIDER_DEFAULT_MODEL, max_length=200)
+
+    @field_validator("provider")
+    @classmethod
+    def _validate_provider(cls, value: str) -> str:
+        clean = value.strip().lower()
+        if clean != CHAT_PROVIDER_DEFAULT_PROVIDER:
+            raise ValueError("provider must be gemini")
+        return clean
+
+    @field_validator("model")
+    @classmethod
+    def _validate_model(cls, value: str) -> str:
+        clean = value.strip()
+        if not clean:
+            return CHAT_PROVIDER_DEFAULT_MODEL
+        if re.fullmatch(r"[A-Za-z0-9_.:/-]+", clean) is None:
+            raise ValueError("invalid model")
+        return clean
 
 
 class ProjectCreatePayload(BaseModel):
@@ -1312,6 +1362,34 @@ def create_app(
     def auth_status_endpoint(request: Request) -> list[dict[str, object]]:
         _require_auth(request)
         return [tool_status.to_payload() for tool_status in collect_auth_status()]
+
+    @app.get("/api/chat/provider")
+    def chat_provider_status_endpoint(request: Request) -> dict[str, object]:
+        _require_auth(request)
+        project = resolve_project(request)
+        return _chat_provider_status(project.config)
+
+    @app.post("/api/chat/provider")
+    def chat_provider_config_endpoint(
+        request: Request,
+        payload: ChatProviderPayload,
+    ) -> dict[str, object]:
+        auth = _require_operator_state_change(
+            request,
+            detail="chat provider config requires operator role",
+        )
+        project = resolve_project(request)
+        _write_chat_provider_config(project.config, payload)
+        _store(request).add_audit_event(
+            board=project.board,
+            kind="audit.chat.provider",
+            actor=_actor_payload(auth),
+            action="chat-provider-config",
+            target={"type": "chat_provider", "id": payload.provider},
+            payload={"provider": payload.provider, "model": payload.model},
+            summary=payload.model,
+        )
+        return _chat_provider_status(project.config)
 
     @app.get("/api/decisions")
     def decision_ledger_endpoint(
@@ -2635,6 +2713,64 @@ def _dashboard_token_path(grove_home: Path, session: str) -> Path:
 
 def _web_companion_path(grove_home: Path, session: str) -> Path:
     return grove_home / session / "web.json"
+
+
+def _chat_provider_config_path(config: WebAppConfig) -> Path:
+    return config.grove_home / config.registry_session / CHAT_PROVIDER_CONFIG_FILENAME
+
+
+def _chat_provider_config(config: WebAppConfig) -> dict[str, str]:
+    try:
+        loaded = json.loads(_chat_provider_config_path(config).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        loaded = {}
+    payload = loaded if isinstance(loaded, dict) else {}
+    provider = str(payload.get("provider") or CHAT_PROVIDER_DEFAULT_PROVIDER).strip().lower()
+    model = str(payload.get("model") or CHAT_PROVIDER_DEFAULT_MODEL).strip()
+    api_key = str(payload.get("api_key") or "").strip()
+    source = "file" if api_key else "none"
+    if not api_key:
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        if api_key:
+            provider = CHAT_PROVIDER_DEFAULT_PROVIDER
+            model = os.environ.get("GEMINI_MODEL", model).strip() or CHAT_PROVIDER_DEFAULT_MODEL
+            source = "env"
+    clean_provider = (
+        provider if provider == CHAT_PROVIDER_DEFAULT_PROVIDER else CHAT_PROVIDER_DEFAULT_PROVIDER
+    )
+    return {
+        "provider": clean_provider,
+        "model": model or CHAT_PROVIDER_DEFAULT_MODEL,
+        "api_key": api_key,
+        "source": source,
+    }
+
+
+def _chat_provider_status(config: WebAppConfig) -> dict[str, object]:
+    loaded = _chat_provider_config(config)
+    api_key = loaded["api_key"]
+    tail = api_key[-4:] if len(api_key) >= 4 else ""
+    return {
+        "provider": loaded["provider"],
+        "model": loaded["model"],
+        "configured": bool(api_key),
+        "source": loaded["source"],
+        "key_hint": f"…{tail}" if tail else None,
+    }
+
+
+def _write_chat_provider_config(config: WebAppConfig, payload: ChatProviderPayload) -> None:
+    api_key = payload.api_key.strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api key is required")
+    _write_secret_json_atomic(
+        _chat_provider_config_path(config),
+        {
+            "provider": payload.provider,
+            "model": payload.model.strip() or CHAT_PROVIDER_DEFAULT_MODEL,
+            "api_key": api_key,
+        },
+    )
 
 
 def _write_web_companion(config: WebAppConfig, *, started_at: int) -> None:
@@ -5752,6 +5888,13 @@ def _safe_public_text(value: object) -> str:
     return EMAIL_RE.sub("[pii]", _safe_log_text(value))
 
 
+def _public_chat_text(value: object) -> str:
+    raw = str(value).replace("\r", "\n")
+    without_paths = ABSOLUTE_PATH_RE.sub("[path]", raw)
+    without_secrets = redact_secret_text(without_paths)
+    return EMAIL_RE.sub("[pii]", without_secrets)
+
+
 def _strict_node_name(value: str) -> str:
     clean = value.strip()
     if NODE_NAME_RE.fullmatch(clean) is None:
@@ -6030,11 +6173,12 @@ def _handle_master_chat_request(
     project: ProjectContext,
 ) -> dict[str, object] | Response:
     if chat_bridge_runtime_enabled(_store(request), board=project.board):
-        # Flag ON only: bridge-native runtime owns web chat. Stage0 is not yet
-        # wired to generate, so return an explicit non-chat unavailable status —
-        # never a fabricated answer/template, and the broker path below is not
-        # taken. Flag OFF (default) skips this → existing path is byte-identical.
-        raise HTTPException(status_code=503, detail="master chat runtime initializing")
+        return _handle_chat_bridge_runtime_web_request(
+            request,
+            payload,
+            auth=auth,
+            project=project,
+        )
     assistant_client = _assistant_client(request)
     if not _node_routed_target_available(project.config, assistant_client):
         raise HTTPException(status_code=503, detail="master chat is unavailable")
@@ -6071,6 +6215,114 @@ def _handle_master_chat_request(
         raise HTTPException(status_code=503, detail="master chat returned invalid response")
     _persist_master_chat_turn(_store(request), payload, rendered, project=project)
     return rendered
+
+
+def _handle_chat_bridge_runtime_web_request(
+    request: Request,
+    payload: MasterChatPayload,
+    *,
+    auth: AuthContext,
+    project: ProjectContext,
+) -> dict[str, object]:
+    provider = _chat_provider_config(project.config)
+    if not provider["api_key"]:
+        raise HTTPException(status_code=503, detail="chat provider is not configured")
+    conversation_id = _master_request_id(payload.conversation_id, prefix="conv")
+    request_id = _master_request_id(payload.request_id, prefix="req")
+    adapter = RedactingProviderAdapter(
+        inner=GeminiChatProviderAdapter(
+            api_key=provider["api_key"],
+            model=provider["model"],
+        )
+    )
+    try:
+        generated = adapter.generate(
+            ProviderRequest(
+                system_prompt=CHAT_BRIDGE_WEB_PERSONA,
+                user_text=_chat_bridge_web_user_text(
+                    _store(request),
+                    payload,
+                    conversation_id=conversation_id,
+                    project=project,
+                ),
+            )
+        )
+        answer_text = guard_answer_channel(generated, forbidden=CHAT_RUNTIME_FORBIDDEN_ANSWERS)
+    except AssistantTransportError as exc:
+        LOGGER.warning("event=chat_bridge_web_transport_error error=%s", _safe_log_text(exc))
+        raise HTTPException(status_code=503, detail="chat provider is unavailable") from exc
+    except Exception as exc:
+        LOGGER.warning("event=chat_bridge_web_error error=%s", _safe_log_text(exc))
+        raise HTTPException(status_code=500, detail="chat provider failed") from exc
+    rendered: dict[str, object] = {
+        "conversation_id": conversation_id,
+        "request_id": request_id,
+        "response_type": "answer",
+        "classification": {
+            "kind": "chat",
+            "intent": "bridge_native.answer",
+            "confidence": 1.0,
+            "signals": [],
+        },
+        "answer": {
+            "text": _public_chat_text(answer_text),
+            "citations": [],
+            "metadata": {
+                "runtime": "chat_bridge_runtime",
+                "provider": provider["provider"],
+                "model": provider["model"],
+            },
+        },
+        "proposal": None,
+        "feedback_route": None,
+        "operator_gate": None,
+        "requires_confirmation": False,
+    }
+    _store(request).add_audit_event(
+        board=project.board,
+        kind="audit.master.turn.received",
+        actor=_actor_payload(auth),
+        action="master.turn.received",
+        target={"type": "master", "id": request_id},
+        payload={
+            "conversation_id": conversation_id,
+            "response_type": "answer",
+            "runtime": "chat_bridge_runtime",
+            "provider": provider["provider"],
+        },
+        summary=_safe_public_text(payload.message),
+    )
+    _persist_master_chat_turn(_store(request), payload, rendered, project=project)
+    return rendered
+
+
+def _chat_bridge_web_user_text(
+    store: SQLiteBoardStore,
+    payload: MasterChatPayload,
+    *,
+    conversation_id: str,
+    project: ProjectContext,
+) -> str:
+    history = store.list_master_chat_messages(board=project.board, conversation_id=conversation_id)
+    recent = history[-12:]
+    history_lines = [
+        f"{message.role}: {_public_chat_text(message.text)}"
+        for message in recent
+        if message.text.strip()
+    ]
+    facts = _master_chat_facts(store, project=project)
+    return "\n".join(
+        [
+            f"Selected project: {project.name}",
+            f"Board: {project.board}",
+            "Runtime facts JSON:",
+            json.dumps(facts, ensure_ascii=False, sort_keys=True),
+            "Conversation history:",
+            "\n".join(history_lines) if history_lines else "(none)",
+            "Current user message:",
+            _public_chat_text(payload.message),
+        ]
+    )
 
 
 def _master_chat_message_payload(message: MasterChatMessage) -> dict[str, object]:
