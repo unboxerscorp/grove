@@ -82,4 +82,15 @@ describe("current design docs", () => {
     expect(readme).not.toContain("dev-room list access");
     expect(readme).not.toContain("one project, one tmux session, one");
   });
+
+  test("web README describes the current cockpit and item model", () => {
+    const webReadme = doc("web/README.md");
+
+    expect(webReadme).toContain("Grove web cockpit");
+    expect(webReadme).toContain("human-facing items");
+    expect(webReadme).not.toContain("Grove Dev Room");
+    expect(webReadme).not.toContain("kanban board");
+    expect(webReadme).not.toContain("task detail");
+    expect(webReadme).not.toContain("dev-room SPA");
+  });
 });

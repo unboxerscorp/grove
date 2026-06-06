@@ -1,13 +1,13 @@
-# Grove Dev Room — web SPA
+# Grove web cockpit
 
 A **standalone single-page app** served by the grove web server at `/`. Not a
 plugin: grove ships and mounts this directly. It gives you a live cockpit over a
-running grove — the kanban board, task detail with comments + runs, the node
+running grove — human-facing items with comments + runs, the organization
 roster, and a live xterm.js view of any agent's tmux pane.
 
-Four components: **BoardView** (kanban), **TaskDrawer** (task + comments + runs),
-**NodeList** (nodes), **TerminalPane** (live xterm). React + react-dom + xterm
-are bundled into a single static `app.js` — no external runtime, no plugin host.
+Core surfaces: the item list, item drawer, organization roster, and terminal
+mirror. React + react-dom + xterm are bundled into a single static `app.js` —
+no external runtime, no plugin host.
 
 ## Layout
 
