@@ -278,6 +278,11 @@ export interface NodeHealthResponse {
 export interface NodePatch {
   parent?: string | null;
   group?: string | null;
+  // Operator-editable advisory fields. The backend PATCH (web_app.py
+  // NodeUpdatePayload) already accepts these; the org-chart drawer edit form
+  // sends them. `role` is intentionally NOT here (not in NodeUpdatePayload).
+  work_instructions?: string;
+  description?: string;
 }
 
 export interface NodeTerminateOptions {
@@ -1066,6 +1071,20 @@ export const api = {
       body: JSON.stringify({ assignee }),
     });
     if (!res.ok) throw new Error(`task assignee: HTTP ${res.status}`);
+    return (await res.json()) as Task;
+  },
+
+  async patchTask(
+    taskId: string,
+    fields: { title?: string; body?: string | null },
+  ): Promise<Task> {
+    const res = await fetch(`/api/tasks/${enc(taskId)}`, {
+      method: "PATCH",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(fields),
+    });
+    if (!res.ok) throw new Error(`task edit: HTTP ${res.status}`);
     return (await res.json()) as Task;
   },
 

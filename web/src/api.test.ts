@@ -175,4 +175,22 @@ describe("node termination API", () => {
       operator_override: true,
     });
   });
+
+  it("PATCHes editable advisory fields (work_instructions/description) to the node endpoint", async () => {
+    stubBrowser();
+    const fetchMock = mockFetch({ name: "worker" });
+    vi.stubGlobal("fetch", fetchMock);
+    const { api, setProject } = await import("./api");
+    setProject("dev10");
+
+    await api.patchNode("worker", { work_instructions: "Focus on G7", description: "edited" });
+
+    const [path, init] = fetchMock.mock.calls[0]!;
+    expect(path).toBe("/api/nodes/worker");
+    expect(init).toMatchObject({ credentials: "same-origin", method: "PATCH" });
+    expect(JSON.parse(String(init?.body))).toEqual({
+      work_instructions: "Focus on G7",
+      description: "edited",
+    });
+  });
 });

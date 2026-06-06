@@ -327,11 +327,42 @@ function NodeDrawer(props: {
   onTerminal: (node: OrgNode) => void;
   onTerminate: (node: OrgNode) => void;
   terminating?: boolean;
+  canEdit: boolean;
+  onPatched: () => void;
 }) {
-  const { node, onClose, onTerminal, onTerminate, terminating } = props;
+  const { node, onClose, onTerminal, onTerminate, terminating, canEdit, onPatched } = props;
   const { t } = useI18n();
   const panelRef = useRef<HTMLElement | null>(null);
   useFocusTrap(true, panelRef);
+
+  // Inline edit of operator-tunable advisory fields, reusing the existing
+  // operator-gated PATCH /api/nodes/{name} (api.patchNode). role is not editable
+  // here (not in the backend NodeUpdatePayload).
+  const [editing, setEditing] = useState(false);
+  const [wi, setWi] = useState(node.work_instructions ?? "");
+  const [desc, setDesc] = useState(node.description ?? "");
+  const [saving, setSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const startEdit = () => {
+    setWi(node.work_instructions ?? "");
+    setDesc(node.description ?? "");
+    setEditError(null);
+    setEditing(true);
+  };
+  const saveEdit = async () => {
+    setSaving(true);
+    setEditError(null);
+    try {
+      await api.patchNode(node.name, { work_instructions: wi, description: desc });
+      onPatched();
+      setEditing(false);
+    } catch {
+      setEditError(t("node.editError"));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -387,6 +418,56 @@ function NodeDrawer(props: {
             {fact(t("node.fact.session"), node.session_id)}
           </div>
 
+          {canEdit && !editing && (
+            <button
+              type="button"
+              className="dr-btn dr-btn--ghost node-drawer__edit"
+              onClick={startEdit}
+            >
+              {t("node.edit")}
+            </button>
+          )}
+          {canEdit && editing && (
+            <form
+              className="node-form node-drawer__edit-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void saveEdit();
+              }}
+            >
+              <label className="node-form__label">
+                {t("node.fact.workInstructions")}
+                <textarea
+                  className="dr-input"
+                  rows={3}
+                  value={wi}
+                  onChange={(e) => setWi(e.target.value)}
+                />
+              </label>
+              <label className="node-form__label">
+                {t("node.fact.description")}
+                <textarea
+                  className="dr-input"
+                  rows={2}
+                  value={desc}
+                  onChange={(e) => setDesc(e.target.value)}
+                />
+              </label>
+              {editError && <div className="node-form__error">{editError}</div>}
+              <div className="node-form__actions">
+                <button
+                  type="button"
+                  className="dr-btn dr-btn--ghost"
+                  onClick={() => setEditing(false)}
+                >
+                  {t("node.cancel")}
+                </button>
+                <button type="submit" className="dr-btn dr-btn--primary" disabled={saving}>
+                  {saving ? t("node.saving") : t("node.save")}
+                </button>
+              </div>
+            </form>
+          )}
           {node.terminal_allowed !== false && (
             <button type="button" className="dr-btn dr-btn--ghost node-drawer__term" onClick={() => onTerminal(node)}>
               {t("org.openTerminal")} ↗
@@ -441,6 +522,10 @@ export function OrgChart(props: {
   const [master, setMaster] = useState<MasterMeta | null>(null);
   const [projectLeads, setProjectLeads] = useState<ProjectLead[]>([]);
   const [nodeHealth, setNodeHealth] = useState<Record<string, NodeHealth>>({}); // PR1 watchdog
+  // Operator gate for the drawer edit form. Optimistic (server still enforces
+  // _require_operator_state_change); we proactively hide the affordance only
+  // when /me confirms a viewer. Re-checked per project.
+  const [canEdit, setCanEdit] = useState(true);
 
   const [cur, setCur] = useState<Positions>({});
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -506,6 +591,21 @@ export function OrgChart(props: {
       clearInterval(id);
     };
   }, [projectTick, reloadKey]);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .getMe()
+      .then((me) => {
+        if (alive) setCanEdit(me?.member?.role !== "viewer");
+      })
+      .catch(() => {
+        if (alive) setCanEdit(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectTick]);
 
   const byName = useMemo(() => {
     const m: Record<string, OrgNode> = {};
@@ -1059,6 +1159,8 @@ export function OrgChart(props: {
           }}
           onTerminate={terminateNode}
           terminating={terminating === drawerNode.name}
+          canEdit={canEdit}
+          onPatched={() => setReloadKey((k) => k + 1)}
         />
       )}
     </section>
