@@ -447,3 +447,84 @@ describe("resolveContextMode", () => {
     });
   });
 });
+
+// Project vs Registry/session split. The Registry/session line appears ONLY when
+// the registry/session differs from the logical project — so single-binding v1
+// packs are byte-identical to before (existing PARITY fixtures unchanged).
+// REGISTRY_SPLIT_PACK is duplicated verbatim in bridge/tests/test_context_pack.py.
+const REGISTRY_SPLIT_PACK = [
+  "GROVE CONTEXT PACK",
+  "Caller node: lead",
+  "Project: proj-a",
+  "Registry/session: dev10",
+  "Project lead: lead",
+  "Target node: maker",
+  "Target role: Builder",
+  "Communication protocol: direct comms",
+  "Visible org summary:",
+  "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder)",
+].join("\n");
+
+describe("buildGroveContextPack registry/session split", () => {
+  function maker(): ContextPackNode {
+    return {
+      agent: "codex",
+      cwd: "/repo",
+      group: "product",
+      name: "maker",
+      parent: "lead",
+      role: "Builder",
+      tmuxPane: "dev10:1.3",
+    };
+  }
+
+  test("emits Registry/session only when it differs from the project (byte-identical to Python)", () => {
+    const pack = buildGroveContextPack({
+      callerNode: "lead",
+      communicationProtocol: "direct comms",
+      nodes: [maker()],
+      project: "proj-a",
+      registrySession: "dev10",
+      projectLead: "lead",
+      targetNode: "maker",
+      targetRole: "Builder",
+    });
+
+    expect(pack).toBe(REGISTRY_SPLIT_PACK);
+  });
+
+  test("omits Registry/session when it equals the project or is unset (v1 single binding)", () => {
+    const equal = buildGroveContextPack({
+      nodes: [maker()],
+      project: "dev10",
+      registrySession: "dev10",
+      targetNode: "maker",
+    });
+    const unset = buildGroveContextPack({
+      nodes: [maker()],
+      project: "dev10",
+      targetNode: "maker",
+    });
+
+    expect(equal).not.toContain("Registry/session:");
+    expect(unset).not.toContain("Registry/session:");
+    expect(equal).toBe(unset);
+  });
+
+  test("compact pack also carries Registry/session only when it differs", () => {
+    const differ = buildCompactGroveContextPack({
+      nodes: [maker()],
+      project: "proj-a",
+      registrySession: "dev10",
+      targetNode: "maker",
+    });
+    const same = buildCompactGroveContextPack({
+      nodes: [maker()],
+      project: "dev10",
+      targetNode: "maker",
+    });
+
+    expect(differ).toContain("Registry/session: dev10");
+    expect(same).not.toContain("Registry/session:");
+  });
+});

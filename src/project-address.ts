@@ -40,29 +40,57 @@ export function parseProjectNodeAddress(
   if (!trimmed) throw new Error("node is required");
 
   const optionProject = normalizeProjectOption(opts.project);
-  const colon = trimmed.indexOf(":");
-  if (colon < 0) {
-    return {
-      node: validateGroveName(trimmed, "node"),
-      project: optionProject,
-    };
+
+  const reconcile = (rawNode: string, rawProject: string): ProjectNodeAddress => {
+    const addressProject = validateGroveName(rawProject, "project");
+    if (optionProject && optionProject !== addressProject) {
+      throw new Error(
+        `conflicting projects: address targets "${addressProject}" but --session/--project is "${optionProject}"`,
+      );
+    }
+    return { node: validateGroveName(rawNode, "node"), project: addressProject };
+  };
+
+  // Canonical: node@project — the same form the org displays (e.g. lead@dev10).
+  const at = trimmed.indexOf("@");
+  if (at >= 0) {
+    const rawNode = trimmed.slice(0, at).trim();
+    const rawProject = trimmed.slice(at + 1).trim();
+    if (!rawNode || !rawProject) {
+      throw new Error("node address must use node@project");
+    }
+    return reconcile(rawNode, rawProject);
   }
 
-  const rawProject = trimmed.slice(0, colon).trim();
-  const rawNode = trimmed.slice(colon + 1).trim();
-  if (!rawProject || !rawNode) {
-    throw new Error("node address must use [project:]node");
+  // Legacy: project:node — deprecated, kept for backcompat.
+  const colon = trimmed.indexOf(":");
+  if (colon >= 0) {
+    const rawProject = trimmed.slice(0, colon).trim();
+    const rawNode = trimmed.slice(colon + 1).trim();
+    if (!rawProject || !rawNode) {
+      throw new Error("node address must use [project:]node");
+    }
+    return reconcile(rawNode, rawProject);
   }
-  const addressProject = validateGroveName(rawProject, "project");
-  if (optionProject && optionProject !== addressProject) {
-    throw new Error(
-      `conflicting projects: address targets "${addressProject}" but --project is "${optionProject}"`,
-    );
-  }
+
+  // Bare → home project (or the --session/--project option).
   return {
-    node: validateGroveName(rawNode, "node"),
-    project: addressProject,
+    node: validateGroveName(trimmed, "node"),
+    project: optionProject,
   };
+}
+
+/**
+ * Canonical address string for a node: `node@project` across projects, bare for
+ * the home project. Round-trips with parseProjectNodeAddress and matches the org
+ * display convention (org.ts:displayNameForProjectNode).
+ */
+export function formatNodeAddress(
+  node: string,
+  project: string,
+  opts: { homeProject: string },
+): string {
+  return project === opts.homeProject ? node : `${node}@${project}`;
 }
 
 export function resolveProjectNodeTarget(
@@ -77,10 +105,9 @@ export function resolveProjectNodeTarget(
       ? callerCtx
       : contextFromProjectRegistry(callerCtx, targetProject);
   const nc = nodeOf(targetCtx, address.node);
-  const label =
-    address.project === undefined || address.project === callerCtx.config.session
-      ? address.node
-      : `${address.project}:${address.node}`;
+  const label = formatNodeAddress(address.node, targetProject, {
+    homeProject: callerCtx.config.session,
+  });
   return {
     callerCtx,
     targetCtx,
@@ -126,9 +153,7 @@ export function resolveGatherTargets(
       nodes: projectAddresses.map((address) => address.node),
       project: targetProject,
       labels: projectAddresses.map((address) =>
-        address.project === undefined || address.project === callerCtx.config.session
-          ? address.node
-          : `${address.project}:${address.node}`,
+        formatNodeAddress(address.node, targetProject, { homeProject: callerCtx.config.session }),
       ),
       crossProject: targetCtx !== callerCtx,
     };

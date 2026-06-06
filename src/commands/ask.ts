@@ -8,13 +8,18 @@ import { parseDuration } from "../util/time.js";
 export async function cmdAsk(
   name: string,
   message: string,
-  opts: { config?: string; context?: string; project?: string; timeout?: string },
+  opts: { config?: string; context?: string; project?: string; session?: string; timeout?: string },
 ): Promise<void> {
   // Live node-to-node ask defaults to the compact pack; --context / env override.
   const contextMode = resolveContextMode(opts.context, "compact");
   const callerCtx = loadContext(opts.config);
+  // --session is the canonical registry/session selector; --project is a kept
+  // deprecated alias. node@project / legacy project:node also trigger resolution.
+  const session = opts.session ?? opts.project;
   const target =
-    opts.project || name.includes(":") ? resolveProjectNodeTarget(callerCtx, name, opts) : null;
+    session || name.includes("@") || name.includes(":")
+      ? resolveProjectNodeTarget(callerCtx, name, { project: session })
+      : null;
   const ctx = target?.targetCtx ?? callerCtx;
   const nc = target?.nc ?? nodeOf(ctx, name);
   const label = target?.label ?? name;

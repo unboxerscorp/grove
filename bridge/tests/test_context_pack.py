@@ -308,3 +308,58 @@ def test_compact_pack_omits_unset_lines_and_singularizes_count() -> None:
     assert "(advisory)" not in pack
     assert "Visible org: 1 node — run `grove org --all --json`" in pack
     assert pack.startswith(GROVE_CONTEXT_PACK_HEADER)
+
+
+# Project vs Registry/session split. REGISTRY_SPLIT_PACK is duplicated verbatim
+# in src/context-pack.test.ts; the line appears ONLY when the registry/session
+# differs from the project, so v1 single-binding packs stay byte-identical.
+REGISTRY_SPLIT_PACK = "\n".join(
+    [
+        "GROVE CONTEXT PACK",
+        "Caller node: lead",
+        "Project: proj-a",
+        "Registry/session: dev10",
+        "Project lead: lead",
+        "Target node: maker",
+        "Target role: Builder",
+        "Communication protocol: direct comms",
+        "Visible org summary:",
+        "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder)",
+    ]
+)
+
+
+def test_registry_session_emitted_only_when_differs() -> None:
+    pack = build_grove_context_pack(
+        caller_node="lead",
+        communication_protocol="direct comms",
+        nodes=(_maker(),),
+        project="proj-a",
+        registry_session="dev10",
+        project_lead="lead",
+        target_node="maker",
+        target_role="Builder",
+    )
+
+    assert pack == REGISTRY_SPLIT_PACK
+
+
+def test_registry_session_omitted_when_equal_or_unset() -> None:
+    equal = build_grove_context_pack(
+        nodes=(_maker(),), project="dev10", registry_session="dev10", target_node="maker"
+    )
+    unset = build_grove_context_pack(nodes=(_maker(),), project="dev10", target_node="maker")
+
+    assert "Registry/session:" not in equal
+    assert "Registry/session:" not in unset
+    assert equal == unset
+
+
+def test_compact_registry_session_only_when_differs() -> None:
+    differ = build_compact_grove_context_pack(
+        nodes=(_maker(),), project="proj-a", registry_session="dev10", target_node="maker"
+    )
+    same = build_compact_grove_context_pack(nodes=(_maker(),), project="dev10", target_node="maker")
+
+    assert "Registry/session: dev10" in differ
+    assert "Registry/session:" not in same

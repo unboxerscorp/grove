@@ -166,9 +166,20 @@ def collapse_foreign_projects(
     return result
 
 
+def _registry_session_lines(project: str, registry_session: str | None) -> list[str]:
+    """The `Registry/session:` line, only when the registry/session differs from
+    the logical project (v1 keeps them 1:1 → empty → byte-identical). Mirror of
+    context-pack.ts:registrySessionLines."""
+    session = (registry_session or "").strip()
+    if session == "" or session == project.strip():
+        return []
+    return [f"Registry/session: {_clean(session)}"]
+
+
 def build_grove_context_pack(
     *,
     project: str,
+    registry_session: str | None = None,
     caller_node: str | None = None,
     communication_protocol: str | None = None,
     max_bytes: int = DEFAULT_MAX_BYTES,
@@ -198,6 +209,7 @@ def build_grove_context_pack(
         GROVE_CONTEXT_PACK_HEADER,
         f"Caller node: {_clean(caller_node, 'operator/CLI')}",
         f"Project: {_clean(project)}",
+        *_registry_session_lines(project, registry_session),
         f"Project lead: {_clean(lead)}",
         f"Target node: {target}",
         f"Target role: {role or '(not recorded)'}",
@@ -216,6 +228,7 @@ def build_grove_context_pack(
 def build_compact_grove_context_pack(
     *,
     project: str,
+    registry_session: str | None = None,
     caller_node: str | None = None,
     max_bytes: int = DEFAULT_MAX_BYTES,
     nodes: Sequence[ContextPackNode] = (),
@@ -239,6 +252,7 @@ def build_compact_grove_context_pack(
         f"{GROVE_CONTEXT_PACK_HEADER} (compact)",
         f"Caller node: {_clean(caller_node, 'operator/CLI')}",
         f"Project: {_clean(project)}",
+        *_registry_session_lines(project, registry_session),
         f"Target node: {target}",
         *([f"Target role: {role}"] if role else []),
         *(

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { Context, NodeCtx } from "./context.js";
 import {
+  formatNodeAddress,
   parseProjectNodeAddress,
   resolveGatherTarget,
   resolveGatherTargets,
@@ -78,7 +79,7 @@ describe("project node addresses", () => {
     expect(target.targetCtx.config.session).toBe("dev11");
     expect(target.nc.addr).toBe("dev11:2.0");
     expect(target.nc.node.role).toBe("Remote maker");
-    expect(target.label).toBe("dev11:worker");
+    expect(target.label).toBe("worker@dev11");
   });
 
   test("strips external project prefixes for gather target groups", () => {
@@ -107,9 +108,44 @@ describe("project node addresses", () => {
     const mixed = resolveGatherTargets(callerContext(), ["dev11:alpha", "dev12:gamma"]);
 
     expect(target.nodes).toEqual(["alpha", "beta"]);
-    expect(target.labels).toEqual(["dev11:alpha", "dev11:beta"]);
+    expect(target.labels).toEqual(["alpha@dev11", "beta@dev11"]);
     expect(target.project).toBe("dev11");
     expect(mixed.map((group) => group.project)).toEqual(["dev11", "dev12"]);
     expect(mixed.map((group) => group.nodes)).toEqual([["alpha"], ["gamma"]]);
+  });
+
+  test("parses canonical node@project addresses (matches org display)", () => {
+    expect(parseProjectNodeAddress("worker@dev11")).toEqual({ node: "worker", project: "dev11" });
+    expect(parseProjectNodeAddress("lead@base-web-admin")).toEqual({
+      node: "lead",
+      project: "base-web-admin",
+    });
+    expect(parseProjectNodeAddress("worker@dev11", { project: "dev11" })).toEqual({
+      node: "worker",
+      project: "dev11",
+    });
+    expect(() => parseProjectNodeAddress("worker@dev11", { project: "dev12" })).toThrow(
+      /conflicting projects/,
+    );
+  });
+
+  test("still parses legacy project:node addresses (backcompat)", () => {
+    expect(parseProjectNodeAddress("dev11:worker")).toEqual({ node: "worker", project: "dev11" });
+  });
+
+  test("formatNodeAddress emits the canonical form and round-trips with the parser", () => {
+    expect(formatNodeAddress("worker", "dev11", { homeProject: "dev10" })).toBe("worker@dev11");
+    expect(formatNodeAddress("worker", "dev10", { homeProject: "dev10" })).toBe("worker");
+    for (const [node, project] of [
+      ["worker", "dev11"],
+      ["lead", "base-web-admin"],
+    ] as const) {
+      expect(
+        parseProjectNodeAddress(formatNodeAddress(node, project, { homeProject: "dev10" })),
+      ).toEqual({
+        node,
+        project,
+      });
+    }
   });
 });

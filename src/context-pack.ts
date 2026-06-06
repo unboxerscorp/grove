@@ -31,6 +31,10 @@ export interface GroveContextPackInput {
   maxBytes?: number;
   nodes?: readonly ContextPackNode[];
   project: string;
+  // Registry/session backing the project. Rendered as a separate line ONLY when
+  // it differs from `project` (v1 keeps them 1:1, so the line never appears and
+  // the pack stays byte-identical). Disentangles project identity from storage.
+  registrySession?: string;
   projectLead?: string;
   targetNode?: string;
   targetRole?: string;
@@ -201,6 +205,15 @@ export function contextPackNodesFromContext(ctx: Context): ContextPackNode[] {
   return [...byName.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
+/** The `Registry/session:` line, rendered only when the registry/session differs
+ *  from the logical project (v1 keeps them 1:1, so this is empty and the pack is
+ *  byte-identical). Mirror of context_pack.py:_registry_session_lines. */
+function registrySessionLines(input: GroveContextPackInput): string[] {
+  const session = input.registrySession?.trim() ?? "";
+  if (session === "" || session === input.project.trim()) return [];
+  return [`Registry/session: ${clean(session)}`];
+}
+
 export function buildGroveContextPack(input: GroveContextPackInput): string {
   const nodes = collapseForeignProjects(input.nodes ?? [], input.project).slice(0, MAX_NODE_LINES);
   const lead = projectLead(nodes, input.projectLead);
@@ -217,6 +230,7 @@ export function buildGroveContextPack(input: GroveContextPackInput): string {
     GROVE_CONTEXT_PACK_HEADER,
     `Caller node: ${clean(input.callerNode, "operator/CLI")}`,
     `Project: ${clean(input.project)}`,
+    ...registrySessionLines(input),
     `Project lead: ${clean(lead)}`,
     targetNode ? `Target node: ${targetNode}` : "Target node: (none)",
     targetRole ? `Target role: ${targetRole}` : "Target role: (not recorded)",
@@ -251,6 +265,7 @@ export function buildCompactGroveContextPack(input: GroveContextPackInput): stri
     `${GROVE_CONTEXT_PACK_HEADER} (compact)`,
     `Caller node: ${clean(input.callerNode, "operator/CLI")}`,
     `Project: ${clean(input.project)}`,
+    ...registrySessionLines(input),
     targetNode ? `Target node: ${targetNode}` : "Target node: (none)",
     ...(targetRole ? [`Target role: ${targetRole}`] : []),
     ...(workInstructions ? [`Target work instructions (advisory): ${workInstructions}`] : []),
