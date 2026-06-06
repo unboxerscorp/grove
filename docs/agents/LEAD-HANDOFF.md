@@ -88,8 +88,8 @@
   - 최신 product-code HEAD는 `5d01154 fix: pin web tmux commands to session socket`이다. bridge tmux subprocess와 node connect payload가 pane/session에서 `tmux -L <session>`을 유도하므로 tmux 밖 launchd/SSH/headless 컨텍스트에서도 default socket이 아니라 `dev10` named socket을 결정적으로 본다.
   - main web은 `dev10:1.0`에서 `/Users/chopin/.grove/dev10/run-web-loop.sh`가 관리하며 `0.0.0.0:8765`로 실행 중이다. 2026-06-06 13:57 KST 기준 child pid `34459`, `started_at=1780721628`, health ok.
   - 원격 실시간 UI용 보조 web은 tmux 조직 pane에 올리지 않는다. `~/Library/LaunchAgents/local.grove.client-web-5173.plist`가 tmux 밖 LaunchAgent로 `0.0.0.0:5173`을 실행한다. 2026-06-06 13:57 KST 기준 pid `36987`, `started_at=1780721854`, health ok. plist는 `PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin`, `GROVE_HOME=/Users/chopin/.grove`, `--session dev10`, `--unsafe-bind`, `--enable-node-input`, `--enable-intake`, `--allow-host 100.100.90.87,192.168.1.186`를 명시한다. `$TMUX` 하드코딩은 제거했으며, liveness는 코드의 `tmux -L dev10` 경로로 검증한다.
-  - 운영자 접속 URL은 `http://100.100.90.87:5173/`이다. 자동 local-token bootstrap이 HTML에 주입되고, `/api/status`는 `running=4`, `/api/org`는 `default_assignee=grove-master`, 4개 노드 모두 `pane_exists=true`를 반환한다. `8765`와 `5173`의 `/api/nodes/grove-master/connect`는 둘 다 `ssh 100.100.90.87 'tmux -L dev10 select-pane -t dev10:0.0 && tmux -L dev10 attach -t dev10'`를 반환한다.
-  - 현재 tmux 조직은 `dev10` 단일 세션의 windows `0 grove-master`, `1 web`, `2 slack`, `3 advisor`만 사용한다. 5173 보조 서버는 이 조직도에 노드/window로 추가하지 않는다.
+  - 운영자 접속 URL은 `http://100.100.90.87:5173/`이다. 자동 local-token bootstrap이 HTML에 주입되고, 최신 baseline에서 `/api/status`는 `total=5`, `running=4`, `idle=1`, `/api/org`는 `default_assignee=grove-master`, 5개 노드 모두 `pane_exists=true`를 반환한다. `8765`와 `5173`의 `/api/nodes/grove-master/connect`는 둘 다 `ssh 100.100.90.87 'tmux -L dev10 select-pane -t dev10:0.0 && tmux -L dev10 attach -t dev10'`를 반환한다.
+  - 현재 tmux 조직은 `dev10` 단일 세션의 windows `0 grove-master`, `1 web`, `2 slack`, `3 advisor`, `4 jester`를 사용한다. 5173 보조 서버는 이 조직도에 노드/window로 추가하지 않는다.
   - Slack은 재시작하지 않았고 runtime pid `59036`, `socket_connected=true`, heartbeat fresh를 유지한다.
   - 검증: `pnpm check` green(TS/Vitest 56 files 302 tests, bridge pytest 454), `node web/e2e/live.mjs` 94/94 green(`LIVE_E2E_CLEANUP matched=2`), DB residue `tasks=0`, `comments=0`, `p2-test` board row 0, `~/.grove/p2-test/registry.json` absent, git tree clean.
 
@@ -124,7 +124,7 @@
 - 앞으로 기본 운영은 `dev10` tmux 하나를 쓴다. 현재 서비스 창은 `dev10:1.0 web`, `dev10:2.0 slack`이다.
 - 프로젝트 ID와 host tmux 세션은 분리됐다. web 프로젝트 생성은 `grove new-project --tmux-session dev10`로 새 프로젝트 registry를 만들고 pane은 `dev10`에 둔다.
 - 사용자가 Slack 재가동을 명시 승인했다. Slack은 `grove-master`와 직접 대화하도록 켜져 있으며, 긴 응답은 Slack thread 안에서 chunking한다.
-- web은 원격 접속을 위해 `0.0.0.0:8765`에 떠 있어야 한다. 현재 tailnet URL은 `http://100.100.90.87:8765`, LAN URL은 `http://192.168.1.186:8765`이다.
+- web은 main cockpit API/UI용 `0.0.0.0:8765`와 운영자 원격 실시간 UI용 LaunchAgent `0.0.0.0:5173` 두 경로가 모두 떠 있어야 한다. 현재 운영자 tailnet URL은 `http://100.100.90.87:5173/`이고, 5173은 tmux 조직 pane에 올리지 않는다.
 - 사람용 목록 항목은 노드 간 통신 프로토콜이 아니다. 사람 TODO, 사람 피드백, ask-human/판단 대기 기록으로만 취급한다.
 - 2026-06-06 13:14 KST 기준 live board DB의 `tasks=0`, `comments=0`, `p2-test` fixture board row 잔존 0, 모든 남은 board slug의 `task_count=0`, `/api/boards == [dev10]`, `/api/inbox total=0`이다. 웹 보드는 "피드백 및 할 일" / "사람 판단 필요" 두 목록만 기본 노출한다.
 - 노드 간 통신은 직접 대화, tmux capture/send, CLI ask/send 등 각 노드 판단에 맡긴다.
@@ -235,10 +235,12 @@ worktree(`~/grove-worktrees/{auth,gui,master,slack,platform}`)는 main보다 크
 
 ## 4. 데몬/노드
 
-- web: `dev10:1.0`, `0.0.0.0:8765`, tailnet `100.100.90.87`, LAN `192.168.1.186`, `/Users/chopin/.grove/dev10/run-web-loop.sh`가 재시작 루프를 담당한다.
+- web main: `dev10:1.0`, `0.0.0.0:8765`, `/Users/chopin/.grove/dev10/run-web-loop.sh`가 재시작 루프를 담당한다.
+- web remote: tmux 조직 pane 밖 LaunchAgent, `0.0.0.0:5173`, 운영자 tailnet URL `http://100.100.90.87:5173/`, `~/Library/LaunchAgents/local.grove.client-web-5173.plist`가 담당한다.
 - slack: `dev10:2.0`, `/Users/chopin/.grove/dev10/run-slack-loop.sh`가 재시작 루프를 담당한다.
 - grove-master: `dev10:0.0`, codex, root.
 - advisor: `dev10:3.0`, claude, `grove-master`의 advisory child. 5분 점검 루프를 유지한다.
+- jester: `dev10:4.0`, claude, social/passive. 요청받을 때만 짧은 농담을 하고 파일/org/list item을 건드리지 않는다.
 - 조직도 `roots:['grove-master']`. 기본 live 프로젝트는 `dev10` 하나다.
 
 ## 5. 캐논 스켈레톤 (최우선 미션)
