@@ -554,6 +554,27 @@ async function coreMain() {
       boardGroupFilter.initial > boardGroupFilter.filtered &&
       boardGroupFilter.filtered > 0;
 
+    await page.$eval('.dr-card[data-task="G-7"] .dr-card__open', (el) => el.click());
+    await page.waitForSelector(".dr-drawer__panel", { timeout: 8000 });
+    const n2Drawer = await page.evaluate(() => ({
+      ticket: (document.querySelector(".dr-drawer__ticket")?.textContent ?? "").trim(),
+      hasPill: !!document.querySelector(".dr-drawer .dr-pill"),
+      threadLink: (document.querySelector(".dr-slack-thread")?.textContent ?? "").trim(),
+      threadHref: document.querySelector(".dr-slack-thread")?.getAttribute("href") ?? "",
+      threadMeta: (document.querySelector(".dr-slack-thread__meta")?.textContent ?? "").trim(),
+    }));
+    await page.click(".dr-drawer__close");
+    await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
+    const n2Ok =
+      // #N2 ask-human web visibility: blocked/human-decision item drawers show
+      // the Slack thread entrypoint tied to the item, not only an inbox count.
+      n2Drawer.ticket === "G-7" &&
+      n2Drawer.hasPill === true &&
+      /Slack|슬랙/i.test(n2Drawer.threadLink) &&
+      n2Drawer.threadHref.includes("app.slack.com/client/TMOCK/CDECIDE/thread/CDECIDE-1780700000.123456") &&
+      n2Drawer.threadMeta.includes("CDECIDE") &&
+      n2Drawer.threadMeta.includes("1780700000.123456");
+
     const ok =
       JSON.stringify(sidebar.groups) === JSON.stringify(["work", "comms", "audit", "setup"]) &&
       sidebar.visibleViewsOk &&
@@ -589,6 +610,7 @@ async function coreMain() {
       /사람용|Human/i.test(board.title) &&
       board.lists.length === 2 &&
       boardGroupFilterOk &&
+      n2Ok &&
       board.noStatusFilters &&
       errors.length === 0;
 
@@ -606,6 +628,8 @@ async function coreMain() {
             board,
             boardGroupFilter,
             boardGroupFilterOk,
+            n2Drawer,
+            n2Ok,
             statusInitial,
             statusActiveAlias,
             statusActiveAliasOk,
@@ -639,6 +663,7 @@ async function coreMain() {
         i18nFullOk,
         projectLoadRebindOk,
         boardGroupFilterOk,
+        n2Ok,
         lists: board.lists,
       }),
     );
@@ -1662,9 +1687,8 @@ async function main() {
       n4SparkOff === true;
 
     // #N2 ask-human visualization (여정3): a blocked task is surfaced in the
-    // Blocked column and its drawer shows the blocked status pill. (A dedicated
-    // "사람 대기" badge + Slack-thread link in the drawer is still a product gap
-    // — no SPA UI exists yet; this asserts the blocked visualization that does.)
+    // Blocked column and its drawer shows the blocked status pill plus a
+    // read-only Slack thread link for the human decision surface.
     const BLOCKED_COL = 3;
     const n2BlockedCol = await colIndexOf("G-7"); // G-7 is seeded status: "blocked"
     await page.evaluate(() => {
@@ -1676,10 +1700,20 @@ async function main() {
     const n2Drawer = await page.evaluate(() => ({
       ticket: (document.querySelector(".dr-drawer__ticket")?.textContent ?? "").trim(),
       hasPill: !!document.querySelector(".dr-drawer .dr-pill"),
+      threadLink: (document.querySelector(".dr-slack-thread")?.textContent ?? "").trim(),
+      threadHref: document.querySelector(".dr-slack-thread")?.getAttribute("href") ?? "",
+      threadMeta: (document.querySelector(".dr-slack-thread__meta")?.textContent ?? "").trim(),
     }));
     await page.click(".dr-drawer__close");
     await page.waitForFunction(() => !document.querySelector(".dr-drawer"), { timeout: 8000 });
-    const n2Ok = n2BlockedCol === BLOCKED_COL && n2Drawer.ticket === "G-7" && n2Drawer.hasPill === true;
+    const n2Ok =
+      n2BlockedCol === BLOCKED_COL &&
+      n2Drawer.ticket === "G-7" &&
+      n2Drawer.hasPill === true &&
+      /Slack|슬랙/i.test(n2Drawer.threadLink) &&
+      n2Drawer.threadHref.includes("app.slack.com/client/TMOCK/CDECIDE/thread/CDECIDE-1780700000.123456") &&
+      n2Drawer.threadMeta.includes("CDECIDE") &&
+      n2Drawer.threadMeta.includes("1780700000.123456");
 
     // v1.29 manual workflow status (task_d0ed0b8 / task_ae67d): the on-card status
     // dropdown issues a real PATCH /api/tasks/{id}/status (canonical key) and the

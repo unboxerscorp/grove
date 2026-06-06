@@ -126,6 +126,8 @@ const KO: Dict = {
   "drawer.comments": "댓글",
   "drawer.noRuns": "아직 실행 없음",
   "drawer.noComments": "댓글 없음",
+  "drawer.slackThreads": "Slack 결정 스레드",
+  "drawer.slackThreadOpen": "Slack 스레드 열기 ↗",
 
   "tab.team": "팀",
   "org.title": "조직도",
@@ -880,6 +882,8 @@ const EN: Dict = {
   "drawer.comments": "Comments",
   "drawer.noRuns": "no runs yet",
   "drawer.noComments": "no comments",
+  "drawer.slackThreads": "Slack decision threads",
+  "drawer.slackThreadOpen": "Open Slack thread ↗",
 
   "tab.team": "Team",
   "org.title": "Org chart",

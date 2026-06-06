@@ -77,13 +77,13 @@
 - **화면에서 보는 것:** 보드의 blocked 컬럼 카드, Slack의 질문 스레드, (재개 후) 카드가 running으로 복귀.
 - **성공 기준:** 막힌 태스크가 알림되고, 스레드 답글이 정확한 세션으로 라우팅되어 unblock, 실행이 이어진다.
 
-| 단계                     | 화면            | 성공 기준                                          | 커버 테스트                                                                                                                                        | 상태                |
-| ------------------------ | --------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| 보드 읽기 전용 관찰      | 보드 뷰         | 컬럼/카드 렌더                                     | `web/verify.mjs`(board)                                                                                                                            | covered             |
-| ask-human 차단 발생      | (백엔드)        | 실패/대기 태스크가 block + 알림                    | `bridge::test_run_once_blocks_failed_task_and_notifies_after_block`, `bridge::test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply`     | covered             |
-| Slack 스레드 답글로 해소 | Slack           | 스레드 답글이 세션으로 라우팅·unblock              | `bridge::test_chat_routing_uses_thread_session_and_posts_response`, `bridge::test_chat_routing_uses_mentioned_node_when_channel_has_no_route`      | covered             |
-| 진행 재개                | 보드            | unblock 후 ready→running                           | `bridge::test_dependencies_promote_children_only_after_parents_done_or_force_unblock`, `bridge::test_release_stale_returns_running_tasks_to_ready` | covered             |
-| 웹에서 ask-human 가시화  | 보드/Slack 패널 | blocked 카드가 "사람 대기" 표시 + 스레드 링크 노출 | — (웹 UI 없음; `bridge::test_slack_threads_endpoint_lists_task_threads`만 백엔드 커버)                                                             | **needs-test (N2)** |
+| 단계                     | 화면            | 성공 기준                                          | 커버 테스트                                                                                                                                        | 상태    |
+| ------------------------ | --------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| 보드 읽기 전용 관찰      | 보드 뷰         | 컬럼/카드 렌더                                     | `web/verify.mjs`(board)                                                                                                                            | covered |
+| ask-human 차단 발생      | (백엔드)        | 실패/대기 태스크가 block + 알림                    | `bridge::test_run_once_blocks_failed_task_and_notifies_after_block`, `bridge::test_human_gate_posts_blocked_task_and_unblocks_on_thread_reply`     | covered |
+| Slack 스레드 답글로 해소 | Slack           | 스레드 답글이 세션으로 라우팅·unblock              | `bridge::test_chat_routing_uses_thread_session_and_posts_response`, `bridge::test_chat_routing_uses_mentioned_node_when_channel_has_no_route`      | covered |
+| 진행 재개                | 보드            | unblock 후 ready→running                           | `bridge::test_dependencies_promote_children_only_after_parents_done_or_force_unblock`, `bridge::test_release_stale_returns_running_tasks_to_ready` | covered |
+| 웹에서 ask-human 가시화  | 보드/Slack 패널 | blocked 카드가 "사람 대기" 표시 + 스레드 링크 노출 | `web/verify.mjs` `#N2`, `bridge::test_slack_threads_endpoint_lists_task_threads`                                                                   | covered |
 
 ---
 
@@ -173,7 +173,7 @@
 | 토큰 입력·검증·저장 | 연동 패널 | xapp-/xoxb- 검증, 마스킹, `POST /api/slack/config`     | `web/verify.mjs`(validationErr, masked 1234/5678, slackCfg), `bridge::test_slack_config_store_validates_and_masks_tokens` | covered |
 | 연결 상태·테스트    | 연동 패널 | 상태 전이 not_configured→tokens_saved→socket_connected | `web/verify.mjs`(statusAfterSave, liveAfterTest), `bridge::test_status_probe_reports_bot_auth_ok_for_saved_tokens`        | covered |
 | 채널↔노드 매핑      | 연동 패널 | 기본 채널+노드 저장, 노드는 현재 프로젝트 기준         | `web/verify.mjs`(nodeOptions, default_node), (전환 시 재로드: SlackPanel projectTick)                                     | covered |
-| 스레드 보기 링크    | 연동 패널 | `GET /api/slack/threads` 진입점                        | `bridge::test_slack_threads_endpoint_lists_task_threads` (웹 렌더 테스트는 N2)                                            | partial |
+| 스레드 보기 링크    | 연동 패널 | `GET /api/slack/threads` 진입점                        | `bridge::test_slack_threads_endpoint_lists_task_threads`, `web/verify.mjs` `#N2`                                          | covered |
 
 ---
 
@@ -227,7 +227,7 @@
 | ID  | 대상                    | 무엇을 검증                                                                                       | 권장/실제 위치                                                                                   | 우선 | 상태    |
 | --- | ----------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ---- | ------- |
 | N1  | 신규/전환 직후 컨텍스트 | 새 프로젝트 생성·전환 직후 조직도/보드가 그 프로젝트(빈 컨텍스트)로 재로드, 이전 데이터 잔존 없음 | `web/verify.mjs` `#N1 project switch re-scope + no residue`                                      | P1   | covered |
-| N2  | ask-human 웹 가시화     | blocked/사람대기 카드 표시 + Slack 스레드 링크 렌더                                               | `web/verify.mjs` `#N2`, `web/e2e/live.mjs` inbox journey, `web/e2e/api.mjs` `/api/inbox` journey | P1   | partial |
+| N2  | ask-human 웹 가시화     | blocked/사람대기 카드 표시 + Slack 스레드 링크 렌더                                               | `web/verify.mjs` `#N2`, `web/e2e/live.mjs` inbox journey, `web/e2e/api.mjs` `/api/inbox` journey | P1   | covered |
 | N3  | 터미널 WS 재스코프      | 프로젝트 전환 후 노드 선택 시 새 프로젝트 ticket으로 terminal WS 재연결                           | `web/verify.mjs` `wsBindOk`, `web/e2e/api.mjs` ws-ticket project binding                         | P1   | covered |
 | N4  | WS 재연결·백오프        | 소켓 close 시 지수 백오프(상한), 4401은 재연결 중단                                               | `web/verify.mjs` `n4Ok` close/reconnect/4401 assertions                                          | P2   | covered |
 | N5  | 터미널 상태 전이        | connecting→live→reconnecting→error UI 라벨/LED 전이                                               | `web/verify.mjs` `#N5 terminal connection-state transitions`                                     | P2   | covered |
@@ -237,5 +237,5 @@
 | N9  | 읽기 전용 터미널        | xterm 입력 비전달 보장(키 입력→무전송)                                                            | `web/verify.mjs` `#N9 xterm stdin disabled`                                                      | P3   | covered |
 | N10 | 그룹 일괄 작업          | 보드 그룹 필터는 커버, 그룹 단위 일괄 배정은 제품화 후 보완                                       | `web/verify.mjs` `#N10 board group filter`                                                       | P3   | partial |
 
-N2는 blocked/ask-human 카드, inbox API, live inbox answer 흐름은 커버됐지만,
-Slack thread link를 drawer에 렌더하는 전용 SPA 표면은 아직 제품화되지 않아 `partial`로 남긴다.
+N2는 blocked/ask-human 카드, inbox API, live inbox answer 흐름, drawer Slack thread
+entrypoint까지 커버됐다.

@@ -3503,6 +3503,41 @@ button {
   color: var(--faint);
 }
 
+.dr-slack-thread-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dr-slack-thread-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-2) 72%, transparent);
+}
+
+.dr-slack-thread {
+  width: fit-content;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.dr-slack-thread:hover {
+  color: var(--amber);
+}
+
+.dr-slack-thread__meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+  overflow-wrap: anywhere;
+}
+
 .dr-run {
   display: flex;
   align-items: flex-start;

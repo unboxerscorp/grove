@@ -17,6 +17,7 @@ import type {
   Org,
   OrgNode,
   Run,
+  SlackThread,
   Task,
   WsTicket,
 } from "./types";
@@ -1056,6 +1057,7 @@ export const api = {
   getTask: (id: string) => getJSON<Task>(`/api/tasks/${enc(id)}`),
   getComments: (id: string) => getJSON<Comment[]>(`/api/tasks/${enc(id)}/comments`),
   getRuns: (id: string) => getJSON<Run[]>(`/api/tasks/${enc(id)}/runs`),
+  getSlackThreads: (id: string) => getJSON<SlackThread[]>(`/api/slack/threads?task_id=${enc(id)}`),
 
   listNodes: () => getJSON<GroveNode[]>("/api/nodes"),
 

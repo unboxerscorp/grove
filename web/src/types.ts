@@ -35,6 +35,15 @@ export interface Run {
   summary?: string;
 }
 
+export interface SlackThread {
+  task_id: string;
+  team_id: string;
+  channel_id: string;
+  thread_ts: string;
+  mode: string;
+  node?: string | null;
+}
+
 export type NodeHealthStatus =
   | "healthy"
   | "rate_limited"

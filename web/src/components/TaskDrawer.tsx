@@ -5,7 +5,7 @@ import type { AuditEvent } from "../api";
 import { cx, initials, MANUAL_STATUS_COLUMNS, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import type { TFn } from "../i18n";
-import type { AssigneeCandidate, Comment, Run, Task } from "../types";
+import type { AssigneeCandidate, Comment, Run, SlackThread, Task } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
 
 /** v1.29 workflow controls: status transition + reviewer (operator only). Both
@@ -189,6 +189,38 @@ function ExecutionTimeline({ taskId, t }: { taskId: string; t: TFn }) {
   );
 }
 
+function slackThreadUrl(thread: SlackThread): string {
+  return `https://app.slack.com/client/${encodeURIComponent(thread.team_id)}/${encodeURIComponent(
+    thread.channel_id,
+  )}/thread/${encodeURIComponent(`${thread.channel_id}-${thread.thread_ts}`)}`;
+}
+
+function TaskSlackThreads({ threads, t }: { threads: SlackThread[]; t: TFn }) {
+  const humanThreads = threads.filter((thread) => /human|gate|ask/i.test(thread.mode));
+  if (humanThreads.length === 0) return null;
+
+  return (
+    <section className="dr-drawer__section dr-slack-threads">
+      <h3 className="dr-drawer__h">
+        {t("drawer.slackThreads")} <span className="dr-drawer__hn">{humanThreads.length}</span>
+      </h3>
+      <div className="dr-slack-thread-list">
+        {humanThreads.map((thread) => (
+          <div key={`${thread.channel_id}:${thread.thread_ts}`} className="dr-slack-thread-row">
+            <a className="dr-slack-thread" href={slackThreadUrl(thread)} target="_blank" rel="noreferrer">
+              {t("drawer.slackThreadOpen")}
+            </a>
+            <span className="dr-slack-thread__meta">
+              {thread.channel_id} · {thread.thread_ts}
+              {thread.node ? ` · ${thread.node}` : ""}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function TaskDrawer(props: {
   taskId: string | null;
   onClose: () => void;
@@ -201,6 +233,7 @@ export function TaskDrawer(props: {
   const [task, setTask] = useState<Task | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [slackThreads, setSlackThreads] = useState<SlackThread[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -209,6 +242,7 @@ export function TaskDrawer(props: {
       setTask(null);
       setComments([]);
       setRuns([]);
+      setSlackThreads([]);
       setError(null);
       return;
     }
@@ -219,12 +253,14 @@ export function TaskDrawer(props: {
       api.getTask(taskId),
       api.getComments(taskId).catch(() => [] as Comment[]),
       api.getRuns(taskId).catch(() => [] as Run[]),
+      api.getSlackThreads(taskId).catch(() => [] as SlackThread[]),
     ])
-      .then(([t, c, r]) => {
+      .then(([t, c, r, s]) => {
         if (!alive) return;
         setTask(t);
         setComments(Array.isArray(c) ? c : []);
         setRuns(Array.isArray(r) ? r : []);
+        setSlackThreads(Array.isArray(s) ? s : []);
       })
       .catch((e: unknown) => {
         if (alive) setError(e instanceof Error ? e.message : t("drawer.loadError"));
@@ -298,6 +334,8 @@ export function TaskDrawer(props: {
               )}
             </div>
             {task.body && <p className="dr-drawer__body">{task.body}</p>}
+
+            <TaskSlackThreads threads={slackThreads} t={t} />
 
             <TaskWorkflow
               task={task}

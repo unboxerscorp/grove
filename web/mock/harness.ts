@@ -15,6 +15,15 @@ interface MockTask {
   tenant?: string;
 }
 
+interface MockSlackThread {
+  task_id: string;
+  team_id: string;
+  channel_id: string;
+  thread_ts: string;
+  mode: string;
+  node?: string;
+}
+
 const BOARDS = [
   { id: "grove", name: "Grove", task_count: 7 },
   { id: "infra", name: "Infra", task_count: 3 },
@@ -46,6 +55,17 @@ const TASKS: Record<string, MockTask[]> = {
   // leaves no residue from the default project's boards/tasks.
   "solo-x": [{ id: "S-1", title: "solo task", status: "running", assignee: "solo" }],
 };
+
+const SLACK_THREADS: MockSlackThread[] = [
+  {
+    task_id: "G-7",
+    team_id: "TMOCK",
+    channel_id: "CDECIDE",
+    thread_ts: "1780700000.123456",
+    mode: "human_gate",
+    node: "frontend",
+  },
+];
 
 // v1.29 workflow contract — mirrors web_app.py WORKFLOW_ALIASES + _workflow_columns
 // + MANUAL_TASK_STATUS_ALIASES. Raw stored statuses map onto canonical keys; the
@@ -2697,7 +2717,10 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     slack = { status: "socket_connected", last_event_at: "2026-06-03T12:00:00Z", last_error: null };
     return Promise.resolve(json(slack));
   }
-  if (p === "/api/slack/threads") return Promise.resolve(json([]));
+  if (p === "/api/slack/threads") {
+    const taskId = u.searchParams.get("task_id") ?? "";
+    return Promise.resolve(json(SLACK_THREADS.filter((thread) => thread.task_id === taskId)));
+  }
 
   return realFetch(input, init);
 }) as typeof fetch;
