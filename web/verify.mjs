@@ -558,6 +558,11 @@ async function coreMain() {
       groupFilter: !!document.querySelector(".dr-board__group-filter"),
       noStatusFilters: document.querySelectorAll(".dr-board__filters, .dr-filter").length === 0,
     }));
+    const mockBoards = await page.evaluate(async () => {
+      const res = await fetch("/api/boards", { headers: { "X-Grove-Project": "dev10" } });
+      return await res.json();
+    });
+    const mockBoardsOk = mockBoards.length === 1 && mockBoards[0]?.id === "grove";
     const boardGroupFilter = { initial: board.totalCards, filtered: 0, values: [] };
     if (board.groupFilter) {
       boardGroupFilter.values = await page.$$eval(".dr-board__group-filter option", (els) =>
@@ -652,6 +657,7 @@ async function coreMain() {
       statusActiveAliasOk &&
       i18nFullOk &&
       projectLoadRebindOk &&
+      mockBoardsOk &&
       statusLoading.loading &&
       statusLoading.noFalseZero &&
       teamLoading.nodes === 0 &&
@@ -710,6 +716,8 @@ async function coreMain() {
             i18nFullOk,
             projectLoadRebind,
             projectLoadRebindOk,
+            mockBoards,
+            mockBoardsOk,
             errors,
           },
           null,

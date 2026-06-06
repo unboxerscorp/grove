@@ -26,7 +26,6 @@ interface MockSlackThread {
 
 const BOARDS = [
   { id: "grove", name: "Grove", task_count: 7 },
-  { id: "infra", name: "Infra", task_count: 3 },
 ];
 
 const TASKS: Record<string, MockTask[]> = {
