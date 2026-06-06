@@ -128,7 +128,7 @@ def test_flag_on_generation_failure_defers_without_cli_fallback(tmp_path: Path) 
     assert due[0].last_error == "provider unavailable"
 
 
-class _ProposalAdapter:
+class _DegradeProposalAdapter:
     def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
         _ = request
         return '<<<GROVE_TASK_PROPOSAL>>>{"title": "정리", "card_text": "태스크로 만들까요?"}'
@@ -144,7 +144,7 @@ def test_flag_on_unconfirmable_proposal_degrades_to_plain_and_completes(
     slack, facade = _FakeSlack(), _FakeFacade()
     conn = _connector(store, slack, facade)
     assert conn._chat_bridge_runtime is not None
-    conn._chat_bridge_adapter = _ProposalAdapter()
+    conn._chat_bridge_adapter = _DegradeProposalAdapter()
     # Force the confirmable-preview build to fail.
     monkeypatch.setattr(conn, "_chat_bridge_runtime_task_preview", lambda *a, **k: None)
 
