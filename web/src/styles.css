@@ -5866,21 +5866,26 @@ button {
 .org-deleg-legend__label { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
 .org-deleg-edge.is-current { opacity: 0.95; }
 
-/* Interactive-terminal read-only DYNAMIC grid (multi-window). Scoped:
+/* Interactive-terminal read-only DYNAMIC grid (multi-window), RAGGED. Scoped:
    .dr-termgrid* / .dr-termfull* / .dr-term--compact only — appended to avoid
-   touching shared rules. Right "+" adds a column (widens), bottom "+" adds a row. */
+   touching shared rules. Each row has its own right "+" (add a column to that
+   row, so rows can differ); the single bottom "+" adds a new row. */
 .dr-termgrid { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: 6px; }
-.dr-termgrid__main { display: flex; flex: 1; min-height: 0; min-width: 0; gap: 6px; }
-.dr-termgrid__grid { display: grid; flex: 1; min-height: 0; min-width: 0; gap: 6px; grid-auto-rows: minmax(0, 1fr); }
-.dr-termgrid__cell { display: flex; flex-direction: column; min-height: 0; min-width: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+/* Ragged layout: rows stack vertically (equal height); each row lays its own
+   cells out horizontally (equal width within that row) followed by that row's
+   "+ column" button — so each row can hold a different number of columns. */
+.dr-termgrid__rows { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: 6px; }
+.dr-termgrid__row { display: flex; flex: 1 1 0; min-height: 0; min-width: 0; gap: 6px; }
+.dr-termgrid__cell { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .dr-termgrid__cellbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 3px 6px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
 .dr-termgrid__cellname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; color: var(--ink); }
 .dr-termgrid__icon { flex: 0 0 auto; font-family: var(--mono); color: var(--dim); background: transparent; border: 0; border-radius: 6px; padding: 1px 6px; cursor: pointer; }
 .dr-termgrid__icon:hover { color: var(--ink); }
 .dr-termgrid__icon:disabled { opacity: 0.4; cursor: default; }
 .dr-termgrid__screen { display: flex; flex: 1; min-height: 0; min-width: 0; }
-/* edge add buttons: right = tall (add column), bottom = wide (add row) */
-.dr-termgrid__addcol { flex: 0 0 26px; min-height: 0; font-family: var(--mono); font-size: 18px; color: var(--dim); background: var(--panel-2); border: 1px dashed var(--line); border-radius: 10px; cursor: pointer; }
+/* add buttons: per-row right "+" = tall (add a column to that row), bottom "+" =
+   wide (add a new row). The per-row button stretches to its row's height. */
+.dr-termgrid__addcol { flex: 0 0 26px; align-self: stretch; min-height: 0; font-family: var(--mono); font-size: 18px; color: var(--dim); background: var(--panel-2); border: 1px dashed var(--line); border-radius: 10px; cursor: pointer; }
 .dr-termgrid__addrow { flex: 0 0 26px; width: 100%; font-family: var(--mono); font-size: 18px; color: var(--dim); background: var(--panel-2); border: 1px dashed var(--line); border-radius: 10px; cursor: pointer; }
 .dr-termgrid__addcol:hover, .dr-termgrid__addrow:hover { color: var(--ink); border-color: var(--teal); }
 .dr-termgrid__addcol:disabled, .dr-termgrid__addrow:disabled { opacity: 0.3; cursor: default; }
