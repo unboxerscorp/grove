@@ -624,7 +624,7 @@ export interface RoutingUpdateResult {
 
 // Cross-room handoff (web_app.py). export → signed allowlist package (task →
 // {title,body,priority,labels}); accept → verify (trust/freshness) + EXPLICIT
-// accept → local task (idempotent by handoff_id, receiver TTL). Default OFF.
+// accept → human-facing local item (idempotent by handoff_id, receiver TTL). Default OFF.
 export interface HandoffPackage {
   algorithm: string;
   key_id: string;
@@ -1325,7 +1325,7 @@ export const api = {
   },
 
   // Cross-room handoff (default OFF → 404). export = signed package; accept =
-  // verify + EXPLICIT accept → local task (idempotent).
+  // verify + EXPLICIT accept → human-facing local item (idempotent).
   async exportHandoff(taskId: string): Promise<HandoffPackage> {
     const res = await fetch("/api/handoff/export", {
       method: "POST",

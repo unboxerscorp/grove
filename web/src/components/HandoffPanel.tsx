@@ -25,9 +25,10 @@ function HandoffMark() {
 /**
  * Receive a handoff (RECEIVER-LOCAL accept = human decision). Paste a signed
  * package → local preview (title/body/labels + freshness) → an EXPLICIT accept
- * (confirm) verifies it server-side and creates a local task. Nothing is created
- * or run before the confirm. Tampered / unknown-key / expired packages are
- * rejected with a fixed message (no raw/secret leak); accept is idempotent.
+ * (confirm) verifies it server-side and creates a human-facing local item.
+ * Nothing is created or run before the confirm. Tampered / unknown-key /
+ * expired packages are rejected with a fixed message (no raw/secret leak);
+ * accept is idempotent.
  */
 export function HandoffPanel({ onAccepted }: { projectTick: number; onAccepted: () => void }) {
   const { t } = useI18n();
@@ -71,7 +72,7 @@ export function HandoffPanel({ onAccepted }: { projectTick: number; onAccepted: 
         setBusy(false);
         setConfirming(false);
         setResult(r);
-        onAccepted(); // refresh board/audit (a local task may have been created)
+        onAccepted(); // refresh board/audit (a human-facing local item may have been created)
       })
       .catch((e: unknown) => {
         setBusy(false);

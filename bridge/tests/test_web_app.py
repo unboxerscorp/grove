@@ -4974,6 +4974,8 @@ def test_handoff_accept_trust_idempotency_and_receiver_local_only(tmp_path: Path
     package_payload = cast(dict[str, object], package["payload"])
     assert accepted_handoff["id"] == package_payload["handoff_id"]
     created_payload = next(response.json() for response in results if response.json()["created"])
+    assert "human-facing local item" in created_payload["limitations"][0]
+    assert "local unassigned ready task" not in " ".join(created_payload["limitations"])
     assert "never dispatches" in created_payload["limitations"][1]
     audits = store.list_audit_events(board="dev11", action="accept")
     assert len(audits) == 1

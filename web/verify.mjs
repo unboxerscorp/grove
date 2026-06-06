@@ -99,6 +99,7 @@ function assertNoStaleItemTitleCopy() {
 function assertNoStaleDelegationCopy() {
   const sources = [
     readFileSync(path.join(root, "src", "api.ts"), "utf8"),
+    readFileSync(path.join(root, "src", "components", "HandoffPanel.tsx"), "utf8"),
     readFileSync(path.join(root, "src", "styles.css"), "utf8"),
     readFileSync(path.join(root, "mock", "harness.ts"), "utf8"),
   ].join("\n");
@@ -111,6 +112,7 @@ function assertNoStaleDelegationCopy() {
       `${"Delegation"} history`,
       `delegation ${"recommendations"}`,
       `delegation ${"edge"}`,
+      `local ${"task"}`,
     ].join("|"),
     "i",
   );

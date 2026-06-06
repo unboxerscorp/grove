@@ -4566,7 +4566,7 @@ def _accept_handoff_payload(
         "handoff_id": payload["handoff_id"],
         "task": _task_payload(task),
         "limitations": [
-            "handoff accept creates a local unassigned ready task only",
+            "handoff accept creates a human-facing local item only",
             "handoff accept never dispatches or executes remote work",
         ],
     }

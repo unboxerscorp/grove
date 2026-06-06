@@ -2462,9 +2462,17 @@ async function run() {
     eq("handoff accept handoff_id echoed", acceptedHandoff.json && acceptedHandoff.json.handoff_id, handoffPackage.payload.handoff_id);
     eq("handoff accept creates ready task", acceptedHandoff.json && acceptedHandoff.json.task && acceptedHandoff.json.task.status, "ready");
     check(
-      "handoff accept creates unassigned local task",
+      "handoff accept creates unassigned local item",
       Boolean(acceptedHandoff.json && acceptedHandoff.json.task) && !("assignee" in acceptedHandoff.json.task),
       JSON.stringify(acceptedHandoff.json && acceptedHandoff.json.task),
+    );
+    check(
+      "handoff accept limitations use item wording",
+      Boolean(acceptedHandoff.json) &&
+        Array.isArray(acceptedHandoff.json.limitations) &&
+        acceptedHandoff.json.limitations.some((item) => /human-facing local item/i.test(item)) &&
+        !acceptedHandoff.json.limitations.some((item) => /local unassigned ready task/i.test(item)),
+      JSON.stringify(acceptedHandoff.json && acceptedHandoff.json.limitations),
     );
     check(
       "handoff accept limitations forbid remote execution",
