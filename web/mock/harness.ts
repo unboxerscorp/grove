@@ -2536,6 +2536,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       return Promise.resolve(new Response(JSON.stringify({ detail: "node not found" }), { status: 404 }));
     diag.nodeConnectFetched = node;
     const session = rec.tmux_pane.split(":")[0];
+    const tmuxPrefix = `tmux -L ${session}`;
     return Promise.resolve(
       json({
         project: proj,
@@ -2543,7 +2544,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         tmux_target: rec.tmux_pane,
         mode: "local_tmux_attach",
         label: "Local tmux attach",
-        commands: { attach: `tmux attach -t ${session}`, local_attach: `tmux attach -t ${session}`, select_pane: `tmux select-pane -t ${rec.tmux_pane}` },
+        commands: { attach: `${tmuxPrefix} attach -t ${session}`, local_attach: `${tmuxPrefix} attach -t ${session}`, select_pane: `${tmuxPrefix} select-pane -t ${rec.tmux_pane}` },
       }),
     );
   }

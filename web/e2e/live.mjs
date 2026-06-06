@@ -905,10 +905,10 @@ async function main() {
       check("grove-master connect uses SSH tmux attach", masterConnect.json?.mode === "ssh_tmux_attach", safeJson(masterConnect.json));
       check(
         "grove-master SSH attach command targets the master pane",
-        typeof masterConnect.json?.commands?.ssh_attach === "string" &&
+          typeof masterConnect.json?.commands?.ssh_attach === "string" &&
           masterConnect.json.commands.ssh_attach.includes("ssh ") &&
-          masterConnect.json.commands.ssh_attach.includes("tmux select-pane -t dev10:0.0") &&
-          masterConnect.json.commands.ssh_attach.includes("tmux attach -t dev10"),
+          masterConnect.json.commands.ssh_attach.includes("tmux -L dev10 select-pane -t dev10:0.0") &&
+          masterConnect.json.commands.ssh_attach.includes("tmux -L dev10 attach -t dev10"),
         safeJson(masterConnect.json),
       );
 
@@ -1010,6 +1010,33 @@ async function main() {
     await runStep(page, "organization chart master and leads", async () => {
       await nav(page, "team");
       await selectProject(page, REAL_PROJECT, REAL_PROJECT_LABEL_RE);
+      const liveOrg = await apiFetch(page, "/api/org", { project: REAL_PROJECT });
+      assertCheck("live org API returns 2xx", liveOrg.ok, `HTTP ${liveOrg.status} ${safeJson(liveOrg.json)}`);
+      check("live org default assignee is grove-master", liveOrg.json?.default_assignee === "grove-master", safeJson(liveOrg.json));
+      check("live org root is grove-master", liveOrg.json?.master_org?.project_master?.name === "grove-master", safeJson(liveOrg.json));
+      const orgNodes = Array.isArray(liveOrg.json?.nodes) ? liveOrg.json.nodes : [];
+      const requiredNodes = ["grove-master", "web", "slack", "advisor"];
+      check(
+        "live org API exposes all runtime nodes",
+        requiredNodes.every((name) => orgNodes.some((node) => node?.name === name)),
+        safeJson(orgNodes),
+      );
+      check(
+        "live org API exposes node metadata",
+        orgNodes
+          .filter((node) => requiredNodes.includes(node?.name))
+          .every(
+            (node) =>
+              typeof node?.role === "string" &&
+              node.role.length > 0 &&
+              typeof node?.cwd === "string" &&
+              node.cwd.length > 0 &&
+              typeof node?.tmux_pane === "string" &&
+              /^dev10:\d+\.\d+$/.test(node.tmux_pane) &&
+              node.pane_exists === true,
+          ),
+        safeJson(orgNodes),
+      );
       await nav(page, "team");
       await page.waitForSelector(".org-master, .master-org__root", { visible: true, timeout: 20_000 });
       const masterText = await page.evaluate(() => {

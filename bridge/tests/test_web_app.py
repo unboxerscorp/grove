@@ -5517,13 +5517,13 @@ def test_projects_endpoint_lists_registry_sessions_with_tmux_status(
     ]
     assert calls == [
         {
-            "args": ["tmux", "has-session", "-t", "dev10"],
+            "args": ["tmux", "-L", "dev10", "has-session", "-t", "dev10"],
             "capture_output": True,
             "timeout": web_app.TMUX_TIMEOUT_SECONDS,
             "check": False,
         },
         {
-            "args": ["tmux", "has-session", "-t", "stopped"],
+            "args": ["tmux", "-L", "stopped", "has-session", "-t", "stopped"],
             "capture_output": True,
             "timeout": web_app.TMUX_TIMEOUT_SECONDS,
             "check": False,
@@ -6607,8 +6607,8 @@ def test_node_send_uses_literal_tmux_argv_audits_redacts_and_rate_limits(
     }
     assert limited.status_code == 429
     assert calls == [
-        ["tmux", "send-keys", "-t", "dev10:1.0", "-l", "--", text],
-        ["tmux", "send-keys", "-t", "dev10:1.0", "Enter"],
+        ["tmux", "-L", "dev10", "send-keys", "-t", "dev10:1.0", "-l", "--", text],
+        ["tmux", "-L", "dev10", "send-keys", "-t", "dev10:1.0", "Enter"],
     ]
     audits = store.list_audit_events(board="dev10", action="node-send", node="worker")
     assert len(audits) == 1
@@ -6668,8 +6668,8 @@ def test_node_send_target_project_header_sends_to_target_and_audits_caller_board
         "tmux_pane": "dev11:2.0",
     }
     assert calls == [
-        ["tmux", "send-keys", "-t", "dev11:2.0", "-l", "--", "hello remote"],
-        ["tmux", "send-keys", "-t", "dev11:2.0", "Enter"],
+        ["tmux", "-L", "dev11", "send-keys", "-t", "dev11:2.0", "-l", "--", "hello remote"],
+        ["tmux", "-L", "dev11", "send-keys", "-t", "dev11:2.0", "Enter"],
     ]
     caller_audits = store.list_audit_events(board="dev10", action="node-send", node="worker")
     assert len(caller_audits) == 1
@@ -6785,12 +6785,14 @@ def test_node_connect_info_is_read_only_and_project_scoped(tmp_path: Path) -> No
         "label": "SSH tmux attach (builder.example)",
         "commands": {
             "attach": (
-                "ssh builder.example 'tmux select-pane -t dev10:2.0 && tmux attach -t dev10'"
+                "ssh builder.example 'tmux -L dev10 select-pane -t dev10:2.0 && "
+                "tmux -L dev10 attach -t dev10'"
             ),
-            "local_attach": "tmux attach -t dev10",
-            "select_pane": "tmux select-pane -t dev10:2.0",
+            "local_attach": "tmux -L dev10 attach -t dev10",
+            "select_pane": "tmux -L dev10 select-pane -t dev10:2.0",
             "ssh_attach": (
-                "ssh builder.example 'tmux select-pane -t dev10:2.0 && tmux attach -t dev10'"
+                "ssh builder.example 'tmux -L dev10 select-pane -t dev10:2.0 && "
+                "tmux -L dev10 attach -t dev10'"
             ),
         },
     }
@@ -6802,9 +6804,9 @@ def test_node_connect_info_is_read_only_and_project_scoped(tmp_path: Path) -> No
         "mode": "local_tmux_attach",
         "label": "Local tmux attach",
         "commands": {
-            "attach": "tmux attach -t dev10",
-            "local_attach": "tmux attach -t dev10",
-            "select_pane": "tmux select-pane -t dev10:0.0",
+            "attach": "tmux -L dev10 attach -t dev10",
+            "local_attach": "tmux -L dev10 attach -t dev10",
+            "select_pane": "tmux -L dev10 select-pane -t dev10:0.0",
         },
     }
     assert scoped.status_code == 404
@@ -6835,11 +6837,15 @@ def test_node_connect_info_uses_allowed_host_for_headless_ssh(tmp_path: Path) ->
         "mode": "ssh_tmux_attach",
         "label": "SSH tmux attach (100.100.90.87)",
         "commands": {
-            "attach": "ssh 100.100.90.87 'tmux select-pane -t dev10:0.0 && tmux attach -t dev10'",
-            "local_attach": "tmux attach -t dev10",
-            "select_pane": "tmux select-pane -t dev10:0.0",
+            "attach": (
+                "ssh 100.100.90.87 'tmux -L dev10 select-pane -t dev10:0.0 && "
+                "tmux -L dev10 attach -t dev10'"
+            ),
+            "local_attach": "tmux -L dev10 attach -t dev10",
+            "select_pane": "tmux -L dev10 select-pane -t dev10:0.0",
             "ssh_attach": (
-                "ssh 100.100.90.87 'tmux select-pane -t dev10:0.0 && tmux attach -t dev10'"
+                "ssh 100.100.90.87 'tmux -L dev10 select-pane -t dev10:0.0 && "
+                "tmux -L dev10 attach -t dev10'"
             ),
         },
     }
@@ -8624,7 +8630,7 @@ def test_tmux_capture_uses_literal_argv_without_shell(monkeypatch: pytest.Monkey
     assert web_app._tmux_capture("dev10:2.0") == b"ok"
     assert calls == [
         {
-            "args": ["tmux", "capture-pane", "-p", "-e", "-J", "-t", "dev10:2.0"],
+            "args": ["tmux", "-L", "dev10", "capture-pane", "-p", "-e", "-J", "-t", "dev10:2.0"],
             "capture_output": True,
             "timeout": web_app.TMUX_TIMEOUT_SECONDS,
             "check": False,
@@ -8667,6 +8673,8 @@ def test_tmux_pane_exists_uses_exact_list_panes_without_shell(
         {
             "args": [
                 "tmux",
+                "-L",
+                "dev10",
                 "list-panes",
                 "-a",
                 "-F",
@@ -8679,6 +8687,8 @@ def test_tmux_pane_exists_uses_exact_list_panes_without_shell(
         {
             "args": [
                 "tmux",
+                "-L",
+                "dev10",
                 "list-panes",
                 "-a",
                 "-F",

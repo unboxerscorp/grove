@@ -209,6 +209,21 @@ function assertLiveE2eChecksSlackMasterRoute() {
   }
 }
 
+function assertLiveE2eChecksOrgMetadata() {
+  const live = readFileSync(path.join(root, "e2e", "live.mjs"), "utf8");
+  if (
+    !/live org API exposes node metadata/.test(live) ||
+    !/default_assignee\s*===\s*["']grove-master["']/.test(live) ||
+    !/master_org\?\.project_master\?\.name\s*===\s*["']grove-master["']/.test(live) ||
+    !/tmux_pane/.test(live) ||
+    !/pane_exists/.test(live) ||
+    !/cwd/.test(live) ||
+    !/role/.test(live)
+  ) {
+    throw new Error("live e2e must verify org metadata exposes node role, cwd, tmux pane, and liveness");
+  }
+}
+
 function assertTerminalPaneDisablesXtermStdin() {
   // #N9 xterm stdin disabled: terminal panes are mirrors; typed input goes only
   // through the explicit node send form when that feature is available.
@@ -412,6 +427,7 @@ async function coreMain() {
   assertLiveE2eCleansOwnBoardFixtures();
   assertLiveE2eChecksMasterSshConnect();
   assertLiveE2eChecksSlackMasterRoute();
+  assertLiveE2eChecksOrgMetadata();
   assertTerminalPaneDisablesXtermStdin();
   if (!existsSync(path.join(root, "dist", "app.js"))) {
     throw new Error("dist/app.js missing — run `npm run build` first");
@@ -934,6 +950,7 @@ async function main() {
     assertLiveE2eCleansOwnBoardFixtures();
     assertLiveE2eChecksMasterSshConnect();
     assertLiveE2eChecksSlackMasterRoute();
+    assertLiveE2eChecksOrgMetadata();
     assertTerminalPaneDisablesXtermStdin();
     await verifyRetiredLegacySurfaces(browser);
     // The historical full-panel script below is intentionally archived. It

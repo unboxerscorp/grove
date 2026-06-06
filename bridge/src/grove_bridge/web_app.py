@@ -7369,7 +7369,7 @@ def _project_workspace(session_dir: Path, registry: Mapping[str, object]) -> str
 def _tmux_session_status(session: str) -> str:
     try:
         proc = subprocess.run(
-            ["tmux", "has-session", "-t", session],
+            _tmux_argv(session, "has-session", "-t", session),
             capture_output=True,
             timeout=TMUX_TIMEOUT_SECONDS,
             check=False,
@@ -8130,7 +8130,13 @@ def _tmux_pane_parts(pane: str, *, config: WebAppConfig) -> tuple[int, int] | No
 def _tmux_pane_exists(pane: str) -> bool:
     try:
         result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index}"],
+            _tmux_argv(
+                pane,
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}:#{window_index}.#{pane_index}",
+            ),
             capture_output=True,
             timeout=TMUX_TIMEOUT_SECONDS,
             check=False,
@@ -8144,7 +8150,7 @@ def _tmux_pane_exists(pane: str) -> bool:
 
 def _tmux_capture(pane: str) -> bytes:
     proc = subprocess.run(
-        ["tmux", "capture-pane", "-p", "-e", "-J", "-t", pane],
+        _tmux_argv(pane, "capture-pane", "-p", "-e", "-J", "-t", pane),
         capture_output=True,
         timeout=TMUX_TIMEOUT_SECONDS,
         check=False,
@@ -8156,7 +8162,7 @@ def _tmux_capture(pane: str) -> bytes:
 
 def _tmux_send_text(pane: str, text: str) -> None:
     text_proc = subprocess.run(
-        ["tmux", "send-keys", "-t", pane, "-l", "--", text],
+        _tmux_argv(pane, "send-keys", "-t", pane, "-l", "--", text),
         capture_output=True,
         text=True,
         timeout=TMUX_TIMEOUT_SECONDS,
@@ -8165,7 +8171,7 @@ def _tmux_send_text(pane: str, text: str) -> None:
     if text_proc.returncode != 0:
         raise RuntimeError(text_proc.stderr.strip())
     enter_proc = subprocess.run(
-        ["tmux", "send-keys", "-t", pane, "Enter"],
+        _tmux_argv(pane, "send-keys", "-t", pane, "Enter"),
         capture_output=True,
         text=True,
         timeout=TMUX_TIMEOUT_SECONDS,
@@ -8173,6 +8179,30 @@ def _tmux_send_text(pane: str, text: str) -> None:
     )
     if enter_proc.returncode != 0:
         raise RuntimeError(enter_proc.stderr.strip())
+
+
+def _tmux_argv(target: str, *args: str) -> list[str]:
+    socket_label = _tmux_socket_label(target)
+    command = ["tmux"]
+    if socket_label is not None:
+        command.extend(["-L", socket_label])
+    command.extend(args)
+    return command
+
+
+def _tmux_shell_prefix(session: str) -> str:
+    socket_label = _tmux_socket_label(session)
+    if socket_label is None:
+        return "tmux"
+    return f"tmux -L {shlex.quote(socket_label)}"
+
+
+def _tmux_socket_label(target: str) -> str | None:
+    match = TMUX_PANE_RE.fullmatch(target)
+    session = match.group("session") if match is not None else target.strip()
+    if re.fullmatch(r"[A-Za-z0-9_.-]+", session):
+        return session
+    return None
 
 
 def _spawn_node(payload: NodeCreatePayload, *, config: WebAppConfig) -> dict[str, object]:
@@ -8280,8 +8310,9 @@ def _node_connect_payload(
     if match is None or not _pane_allowed(pane, config=project.config):
         raise HTTPException(status_code=404, detail="node not found")
     session = match.group("session")
-    local_attach = f"tmux attach -t {session}"
-    select_pane = f"tmux select-pane -t {pane}"
+    tmux_prefix = _tmux_shell_prefix(session)
+    local_attach = f"{tmux_prefix} attach -t {shlex.quote(session)}"
+    select_pane = f"{tmux_prefix} select-pane -t {shlex.quote(pane)}"
     commands = {
         "attach": local_attach,
         "local_attach": local_attach,
