@@ -186,6 +186,10 @@ taskCommand
   .option("--allow-remote", "allow sending the dashboard token to a non-loopback grove-web URL")
   .option("--status <status>", "filter by item status")
   .option("--assignee <node>", "filter by assigned node")
+  .option(
+    "--all-projects",
+    "aggregate items across every visible project (read-only cross-project view)",
+  )
   .option("-c, --config <file>", "path to grove.yaml")
   .option("--json", "print human-facing items as JSON")
   .action(run((opts: Record<string, unknown>) => cmdTaskList(withConfig(opts))));

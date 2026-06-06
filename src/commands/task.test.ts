@@ -7,10 +7,12 @@ import {
   discoverTaskWebUrl,
   isExecutorExcluded,
   isLoopbackTaskWebUrl,
+  listAllProjectTasks,
   listMyTasks,
   listTasks,
   matchSelfNode,
   type NodeRow,
+  renderAllProjectsTaskListText,
   renderTaskJson,
   renderTaskListJson,
   renderTaskListText,
@@ -591,5 +593,119 @@ describe("renderTaskMineText", () => {
         tasks: [{ id: "t1", status: "ready", title: "do A" }],
       }),
     ).toBe("ready/running items assigned to task-worker on dev10 (dev10):\nt1 [ready] do A");
+  });
+});
+
+function allProjectsDeps(opts: {
+  projects: string[];
+  byProject: Record<string, { body?: unknown; status?: number }>;
+  env?: NodeJS.ProcessEnv;
+}): {
+  calls: FetchCall[];
+  deps: TaskDeps & { listProjects: () => string[] };
+} {
+  const calls: FetchCall[] = [];
+  return {
+    calls,
+    deps: {
+      env: opts.env ?? { GROVE_WEB_URL: "http://127.0.0.1:9999" },
+      fetch: async (url, init) => {
+        calls.push({ init, url });
+        const match = /\/api\/boards\/([^/?]+)\/tasks/.exec(url);
+        const project = match?.[1] ? decodeURIComponent(match[1]) : "";
+        const entry = opts.byProject[project] ?? { body: [] };
+        return response((entry.body ?? []) as Record<string, unknown>, entry.status ?? 200);
+      },
+      listProjects: () => opts.projects,
+      loadConfigSession: () => null,
+      readText: (file) => (file.endsWith("dashboard-token") ? "token-123\n" : null),
+      sessionDir: (session) => `/home/tester/.grove/${session}`,
+      warn: () => {},
+    },
+  };
+}
+
+describe("listAllProjectTasks", () => {
+  test("aggregates across projects with the host token and a per-project X-Grove-Project", async () => {
+    const { calls, deps } = allProjectsDeps({
+      byProject: {
+        "base-inbrain-server": { body: [] },
+        "base-web-admin": { body: [{ assignee: "win4", id: "t2", status: "running", title: "B" }] },
+        dev10: { body: [{ assignee: "lead", id: "t1", status: "ready", title: "A" }] },
+      },
+      projects: ["dev10", "base-web-admin", "base-inbrain-server"],
+    });
+
+    const result = await listAllProjectTasks({ session: "dev10" }, deps);
+
+    expect(result.projects).toEqual(["dev10", "base-web-admin", "base-inbrain-server"]);
+    expect(result.tasks.map((task) => [task["project"], task["id"]])).toEqual([
+      ["dev10", "t1"],
+      ["base-web-admin", "t2"],
+    ]);
+    expect(result.errors).toEqual([]);
+    for (const call of calls) {
+      expect(call.init.headers["X-Grove-Session-Token"]).toBe("token-123");
+    }
+    expect(calls.map((call) => call.init.headers["X-Grove-Project"])).toEqual([
+      "dev10",
+      "base-web-admin",
+      "base-inbrain-server",
+    ]);
+  });
+
+  test("records per-project errors and still returns other projects", async () => {
+    const { deps } = allProjectsDeps({
+      byProject: {
+        "base-web-admin": { body: { detail: "missing or invalid session token" }, status: 401 },
+        dev10: { body: [{ id: "t1", status: "ready", title: "A" }] },
+      },
+      projects: ["dev10", "base-web-admin"],
+    });
+
+    const result = await listAllProjectTasks({ session: "dev10" }, deps);
+
+    expect(result.tasks.map((task) => task["id"])).toEqual(["t1"]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.project).toBe("base-web-admin");
+  });
+
+  test("passes status and assignee filters to every project query", async () => {
+    const { calls, deps } = allProjectsDeps({
+      byProject: { dev10: { body: [] } },
+      projects: ["dev10"],
+    });
+
+    await listAllProjectTasks({ assignee: "lead", session: "dev10", status: "ready" }, deps);
+
+    expect(calls[0]?.url).toContain("status=ready");
+    expect(calls[0]?.url).toContain("assignee=lead");
+  });
+});
+
+describe("renderAllProjectsTaskListText", () => {
+  test("renders project-tagged rows and error markers", () => {
+    const text = renderAllProjectsTaskListText({
+      errors: [{ detail: "HTTP 401", project: "p2" }],
+      hostSession: "dev10",
+      projects: ["dev10", "p2"],
+      tasks: [{ assignee: "lead", id: "t1", project: "dev10", status: "ready", title: "A" }],
+      url: "http://127.0.0.1:9999",
+    });
+
+    expect(text).toContain("dev10 t1 [ready] lead: A");
+    expect(text).toContain("! p2: HTTP 401");
+  });
+
+  test("notes an empty cross-project result", () => {
+    expect(
+      renderAllProjectsTaskListText({
+        errors: [],
+        hostSession: "dev10",
+        projects: ["a", "b"],
+        tasks: [],
+        url: "http://127.0.0.1:9999",
+      }),
+    ).toBe("no items across 2 project(s)");
   });
 });

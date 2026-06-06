@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { loadConfig } from "../config.js";
@@ -6,7 +6,7 @@ import { loadRegistry } from "../registry.js";
 import { currentPaneTarget } from "../tmux.js";
 import { warn } from "../util/log.js";
 import { validateGroveName } from "../util/names.js";
-import { sessionDir } from "../util/paths.js";
+import { GROVE_HOME, sessionDir } from "../util/paths.js";
 
 const DEFAULT_SESSION = "dev10";
 const DEFAULT_BOARD = "default";
@@ -347,6 +347,120 @@ export async function listTasks(
   };
 }
 
+// --- cross-project actionable view (`grove task list --all-projects`) --------
+//
+// task-master (active board coordination) needs ONE read-only view of
+// ready/running + assignee across every project. The per-project CLI cannot do
+// this: each project dir has its own dashboard-token, but the single running
+// grove-web only accepts the host session's token, so `--session <other>` 401s.
+// This helper authenticates once with the host session's token and varies the
+// X-Grove-Project header per project, aggregating results. Read-only; no
+// dispatch or mutation (the task-master only nudges).
+
+export interface AllProjectsTaskListResult {
+  url: string;
+  hostSession: string;
+  projects: string[];
+  tasks: Array<Record<string, unknown>>;
+  errors: Array<{ project: string; detail: string }>;
+}
+
+function defaultListProjects(): string[] {
+  try {
+    return readdirSync(GROVE_HOME, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isDirectory() && !entry.name.startsWith(".") && !entry.name.startsWith("_"),
+      )
+      .map((entry) => entry.name)
+      .filter((name) => existsSync(path.join(GROVE_HOME, name, "registry.json")));
+  } catch {
+    return [];
+  }
+}
+
+export async function listAllProjectTasks(
+  input: TaskInput = {},
+  deps: TaskDeps & { listProjects?: () => string[] } = defaultDeps,
+): Promise<AllProjectsTaskListResult> {
+  const hostSession = resolveSession(input, deps);
+  const baseUrl = discoverTaskWebUrl(hostSession, deps);
+  assertRemoteAllowed(baseUrl, input, deps);
+  const { token } = readToken(hostSession, deps);
+  const origin = new URL(baseUrl).origin;
+  const status = trimmed(input.status);
+  const assignee = trimmed(input.assignee);
+  const projects = (deps.listProjects ?? defaultListProjects)();
+
+  const tasks: Array<Record<string, unknown>> = [];
+  const errors: Array<{ project: string; detail: string }> = [];
+  for (const project of projects) {
+    const query = new URLSearchParams();
+    if (status) query.set("status", status);
+    if (assignee) query.set("assignee", assignee);
+    const queryText = query.toString();
+    const endpoint = `${baseUrl}/api/boards/${encodeURIComponent(project)}/tasks${
+      queryText ? `?${queryText}` : ""
+    }`;
+    let response: TaskFetchResponse;
+    try {
+      response = await deps.fetch(endpoint, {
+        headers: {
+          Origin: origin,
+          "X-Grove-Project": project,
+          "X-Grove-Session-Token": token,
+        },
+        method: "GET",
+      });
+    } catch (error) {
+      errors.push({ detail: error instanceof Error ? error.message : String(error), project });
+      continue;
+    }
+    const responseText = await response.text();
+    if (!response.ok) {
+      errors.push({
+        detail: `HTTP ${response.status} ${response.statusText}${
+          errorSnippet(responseText) ? `: ${errorSnippet(responseText)}` : ""
+        }`,
+        project,
+      });
+      continue;
+    }
+    for (const task of parseTaskList(responseText)) {
+      tasks.push({ ...task, project });
+    }
+  }
+
+  return { errors, hostSession, projects, tasks, url: baseUrl };
+}
+
+export function renderAllProjectsTaskListText(result: AllProjectsTaskListResult): string {
+  const lines: string[] = [];
+  for (const task of result.tasks) {
+    const project = typeof task["project"] === "string" ? task["project"] : "(unknown-project)";
+    const id = typeof task["id"] === "string" ? task["id"] : "(unknown-item)";
+    const status = typeof task["status"] === "string" ? task["status"] : "unknown";
+    const assignee = typeof task["assignee"] === "string" ? task["assignee"] : "unassigned";
+    const title = typeof task["title"] === "string" ? task["title"] : "(untitled)";
+    lines.push(`${project} ${id} [${status}] ${assignee}: ${title}`);
+  }
+  if (lines.length === 0) {
+    lines.push(`no items across ${result.projects.length} project(s)`);
+  }
+  for (const error of result.errors) {
+    lines.push(`! ${error.project}: ${error.detail}`);
+  }
+  return lines.join("\n");
+}
+
+export function renderAllProjectsTaskListJson(result: AllProjectsTaskListResult): string {
+  return JSON.stringify(
+    { errors: result.errors, projects: result.projects, tasks: result.tasks },
+    null,
+    2,
+  );
+}
+
 export function renderTaskText(result: TaskTransitionResult): string {
   const actualStatus = result.task["status"];
   const status = typeof actualStatus === "string" ? actualStatus : result.status;
@@ -387,9 +501,16 @@ export async function cmdTask(
 }
 
 export async function cmdTaskList(
-  opts: TaskInput & { json?: boolean },
-  deps: TaskDeps = defaultDeps,
+  opts: TaskInput & { json?: boolean; allProjects?: boolean },
+  deps: TaskDeps & { listProjects?: () => string[] } = defaultDeps,
 ): Promise<void> {
+  if (opts.allProjects) {
+    const result = await listAllProjectTasks(opts, deps);
+    process.stdout.write(
+      `${opts.json ? renderAllProjectsTaskListJson(result) : renderAllProjectsTaskListText(result)}\n`,
+    );
+    return;
+  }
   const result = await listTasks(opts, deps);
   process.stdout.write(`${opts.json ? renderTaskListJson(result) : renderTaskListText(result)}\n`);
 }
