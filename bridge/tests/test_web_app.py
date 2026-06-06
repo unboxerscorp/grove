@@ -2272,6 +2272,28 @@ def test_chat_provider_config_status_and_save_redacts_key(tmp_path: Path) -> Non
     assert "AIza-test-key" not in json.dumps(payload)
 
 
+def test_chat_provider_config_is_shared_across_projects(tmp_path: Path) -> None:
+    write_registry(tmp_path, "base-inbrain-server", {"lead": {"name": "lead"}})
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    saved = client.post(
+        "/api/chat/provider",
+        headers=headers | {"X-Grove-Project": "base-inbrain-server"},
+        json={"provider": "gemini", "model": "gemini-test", "api_key": "AIza-shared-key"},
+    )
+    dev10_status = client.get("/api/chat/provider", headers=headers)
+
+    assert saved.status_code == 200
+    assert dev10_status.status_code == 200
+    assert saved.json()["configured"] is True
+    assert dev10_status.json()["configured"] is True
+    assert dev10_status.json()["model"] == "gemini-test"
+    assert (tmp_path / ".grove" / "dev10" / "chat-provider.json").is_file()
+    assert not (tmp_path / ".grove" / "base-inbrain-server" / "chat-provider.json").exists()
+
+
 def test_chat_runtime_feature_requires_provider_config(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     client = make_client(tmp_path, store)

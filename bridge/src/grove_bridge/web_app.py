@@ -2725,7 +2725,7 @@ def _web_companion_path(grove_home: Path, session: str) -> Path:
 
 
 def _chat_provider_config_path(config: WebAppConfig) -> Path:
-    return config.grove_home / config.registry_session / CHAT_PROVIDER_CONFIG_FILENAME
+    return config.grove_home / DEFAULT_SESSION / CHAT_PROVIDER_CONFIG_FILENAME
 
 
 def _chat_provider_config(config: WebAppConfig) -> dict[str, str]:

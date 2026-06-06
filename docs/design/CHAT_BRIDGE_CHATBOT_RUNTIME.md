@@ -48,7 +48,8 @@ directly — **never** the persistent CLI node and **never** the `AssistantBroke
 node is the persona/policy/semantic _source_, not a runtime backend.)
 
 - MVP provider: Gemini via `GeminiChatProviderAdapter`, configured from Setup (`/api/chat/provider`) and stored in
-  `~/.grove/<session>/chat-provider.json`.
+  the master session at `~/.grove/dev10/chat-provider.json` so every selected project uses the same chat runtime
+  key.
 - Default model: `gemini-2.5-flash` unless the operator changes it in Setup.
 - Persona/policy = system prompt (from chat-master); context = bounded, redacted session transcript + facts.
 - The adapter emits a **structured turn result** (answer | task-proposal + fields + chat-master-authored card text).
