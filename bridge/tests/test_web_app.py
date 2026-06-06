@@ -2326,6 +2326,17 @@ def test_chat_runtime_feature_requires_provider_config(tmp_path: Path) -> None:
 
     assert enabled.status_code == 200
     assert enabled.json()["feature"]["enabled"] is True
+    slack_status = client.get("/api/slack/config/status", headers=headers)
+    assert slack_status.status_code == 200
+    assert slack_status.json()["chat_runtime"] == {
+        "enabled": True,
+        "ready": True,
+        "route": "bridge_native",
+        "provider": "gemini",
+        "model": "gemini-test",
+        "provider_configured": True,
+        "provider_source": "file",
+    }
 
 
 def test_chat_runtime_feature_is_shared_across_projects(tmp_path: Path) -> None:
@@ -8736,14 +8747,21 @@ def test_slack_manifest_and_config_endpoints(tmp_path: Path) -> None:
     assert test_response.json()["status"] == "tokens_saved"
     assert status_response.json()["status"] == "tokens_saved"
     assert status_response.json()["intake"] == {"enabled": False}
+    assert status_response.json()["chat_runtime"] == {
+        "enabled": False,
+        "ready": False,
+        "route": "node_queue",
+        "provider": "gemini",
+        "model": "gemini-2.5-flash",
+        "provider_configured": False,
+        "provider_source": "none",
+    }
     assert "state" not in status_response.json()
     assert status_response.json()["tokens"]["default_channel"] == "C123"
 
-    enabled_client = make_client(
-        tmp_path,
-        SQLiteBoardStore(tmp_path / "enabled-board.db"),
-        slack_intake_enabled=True,
-    )
+    enabled_store = SQLiteBoardStore(tmp_path / "enabled-board.db")
+    enabled_store.set_gui_feature_enabled(board="dev10", feature="intake", enabled=True)
+    enabled_client = make_client(tmp_path, enabled_store, slack_intake_enabled=True)
     enabled_status = enabled_client.get(
         "/api/slack/config/status",
         headers=auth_headers(enabled_client),

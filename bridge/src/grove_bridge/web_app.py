@@ -2503,10 +2503,11 @@ def create_app(
     def slack_config_status_endpoint(request: Request) -> dict[str, object]:
         _require_auth(request)
         project = resolve_project(request)
-        return config_status(
+        store = _store(request)
+        payload = config_status(
             _slack_config_path(project.config),
             intake_enabled=_gui_feature_enabled(
-                _store(request),
+                store,
                 project=project,
                 feature="intake",
             ),
@@ -2515,6 +2516,8 @@ def create_app(
                 project.config.registry_session,
             ),
         )
+        payload["chat_runtime"] = _chat_runtime_status(store, project=project)
+        return payload
 
     @app.post("/api/slack/config")
     def slack_config_endpoint(
@@ -2743,6 +2746,27 @@ def _chat_provider_status(config: WebAppConfig) -> dict[str, object]:
         "configured": bool(api_key),
         "source": loaded["source"],
         "key_hint": f"…{tail}" if tail else None,
+    }
+
+
+def _chat_runtime_status(store: SQLiteBoardStore, *, project: ProjectContext) -> dict[str, object]:
+    enabled = _gui_feature_enabled(store, project=project, feature=CHAT_BRIDGE_RUNTIME_FLAG)
+    provider = _chat_provider_status(project.config)
+    provider_configured = bool(provider["configured"])
+    if enabled and provider_configured:
+        route = "bridge_native"
+    elif enabled:
+        route = "hold_until_provider_configured"
+    else:
+        route = "node_queue"
+    return {
+        "enabled": enabled,
+        "ready": enabled and provider_configured,
+        "route": route,
+        "provider": provider["provider"],
+        "model": provider["model"],
+        "provider_configured": provider_configured,
+        "provider_source": provider["source"],
     }
 
 

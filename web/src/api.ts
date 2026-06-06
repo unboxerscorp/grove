@@ -354,6 +354,15 @@ export interface SlackStatus {
   // can show whether explicit Slack feedback/ask-human messages can become
   // human-facing list candidates.
   intake?: { enabled?: boolean };
+  chat_runtime?: {
+    enabled?: boolean;
+    ready?: boolean;
+    route?: "node_queue" | "hold_until_provider_configured" | "bridge_native" | string;
+    provider?: "gemini" | string;
+    model?: string;
+    provider_configured?: boolean;
+    provider_source?: string;
+  };
 }
 
 // Mirrors web_app.py _cost_metric: every number carries provenance so estimates
