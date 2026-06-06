@@ -47,6 +47,7 @@ from grove_bridge.assistant import (
 )
 from grove_bridge.auth import Account, DashboardRole
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
+from grove_bridge.chat_runtime import chat_bridge_runtime_enabled
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
 from grove_bridge.slack import (
@@ -5991,6 +5992,12 @@ def _handle_master_chat_request(
     auth: AuthContext,
     project: ProjectContext,
 ) -> dict[str, object] | Response:
+    if chat_bridge_runtime_enabled(_store(request), board=project.board):
+        # Flag ON only: bridge-native runtime owns web chat. Stage0 is not yet
+        # wired to generate, so return an explicit non-chat unavailable status —
+        # never a fabricated answer/template, and the broker path below is not
+        # taken. Flag OFF (default) skips this → existing path is byte-identical.
+        raise HTTPException(status_code=503, detail="master chat runtime initializing")
     assistant_client = _assistant_client(request)
     if not _node_routed_target_available(project.config, assistant_client):
         raise HTTPException(status_code=503, detail="master chat is unavailable")

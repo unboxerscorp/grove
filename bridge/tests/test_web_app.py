@@ -2161,6 +2161,46 @@ def test_master_chat_returns_answer_and_records_redacted_audit(tmp_path: Path) -
     assert audits[0].kind == "audit.master.turn.received"
 
 
+def test_master_chat_flag_off_runtime_inert_existing_path(tmp_path: Path) -> None:
+    # Flag OFF (default): the bridge-native runtime is inert; the existing
+    # AssistantBroker web path is byte-identical (200 answer).
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={
+            "message": "MASTER로 뭐 가능?",
+            "conversation_id": "conv-off",
+            "request_id": "req-off",
+            "origin_page": "/boards/dev10",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["response_type"] == "answer"
+
+
+def test_master_chat_flag_on_runtime_holds_with_unavailable_status(tmp_path: Path) -> None:
+    # Flag ON: the runtime owns web chat. Stage0 = not yet generating, so an
+    # explicit non-chat unavailable status — never a fabricated answer/template,
+    # and the existing broker path is not taken.
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    client = make_client(tmp_path, store)
+    response = client.post(
+        "/api/master/chat",
+        headers=auth_headers(client),
+        json={
+            "message": "MASTER로 뭐 가능?",
+            "conversation_id": "conv-on",
+            "request_id": "req-on",
+            "origin_page": "/boards/dev10",
+        },
+    )
+    assert response.status_code == 503
+    assert "runtime" in str(response.json().get("detail", "")).lower()
+
+
 def test_master_chat_history_get_returns_empty_message_list(tmp_path: Path) -> None:
     client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
 
