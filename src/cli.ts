@@ -20,7 +20,7 @@ import { cmdSession } from "./commands/session.js";
 import { cmdSpawn } from "./commands/spawn.js";
 import { cmdStatus } from "./commands/status.js";
 import { cmdTail } from "./commands/tail.js";
-import { cmdTask, cmdTaskList, type TaskAction } from "./commands/task.js";
+import { cmdTask, cmdTaskList, cmdTaskMine, type TaskAction } from "./commands/task.js";
 import { cmdUp } from "./commands/up.js";
 import { cmdWaitCommand } from "./commands/wait.js";
 import { cmdWatch } from "./commands/watch.js";
@@ -188,6 +188,17 @@ taskCommand
   .option("-c, --config <file>", "path to grove.yaml")
   .option("--json", "print human-facing items as JSON")
   .action(run((opts: Record<string, unknown>) => cmdTaskList(withConfig(opts))));
+
+taskCommand
+  .command("mine")
+  .description("list ready/running items assigned to the current node (executor-only, read-only)")
+  .option("--node <name>", "resolve as this node instead of auto-detecting the current pane")
+  .option("--board <board>", "target human-facing list slug (defaults to the session)")
+  .option("--session <session>", "target grove session/project")
+  .option("--allow-remote", "allow sending the dashboard token to a non-loopback grove-web URL")
+  .option("-c, --config <file>", "path to grove.yaml")
+  .option("--json", "print assigned items as JSON")
+  .action(run((opts: Record<string, unknown>) => cmdTaskMine(withConfig(opts))));
 
 function taskTransitionCommand(action: TaskAction, description: string): void {
   taskCommand

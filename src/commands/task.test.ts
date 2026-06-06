@@ -3,17 +3,24 @@ import { describe, expect, test, vi } from "vitest";
 import {
   cmdTask,
   cmdTaskList,
+  cmdTaskMine,
   discoverTaskWebUrl,
+  isExecutorExcluded,
   isLoopbackTaskWebUrl,
+  listMyTasks,
   listTasks,
+  matchSelfNode,
+  type NodeRow,
   renderTaskJson,
   renderTaskListJson,
   renderTaskListText,
+  renderTaskMineText,
   renderTaskText,
   statusForTaskAction,
   type TaskAction,
   type TaskDeps,
   type TaskFetchInit,
+  type TaskMineDeps,
   updateTaskStatus,
 } from "./task.js";
 
@@ -345,5 +352,244 @@ describe("cmdTaskList", () => {
         status: "running",
       }),
     ]);
+  });
+});
+
+function mineDeps(
+  opts: {
+    env?: NodeJS.ProcessEnv;
+    fetchError?: Error;
+    nodes?: NodeRow[];
+    paneAddr?: string | null;
+    responseBody?: Record<string, unknown>;
+    responseStatus?: number;
+    webJson?: string;
+  } = {},
+): {
+  calls: FetchCall[];
+  deps: TaskMineDeps;
+  readPaths: string[];
+  warnings: string[];
+} {
+  const base = deps(opts);
+  return {
+    ...base,
+    deps: {
+      ...base.deps,
+      currentPaneAddr: async () => opts.paneAddr ?? null,
+      listNodes: () => opts.nodes ?? [],
+    },
+  };
+}
+
+describe("isExecutorExcluded", () => {
+  test("excludes service, audit, and master group nodes (incl chat-master)", () => {
+    expect(isExecutorExcluded({ group: "services", name: "web" })).toBe(true);
+    expect(isExecutorExcluded({ group: "services", name: "slack" })).toBe(true);
+    expect(isExecutorExcluded({ group: "audit", name: "whip" })).toBe(true);
+    expect(isExecutorExcluded({ group: "master", name: "grove-master" })).toBe(true);
+    expect(isExecutorExcluded({ group: "master", name: "chat-master" })).toBe(true);
+  });
+
+  test("excludes service-kind, advisor, and jester nodes", () => {
+    expect(isExecutorExcluded({ kind: "service", name: "some-service" })).toBe(true);
+    expect(isExecutorExcluded({ name: "advisor" })).toBe(true);
+    expect(isExecutorExcluded({ name: "jester" })).toBe(true);
+  });
+
+  test("includes lead and worker executor nodes", () => {
+    expect(isExecutorExcluded({ group: "lead", name: "lead" })).toBe(false);
+    expect(isExecutorExcluded({ group: "workers", name: "task-worker" })).toBe(false);
+  });
+});
+
+describe("matchSelfNode", () => {
+  const rows: NodeRow[] = [
+    { group: "workers", name: "task-worker", tmuxPane: "dev10:2.5" },
+    { group: "services", kind: "service", name: "web", tmuxPane: "dev10:1.0" },
+  ];
+
+  test("prefers an explicit node name", () => {
+    expect(matchSelfNode(rows, { explicitNode: "web" })).toEqual({
+      group: "services",
+      kind: "service",
+      name: "web",
+    });
+  });
+
+  test("returns a name-only self for an explicit unknown node", () => {
+    expect(matchSelfNode(rows, { explicitNode: "ghost" })).toEqual({ name: "ghost" });
+  });
+
+  test("resolves the current pane to its node", () => {
+    expect(matchSelfNode(rows, { paneAddr: "dev10:2.5" })).toEqual({
+      group: "workers",
+      name: "task-worker",
+    });
+  });
+
+  test("returns null when neither explicit nor pane resolves", () => {
+    expect(matchSelfNode(rows, { paneAddr: "dev10:9.9" })).toBeNull();
+    expect(matchSelfNode(rows, {})).toBeNull();
+  });
+});
+
+describe("listMyTasks", () => {
+  test("is a no-op for excluded nodes and never calls grove-web", async () => {
+    const state = mineDeps({
+      nodes: [{ group: "services", kind: "service", name: "web", tmuxPane: "dev10:1.0" }],
+      paneAddr: "dev10:1.0",
+    });
+
+    const result = await listMyTasks({ session: "dev10" }, state.deps);
+
+    expect(result.resolved).toBe(true);
+    expect(result.excluded).toBe(true);
+    expect(result.node).toBe("web");
+    expect(result.tasks).toEqual([]);
+    expect(state.calls).toEqual([]);
+  });
+
+  test("reports unresolved when the current node cannot be identified", async () => {
+    const state = mineDeps({
+      nodes: [{ group: "workers", name: "task-worker", tmuxPane: "dev10:2.5" }],
+      paneAddr: "dev10:9.9",
+    });
+
+    const result = await listMyTasks({ session: "dev10" }, state.deps);
+
+    expect(result.resolved).toBe(false);
+    expect(result.excluded).toBe(false);
+    expect(state.calls).toEqual([]);
+  });
+
+  test("lists only ready/running items for an executor, board defaults to the session", async () => {
+    const state = mineDeps({
+      env: { GROVE_WEB_URL: "http://127.0.0.1:9999" },
+      nodes: [{ group: "workers", name: "task-worker", tmuxPane: "dev10:2.5" }],
+      paneAddr: "dev10:2.5",
+      responseBody: [
+        { assignee: "task-worker", id: "t1", status: "ready", title: "do A" },
+        { assignee: "task-worker", id: "t2", status: "running", title: "do B" },
+        { assignee: "task-worker", id: "t3", status: "done", title: "old" },
+        { assignee: "task-worker", id: "t4", status: "blocked", title: "stuck" },
+      ] as unknown as Record<string, unknown>,
+    });
+
+    const result = await listMyTasks({ session: "dev10" }, state.deps);
+
+    expect(result.node).toBe("task-worker");
+    expect(result.excluded).toBe(false);
+    expect(result.resolved).toBe(true);
+    expect(state.calls).toHaveLength(1);
+    expect(state.calls[0]?.url).toBe(
+      "http://127.0.0.1:9999/api/boards/dev10/tasks?assignee=task-worker",
+    );
+    expect(result.tasks.map((task) => task["id"])).toEqual(["t1", "t2"]);
+  });
+
+  test("honors an explicit --node override", async () => {
+    const state = mineDeps({
+      env: { GROVE_WEB_URL: "http://127.0.0.1:9999" },
+      nodes: [{ group: "lead", name: "lead", tmuxPane: "dev10:2.0" }],
+      responseBody: [] as unknown as Record<string, unknown>,
+    });
+
+    const result = await listMyTasks(
+      { board: "dev10", node: "lead", session: "dev10" },
+      state.deps,
+    );
+
+    expect(result.node).toBe("lead");
+    expect(state.calls[0]?.url).toBe("http://127.0.0.1:9999/api/boards/dev10/tasks?assignee=lead");
+  });
+});
+
+describe("cmdTaskMine", () => {
+  test("prints an executor-only notice for excluded nodes", async () => {
+    const state = mineDeps({
+      nodes: [{ name: "advisor", tmuxPane: "dev10:0.2" }],
+      paneAddr: "dev10:0.2",
+    });
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+
+    await cmdTaskMine({ session: "dev10" }, state.deps);
+
+    expect(writes.join("")).toContain("executor-only");
+    expect(state.calls).toEqual([]);
+  });
+
+  test("prints assigned ready/running items as JSON when requested", async () => {
+    const state = mineDeps({
+      env: { GROVE_WEB_URL: "http://127.0.0.1:9999" },
+      nodes: [{ group: "workers", name: "task-worker", tmuxPane: "dev10:2.5" }],
+      paneAddr: "dev10:2.5",
+      responseBody: [
+        { assignee: "task-worker", id: "t1", status: "ready", title: "do A" },
+      ] as unknown as Record<string, unknown>,
+    });
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+
+    await cmdTaskMine({ json: true, session: "dev10" }, state.deps);
+
+    const parsed = JSON.parse(writes.join("")) as { node: string; tasks: unknown[] };
+    expect(parsed.node).toBe("task-worker");
+    expect(parsed.tasks).toHaveLength(1);
+  });
+});
+
+describe("renderTaskMineText", () => {
+  test("renders unresolved, excluded, empty, and populated states", () => {
+    expect(
+      renderTaskMineText({
+        board: "dev10",
+        excluded: false,
+        node: "",
+        resolved: false,
+        session: "dev10",
+        tasks: [],
+      }),
+    ).toContain("could not determine the current grove node");
+
+    expect(
+      renderTaskMineText({
+        board: "dev10",
+        excluded: true,
+        node: "advisor",
+        resolved: true,
+        session: "dev10",
+        tasks: [],
+      }),
+    ).toContain("executor-only");
+
+    expect(
+      renderTaskMineText({
+        board: "dev10",
+        excluded: false,
+        node: "task-worker",
+        resolved: true,
+        session: "dev10",
+        tasks: [],
+      }),
+    ).toBe("no ready or running items assigned to task-worker on dev10 (dev10).");
+
+    expect(
+      renderTaskMineText({
+        board: "dev10",
+        excluded: false,
+        node: "task-worker",
+        resolved: true,
+        session: "dev10",
+        tasks: [{ id: "t1", status: "ready", title: "do A" }],
+      }),
+    ).toBe("ready/running items assigned to task-worker on dev10 (dev10):\nt1 [ready] do A");
   });
 });

@@ -10,6 +10,7 @@ vi.mock("node:child_process", () => ({
 import {
   capturePane,
   createDetachedPane,
+  currentPaneTargetArgs,
   detachedNewWindowPaneArgs,
   detachedSplitPaneArgs,
   isSinglePaneTarget,
@@ -438,5 +439,27 @@ describe("tmux detached pane commands", () => {
     } finally {
       await tmux(["kill-session", "-t", `=${session}`]);
     }
+  });
+});
+
+describe("currentPaneTargetArgs", () => {
+  test("targets the process's own pane id when TMUX_PANE is set", () => {
+    // display-message without -t reports the session's ACTIVE pane, not the
+    // pane this process runs in, so self-resolution must target $TMUX_PANE.
+    expect(currentPaneTargetArgs("%777")).toEqual([
+      "display-message",
+      "-t",
+      "%777",
+      "-p",
+      PANE_INDEX_TARGET_FORMAT,
+    ]);
+  });
+
+  test("falls back to the active pane only when no pane id is available", () => {
+    expect(currentPaneTargetArgs(undefined)).toEqual([
+      "display-message",
+      "-p",
+      PANE_INDEX_TARGET_FORMAT,
+    ]);
   });
 });

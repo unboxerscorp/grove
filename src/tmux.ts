@@ -149,6 +149,28 @@ export async function paneTarget(addr: string): Promise<string> {
   return (await tmux(["display-message", "-t", addr, "-p", PANE_INDEX_TARGET_FORMAT])).trim();
 }
 
+/** tmux args that resolve a pane's canonical address. With a pane id (from
+ *  $TMUX_PANE) it targets THIS process's pane; without one, `display-message`
+ *  reports the session's active pane, which is only a best-effort fallback. */
+export function currentPaneTargetArgs(paneId: string | undefined): string[] {
+  const tail = ["-p", PANE_INDEX_TARGET_FORMAT];
+  return paneId ? ["display-message", "-t", paneId, ...tail] : ["display-message", ...tail];
+}
+
+/** Canonical "session:window.pane" address of the pane the current process runs
+ *  in, or null when not inside tmux or tmux is unavailable. Used by self-context
+ *  aware CLI commands to resolve which node is calling. Targets $TMUX_PANE so it
+ *  resolves the calling pane rather than the session's active pane. */
+export async function currentPaneTarget(): Promise<string | null> {
+  try {
+    const paneId = process.env["TMUX_PANE"]?.trim() || undefined;
+    const out = (await tmux(currentPaneTargetArgs(paneId))).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function paneExists(addr: string): Promise<boolean> {
   try {
     const panes = await tmux(["list-panes", "-a", "-F", PANE_INDEX_TARGET_FORMAT]);

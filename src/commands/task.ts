@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { loadConfig } from "../config.js";
+import { loadRegistry } from "../registry.js";
+import { currentPaneTarget } from "../tmux.js";
 import { warn } from "../util/log.js";
 import { validateGroveName } from "../util/names.js";
 import { sessionDir } from "../util/paths.js";
@@ -390,4 +392,163 @@ export async function cmdTaskList(
 ): Promise<void> {
   const result = await listTasks(opts, deps);
   process.stdout.write(`${opts.json ? renderTaskListJson(result) : renderTaskListText(result)}\n`);
+}
+
+// --- assigned-task awareness (`grove task mine`) -----------------------------
+//
+// Read-only "what is assigned to me" view for executor nodes. This is Stage 1
+// of task_8e647 (assigned-task awareness). It never claims, never starts work,
+// and never polls; the explicit claim contract (Stage 2) reuses `task start
+// --from-status ready` and its 409 single-winner semantics. Auto-start/auto-exec
+// (Stage 3) is deliberately not implemented here and stays HOLD until separate
+// multi-review + operator approval.
+
+/** Self-context attributes used to decide executor eligibility. */
+export interface SelfNode {
+  name: string;
+  group?: string;
+  kind?: string;
+}
+
+/** Minimal registry row used to resolve the calling node. */
+export interface NodeRow {
+  name: string;
+  group?: string;
+  kind?: string;
+  tmuxPane?: string;
+}
+
+export interface TaskMineInput {
+  allowRemote?: boolean;
+  board?: string;
+  config?: string;
+  node?: string;
+  session?: string;
+}
+
+export interface TaskMineDeps extends TaskDeps {
+  listNodes(session: string): NodeRow[];
+  currentPaneAddr(): Promise<string | null>;
+}
+
+export interface TaskMineResult {
+  session: string;
+  board: string;
+  node: string;
+  resolved: boolean;
+  excluded: boolean;
+  tasks: Array<Record<string, unknown>>;
+}
+
+// Service/master/audit panes and the advisor/jester roles are not executors, so
+// they are excluded from assigned-task self-check. chat-master is group=master
+// and grove-master is group=master, so both are covered here.
+const EXCLUDED_GROUPS = new Set(["services", "audit", "master"]);
+const EXCLUDED_NODE_NAMES = new Set(["advisor", "jester"]);
+const MINE_VISIBLE_STATUSES = new Set(["ready", "running"]);
+
+export function isExecutorExcluded(node: SelfNode): boolean {
+  const group = node.group?.trim().toLowerCase();
+  if (group && EXCLUDED_GROUPS.has(group)) return true;
+  if (node.kind?.trim().toLowerCase() === "service") return true;
+  return EXCLUDED_NODE_NAMES.has(node.name.trim().toLowerCase());
+}
+
+function selfFromRow(row: NodeRow): SelfNode {
+  return { group: row.group, kind: row.kind, name: row.name };
+}
+
+export function matchSelfNode(
+  rows: NodeRow[],
+  opts: { explicitNode?: string; paneAddr?: string | null },
+): SelfNode | null {
+  const explicit = opts.explicitNode?.trim();
+  if (explicit) {
+    const row = rows.find((candidate) => candidate.name === explicit);
+    return row ? selfFromRow(row) : { name: explicit };
+  }
+  const pane = opts.paneAddr?.trim();
+  if (pane) {
+    const row = rows.find((candidate) => candidate.tmuxPane?.trim() === pane);
+    if (row) return selfFromRow(row);
+  }
+  return null;
+}
+
+function defaultListNodes(session: string): NodeRow[] {
+  const registry = loadRegistry(session);
+  if (!registry) return [];
+  return Object.entries(registry.nodes).map(([name, runtime]) => ({
+    group: runtime.group,
+    kind: runtime.kind,
+    name: runtime.name || name,
+    tmuxPane: runtime.tmux_pane,
+  }));
+}
+
+const defaultMineDeps: TaskMineDeps = {
+  ...defaultDeps,
+  currentPaneAddr: currentPaneTarget,
+  listNodes: defaultListNodes,
+};
+
+export async function listMyTasks(
+  input: TaskMineInput,
+  deps: TaskMineDeps = defaultMineDeps,
+): Promise<TaskMineResult> {
+  const session = resolveSession(input, deps);
+  const board = validateGroveName(trimmed(input.board) ?? session, "--board");
+  const rows = deps.listNodes(session);
+  const paneAddr = await deps.currentPaneAddr();
+  const self = matchSelfNode(rows, { explicitNode: input.node, paneAddr });
+  if (!self) {
+    return { board, excluded: false, node: "", resolved: false, session, tasks: [] };
+  }
+  if (isExecutorExcluded(self)) {
+    return { board, excluded: true, node: self.name, resolved: true, session, tasks: [] };
+  }
+  const listed = await listTasks(
+    {
+      allowRemote: input.allowRemote,
+      assignee: self.name,
+      board,
+      config: input.config,
+      session,
+    },
+    deps,
+  );
+  const tasks = listed.tasks.filter((task) => MINE_VISIBLE_STATUSES.has(String(task["status"])));
+  return { board, excluded: false, node: self.name, resolved: true, session, tasks };
+}
+
+export function renderTaskMineText(result: TaskMineResult): string {
+  if (!result.resolved) {
+    return "could not determine the current grove node; pass --node <name> to scope `grove task mine`.";
+  }
+  if (result.excluded) {
+    return `${result.node}: assigned-task self-check is executor-only; service/master/advisor/audit nodes are excluded.`;
+  }
+  if (result.tasks.length === 0) {
+    return `no ready or running items assigned to ${result.node} on ${result.board} (${result.session}).`;
+  }
+  const header = `ready/running items assigned to ${result.node} on ${result.board} (${result.session}):`;
+  const lines = result.tasks.map((task) => {
+    const id = typeof task["id"] === "string" ? task["id"] : "(unknown-item)";
+    const status = typeof task["status"] === "string" ? task["status"] : "unknown";
+    const title = typeof task["title"] === "string" ? task["title"] : "(untitled)";
+    return `${id} [${status}] ${title}`;
+  });
+  return [header, ...lines].join("\n");
+}
+
+export function renderTaskMineJson(result: TaskMineResult): string {
+  return JSON.stringify(result, null, 2);
+}
+
+export async function cmdTaskMine(
+  opts: TaskMineInput & { json?: boolean },
+  deps: TaskMineDeps = defaultMineDeps,
+): Promise<void> {
+  const result = await listMyTasks(opts, deps);
+  process.stdout.write(`${opts.json ? renderTaskMineJson(result) : renderTaskMineText(result)}\n`);
 }
