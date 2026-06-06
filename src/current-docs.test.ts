@@ -19,4 +19,20 @@ describe("current design docs", () => {
       "Only read-only answers and proposal drafts belong in the first adapter",
     );
   });
+
+  test("auth and project lifecycle design reflects the live routed auth model", () => {
+    const authAndProjects = doc("docs/design/AUTH_AND_PROJECTS.md");
+
+    expect(authAndProjects).toContain("Status: current v2 live auth and project lifecycle model");
+    expect(authAndProjects).toContain("Team-auth mode is implemented in the bridge and web UI");
+    expect(authAndProjects).toContain(
+      "Shared access is implemented as default-off one-time join codes",
+    );
+    expect(authAndProjects).not.toContain("Phase 1 is design and new-module scaffolding only");
+    expect(authAndProjects).not.toContain("no `web_app.py` route registration");
+    expect(authAndProjects).not.toContain("no `app.tsx` or frontend core wiring");
+    expect(authAndProjects).not.toContain(
+      "The phase-1 bridge module, `grove_bridge.auth`, defines typed auth interfaces",
+    );
+  });
 });

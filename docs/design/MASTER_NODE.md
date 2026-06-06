@@ -3,10 +3,10 @@
 Status: current v2 live model.
 
 This document describes the live `grove-master` node contract. It supersedes
-the earlier phase-1 adapter-only design: Slack, web chat, and API chat now route
-to a real tmux-backed `grove-master` node by default, while the bridge still owns
-authentication, context construction, redaction, confirmation, and audit
-boundaries for dashboard-originated actions.
+the earlier scaffold design: Slack and web chat route to the live `grove-master`
+node, and API chat also targets a real tmux-backed master by default. The bridge
+still owns authentication, context construction, redaction, confirmation, and
+audit boundaries for dashboard-originated actions.
 
 ## Concept
 

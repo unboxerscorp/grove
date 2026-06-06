@@ -1,27 +1,40 @@
 # Auth And Project Lifecycle
 
-Status: phase 1 draft, updated for the current v2 direct-org model. This
-document defines the dashboard login and project lifecycle track. Phase 1 is
-design and new-module scaffolding only:
+Status: current v2 live auth and project lifecycle model.
 
-- no `web_app.py` route registration;
-- no `app.tsx` or frontend core wiring;
-- no replacement of the current v1.27 `/api/nodes/{node}/connect` behavior;
-- no mutation outside the requested bridge auth interface scaffold.
+This document describes the live dashboard auth, shared access, and project
+lifecycle contract. It supersedes the earlier scaffold note.
+
+Team-auth mode is implemented in the bridge and web UI.
+Shared access is implemented as default-off one-time join codes.
+Project lifecycle mutations are routed through operator-checked bridge/API
+paths.
 
 ## Goals
 
-The auth track replaces injected dashboard tokens with account-backed sessions, keeps the
-dashboard access model centered on `operator` and `viewer`, and makes the
-dashboard safe to share on a tailnet or trusted LAN. An `admin` role may exist
-for account/session administration, but normal project, node, human-facing list,
-and node mutation should only need operator authority. It also makes projects a
-first-class lifecycle unit: one project owns one workspace/cwd and one
-human-facing list backing slug, and project creation creates a concrete project
-lead node in that workspace. There is no synthetic `project-master` identity in
-the current model.
+The auth model keeps the dashboard usable on loopback while allowing a safer
+tailnet or trusted-LAN room when the operator explicitly enables it.
 
-The intended product invariant is:
+The live contract is:
+
+- loopback/local mode may use the injected session token bootstrap;
+- team-auth mode uses account-backed sessions, HttpOnly cookies, and CSRF for
+  state-changing requests;
+- shared access is default OFF and must be explicitly enabled;
+- project, node, human-facing list item, terminal input, quota, and sharing
+  mutations require operator authority;
+- viewer sessions may inspect visible project, list item, node, terminal, and
+  connect metadata but cannot send pane input or mutate state;
+- project creation creates or verifies a concrete project lead node with an
+  explicit cwd and tmux placement;
+- the current model does not synthesize `project-master` identities.
+
+An `admin` role may exist for account/session administration. Normal project,
+node, list item, and terminal control should only need operator authority.
+
+## Project Invariants
+
+Each project is a first-class lifecycle unit:
 
 ```text
 project name == human-facing list backing slug
@@ -34,90 +47,8 @@ predictable. The tmux session is operational placement metadata; on the current
 Mac mini deployment multiple projects may place panes in the single `dev10`
 session while still preserving per-project cwd and registry ownership.
 
-## Auth Model
-
-The injected-token model is local-machine bootstrap behavior. It is convenient
-for loopback use, but it is a poor fit for shared tailnet rooms because a static
-token can leak through page source, logs, browser extensions, or copied URLs.
-The replacement model is account login plus server-issued sessions.
-
-Phase 1 auth terms:
-
-- **account**: a durable dashboard identity with display name, role, and enabled
-  state;
-- **session**: an opaque server-issued browser session bound to one account and
-  expiry time;
-- **actor**: the request-time identity derived from a valid session;
-- **role**: `viewer`, `operator`, or `admin` for dashboard authorization.
-
-The bridge should normalize request authorization to permissions instead of
-route-local role checks. Existing lower-level primitives may keep compatibility
-fields while migration is in progress, but dashboard policy should ask whether
-the actor has a named permission. Viewers may read visible project, list item,
-node, terminal, and connect metadata. Operators may mutate projects, list items,
-nodes, node input, quota, and operator-only reporting after Origin, Host, and
-CSRF checks pass. Admins inherit operator authority and add account/session
-management.
-
-Initial permission buckets:
-
-- viewer: project/list item/node/terminal/connect read;
-- operator: viewer reads plus project/list item/node mutation, node input,
-  audit read, cost read, and quota mutation;
-- admin: operator permissions plus account/session management.
-
-### Session Contract
-
-The future router layer should expose these logical operations:
-
-- login with account credentials or a one-time join code;
-- issue an HttpOnly session cookie plus CSRF token;
-- verify session cookies on API and websocket upgrade paths;
-- return `/me` account and role metadata;
-- revoke a session on logout;
-- expire sessions automatically and deny disabled accounts.
-
-Sessions should be opaque to the browser. The frontend must not receive a
-dashboard bearer token in HTML, JavaScript globals, query strings, or local
-storage. Non-mutating requests authenticate with the session cookie. Mutating
-requests also send the CSRF token header.
-
-Password and session secrets stay behind interfaces. Account payloads must not
-carry password hashes, raw passwords, cookie values, CSRF values, or session
-signing secrets. Password hashes are modeled as redacted metadata only, with
-hashing and verification delegated to a `PasswordHasher`/credential verifier
-boundary. Session cookie encoding/decoding is delegated to a session manager or
-token codec boundary; the route layer writes cookies later.
-
-Cookie defaults:
-
-- `HttpOnly`;
-- `SameSite=Lax`;
-- path scoped to the dashboard;
-- `Secure` when served over HTTPS;
-- finite TTL with server-side revocation.
-
-### Tailnet Multiuser Compatibility
-
-Shared dashboard serving is allowed only when host binding is explicit and the
-operator configures trusted hosts. A tailnet room should therefore use:
-
-- explicit bind host or wildcard bind with `--allow-host`;
-- no HTML token bootstrap on non-loopback hosts;
-- account sessions and CSRF for all users;
-- per-user audit actors rather than a shared `lead` identity;
-- presence derived from active sessions, not from anonymous browser tabs.
-
-Join links or one-time codes may be used for onboarding, but the resulting
-identity is still an account/session pair. Join-code default role should remain
-operator only when the operator explicitly chooses that behavior; viewer is the
-safer default for broad sharing.
-
-## Project Lifecycle
-
-Project creation is an operator-only mutation. The future lifecycle service
-should validate the requested project name and workspace once, then create or
-verify these resources as one idempotent unit:
+Project creation is an operator-only mutation. It should create or verify these
+resources as one idempotent unit:
 
 1. `grove new-project <name> --json` creates or verifies the workspace and
    project registry.
@@ -128,59 +59,121 @@ verify these resources as one idempotent unit:
 4. Dashboard project metadata reports project, workspace, list slug, tmux host
    session, and lead node identity.
 
-The project must not be partially visible as a normal ready project until the
-lifecycle result can report these resources. If tmux pane creation succeeds but
+The project must not be shown as a normal ready project until the lifecycle
+result can report these resources. If tmux pane creation succeeds but
 list/registry creation fails, the response should surface a repairable degraded
-state and include the exact missing resource. Follow-up repair should be
-explicit and audited.
+state and include the exact missing resource. Follow-up repair must be explicit
+and audited.
 
-The auth-side lifecycle contract is represented as a `ProjectIdentity` decision:
-`project`, `workspace`, `list_slug`, and `tmux_session` must be non-empty and
-internally consistent before a lifecycle mutation is authorized. A valid
-identity is still necessary but not sufficient: the actor must also have project
-mutation permission. The auth module does not create projects, list items,
-sessions, panes, or registry entries.
+Current live `dev10` uses `grove-master` as the global master and project-level
+direct operator. New project scaffolds create a concrete `lead` node rather than
+a synthetic `project-master`.
 
-### Project Lead
+## Auth Modes
 
-Each project has one default lead node. It is the default direct-contact target
-for project-level questions, setup work, and coordination, and it may also be
-the default assignee for newly created human-facing list items when the operator
-chooses that project.
+### Local Token Mode
 
-The lifecycle contract requires dashboard and list APIs to see exactly one
-default project lead identity for the project. Current live dev10 uses
-`grove-master` as the global master and project-level direct operator, while new
-project scaffolds create a concrete `lead` node rather than a synthetic
-`project-master`.
+The injected-token model is local-machine bootstrap behavior. It remains useful
+for loopback and operator-owned local development, but it is not the preferred
+model for shared tailnet rooms because a static token can leak through page
+source, logs, browser extensions, or copied URLs.
 
-### Audit
+Local mode should stay explicit and visibly marked as local in the UI.
 
-Project lifecycle audit events should include:
+### Team-Auth Mode
 
-- actor id and role;
-- requested project name;
-- resulting project/workspace/list slug and tmux host session;
-- lifecycle step outcomes;
-- default assignee;
-- degraded or repair-needed reason when applicable.
+Team-auth mode uses account-backed sessions:
 
-The audit payload must not include dashboard cookies, CSRF values, join codes,
-or account secrets.
+- **account**: durable dashboard identity with display name, role, and enabled
+  state;
+- **session**: opaque browser session bound to one account and expiry time;
+- **actor**: request-time identity derived from a valid session;
+- **role**: `viewer`, `operator`, or `admin`;
+- **csrf**: per-session token required for state-changing dashboard requests.
+
+The bridge exposes and tests the live auth endpoints:
+
+- `POST /api/login`;
+- `POST /api/logout`;
+- `GET /api/me`;
+- `GET /api/csrf`;
+- `POST /api/share` when shared access is enabled;
+- `POST /api/join` when shared access is enabled.
+
+The frontend consumes `/api/me`, stores the returned CSRF token in memory, sends
+the CSRF header for mutating requests, gates operator-only controls, and strips
+one-time join codes from URLs after reading them.
+
+Sessions are opaque to the browser. The frontend must not receive password
+hashes, raw passwords, cookie values, session signing secrets, or unredacted
+join secrets. Cookie defaults should be:
+
+- `HttpOnly`;
+- `SameSite=Lax`;
+- path scoped to the dashboard;
+- `Secure` when served over HTTPS;
+- finite TTL with server-side revocation.
+
+## Permissions
+
+The bridge normalizes authorization to permissions rather than route-local ad
+hoc role checks.
+
+Initial permission buckets:
+
+- viewer: project/list item/node/terminal/connect read;
+- operator: viewer reads plus project/list item/node mutation, node input, audit
+  read, cost read, quota mutation, project lifecycle, and share-code issuance;
+- admin: operator permissions plus account/session management.
+
+Mutating routes must check the authenticated actor and CSRF. Factual
+master-chat turns may be allowed without CSRF after authentication, but
+action-confirming master-chat turns require the same CSRF boundary as other
+state changes.
+
+Viewer sessions must not:
+
+- create projects;
+- create, approve, abort, or mutate human-facing list items;
+- send terminal input;
+- mint share codes;
+- mutate GUI features, quota, routing, or other operator-only settings.
+
+## Shared Access
+
+Shared access is default OFF. When enabled, `POST /api/share` mints a one-time
+join code and share URL for an authenticated operator. `POST /api/join`
+exchanges a valid code plus display name for a member session.
+
+Shared access rules:
+
+- remote non-loopback bind requires explicit trusted `--allow-host`;
+- `GET /api/share` does not mint codes;
+- share issuance requires operator role and CSRF;
+- join codes are one-time and expiring;
+- join-code default role is operator only when the operator explicitly chooses
+  that mode; viewer is safer for broad sharing;
+- `admin` join role should be treated as a high-risk explicit configuration;
+- share URLs must not expose secret material after the UI captures the code;
+- joined members use the same project, node, terminal, and list authorization
+  policy as other sessions.
+
+Presence should derive from active sessions, not anonymous browser tabs.
 
 ## Dashboard Tmux Connect Surface
 
-The project dashboard should show tmux connection metadata at two levels:
+The dashboard exposes tmux connection metadata at two levels:
 
 - **project/session level**: tmux session name, list backing slug, workspace path
   when safe to expose, tmux attach command, and SSH attach command;
-- **node/pane level**: reuse v1.27 `/api/nodes/{node}/connect` for pane-specific
+- **node/pane level**: `/api/nodes/{node}/connect` returns pane-specific
   attach/select commands.
 
-Project-level copy commands should be generated server-side from trusted
+Project-level and node-level commands are generated server-side from trusted
 configuration and shell-escaped inputs. The bridge should not guess public host
-names. Operators configure a host alias for SSH/tailnet sharing, and the UI only
-copies commands returned by the bridge.
+names. Operators configure a host alias for SSH/tailnet sharing; when a node
+does not have `connect_host`, the bridge may fall back to the first trusted
+non-loopback web `allowed_hosts` entry.
 
 Recommended command payload shape:
 
@@ -199,37 +192,58 @@ Recommended command payload shape:
 }
 ```
 
-Viewers may copy read-only connect commands, but only operators may use web
-input controls that send text into a pane. Node-level connect controls should
-continue to call `/api/nodes/{node}/connect`; v1.28 should not fork that route.
+Viewers may copy connect commands, but only operators may use web controls that
+send text into a pane.
 
 ## Bridge Boundary
 
-The phase-1 bridge module, `grove_bridge.auth`, defines typed auth interfaces
-and pure authorization helpers only. It should model:
+The bridge owns:
 
-- account identity and dashboard role;
-- login credentials and login result;
-- non-exception login outcomes for unknown account, disabled account, and invalid
-  credentials;
-- password hash redaction and password/session secret boundaries;
-- session issuance, verification, and revocation;
-- request actor context;
-- protocol boundaries for account and session stores;
-- permission decisions for role-gated access;
-- project lifecycle authorization for the project/workspace/list/tmux identity.
+- account/session primitives and redaction boundaries in `grove_bridge.auth`;
+- route-level auth and CSRF enforcement in the web app;
+- shared access join-code issuance and exchange;
+- project lifecycle authorization;
+- node connect metadata generation;
+- audit actor attribution for authenticated actions;
+- secret-free payloads for browser and Slack surfaces.
 
-The module must not register FastAPI routes, write cookies, read account files,
-mutate the existing team-auth store, create projects, create list backing
-records, spawn nodes, or call tmux. Those actions belong to later router/service
-layers after this contract is reviewed.
+The frontend owns:
+
+- displaying whether the dashboard is local or secured;
+- loading `/api/me` and remembering CSRF in memory;
+- hiding or disabling operator-only controls for viewers;
+- join-code capture and URL scrubbing;
+- presenting connect/share/join flows without treating secrets as durable UI
+  state.
+
+The CLI and project registry own concrete project creation, workspace/cwd, and
+node placement. The auth layer authorizes lifecycle mutations; it does not
+invent hidden projects, synthesize `project-master`, or bypass operator-owned
+org changes.
+
+## Audit
+
+Project lifecycle and auth-sensitive audit events should include:
+
+- actor id, login, and role;
+- requested project name;
+- resulting project/workspace/list slug and tmux host session;
+- lifecycle step outcomes;
+- default assignee or lead node;
+- degraded or repair-needed reason when applicable;
+- share/join actor metadata without raw join secrets.
+
+Audit payloads must not include dashboard cookies, CSRF values, join codes,
+password hashes, raw credentials, session signing secrets, or unredacted
+transcripts.
 
 ## Non-Goals
 
 - public internet exposure without a separate security review;
-- replacing v1.27 node connect routes;
-- changing `web_app.py` or `app.tsx` in this phase;
 - hard per-user OS sandboxing;
-- storing raw credentials or session secrets in audit events;
 - allowing viewers to mutate projects, human-facing list items, nodes, or
-  terminal input.
+  terminal input;
+- storing raw credentials, session cookies, CSRF tokens, or join codes in audit
+  events;
+- synthetic `project-master` defaults in the current model;
+- autonomous org creation/deletion without explicit operator instruction.
