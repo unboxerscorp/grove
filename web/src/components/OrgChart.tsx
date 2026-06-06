@@ -5,7 +5,7 @@ import { AGENTS, agentGlyph, cx, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import { buildOrgTree, isBgServiceNode } from "../orgTree";
 import type { TFn } from "../i18n";
-import type { MasterMeta, MasterOrg, NodeHealth, OrgNode, ProjectLead } from "../types";
+import type { MasterMeta, NodeHealth, OrgNode, ProjectLead } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
 import { ROLE_PRESETS, rolePresetBody } from "../rolePresets";
 import { GroveMark } from "./GroveMark";
@@ -421,48 +421,6 @@ type DragState = {
   invalid: boolean;
 };
 
-function MasterOrgStrip(props: {
-  masterOrg: MasterOrg | null;
-  onOpenMasterChat?: () => void;
-  onSwitchProject?: (project: string) => void;
-}) {
-  const { masterOrg, onOpenMasterChat, onSwitchProject } = props;
-  if (!masterOrg) return null;
-  const selected = masterOrg.selected_project;
-  const otherProjects = masterOrg.visible_projects.filter((project) => project !== selected);
-  const humanCount = masterOrg.human.assignee_candidates.length;
-  const defaultNode = masterOrg.project_master.name;
-  return (
-    <div className="master-org" data-master-org="true">
-      <button type="button" className="master-org__root" onClick={onOpenMasterChat}>
-        <span className="master-org__mark">M</span>
-        <span className="master-org__title">{masterOrg.name}</span>
-        <span className="master-org__meta">{selected}</span>
-      </button>
-      <div className="master-org__facts">
-        <span className="master-org__fact">default {defaultNode}</span>
-        <span className="master-org__fact">projects {masterOrg.visible_projects.length}</span>
-        {humanCount > 0 && <span className="master-org__fact">human {humanCount}</span>}
-      </div>
-      {otherProjects.length > 0 && (
-        <div className="master-org__projects" aria-label="cross-project leads">
-          {otherProjects.map((project) => (
-            <button
-              key={project}
-              type="button"
-              className="master-org__project"
-              data-project={project}
-              onClick={() => onSwitchProject?.(project)}
-            >
-              {project} lead
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function OrgChart(props: {
   liveTick: number;
   projectTick: number;
@@ -474,7 +432,6 @@ export function OrgChart(props: {
   const { t } = useI18n();
 
   const [nodes, setNodes] = useState<OrgNode[]>([]);
-  const [masterOrg, setMasterOrg] = useState<MasterOrg | null>(null);
   const [childrenMap, setChildrenMap] = useState<Record<string, string[]>>({});
   const [rootList, setRootList] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -517,7 +474,6 @@ export function OrgChart(props: {
         setNodes(o.nodes ?? []);
         setRootList(o.roots ?? []);
         setChildrenMap(o.children ?? {});
-        setMasterOrg(o.master_org ?? null);
         setMaster(o.master ?? null);
         setProjectLeads(o.project_leads ?? []);
         setError(null);
@@ -866,12 +822,6 @@ export function OrgChart(props: {
       {terminateError && <div className="org__msg is-error">{terminateError}</div>}
       {!error && loading && nodes.length === 0 && <div className="org__msg">{t("org.loading")}</div>}
       {!error && !loading && nodes.length === 0 && <div className="org__msg">{t("org.empty")}</div>}
-
-      <MasterOrgStrip
-        masterOrg={masterOrg}
-        onOpenMasterChat={onOpenMasterChat}
-        onSwitchProject={onSwitchProject}
-      />
 
       {serviceNodes.length > 0 && (
         <div className="org-services" aria-label={t("org.services")}>
