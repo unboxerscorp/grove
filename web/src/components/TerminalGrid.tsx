@@ -4,6 +4,7 @@ import { cx } from "../constants";
 import { useI18n } from "../i18n";
 import type { GroveNode } from "../types";
 import { TerminalPane } from "./TerminalPane";
+import { termDnd } from "../termViewsStore";
 
 const MAX_CELLS = 9;
 const MAX_ROWS = 3;
@@ -176,6 +177,20 @@ export function TerminalGrid({
   // store.views always holds >= 1 view (seeded at init; closeView never empties it).
   const activeView = store.views.find((v) => v.id === store.activeId) ?? store.views[0]!;
   const rows = activeView.rows;
+
+  // Publish the cross-component DnD slice for NodeList (the drag source): mount
+  // state gates the drag affordance; the active view's node set drives in-view
+  // dimming so a node already here can't be dragged in again. (D1: publish only —
+  // NodeList consumes in D2, drop zones in D3.)
+  useEffect(() => {
+    termDnd.setGridMounted(true);
+    return () => termDnd.setGridMounted(false);
+  }, []);
+  const activeNodeNames = useMemo(() => rows.flatMap((r) => r.cells.map((c) => c.node)), [rows]);
+  useEffect(() => {
+    termDnd.setActiveNodes(activeNodeNames);
+  }, [activeNodeNames]);
+
   const total = totalCells(rows);
   const canAddRow = rows.length < MAX_ROWS && total < MAX_CELLS;
   const canAddCol = (row: GridRow) => row.cells.length < MAX_COLS && total < MAX_CELLS;
