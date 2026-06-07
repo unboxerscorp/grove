@@ -5913,6 +5913,48 @@ button {
 .dr-termgrid__icon:hover { color: var(--text); }
 .dr-termgrid__icon:disabled { opacity: 0.4; cursor: default; }
 .dr-termgrid__screen { display: flex; flex: 1; min-height: 0; min-width: 0; }
+/* node→grid drop zones (rendered only during a drag). Thin hit strips; faint
+   guide while dragging, and the hovered one shows a teal insert line + glow and
+   widens so neighbouring cells slide to make room. */
+.dr-termgrid__drop { position: relative; flex: 0 0 8px; border-radius: 4px; transition: flex-basis 0.13s ease; }
+.dr-termgrid__drop--col { align-self: stretch; }
+.dr-termgrid__drop--row { width: 100%; flex: 0 0 8px; }
+.dr-termgrid__drop::before {
+  content: "";
+  position: absolute;
+  background: var(--teal);
+  border-radius: 3px;
+  opacity: 0;
+  box-shadow: 0 0 10px rgba(84, 199, 184, 0.75);
+  transition: opacity 0.13s ease;
+}
+.dr-termgrid__drop--col::before { top: 6px; bottom: 6px; left: 50%; width: 3px; transform: translateX(-1.5px); }
+.dr-termgrid__drop--row::before { left: 6px; right: 6px; top: 50%; height: 3px; transform: translateY(-1.5px); }
+.dr-termgrid.is-dnd .dr-termgrid__drop::before { opacity: 0.22; }
+.dr-termgrid__drop.is-over { flex-basis: 20px; }
+.dr-termgrid__drop.is-over::before { opacity: 1; }
+/* empty view acts as a drop target while dragging */
+.dr-termgrid__empty.is-droptarget {
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  transition:
+    border-color 0.13s ease,
+    background 0.13s ease;
+}
+.dr-termgrid__empty.is-over { border-color: var(--teal); background: rgba(84, 199, 184, 0.06); }
+/* custom drag ghost (rendered off-screen, used only as the drag image) */
+.dr-drag-ghost {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  background: var(--teal);
+  border-radius: 7px;
+  padding: 5px 10px;
+  box-shadow: 0 10px 26px -10px rgba(0, 0, 0, 0.8);
+}
 /* add buttons: per-row right "+" = tall (add a column to that row), bottom "+" =
    wide (add a new row). The per-row button stretches to its row's height. */
 .dr-termgrid__addcol { flex: 0 0 26px; align-self: stretch; min-height: 0; font-family: var(--mono); font-size: 18px; color: var(--dim); background: var(--panel-2); border: 1px dashed var(--line); border-radius: 10px; cursor: pointer; }

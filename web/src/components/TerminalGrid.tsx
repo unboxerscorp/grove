@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import { cx } from "../constants";
 import { useI18n } from "../i18n";
 import type { GroveNode } from "../types";
 import { TerminalPane } from "./TerminalPane";
-import { termDnd } from "../termViewsStore";
+import { termDnd, useTermDnd } from "../termViewsStore";
 
 const MAX_CELLS = 9;
 const MAX_ROWS = 3;
@@ -149,6 +149,12 @@ export function TerminalGrid({
     return boot.store;
   });
   const [picking, setPicking] = useState<Picking>(null);
+  // Active drop-zone key (the slot the pointer is over during a drag).
+  const [overKey, setOverKey] = useState<string | null>(null);
+  const dnd = useTermDnd();
+  useEffect(() => {
+    if (dnd.draggingNode === null) setOverKey(null); // drag ended -> clear highlight
+  }, [dnd.draggingNode]);
 
   // Persist on every change (per browser; survives remount / revisit / expand-back).
   useEffect(() => {
@@ -242,8 +248,89 @@ export function TerminalGrid({
       return { views, activeId };
     });
 
+  // --- node→grid drop (D3) -------------------------------------------------
+  const getDropNode = (e: React.DragEvent) =>
+    e.dataTransfer.getData("application/x-grove-node") || e.dataTransfer.getData("text/plain");
+  // Insert a cell at `index` within a row (no-dup: a node already in the active
+  // view is rejected — the source also blocks dragging in-view nodes).
+  const insertCellAt = (rowId: string, index: number, node: string) =>
+    setActiveRows((rs) => {
+      if (totalCells(rs) >= MAX_CELLS || rs.some((r) => r.cells.some((c) => c.node === node))) return rs;
+      return rs.map((r) =>
+        r.id === rowId && r.cells.length < MAX_COLS
+          ? { ...r, cells: [...r.cells.slice(0, index), { id: nextCellId(), node }, ...r.cells.slice(index)] }
+          : r,
+      );
+    });
+  const insertRowAt = (index: number, node: string) =>
+    setActiveRows((rs) => {
+      if (
+        rs.length >= MAX_ROWS ||
+        totalCells(rs) >= MAX_CELLS ||
+        rs.some((r) => r.cells.some((c) => c.node === node))
+      )
+        return rs;
+      return [...rs.slice(0, index), makeRow(node), ...rs.slice(index)];
+    });
+  const dragging = dnd.draggingNode !== null;
+  // A thin drop strip; the hovered one shows a teal insert line + glow (CSS).
+  const dropSlot = (key: string, orient: "col" | "row", onNode: (n: string) => void) => (
+    <div
+      key={key}
+      className={cx("dr-termgrid__drop", `dr-termgrid__drop--${orient}`, overKey === key && "is-over")}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragEnter={() => setOverKey(key)}
+      onDragLeave={() => setOverKey((k) => (k === key ? null : k))}
+      onDrop={(e) => {
+        e.preventDefault();
+        setOverKey(null);
+        const node = getDropNode(e);
+        if (node) onNode(node);
+      }}
+    />
+  );
+  const renderCell = (row: GridRow, cell: GridCell) => {
+    const node = nodes.find((n) => n.name === cell.node) ?? null;
+    return (
+      <div className="dr-termgrid__cell" key={cell.id}>
+        <div className="dr-termgrid__cellbar">
+          <span className="dr-termgrid__cellname" title={cell.node}>
+            {cell.node}
+          </span>
+          <button
+            type="button"
+            className="dr-termgrid__icon"
+            data-act="full"
+            title={t("termgrid.fullview")}
+            aria-label={t("termgrid.fullview")}
+            disabled={!node}
+            onClick={() => node && onExpand(node.tmux_pane)}
+          >
+            ⤢
+          </button>
+          <button
+            type="button"
+            className="dr-termgrid__icon"
+            data-act="close"
+            title={t("termgrid.close")}
+            aria-label={t("termgrid.close")}
+            onClick={() => closeCell(row.id, cell.id)}
+          >
+            ×
+          </button>
+        </div>
+        <div className="dr-termgrid__screen">
+          <TerminalPane node={node} compact />
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <section className="dr-termgrid">
+    <section className={cx("dr-termgrid", dragging && "is-dnd")}>
       <div className="dr-termtabs" role="tablist" aria-label={t("tab.terminal")}>
         {store.views.map((v) => (
           <span key={v.id} className={cx("dr-termtabs__tab", v.id === store.activeId && "is-active")}>
@@ -281,7 +368,33 @@ export function TerminalGrid({
       </div>
 
       {total === 0 ? (
-        <div className="dr-termgrid__empty">
+        <div
+          className={cx(
+            "dr-termgrid__empty",
+            dragging && "is-droptarget",
+            overKey === "empty" && "is-over",
+          )}
+          onDragOver={
+            dragging
+              ? (e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "copy";
+                }
+              : undefined
+          }
+          onDragEnter={dragging ? () => setOverKey("empty") : undefined}
+          onDragLeave={dragging ? () => setOverKey((k) => (k === "empty" ? null : k)) : undefined}
+          onDrop={
+            dragging
+              ? (e) => {
+                  e.preventDefault();
+                  setOverKey(null);
+                  const node = getDropNode(e);
+                  if (node) insertRowAt(0, node);
+                }
+              : undefined
+          }
+        >
           <p className="dr-termgrid__empty-msg">{t("termgrid.empty")}</p>
           <button
             type="button"
@@ -294,55 +407,34 @@ export function TerminalGrid({
         </div>
       ) : (
         <div className="dr-termgrid__rows">
-          {rows.map((row) => (
-            <div className="dr-termgrid__row" key={row.id}>
-              {row.cells.map((cell) => {
-                const node = nodes.find((n) => n.name === cell.node) ?? null;
-                return (
-                  <div className="dr-termgrid__cell" key={cell.id}>
-                    <div className="dr-termgrid__cellbar">
-                      <span className="dr-termgrid__cellname" title={cell.node}>
-                        {cell.node}
-                      </span>
-                      <button
-                        type="button"
-                        className="dr-termgrid__icon"
-                        data-act="full"
-                        title={t("termgrid.fullview")}
-                        aria-label={t("termgrid.fullview")}
-                        disabled={!node}
-                        onClick={() => node && onExpand(node.tmux_pane)}
-                      >
-                        ⤢
-                      </button>
-                      <button
-                        type="button"
-                        className="dr-termgrid__icon"
-                        data-act="close"
-                        title={t("termgrid.close")}
-                        aria-label={t("termgrid.close")}
-                        onClick={() => closeCell(row.id, cell.id)}
-                      >
-                        ×
-                      </button>
-                    </div>
-                    <div className="dr-termgrid__screen">
-                      <TerminalPane node={node} compact />
-                    </div>
-                  </div>
-                );
-              })}
-              <button
-                type="button"
-                className="dr-termgrid__addcol"
-                title={t("termgrid.addCol")}
-                aria-label={t("termgrid.addCol")}
-                disabled={!canAddCol(row)}
-                onClick={() => setPicking({ type: "col", rowId: row.id })}
-              >
-                +
-              </button>
-            </div>
+          {dragging && canAddRow && dropSlot("r:0", "row", (n) => insertRowAt(0, n))}
+          {rows.map((row, ri) => (
+            <Fragment key={row.id}>
+              <div className="dr-termgrid__row">
+                {dragging &&
+                  canAddCol(row) &&
+                  dropSlot(`c:${row.id}:0`, "col", (n) => insertCellAt(row.id, 0, n))}
+                {row.cells.map((cell, ci) => (
+                  <Fragment key={cell.id}>
+                    {renderCell(row, cell)}
+                    {dragging &&
+                      canAddCol(row) &&
+                      dropSlot(`c:${row.id}:${ci + 1}`, "col", (n) => insertCellAt(row.id, ci + 1, n))}
+                  </Fragment>
+                ))}
+                <button
+                  type="button"
+                  className="dr-termgrid__addcol"
+                  title={t("termgrid.addCol")}
+                  aria-label={t("termgrid.addCol")}
+                  disabled={!canAddCol(row)}
+                  onClick={() => setPicking({ type: "col", rowId: row.id })}
+                >
+                  +
+                </button>
+              </div>
+              {dragging && canAddRow && dropSlot(`r:${ri + 1}`, "row", (n) => insertRowAt(ri + 1, n))}
+            </Fragment>
           ))}
           <button
             type="button"

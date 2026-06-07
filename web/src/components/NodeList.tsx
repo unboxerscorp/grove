@@ -118,6 +118,13 @@ export function NodeList(props: {
                       e.dataTransfer.setData("application/x-grove-node", n.name);
                       e.dataTransfer.setData("text/plain", n.name);
                       e.dataTransfer.effectAllowed = "copy";
+                      // Custom drag image: a small node-name chip (off-screen el).
+                      const ghost = document.createElement("div");
+                      ghost.className = "dr-drag-ghost";
+                      ghost.textContent = n.name;
+                      document.body.appendChild(ghost);
+                      e.dataTransfer.setDragImage(ghost, 14, 14);
+                      window.setTimeout(() => ghost.remove(), 0);
                       termDnd.setDragging(n.name);
                     }
                   : undefined
