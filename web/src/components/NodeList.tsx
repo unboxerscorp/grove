@@ -6,6 +6,7 @@ import { liveNodeCount } from "../nodeLive";
 import { buildNodeListRows, isBgServiceNode } from "../orgTree";
 import type { GroveNode } from "../types";
 import { NodeHealthBadge } from "./NodeHealthBadge";
+import { termDnd, useTermDnd } from "../termViewsStore";
 
 function statusClass(status: string): string {
   switch (status) {
@@ -36,6 +37,11 @@ export function NodeList(props: {
   const { nodes, selectedPane, onSelect, boardLive, childrenMap, roots } = props;
   const { t } = useI18n();
   const [query, setQuery] = useState("");
+  // Terminal node→grid drag-and-drop: this list is the drag SOURCE. Affordance is
+  // live only while the terminal grid is mounted; a node already in the active
+  // view is dimmed + non-draggable (you can't drag the same node in twice).
+  const dnd = useTermDnd();
+  const activeSet = useMemo(() => new Set(dnd.activeNodes), [dnd.activeNodes]);
 
   const ordered = useMemo(() => buildNodeListRows(nodes, childrenMap, roots), [nodes, childrenMap, roots]);
   const filtered = useMemo(() => {
@@ -73,49 +79,71 @@ export function NodeList(props: {
         {filtered.length === 0 && (
           <div className="dr-rail__empty">{nodes.length ? t("nodes.noMatch") : t("nodes.none")}</div>
         )}
-        {filtered.map(({ node: n, depth, section }, i) => (
-          <button
-            key={n.tmux_pane || n.session_id || n.name}
-            type="button"
-            data-node={n.name}
-            data-depth={depth}
-            data-section={section}
-            className={cx(
-              "dr-node",
-              n.tmux_pane === selectedPane && "is-selected",
-              n.terminal_allowed === false && "is-locked",
-              isBgServiceNode(n) && "is-service",
-            )}
-            style={
-              {
-                "--depth": depth,
-                "--indent": `${depth * 18}px`,
-                "--branch": `${Math.max(0, depth - 1) * 18}px`,
-                animationDelay: `${Math.min(i, 14) * 26}ms`,
-              } as React.CSSProperties
-            }
-            disabled={n.terminal_allowed === false}
-            title={n.terminal_allowed === false ? t("nodes.notViewable") : undefined}
-            onClick={() => onSelect(n.tmux_pane)}
-          >
-            <span className={cx("dr-node__dot", statusClass(n.status))} />
-            <span className="dr-node__body">
-              <span className="dr-node__top">
-                <span className="dr-node__name">{n.name}</span>
-                <NodeHealthBadge health={n.health} compact />
-                <span className="dr-node__agent" title={n.agent}>
-                  {isBgServiceNode(n) ? t("node.kind.service") : `${agentGlyph(n.agent)} ${n.agent}`}
+        {filtered.map(({ node: n, depth, section }, i) => {
+          const locked = n.terminal_allowed === false;
+          const inView = dnd.gridMounted && activeSet.has(n.name);
+          const canDrag = dnd.gridMounted && !inView && !locked;
+          const dragging = dnd.draggingNode === n.name;
+          return (
+            <button
+              key={n.tmux_pane || n.session_id || n.name}
+              type="button"
+              data-node={n.name}
+              data-depth={depth}
+              data-section={section}
+              draggable={canDrag}
+              className={cx(
+                "dr-node",
+                n.tmux_pane === selectedPane && "is-selected",
+                locked && "is-locked",
+                isBgServiceNode(n) && "is-service",
+                inView && "is-inview",
+                canDrag && "is-draggable",
+                dragging && "is-dragging",
+              )}
+              style={
+                {
+                  "--depth": depth,
+                  "--indent": `${depth * 18}px`,
+                  "--branch": `${Math.max(0, depth - 1) * 18}px`,
+                  animationDelay: `${Math.min(i, 14) * 26}ms`,
+                } as React.CSSProperties
+              }
+              disabled={locked}
+              title={locked ? t("nodes.notViewable") : canDrag ? t("nodes.dragHint") : undefined}
+              onClick={() => onSelect(n.tmux_pane)}
+              onDragStart={
+                canDrag
+                  ? (e) => {
+                      e.dataTransfer.setData("application/x-grove-node", n.name);
+                      e.dataTransfer.setData("text/plain", n.name);
+                      e.dataTransfer.effectAllowed = "copy";
+                      termDnd.setDragging(n.name);
+                    }
+                  : undefined
+              }
+              onDragEnd={canDrag ? () => termDnd.setDragging(null) : undefined}
+            >
+              <span className={cx("dr-node__dot", statusClass(n.status))} />
+              <span className="dr-node__body">
+                <span className="dr-node__top">
+                  <span className="dr-node__name">{n.name}</span>
+                  <NodeHealthBadge health={n.health} compact />
+                  <span className="dr-node__agent" title={n.agent}>
+                    {isBgServiceNode(n) ? t("node.kind.service") : `${agentGlyph(n.agent)} ${n.agent}`}
+                  </span>
+                </span>
+                <span className="dr-node__sub">
+                  <span className="dr-node__pane">{n.tmux_pane}</span>
+                  <span className={cx("dr-node__status", statusClass(n.status))}>
+                    {statusLabel(t, n.status)}
+                  </span>
                 </span>
               </span>
-              <span className="dr-node__sub">
-                <span className="dr-node__pane">{n.tmux_pane}</span>
-                <span className={cx("dr-node__status", statusClass(n.status))}>
-                  {statusLabel(t, n.status)}
-                </span>
-              </span>
-            </span>
-          </button>
-        ))}
+              {inView && <span className="dr-node__inview">{t("nodes.inThisView")}</span>}
+            </button>
+          );
+        })}
       </div>
     </aside>
   );

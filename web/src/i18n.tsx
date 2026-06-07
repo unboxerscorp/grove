@@ -41,6 +41,8 @@ const KO: Dict = {
   "nodes.noMatch": "일치 항목 없음",
   "nodes.none": "온라인 노드 없음",
   "nodes.notViewable": "터미널을 열 수 없는 노드입니다 (pane 없음).",
+  "nodes.inThisView": "현재 뷰에 있음",
+  "nodes.dragHint": "그리드로 끌어다 놓기",
 
   "status.active": "활성",
   "status.running": "실행 중",
@@ -856,6 +858,8 @@ const EN: Dict = {
   "nodes.noMatch": "no match",
   "nodes.none": "no nodes online",
   "nodes.notViewable": "This node has no terminal to open (no pane).",
+  "nodes.inThisView": "in this view",
+  "nodes.dragHint": "drag into the grid",
 
   "status.active": "active",
   "status.running": "running",
