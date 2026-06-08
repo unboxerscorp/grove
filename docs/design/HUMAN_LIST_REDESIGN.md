@@ -1,8 +1,9 @@
-# Human-facing List Redesign — Candidate Review (design-only)
+# Human-facing List Redesign — Candidate Review
+
+> **STATUS — Slack-bot permission slice IMPLEMENTED (2026-06-08, flag-gated):** typed confirm-action dispatcher + Slack wiring + chat-create→`staged` dark flag (default OFF, live-unchanged) — see `SLACK_BOT_LIST_PERMISSION_MODEL.md` STATUS. Backend `staged`/`/dispatch` is task-worker's (`9eeeca8`). Deployment bundled later.
 
 Integrates three node perspectives for the operator's request: list UI/flow + Slack-bot
-list permissions. No code yet. Refs: `docs/design/SLACK_BOT_LIST_PERMISSION_MODEL.md`
-(chat-worker).
+list permissions. Refs: `docs/design/SLACK_BOT_LIST_PERMISSION_MODEL.md` (chat-worker).
 
 ## Problem (operator)
 

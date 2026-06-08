@@ -1,6 +1,8 @@
-# Slack Bot List Permission / Tool Model — Design Review (review only, no code)
+# Slack Bot List Permission / Tool Model — Design Review
 
-> Owner: chat-worker (review per grove-master + lead; **no implementation** — lead integrates).
+> **STATUS — IMPLEMENTED (2026-06-08, Candidate A, behind the `chat_bridge_runtime` flag):** pure typed-action dispatcher `bridge/src/grove_bridge/chat_actions.py` (`ChatConfirmAction` + `apply_chat_confirm_action`: create/classify/transition/comment/dispatch — role-gated, scope-exact board-ownership IDOR guard, CAS, [R]-redacted, audited, no-partial) + Slack confirm-action wiring (parallel `SlackConfirmationStore.register_action` + confirm→dispatcher routing; LLM tools stay read-only = `get_project_tasks` only, writes are never tools) + chat-create→`staged` dark flag `chat_create_staged` (default OFF). dark-OFF = live-unchanged (test_slack 회귀0); deployment bundled later. Plan: `docs/superpowers/plans/2026-06-08-slack-confirm-action-typed-dispatch.md`.
+
+> Owner: chat-worker (review per grove-master + lead). Operator premise / invariants below carry forward into the implementation.
 > Operator premise: the Slack bot / chat runtime must manage human-facing lists well, but
 > **unrestricted board-DB write is dangerous**. Invariant preserved throughout:
 > **confirm-before-create / human-approval boundary** (CLAUDE.md: classification can only
