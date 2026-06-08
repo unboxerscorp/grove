@@ -69,6 +69,8 @@ TASK_COMPLETION_METADATA_EVENT_TYPE = "grove_task_completed"
 DIGEST_REMINDER_MODE = "digest_reminder"
 INTAKE_CONFIRM_ACTION_ID = "grove_intake_confirm"
 INTAKE_ANSWER_ONLY_ACTION_ID = "grove_intake_answer_only"
+# Cap on live-thread messages folded into the chat-bridge context (recent N).
+_CHAT_THREAD_MESSAGE_CAP = 30
 SLACK_EVENT_DEDUPE_MAX = 1000
 SLACK_ASSISTANT_RESPONSE_CHUNK_CHARS = 3000
 SLACK_NODE_CHAT_INPUT_BUSY_MARKER = "target pane has unsent prompt input"
@@ -126,6 +128,10 @@ class SlackClientProtocol(Protocol):
         oldest: str | None = None,
     ) -> str | None: ...
 
+    def conversations_replies(
+        self, *, channel: str, thread_ts: str
+    ) -> Sequence[Mapping[str, object]]: ...
+
 
 class ChatFacadeProtocol(Protocol):
     def send(self, *, session_id: str, node: str, text: str) -> str: ...
@@ -150,6 +156,14 @@ class SlackWebClientProtocol(Protocol):
         oldest: str | None = None,
         inclusive: bool = True,
         cursor: str | None = None,
+    ) -> Mapping[str, object]: ...
+
+    def conversations_replies(
+        self,
+        *,
+        channel: str,
+        ts: str,
+        limit: int,
     ) -> Mapping[str, object]: ...
 
 
@@ -526,6 +540,15 @@ class SlackSdkClient:
             cursor = _next_history_cursor(response)
             if cursor is None:
                 return None
+
+    def conversations_replies(
+        self, *, channel: str, thread_ts: str
+    ) -> Sequence[Mapping[str, object]]:
+        response = self._client.conversations_replies(channel=channel, ts=thread_ts, limit=100)
+        messages = response.get("messages")
+        if not isinstance(messages, Sequence) or isinstance(messages, str | bytes):
+            return []
+        return [message for message in messages if isinstance(message, Mapping)]
 
 
 class GroveServeChatFacade:
@@ -2918,16 +2941,7 @@ class SlackConnector:
         *,
         conversation_id: str,
     ) -> str:
-        history = self.store.list_master_chat_messages(
-            board=self.human_gate.board,
-            conversation_id=conversation_id,
-            limit=12,
-        )
-        history_lines = [
-            f"{message.role}: {_safe_slack_message_text(message.text)}"
-            for message in history[-12:]
-            if message.text.strip()
-        ]
+        history_lines = self._chat_bridge_history_lines(item, conversation_id=conversation_id)
         return "\n".join(
             [
                 "Surface: slack",
@@ -2940,6 +2954,68 @@ class SlackConnector:
                 _safe_slack_message_text(item.text),
             ]
         )
+
+    def _chat_bridge_history_lines(
+        self, item: SlackChatQueueItem, *, conversation_id: str
+    ) -> list[str]:
+        """Conversation context for the chat-bridge turn.
+
+        REPLACE: an in-thread mention (a reply — ``thread_ts != message_ts``) means the
+        live Slack thread is the complete, authoritative conversation (humans + bot,
+        including the feedback posted *before* the bot was summoned). Use it. A standalone
+        top-level mention has no such thread → fall back to the bot's persisted history.
+        """
+        if item.thread_ts and item.thread_ts != item.message_ts:
+            live = self._chat_bridge_live_thread_lines(item)
+            if live:
+                return live
+        history = self.store.list_master_chat_messages(
+            board=self.human_gate.board,
+            conversation_id=conversation_id,
+            limit=12,
+        )
+        return [
+            f"{message.role}: {_safe_slack_message_text(message.text)}"
+            for message in history[-12:]
+            if message.text.strip()
+        ]
+
+    def _chat_bridge_live_thread_lines(self, item: SlackChatQueueItem) -> list[str]:
+        """Render the live Slack thread as attributed, [R]-redacted lines (recent N).
+
+        Role attribution: the bot's own messages (``bot_id`` or ``bot_user_id`` match)
+        are ``assistant``; every human message is labeled with its author so the model
+        knows who said what. Each text is secret-redacted before it reaches the model.
+        """
+        try:
+            replies = self.slack_client.conversations_replies(
+                channel=item.channel_id, thread_ts=item.thread_ts
+            )
+        except Exception as exc:  # transport/API failure → fall back to persisted history
+            LOGGER.warning(
+                "conversations.replies fetch failed thread=%s: %s",
+                item.thread_ts,
+                redact_secret_text(str(exc)),
+            )
+            return []
+        lines: list[str] = []
+        for raw in list(replies)[-_CHAT_THREAD_MESSAGE_CAP:]:
+            if not isinstance(raw, Mapping):
+                continue
+            text = _safe_slack_message_text(redact_secret_text(str(raw.get("text") or "")))
+            if not text.strip():
+                continue
+            user = str(raw.get("user") or "")
+            is_bot = bool(raw.get("bot_id")) or (
+                self.bot_user_id is not None and user == self.bot_user_id
+            )
+            if is_bot:
+                lines.append(f"assistant: {text}")
+            else:
+                member = self._assistant_member(user)
+                author = member.name if member is not None else (user or "user")
+                lines.append(f"{author}: {text}")
+        return lines
 
     def _persist_chat_bridge_slack_turn(
         self,

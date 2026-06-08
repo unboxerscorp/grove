@@ -106,6 +106,10 @@ class FakeSlackClient:
                 return ts
         return None
 
+    def conversations_replies(self, *, channel: str, thread_ts: str) -> list[Mapping[str, object]]:
+        _ = (channel, thread_ts)
+        return []
+
 
 class FakeChatFacade:
     def __init__(self) -> None:
@@ -915,6 +919,12 @@ def test_human_gate_malformed_history_pagination_keeps_pending_without_repost(
             oldest: str | None = None,
         ) -> str | None:
             class MalformedWebClient:
+                def conversations_replies(
+                    self, *, channel: str, ts: str, limit: int
+                ) -> Mapping[str, object]:
+                    _ = (channel, ts, limit)
+                    return {"messages": []}
+
                 def chat_postMessage(
                     self,
                     *,
@@ -1146,6 +1156,12 @@ def test_human_gate_poll_skips_when_channel_missing_or_task_not_marked_human(
 
 def test_slack_sdk_history_lookup_scans_all_pages() -> None:
     class FakePaginatedWebClient:
+        def conversations_replies(
+            self, *, channel: str, ts: str, limit: int
+        ) -> Mapping[str, object]:
+            _ = (channel, ts, limit)
+            return {"messages": []}
+
         def __init__(self) -> None:
             self.cursors: list[str | None] = []
 
@@ -1207,6 +1223,12 @@ def test_slack_sdk_history_lookup_scans_all_pages() -> None:
 
 def test_slack_sdk_client_rejects_missing_post_ts_and_bad_history() -> None:
     class BadWebClient:
+        def conversations_replies(
+            self, *, channel: str, ts: str, limit: int
+        ) -> Mapping[str, object]:
+            _ = (channel, ts, limit)
+            return {"messages": []}
+
         def __init__(self, history_response: Mapping[str, object]) -> None:
             self.history_response = history_response
 
@@ -4259,6 +4281,12 @@ def test_slack_sdk_client_post_message_slackresponse() -> None:
             return default
 
     class FakeWebClient:
+        def conversations_replies(
+            self, *, channel: str, ts: str, limit: int
+        ) -> Mapping[str, object]:
+            _ = (channel, ts, limit)
+            return {"messages": []}
+
         def chat_postMessage(
             self,
             *,

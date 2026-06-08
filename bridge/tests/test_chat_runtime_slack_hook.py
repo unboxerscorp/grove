@@ -23,6 +23,8 @@ class _FakeSlack:
     def __init__(self) -> None:
         self.posts: list[tuple[str, str]] = []
         self.post_kwargs: list[dict[str, object]] = []
+        self.replies: dict[str, list[dict[str, object]]] = {}
+        self.replies_calls: list[tuple[str, str]] = []
 
     def post_message(self, *, channel: str, text: str, **kwargs: object) -> str:
         self.posts.append((channel, text))
@@ -32,6 +34,10 @@ class _FakeSlack:
     def find_message_by_metadata(self, **kwargs: object) -> None:
         _ = kwargs
         return None
+
+    def conversations_replies(self, *, channel: str, thread_ts: str) -> list[dict[str, object]]:
+        self.replies_calls.append((channel, thread_ts))
+        return self.replies.get(thread_ts, [])
 
 
 class _FakeFacade:
@@ -570,3 +576,76 @@ def test_agent_write_tool_creates_task_smoke(
     )
     conn.poll_node_chat_queue()
     assert len(store.list_tasks(board="dev10")) == 1
+
+
+def test_in_thread_mention_replaces_history_with_live_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # REPLACE: an in-thread mention -> the live Slack thread (humans + bot, incl.
+    # pre-mention feedback) becomes the conversation context, with role attribution
+    # (bot=assistant, human=author name) and [R] redaction per message.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    slack, facade = _FakeSlack(), _FakeFacade()
+    command_config = SlackCommandConfig(
+        board="dev10", members={"Uhuman": SlackCommandMember("kwon", "kwon", "operator")}
+    )
+    conn = _connector(store, slack, facade, command_config=command_config)
+    conn.bot_user_id = "Bbot"
+    secret = "xoxb-" + ("m" * 44)
+    slack.replies = {
+        "root.1": [
+            {"user": "Uhuman", "text": f"이거 X프로젝트에 추가 {secret}", "ts": "root.1"},
+            {"user": "Bbot", "text": "무엇을 도와드릴까요?", "ts": "1.5"},
+            {"user": "Uhuman", "text": "@그로브 이거 추가해줘", "ts": "2.0"},
+        ]
+    }
+    item = store.enqueue_slack_chat_message(
+        board="dev10",
+        team_id="T",
+        channel_id="C1",
+        thread_ts="root.1",
+        message_ts="2.0",
+        user_id="Uhuman",
+        node="chat-master",
+        text="@그로브 이거 추가해줘",
+    )
+    text = conn._chat_bridge_slack_user_text(item, conversation_id="slack:T:C1:root.1")
+
+    assert slack.replies_calls == [("C1", "root.1")]  # live thread fetched
+    assert "kwon: 이거 X프로젝트에 추가" in text  # human attributed by name (pre-mention feedback)
+    assert "assistant: 무엇을 도와드릴까요" in text  # bot = assistant
+    assert secret not in text  # [R] redaction per message
+
+
+def test_non_thread_mention_uses_persisted_history_without_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A standalone top-level mention (thread_ts == message_ts) -> persisted history
+    # fallback; conversations.replies is NOT fetched.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    slack, facade = _FakeSlack(), _FakeFacade()
+    conn = _connector(store, slack, facade)
+    store.append_master_chat_message(
+        board="dev10",
+        conversation_id="slack:T:C1:9.9",
+        role="user",
+        text="earlier persisted message",
+        request_id="r1",
+        origin_surface="slack",
+    )
+    item = store.enqueue_slack_chat_message(
+        board="dev10",
+        team_id="T",
+        channel_id="C1",
+        thread_ts="9.9",
+        message_ts="9.9",
+        user_id="U",
+        node="chat-master",
+        text="hi",
+    )
+    text = conn._chat_bridge_slack_user_text(item, conversation_id="slack:T:C1:9.9")
+
+    assert slack.replies_calls == []  # no fetch for a standalone top-level mention
+    assert "earlier persisted message" in text  # persisted history used
