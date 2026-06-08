@@ -2125,7 +2125,7 @@ button {
   color: var(--coral);
 }
 
-/* node-direct chatbot status (read-only; replaced the Gemini provider card) */
+/* node-direct chatbot status (read-only; replaced the external-provider config card) */
 .chat-status {
   display: flex;
   flex-direction: column;

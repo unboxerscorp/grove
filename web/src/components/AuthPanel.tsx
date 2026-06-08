@@ -36,7 +36,7 @@ export function AuthPanel() {
   const [featureBusy, setFeatureBusy] = useState<GuiFeatureKey | null>(null);
   const [armed, setArmed] = useState<GuiFeatureKey | null>(null); // P1 risk-enable confirm
   const [isViewer, setIsViewer] = useState(false);
-  // Chatbot routes directly to the CHAT MASTER node (Gemini provider removed).
+  // Chatbot routes directly to the CHAT MASTER node (no external provider).
   // Read-only: surface that node's presence/status, no provider config.
   const [chatMaster, setChatMaster] = useState<GroveNode | null>(null);
 
