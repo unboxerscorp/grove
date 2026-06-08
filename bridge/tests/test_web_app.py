@@ -1622,6 +1622,26 @@ def test_new_items_default_to_staged_and_honor_explicit_status(tmp_path: Path) -
     assert explicit.json()["status"] == "ask_human"  # ask-human bypasses staged
 
 
+def test_cross_project_create_defaults_to_staged(tmp_path: Path) -> None:
+    # A node-direct create on ANOTHER project's board (host token + X-Grove-Project)
+    # must also land staged — the stack-then-gate invariant holds cross-project.
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "base-web-admin",
+        {"lead": {"name": "lead", "agent": "codex", "group": "lead", "tmux_pane": "bwa:1.0"}},
+    )
+    client = make_client(tmp_path, store)  # registry_session=dev10 -> host token
+    headers = auth_headers(client) | {"X-Grove-Project": "base-web-admin"}
+
+    created = client.post(
+        "/api/boards/base-web-admin/tasks", headers=headers, json={"title": "cross staged"}
+    )
+    assert created.status_code == 200
+    assert created.json()["status"] == "staged"
+    assert store.get_task(board="base-web-admin", task_id=created.json()["id"]).status == "staged"
+
+
 def test_workflow_exposes_staged_column(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     client = make_client(tmp_path, store)
