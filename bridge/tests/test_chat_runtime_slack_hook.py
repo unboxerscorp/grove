@@ -16,7 +16,7 @@ from grove_bridge.slack import (
     SlackConnector,
     SlackEvent,
 )
-from grove_bridge.store import SQLiteBoardStore
+from grove_bridge.store import SlackChatQueueItem, SQLiteBoardStore
 
 
 class _FakeSlack:
@@ -416,18 +416,57 @@ def test_registered_typed_action_applies_on_confirm(
     assert store.get_task(board="dev10", task_id=t.id).status == "ready"
 
 
-def test_chat_bridge_tools_are_read_only_no_write_verbs(
+def _enqueued_item(
+    store: SQLiteBoardStore, *, user_id: str = "U", msg_ts: str = "9.9"
+) -> SlackChatQueueItem:
+    return store.enqueue_slack_chat_message(
+        board="dev10",
+        team_id="T",
+        channel_id="C1",
+        thread_ts="th",
+        message_ts=msg_ts,
+        user_id=user_id,
+        node="chat-master",
+        text="hi",
+    )
+
+
+def test_chat_bridge_tools_read_only_when_write_flag_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Writes are NEVER exposed as LLM tools — only read-only queries.
+    # Default (chat_write_tools OFF): the agent has ONLY read tools — live unchanged.
     monkeypatch.setenv("HOME", str(tmp_path))
     store = SQLiteBoardStore(tmp_path / "b.db")
     slack, facade = _FakeSlack(), _FakeFacade()
     conn = _connector(store, slack, facade)
-    tool_names = [tool.name for tool in conn._chat_bridge_tools()]
-    assert tool_names == ["get_project_tasks"]
-    write_verbs = ("create", "update", "delete", "dispatch", "transition", "comment", "assign")
-    assert not any(verb in name for name in tool_names for verb in write_verbs)
+    item = _enqueued_item(store)
+    assert [tool.name for tool in conn._chat_bridge_tools(item)] == ["get_project_tasks"]
+
+
+def test_chat_bridge_write_tools_exposed_when_flag_on_and_operator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # V2: write flag ON + operator Slack user -> role-gated write tools added.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_write_tools", enabled=True)
+    slack, facade = _FakeSlack(), _FakeFacade()
+    command_config = SlackCommandConfig(
+        board="dev10",
+        members={
+            "U": SlackCommandMember("lead", "lead", "operator"),
+            "V": SlackCommandMember("viewer", "viewer", "viewer"),
+        },
+    )
+    conn = _connector(store, slack, facade, command_config=command_config)
+    item = _enqueued_item(store, user_id="U", msg_ts="9.1")
+    names = {tool.name for tool in conn._chat_bridge_tools(item)}
+    assert "get_project_tasks" in names
+    assert {"create_task", "add_task_comment", "set_task_status", "dispatch_task"} <= names
+
+    # A non-operator Slack user gets NO write tools even with the flag on.
+    item_v = _enqueued_item(store, user_id="V", msg_ts="9.2")
+    assert [tool.name for tool in conn._chat_bridge_tools(item_v)] == ["get_project_tasks"]
 
 
 def _confirm_chat_proposal(
@@ -490,3 +529,44 @@ def test_chat_create_staged_flag_makes_confirmed_task_staged(
     _confirm_chat_proposal(conn, slack, store)
     tasks = store.list_tasks(board="dev10")
     assert tasks and tasks[0].status == "staged"
+
+
+class _WriteCallingAdapter:
+    """Simulates the LLM agent calling the create_task write tool on an explicit
+    operator request (the real provider runs the function-calling loop)."""
+
+    def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
+        _ = request
+        create = next((tool for tool in tools if tool.name == "create_task"), None)
+        if create is not None:
+            create.handler({"title": "보드 카드 상태별 색상 구분 태스크"})
+        return "만들었습니다."
+
+
+def test_agent_write_tool_creates_task_smoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # V2 smoke: explicit operator request -> agent calls the write tool -> task created
+    # (no proposal/confirm loop). Behind chat_write_tools (default OFF) + operator role.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    store.set_gui_feature_enabled(board="dev10", feature="chat_write_tools", enabled=True)
+    slack, facade = _FakeSlack(), _FakeFacade()
+    command_config = SlackCommandConfig(
+        board="dev10", members={"U": SlackCommandMember("lead", "lead", "operator")}
+    )
+    conn = _connector(store, slack, facade, command_config=command_config)
+    conn._chat_bridge_adapter = _WriteCallingAdapter()
+    store.enqueue_slack_chat_message(
+        board="dev10",
+        team_id="T",
+        channel_id="C1",
+        thread_ts="th",
+        message_ts="3.3",
+        user_id="U",
+        node="chat-master",
+        text="보드 카드 상태별 색상 구분 태스크 만들어줘",
+    )
+    conn.poll_node_chat_queue()
+    assert len(store.list_tasks(board="dev10")) == 1

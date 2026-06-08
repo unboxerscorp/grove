@@ -42,6 +42,7 @@ from grove_bridge.chat_runtime import (
     GeminiChatProviderAdapter,
     ProviderRequest,
     RedactingProviderAdapter,
+    build_chat_write_tools,
     build_get_project_tasks_tool,
     chat_bridge_runtime_enabled,
     guard_answer_channel,
@@ -2601,11 +2602,39 @@ class SlackConnector:
             self._chat_bridge_provider_signature = signature
         return self._chat_bridge_adapter is not None
 
-    def _chat_bridge_tools(self) -> list[ChatTool]:
-        """Read-only tools the bridge-native runtime exposes to the provider's
-        function-calling, so real-state questions (e.g. remaining tasks) are
-        answered from the board — never guessed. Writes stay confirm-gated."""
-        return [build_get_project_tasks_tool(self.store, default_board=self.human_gate.board)]
+    def _chat_write_tools_enabled(self, board: str) -> bool:
+        """Dark flag (default OFF, fail-closed): gates the V2 role-gated WRITE tools.
+        OFF -> the agent has only read tools (live behavior unchanged)."""
+        try:
+            state = self.store.gui_feature_flags(board=board, features=("chat_write_tools",))[
+                "chat_write_tools"
+            ]
+        except Exception:
+            return False
+        return state.get("enabled") is True
+
+    def _chat_bridge_tools(self, item: SlackChatQueueItem) -> list[ChatTool]:
+        """Tools the bridge-native agent exposes to the provider's function-calling.
+        Always: the read-only board query. When the V2 write flag is ON AND the Slack
+        user is operator/admin: role-gated WRITE tools (the dispatcher re-checks role +
+        the six guards). Flag OFF -> read-only (live behavior unchanged)."""
+        board = self.human_gate.board
+        tools = [build_get_project_tasks_tool(self.store, default_board=board)]
+        if self._chat_write_tools_enabled(board):
+            actor = self._assistant_member(item.user_id)
+            if actor is not None and actor.role in {"admin", "operator"}:
+                tools.extend(
+                    build_chat_write_tools(
+                        self.store,
+                        board=board,
+                        actor={
+                            "member_id": actor.member_id,
+                            "name": actor.name,
+                            "role": actor.role,
+                        },
+                    )
+                )
+        return tools
 
     def _process_chat_bridge_runtime_item(self, item: SlackChatQueueItem, *, now: int) -> bool:
         """Bridge-native Slack runtime entry — flag-gated; reached only
@@ -2643,7 +2672,7 @@ class SlackConnector:
                                 conversation_id=conversation_id,
                             ),
                         ),
-                        tools=self._chat_bridge_tools(),
+                        tools=self._chat_bridge_tools(item),
                     )
                     turn = parse_structured_turn(generated)
                     if turn.kind == "task_proposal":
