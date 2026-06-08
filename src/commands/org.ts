@@ -101,6 +101,9 @@ function displayNameForProjectNode(name: string, project: string, homeProject: s
 const ORG_LEVEL_GROUPS = new Set(["master", "services"]);
 
 function isOrgLevelNode(name: string, group: string | undefined): boolean {
+  // A project's lead is never org-level (it is the per-project lead under
+  // grove-master), even if mis-grouped under services. Mirror of web_app.py.
+  if (name === "lead") return false;
   return (group ? ORG_LEVEL_GROUPS.has(group) : false) || name === "advisor";
 }
 

@@ -413,6 +413,29 @@ describe("org rendering", () => {
     expect(nodes.has("advisor@dev10")).toBe(false);
   });
 
+  test("a lead mis-grouped under services stays the per-project lead, not org-level", () => {
+    const ctx = makeContext({
+      lead: {
+        agent: "claude",
+        children: [],
+        cwd: "/repo/dev10",
+        group: "services",
+        name: "lead",
+        parent: "grove-master",
+        role: "Dev lead",
+        tmux_pane: "dev10:1.0",
+      },
+    });
+
+    const org = buildAllProjectOrg(ctx, {}, null);
+    const nodes = new Map(org.nodes.map((node) => [node.name, node]));
+
+    expect(nodes.get("lead@dev10")).toEqual(
+      expect.objectContaining({ parent: "grove-master", project: "dev10" }),
+    );
+    expect(nodes.has("lead")).toBe(false);
+  });
+
   test("exposes runtime cwd, tmux pane, status, and session id", () => {
     const ctx = makeContext({
       lead: {
