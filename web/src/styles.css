@@ -3016,9 +3016,13 @@ button {
 .dr-node__name {
   font-size: 13.5px;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  /* Show the FULL node name: wrap (at hyphens, else anywhere) instead of cutting
+     it off with an ellipsis when the agent label / in-view badge / deep indent
+     squeeze the row. Takes the available top-line width via flex:1. */
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
 
 .dr-node__agent {
@@ -5664,14 +5668,16 @@ button {
   background: linear-gradient(180deg, rgba(15, 18, 25, 0.5), rgba(8, 10, 14, 0.3));
 }
 
-.dr-term__send { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1; min-width: 200px; margin-left: auto; }
+.dr-term__send { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; flex: 1; min-width: 200px; margin-left: auto; }
 /* Leading prompt caret marks the row as a command input (echoes the terminal
    "$"/tree prompts in the mirror above and the ❯ terminal nav icon) without any
    extra markup. Decorative — the input keeps its own placeholder/label. */
 .dr-term__send::before { content: "\276F"; flex: none; align-self: center; font-family: var(--mono); font-size: 12px; line-height: 1; color: var(--teal); opacity: 0.75; }
 /* Sunken field so the composer reads clearly as "type a command here" against the
    footer, with smooth focus transition. */
-.dr-term__send-input { flex: 1; min-width: 140px; font-family: var(--mono); font-size: 12px; background: rgba(4, 6, 10, 0.55); transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+/* textarea composer: single row by default, auto-grows on Shift+Enter (JS sets
+   height, capped); no manual resize handle. */
+.dr-term__send-input { flex: 1; min-width: 140px; display: block; resize: none; line-height: 1.4; max-height: 132px; overflow-y: auto; font-family: var(--mono); font-size: 12px; background: rgba(4, 6, 10, 0.55); transition: border-color 0.15s ease, box-shadow 0.15s ease; }
 .dr-term__send-input::placeholder { color: var(--faint); }
 /* Clear, on-theme focus affordance: solid amber edge + soft amber ring so the
    active composer is obvious even in a dense grid of cells. */
@@ -5839,6 +5845,7 @@ button {
 .dr-node.is-inview { opacity: 0.5; cursor: default; }
 .dr-node__inview {
   flex: none;
+  margin-left: auto; /* sits at the right end of the sub-line */
   font-family: var(--mono);
   font-size: 9px;
   letter-spacing: 0.04em;

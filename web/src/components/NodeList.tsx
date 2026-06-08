@@ -131,9 +131,11 @@ export function NodeList(props: {
                   <span className={cx("dr-node__status", statusClass(n.status))}>
                     {statusLabel(t, n.status)}
                   </span>
+                  {/* On the sub-line (not trailing the row) so it never squeezes the
+                      node name on the top line. */}
+                  {inView && <span className="dr-node__inview">{t("nodes.inThisView")}</span>}
                 </span>
               </span>
-              {inView && <span className="dr-node__inview">{t("nodes.inThisView")}</span>}
             </button>
           );
         })}
