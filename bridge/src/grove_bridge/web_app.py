@@ -77,6 +77,7 @@ from grove_bridge.chat_runtime import (
 )
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
+from grove_bridge.project_directory import ProjectDirectory
 from grove_bridge.slack import (
     HUMAN_GATE_MODE,
     HUMAN_GATE_PENDING_MODE,
@@ -6580,10 +6581,14 @@ def _chat_bridge_web_user_text(
         if message.text.strip()
     ]
     facts = _master_chat_facts(store, project=project)
+    # User-facing project = display_name; the internal board/session is never
+    # surfaced to the LLM (avoids the "dev10 프로젝트" leak).
+    selected_display = _project_directory(project.config).display_name(
+        project.config.registry_session
+    )
     return "\n".join(
         [
-            f"Selected project: {project.name}",
-            f"Board: {project.board}",
+            f"Selected project: {selected_display}",
             "Runtime facts JSON:",
             json.dumps(facts, ensure_ascii=False, sort_keys=True),
             "Conversation history:",
@@ -7045,9 +7050,15 @@ def _master_chat_facts(
         *_safe_list_tasks(store, board=project.board, status="blocked"),
         *_safe_list_tasks(store, board=project.board, status="ask_human"),
     ]
+    directory = _project_directory(project.config)
+    selected_display = directory.display_name(project.config.registry_session)
     return {
-        "project": {"selected": project.name, "board": project.board},
-        "projects": {"visible": list(_visible_project_names(project))},
+        # User-facing project identity = display_name (e.g. grove-dev), never the
+        # internal session/board ("dev10") — that was the chatbot "dev10 프로젝트" leak.
+        "project": {"selected": selected_display, "board": selected_display},
+        "projects": {
+            "visible": [directory.display_name(name) for name in _visible_project_names(project)]
+        },
         "org": {
             "node_count": len(nodes),
             "roots": org.get("roots", []),
@@ -7119,7 +7130,7 @@ def _master_chat_fact_summary(facts: Mapping[str, object]) -> str:
     )
     human_suffix = ", ".join(str(node) for node in human_nodes) if human_nodes else "none"
     return (
-        f"Project {project['selected']} board {project['board']}. "
+        f"Project {project['selected']}. "
         f"Reviewers: {reviewers['count']}{reviewer_suffix}. "
         f"Human items: {status_line}. "
         f"Human queue: ask-human={human['ask_human_count']}, "
@@ -8023,6 +8034,12 @@ def _project_metadata(config: WebAppConfig) -> dict[str, object]:
         "board": config.registry_session,
         "display_name": _project_display_name(config.registry_session, registry),
     }
+
+
+def _project_directory(config: WebAppConfig) -> ProjectDirectory:
+    """Shared project-identity source (display_name single source / dev10 leak
+    core). web/chat/UI all resolve user-facing names through this."""
+    return ProjectDirectory(config.grove_home, default_session=DEFAULT_SESSION)
 
 
 def _project_display_name(session: str, registry: Mapping[str, object]) -> str:
