@@ -41,6 +41,7 @@ from grove_bridge.slack import (
     SlackEvent,
     SlackFileAttachment,
     SlackSdkClient,
+    _node_chat_visible_response_text,
     mask_token,
 )
 from grove_bridge.store import SQLiteBoardStore, Task
@@ -4239,6 +4240,24 @@ def test_grove_chat_facade_uses_timeout_and_literal_argv(monkeypatch: pytest.Mon
             "check": False,
         }
     ]
+
+
+def test_node_chat_visible_response_extracts_response_block() -> None:
+    raw = (
+        "A live operator turn in the grove-dev thread...\n"
+        "[RESPONSE]\n네, 처리했습니다.\n[/RESPONSE]"
+    )
+
+    assert _node_chat_visible_response_text(raw) == "네, 처리했습니다."
+
+
+def test_node_chat_visible_response_fails_closed_on_internal_text() -> None:
+    raw = "A live operator turn in the grove-dev thread...\nConversation so far: secret context"
+
+    assert (
+        _node_chat_visible_response_text(raw)
+        == "지금은 답변을 만들 수 없어요. 잠시 뒤 다시 시도해 주세요."
+    )
 
 
 def blocked_human_task(store: SQLiteBoardStore, *, board: str) -> Task:

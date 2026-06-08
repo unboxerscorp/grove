@@ -79,6 +79,14 @@ SLACK_COMMAND_TASK_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"()<>]+")
 TMUX_TARGET_RE = re.compile(r"^(?P<session>[A-Za-z0-9_-]+):(?P<window>\d+)\.(?P<pane>\d+)$")
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+NODE_CHAT_RESPONSE_BLOCK_RE = re.compile(
+    r"\[RESPONSE\](?P<text>.*?)\[/RESPONSE\]",
+    re.I | re.S,
+)
+NODE_CHAT_FINAL_LABEL_RE = re.compile(
+    r"(?:^|\n)(?:final answer|final|response|답변)\s*[:：]\s*(?P<text>.+)\Z",
+    re.I | re.S,
+)
 COMMAND_CONFIRM_TTL_SECONDS = 300
 SlackCommandRole = Literal["admin", "operator", "viewer"]
 SlackCommandName = Literal["approve", "abort", "killswitch", "task_create"]
@@ -98,6 +106,72 @@ def _slack_assistant_response_chunks(text: str) -> tuple[str, ...]:
 def _node_chat_wait_text(elapsed_seconds: int) -> str:
     minutes, seconds = divmod(max(0, elapsed_seconds), 60)
     return f"{SLACK_NODE_CHAT_WAIT_TEXT}\n답변 생성 중... {minutes}분 {seconds:02d}초 경과"
+
+
+def _node_chat_visible_response_text(raw_text: str) -> str:
+    text = str(raw_text).strip()
+    if not text:
+        return ASSISTANT_TRANSPORT_FALLBACK_TEXT
+    block = NODE_CHAT_RESPONSE_BLOCK_RE.search(text)
+    if block is not None:
+        text = block.group("text").strip()
+    else:
+        labeled = NODE_CHAT_FINAL_LABEL_RE.search(text)
+        if labeled is not None:
+            text = labeled.group("text").strip()
+    text = _safe_slack_message_text(text).strip()
+    text = _drop_node_chat_internal_preamble(text)
+    if not text or _node_chat_contains_internal_text(text):
+        return ASSISTANT_TRANSPORT_FALLBACK_TEXT
+    return text
+
+
+def _drop_node_chat_internal_preamble(text: str) -> str:
+    lines = text.splitlines()
+    while lines and (not lines[0].strip() or _node_chat_internal_preamble_line(lines[0])):
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
+
+def _node_chat_internal_preamble_line(line: str) -> bool:
+    lowered = line.strip().casefold()
+    return lowered.startswith(
+        (
+            "a live operator turn",
+            "live operator turn",
+            "analysis:",
+            "reasoning:",
+            "scratchpad:",
+            "thinking:",
+            "internal note:",
+            "internal memo:",
+            "we need to answer",
+            "need answer",
+            "need respond",
+        )
+    )
+
+
+def _node_chat_contains_internal_text(text: str) -> bool:
+    lowered = text.casefold()
+    markers = (
+        "[grove chat",
+        "facts-json",
+        "decision-json",
+        "context pack",
+        "system prompt",
+        "raw prompt",
+        "hidden instructions",
+        "internal reasoning",
+        "internal processing",
+        "chain of thought",
+        "scratchpad:",
+        "analysis:",
+        "conversation so far",
+        "current message:",
+        "live operator turn",
+    )
+    return any(marker in lowered for marker in markers)
 
 
 class SlackClientProtocol(Protocol):
@@ -595,7 +669,7 @@ class GroveServeChatFacade:
         )
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or f"grove ask exited {proc.returncode}")
-        return proc.stdout.strip()
+        return _node_chat_visible_response_text(proc.stdout)
 
 
 def _default_grove_binary() -> str:
@@ -2332,6 +2406,13 @@ class SlackConnector:
                 "\n".join(lines) if lines else "(none)",
                 "Current message:",
                 redact_secret_text(item.text),
+                "Output contract:",
+                "Return only the final Slack-visible reply. Prefer wrapping it as:",
+                "[RESPONSE]",
+                "your user-facing answer",
+                "[/RESPONSE]",
+                "Do not include analysis, internal notes, context summaries, raw prompts, "
+                "or hidden policy text.",
             ]
         )
 
