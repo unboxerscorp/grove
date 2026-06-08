@@ -115,20 +115,6 @@ export interface AuthTool {
   login_hint?: string;
 }
 
-export interface ChatProviderStatus {
-  provider: "gemini";
-  model: string;
-  configured: boolean;
-  source?: string;
-  key_hint?: string | null;
-}
-
-export interface ChatProviderUpdate {
-  provider?: "gemini";
-  model?: string;
-  api_key: string;
-}
-
 // Mirrors web_app.py _node_liveness_summary: the backend already classifies
 // every node, so `idle` and `error` are authoritative — never derive them.
 export interface NodeSummary {
@@ -354,15 +340,6 @@ export interface SlackStatus {
   // can show whether explicit Slack feedback/ask-human messages can become
   // human-facing list candidates.
   intake?: { enabled?: boolean };
-  chat_runtime?: {
-    enabled?: boolean;
-    ready?: boolean;
-    route?: "node_queue" | "hold_until_provider_configured" | "bridge_native" | string;
-    provider?: "gemini" | string;
-    model?: string;
-    provider_configured?: boolean;
-    provider_source?: string;
-  };
 }
 
 // Mirrors web_app.py _cost_metric: every number carries provenance so estimates
@@ -1380,23 +1357,6 @@ export const api = {
 
   // Dev-tool auth status.
   getAuthStatus: () => getJSON<AuthTool[]>("/api/auth-status"),
-
-  getChatProvider: () => getJSON<ChatProviderStatus>("/api/chat/provider"),
-
-  async setChatProvider(body: ChatProviderUpdate): Promise<ChatProviderStatus> {
-    const res = await fetch("/api/chat/provider", {
-      method: "POST",
-      headers: headers({ "Content-Type": "application/json" }),
-      credentials: "same-origin",
-      body: JSON.stringify({
-        provider: body.provider ?? "gemini",
-        model: body.model ?? "gemini-2.5-flash",
-        api_key: body.api_key,
-      }),
-    });
-    if (!res.ok) throw new Error(`chat provider: HTTP ${res.status}`);
-    return (await res.json()) as ChatProviderStatus;
-  },
 
   // Cost/credit usage (project-scoped; 403 for team viewers). Per-agent token +
   // cost metrics carry source/confidence; agy credit may be unknown.

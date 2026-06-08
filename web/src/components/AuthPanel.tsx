@@ -1,23 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
-import type { ChatProviderStatus } from "../api";
 import { cx } from "../constants";
-import { useI18n } from "../i18n";
-import type { GuiFeatureKey, GuiFeatureState } from "../types";
+import { statusLabel, useI18n } from "../i18n";
+import type { GroveNode, GuiFeatureKey, GuiFeatureState } from "../types";
 
 const GUI_FEATURES: { key: GuiFeatureKey; labelKey: string; noteKey: string }[] = [
   { key: "node-input", labelKey: "setup.feature.nodeInput", noteKey: "setup.feature.nodeInput.note" },
-  {
-    key: "chat_bridge_runtime",
-    labelKey: "setup.feature.chatRuntime",
-    noteKey: "setup.feature.chatRuntime.note",
-  },
 ];
 
 // Features whose ENABLE direction is consequential. Enabling requires a 2-step
 // confirm (arm -> confirm/cancel); disabling stays a single immediate POST.
-const RISK_FEATURES = new Set<GuiFeatureKey>(["node-input", "intake", "chat_bridge_runtime"]);
+const RISK_FEATURES = new Set<GuiFeatureKey>(["node-input", "intake"]);
 
 function AuthMark() {
   return (
@@ -42,11 +36,9 @@ export function AuthPanel() {
   const [featureBusy, setFeatureBusy] = useState<GuiFeatureKey | null>(null);
   const [armed, setArmed] = useState<GuiFeatureKey | null>(null); // P1 risk-enable confirm
   const [isViewer, setIsViewer] = useState(false);
-  const [chatProvider, setChatProvider] = useState<ChatProviderStatus | null>(null);
-  const [chatKey, setChatKey] = useState("");
-  const [chatModel, setChatModel] = useState("gemini-2.5-flash");
-  const [chatProviderBusy, setChatProviderBusy] = useState(false);
-  const [chatProviderError, setChatProviderError] = useState<string | null>(null);
+  // Chatbot routes directly to the CHAT MASTER node (Gemini provider removed).
+  // Read-only: surface that node's presence/status, no provider config.
+  const [chatMaster, setChatMaster] = useState<GroveNode | null>(null);
 
   // Keep the translator in a ref so `load` is stable — a language toggle must
   // NOT re-trigger /api/auth-status (same pattern as TerminalPane's tRef).
@@ -65,20 +57,17 @@ export function AuthPanel() {
       .finally(() => setFeaturesLoading(false));
   }, []);
 
-  const loadChatProvider = useCallback(() => {
+  // The CHAT MASTER node from the live node list (no provider endpoint).
+  const loadChatMaster = useCallback(() => {
     api
-      .getChatProvider()
-      .then((payload) => {
-        setChatProvider(payload);
-        setChatModel(payload.model || "gemini-2.5-flash");
-        setChatProviderError(null);
-      })
-      .catch(() => setChatProviderError(tRef.current("setup.chatProvider.loadError")));
+      .listNodes()
+      .then((nodes) => setChatMaster(nodes.find((n) => n.name === "chat-master") ?? null))
+      .catch(() => setChatMaster(null));
   }, []);
 
   useEffect(() => {
     loadFeatures();
-    loadChatProvider();
+    loadChatMaster();
     let alive = true;
     api
       .getMe()
@@ -91,11 +80,11 @@ export function AuthPanel() {
     return () => {
       alive = false;
     };
-  }, [loadFeatures, loadChatProvider]);
+  }, [loadFeatures, loadChatMaster]);
 
   const refresh = () => {
     loadFeatures();
-    loadChatProvider();
+    loadChatMaster();
   };
 
   // The actual mutation — a single operator-gated, CSRF-protected POST.
@@ -114,10 +103,6 @@ export function AuthPanel() {
   const requestFeature = (key: GuiFeatureKey) => {
     const current = features?.[key];
     if (!current || featureBusy) return;
-    if (key === "chat_bridge_runtime" && !chatProvider?.configured) {
-      setFeatureError(tRef.current("setup.features.chatRuntimeNeedsProvider"));
-      return;
-    }
     const next = !current.enabled;
     if (next && RISK_FEATURES.has(key)) {
       setFeatureError(null);
@@ -135,25 +120,6 @@ export function AuthPanel() {
 
   const cancelFeature = () => setArmed(null); // no POST
 
-  const saveChatProvider = () => {
-    const apiKey = chatKey.trim();
-    if (!apiKey) {
-      setChatProviderError(tRef.current("setup.chatProvider.keyRequired"));
-      return;
-    }
-    setChatProviderBusy(true);
-    setChatProviderError(null);
-    api
-      .setChatProvider({ api_key: apiKey, model: chatModel.trim() || "gemini-2.5-flash" })
-      .then((payload) => {
-        setChatProvider(payload);
-        setChatKey("");
-        setChatModel(payload.model || "gemini-2.5-flash");
-      })
-      .catch(() => setChatProviderError(tRef.current("setup.chatProvider.saveError")))
-      .finally(() => setChatProviderBusy(false));
-  };
-
   return (
     <section className="auth">
       <div className="auth__scroll">
@@ -166,60 +132,41 @@ export function AuthPanel() {
             type="button"
             className="dr-btn dr-btn--ghost auth-refresh"
             onClick={refresh}
-            disabled={featuresLoading || chatProviderBusy}
+            disabled={featuresLoading}
           >
             ↻ {featuresLoading ? t("auth.refreshing") : t("auth.refresh")}
           </button>
         </header>
 
-        <section className="chat-provider" aria-label={t("setup.chatProvider.title")}>
-          <div className="chat-provider__head">
+        <section className="chat-status" aria-label={t("setup.chat.title")}>
+          <div className="chat-status__head">
             <div>
-              <h3 className="chat-provider__title">{t("setup.chatProvider.title")}</h3>
-              <p className="chat-provider__note">{t("setup.chatProvider.note")}</p>
+              <h3 className="chat-status__title">{t("setup.chat.title")}</h3>
+              <p className="chat-status__note">{t("setup.chat.note")}</p>
             </div>
-            <span className={cx("auth-badge", chatProvider?.configured ? "is-ok" : "is-warn")}>
-              {chatProvider?.configured
-                ? t("setup.chatProvider.configured", { hint: chatProvider.key_hint ?? "" })
-                : t("setup.chatProvider.notConfigured")}
-            </span>
+            <span className="auth-badge is-ok">{t("setup.chat.routeBadge")}</span>
           </div>
-          {chatProviderError && <div className="auth__msg is-error">{chatProviderError}</div>}
-          <form
-            className="chat-provider__form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              saveChatProvider();
-            }}
-          >
-            <label className="chat-provider__field">
-              <span>{t("setup.chatProvider.model")}</span>
-              <input
-                className="dr-input"
-                value={chatModel}
-                onChange={(e) => setChatModel(e.target.value)}
-                disabled={isViewer || chatProviderBusy}
-              />
-            </label>
-            <label className="chat-provider__field is-key">
-              <span>{t("setup.chatProvider.key")}</span>
-              <input
-                className="dr-input"
-                type="password"
-                value={chatKey}
-                onChange={(e) => setChatKey(e.target.value)}
-                disabled={isViewer || chatProviderBusy}
-                autoComplete="off"
-              />
-            </label>
-            <button
-              type="submit"
-              className="dr-btn dr-btn--primary"
-              disabled={isViewer || chatProviderBusy}
-            >
-              {chatProviderBusy ? t("setup.chatProvider.saving") : t("setup.chatProvider.save")}
-            </button>
-          </form>
+          <div className="chat-status__row">
+            <span className="chat-status__k">{t("setup.chat.node")}</span>
+            {chatMaster ? (
+              <span className="chat-status__v">
+                <span
+                  className={cx(
+                    "chat-status__dot",
+                    chatMaster.status === "active" || chatMaster.status === "running"
+                      ? "is-on"
+                      : chatMaster.status === "error"
+                        ? "is-error"
+                        : "is-idle",
+                  )}
+                />
+                <span className="chat-status__name">{chatMaster.name}</span>
+                <span className="chat-status__state">{statusLabel(t, chatMaster.status)}</span>
+              </span>
+            ) : (
+              <span className="chat-status__v is-muted">{t("setup.chat.nodeUnknown")}</span>
+            )}
+          </div>
         </section>
 
         <section className="setup-features" aria-label={t("setup.features.title")}>
@@ -236,8 +183,6 @@ export function AuthPanel() {
               const state = features?.[item.key];
               const enabled = state?.enabled === true;
               const busy = featureBusy === item.key;
-              const blocked =
-                item.key === "chat_bridge_runtime" && !enabled && !chatProvider?.configured;
               return (
                 <div
                   key={item.key}
@@ -247,9 +192,7 @@ export function AuthPanel() {
                 >
                   <div className="setup-feature__copy">
                     <span className="setup-feature__label">{t(item.labelKey)}</span>
-                    <span className="setup-feature__note">
-                      {blocked ? t("setup.features.chatRuntimeNeedsProvider") : t(item.noteKey)}
-                    </span>
+                    <span className="setup-feature__note">{t(item.noteKey)}</span>
                   </div>
                   {armed === item.key ? (
                     // P1 risk-enable confirm: arming POSTs nothing; confirm = one
@@ -279,7 +222,7 @@ export function AuthPanel() {
                       aria-checked={enabled}
                       data-enabled={enabled ? "1" : "0"}
                       data-risk={RISK_FEATURES.has(item.key) ? "1" : undefined}
-                      disabled={featuresLoading || busy || isViewer || !state || blocked}
+                      disabled={featuresLoading || busy || isViewer || !state}
                       onClick={() => requestFeature(item.key)}
                     >
                       <span className="setup-switch__track">

@@ -251,8 +251,7 @@ export type GuiFeatureKey =
   | "summary"
   | "handoff"
   | "usage-trend"
-  | "retro-analytics"
-  | "chat_bridge_runtime";
+  | "retro-analytics";
 
 export interface GuiFeatureState {
   enabled: boolean;

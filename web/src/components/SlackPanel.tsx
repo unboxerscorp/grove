@@ -26,19 +26,6 @@ function last4(token: string): string {
   return token.length >= 4 ? token.slice(-4) : token;
 }
 
-function chatRuntimeKey(route: string | undefined): string {
-  switch (route) {
-    case "bridge_native":
-      return "bridge_native";
-    case "hold_until_provider_configured":
-      return "hold_until_provider_configured";
-    case "node_queue":
-      return "node_queue";
-    default:
-      return "unknown";
-  }
-}
-
 export function SlackPanel({ projectTick = 0 }: { projectTick?: number }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<SlackStatus | null>(null);
@@ -260,12 +247,6 @@ export function SlackPanel({ projectTick = 0 }: { projectTick?: number }) {
           {status?.last_error && (
             <div className="slack-status-card__meta is-error">
               {t("slack.status.lastError")}: <span>{status.last_error}</span>
-            </div>
-          )}
-          {status?.chat_runtime && (
-            <div className="slack-status-card__meta">
-              {t("slack.chatRuntime.title")}:{" "}
-              <span>{t(`slack.chatRuntime.${chatRuntimeKey(status.chat_runtime.route)}`)}</span>
             </div>
           )}
         </div>
