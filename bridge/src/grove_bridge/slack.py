@@ -53,6 +53,7 @@ from grove_bridge.chat_runtime import (
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
 from grove_bridge.master import MasterChatResponse, MasterChatResponseType
+from grove_bridge.project_directory import ProjectDirectory
 from grove_bridge.store import BoardEvent, SlackChatQueueItem, SlackThread, SQLiteBoardStore, Task
 
 LOGGER = logging.getLogger(__name__)
@@ -2613,13 +2614,25 @@ class SlackConnector:
             return False
         return state.get("enabled") is True
 
+    def _project_directory(self) -> ProjectDirectory:
+        """Project display/identity directory (single source: ~/.grove registries).
+        Resolves display names <-> internal boards so the chat layer never exposes
+        the internal board/session id (e.g. 'dev10') to the model."""
+        return ProjectDirectory(
+            Path("~/.grove").expanduser(), default_session=self.human_gate.board
+        )
+
     def _chat_bridge_tools(self, item: SlackChatQueueItem) -> list[ChatTool]:
         """Tools the bridge-native agent exposes to the provider's function-calling.
         Always: the read-only board query. When the V2 write flag is ON AND the Slack
         user is operator/admin: role-gated WRITE tools (the dispatcher re-checks role +
         the six guards). Flag OFF -> read-only (live behavior unchanged)."""
         board = self.human_gate.board
-        tools = [build_get_project_tasks_tool(self.store, default_board=board)]
+        tools = [
+            build_get_project_tasks_tool(
+                self.store, default_board=board, directory=self._project_directory()
+            )
+        ]
         if self._chat_write_tools_enabled(board):
             actor = self._assistant_member(item.user_id)
             if actor is not None and actor.role in {"admin", "operator"}:
@@ -2918,7 +2931,7 @@ class SlackConnector:
         return "\n".join(
             [
                 "Surface: slack",
-                f"Board: {self.human_gate.board}",
+                f"Project: {self._project_directory().display_name(self.human_gate.board)}",
                 f"Conversation: {conversation_id}",
                 f"Thread: {item.team_id}/{item.channel_id}/{item.thread_ts}",
                 "Conversation history:",

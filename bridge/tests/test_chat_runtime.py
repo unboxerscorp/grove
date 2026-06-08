@@ -28,7 +28,12 @@ from grove_bridge.chat_runtime import (
     load_chat_bridge_persona,
     parse_structured_turn,
 )
+from grove_bridge.project_directory import ProjectDirectory
 from grove_bridge.store import SQLiteBoardStore
+
+
+def _dir(grove_home: Path) -> ProjectDirectory:
+    return ProjectDirectory(grove_home, default_session="dev10")
 
 
 class _FakeFlags:
@@ -255,11 +260,11 @@ def test_load_chat_bridge_persona_present_returns_source_text(tmp_path: Path) ->
 def test_get_project_tasks_tool_returns_real_board_tasks(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "b.db")
     store.create_task(board="dev10", title="open one", body=None, assignee="worker")
-    tool = build_get_project_tasks_tool(store, default_board="dev10")
+    tool = build_get_project_tasks_tool(store, default_board="dev10", directory=_dir(tmp_path))
 
     assert tool.name == "get_project_tasks"
     result = tool.handler({})
-    assert result["board"] == "dev10"
+    assert result["project"] == "grove-dev"
     assert result["count"] == 1
     rows = result["tasks"]
     assert isinstance(rows, list) and rows[0]["title"] == "open one"
@@ -269,7 +274,7 @@ def test_get_project_tasks_tool_returns_real_board_tasks(tmp_path: Path) -> None
 def test_gemini_function_calling_executes_tool_then_returns_text(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "b.db")
     store.create_task(board="dev10", title="open one", body=None, assignee=None)
-    tool = build_get_project_tasks_tool(store, default_board="dev10")
+    tool = build_get_project_tasks_tool(store, default_board="dev10", directory=_dir(tmp_path))
     captured: list[dict[str, object]] = []
     payloads: list[dict[str, object]] = [
         {
@@ -321,7 +326,7 @@ def test_gemini_unknown_tool_call_defers_no_hallucination(tmp_path: Path) -> Non
 
 def test_gemini_tool_loop_is_bounded_and_defers_when_no_text(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "b.db")
-    tool = build_get_project_tasks_tool(store, default_board="dev10")
+    tool = build_get_project_tasks_tool(store, default_board="dev10", directory=_dir(tmp_path))
     payload: dict[str, object] = {
         "candidates": [
             {"content": {"parts": [{"functionCall": {"name": "get_project_tasks", "args": {}}}]}}
@@ -363,3 +368,32 @@ def test_redacting_adapter_redacts_tool_results_before_provider() -> None:
     rendered = json.dumps(captured["result"])
     assert secret not in rendered  # nested string values redacted recursively
     assert "[redacted]" in rendered  # redaction was actually applied to the result
+
+
+def test_get_project_tasks_resolves_display_name_and_never_exposes_board(tmp_path: Path) -> None:
+    # Directory-aware: a display-name ref resolves to the internal board for the query,
+    # and the result reports the DISPLAY name only — the board id is never exposed.
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "alpha" / "registry.json").write_text(
+        json.dumps({"display_name": "Alpha Project"}), encoding="utf-8"
+    )
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.create_task(board="alpha", title="a-task", body=None, assignee=None)
+    tool = build_get_project_tasks_tool(store, default_board="dev10", directory=_dir(tmp_path))
+    result = tool.handler({"project": "Alpha Project"})
+    assert result["project"] == "Alpha Project"
+    assert "board" not in result  # internal id never leaks to the model
+    assert result["count"] == 1
+
+
+def test_get_project_tasks_unknown_project_rejected_with_visible_list(tmp_path: Path) -> None:
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "alpha" / "registry.json").write_text(
+        json.dumps({"display_name": "Alpha Project"}), encoding="utf-8"
+    )
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    tool = build_get_project_tasks_tool(store, default_board="dev10", directory=_dir(tmp_path))
+    result = tool.handler({"project": "Nonexistent"})
+    assert result["ok"] is False
+    projects = result["projects"]
+    assert isinstance(projects, list) and "Alpha Project" in projects

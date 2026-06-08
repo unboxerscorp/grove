@@ -6453,7 +6453,13 @@ def _handle_chat_bridge_runtime_web_request(
                     project=project,
                 ),
             ),
-            tools=[build_get_project_tasks_tool(_store(request), default_board=project.board)],
+            tools=[
+                build_get_project_tasks_tool(
+                    _store(request),
+                    default_board=project.board,
+                    directory=_project_directory(project.config),
+                )
+            ],
         )
         turn = parse_structured_turn(generated)
         if turn.kind == "task_proposal":

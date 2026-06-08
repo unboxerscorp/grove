@@ -42,6 +42,7 @@ from grove_bridge.chat_actions import (
     ChatConfirmAction,
     apply_chat_confirm_action,
 )
+from grove_bridge.project_directory import ProjectDirectory
 from grove_bridge.store import SQLiteBoardStore
 
 # GUI feature flag name (default OFF). Distinct from the ``intake`` flag, which
@@ -494,23 +495,33 @@ def load_chat_bridge_persona(path: Path | None) -> str:
     return text or CHAT_BRIDGE_SHADOW_PERSONA
 
 
-def build_get_project_tasks_tool(store: SQLiteBoardStore, *, default_board: str) -> ChatTool:
-    """READ-ONLY tool: list real tasks on a grove project board (a store query).
+def build_get_project_tasks_tool(
+    store: SQLiteBoardStore, *, default_board: str, directory: ProjectDirectory
+) -> ChatTool:
+    """READ-ONLY tool: list real tasks on a grove project (a store query).
 
-    Answers "what work/tasks remain / are running / are assigned" with actual
-    board data. Performs no writes — task creation/update stays confirm-gated
-    elsewhere. The result is fed back to the model verbatim (no fabrication)."""
+    Projects are identified by their **display name** — the internal board id is
+    never exposed to the model. An explicit project ref is resolved via the
+    ``ProjectDirectory``; an unknown/invisible project is rejected with the visible
+    list. Read-only — writes go through the write tools / dispatcher."""
 
     def handler(args: Mapping[str, object]) -> Mapping[str, object]:
-        board_arg = args.get("board") or args.get("project")
-        board = (
-            board_arg.strip() if isinstance(board_arg, str) and board_arg.strip() else default_board
-        )
+        ref = args.get("project") or args.get("board")
+        if isinstance(ref, str) and ref.strip():
+            board = directory.resolve(ref.strip())
+            if board is None:
+                return {
+                    "ok": False,
+                    "error": f"unknown project: {ref.strip()}",
+                    "projects": [entry.display_name for entry in directory.list_projects()],
+                }
+        else:
+            board = default_board
         status_arg = args.get("status")
         status = status_arg.strip() if isinstance(status_arg, str) and status_arg.strip() else None
         tasks = store.list_tasks(board=board, status=status, limit=50)
         return {
-            "board": board,
+            "project": directory.display_name(board),
             "status": status or "all",
             "count": len(tasks),
             "tasks": [
@@ -522,17 +533,18 @@ def build_get_project_tasks_tool(store: SQLiteBoardStore, *, default_board: str)
     return ChatTool(
         name="get_project_tasks",
         description=(
-            "List tasks on a grove project board. Use this to answer questions about "
-            "what work/tasks remain, are in progress, done, or who they are assigned to. "
-            "Returns real board data — do not guess task state."
+            "List tasks on a grove project. Use this to answer questions about what "
+            "work/tasks remain, are in progress, done, or who they are assigned to. "
+            "Projects are named by their display name; returns real board data — do "
+            "not guess task state."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "board": {
+                "project": {
                     "type": "string",
                     "description": (
-                        "Project/board id, e.g. 'dev10'. Defaults to the current project."
+                        "Project display name (e.g. 'grove-dev'). Defaults to the current project."
                     ),
                 },
                 "status": {
