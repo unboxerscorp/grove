@@ -524,6 +524,8 @@ export function App() {
                 </div>
               ) : (
                 <TerminalGrid
+                  key={project ?? "_noproject"}
+                  project={project}
                   nodes={nodes}
                   initialNode={selected?.name ?? null}
                   onExpand={(pane) => setTermFull(pane)}

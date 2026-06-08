@@ -10,8 +10,12 @@ const MAX_CELLS = 9;
 const MAX_ROWS = 3;
 const MAX_COLS = 3;
 const MAX_VIEWS = 6;
-const STORE_KEY = "grove.termviews";
+const LEGACY_STORE_KEY = "grove.termviews";
 const STORE_VERSION = 1;
+// Terminal views persist PER PROJECT (still per browser, no server) so each
+// project keeps its own tabs/layout. Key: "grove.termviews.<project>".
+const storeKey = (project: string | null): string =>
+  project ? `${LEGACY_STORE_KEY}.${project}` : LEGACY_STORE_KEY;
 
 let _cid = 0;
 const nextCellId = () => `tc-${++_cid}`;
@@ -68,9 +72,29 @@ function serialize(store: Store): string {
 // corruption/old version falls back to a single fresh (optionally seeded) view.
 // `restored` tells the caller whether a stored layout was applied (so the mount
 // seed-once does not overwrite it).
-function loadStore(defaultName: string, seedNode?: string | null): { store: Store; restored: boolean } {
+function loadStore(
+  project: string | null,
+  defaultName: string,
+  seedNode?: string | null,
+): { store: Store; restored: boolean } {
+  const key = storeKey(project);
   try {
-    const raw = localStorage.getItem(STORE_KEY);
+    let raw = localStorage.getItem(key);
+    // One-time migration: a project with no saved layout yet inherits the legacy
+    // project-agnostic key (pre-per-project data), then that legacy key is removed
+    // so other projects start fresh — keeps the user's current view in this project.
+    if (raw === null && project) {
+      const legacy = localStorage.getItem(LEGACY_STORE_KEY);
+      if (legacy !== null) {
+        raw = legacy;
+        try {
+          localStorage.setItem(key, legacy);
+          localStorage.removeItem(LEGACY_STORE_KEY);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
     if (raw) {
       const parsed: unknown = JSON.parse(raw);
       const p = parsed as { version?: unknown; activeIndex?: unknown; views?: unknown };
@@ -116,8 +140,9 @@ function loadStore(defaultName: string, seedNode?: string | null): { store: Stor
  * Each row has its own right "+" (add a column to THAT row); one bottom "+" adds
  * a new row. Tabs across the top switch / add / close views. The whole layout
  * (views + active tab + each view's ragged structure of node names) is saved to
- * localStorage ("grove.termviews"), so it survives navigation, refresh, and the
- * expand→back round-trip — and is per browser, i.e. each admin keeps their own.
+ * localStorage per project ("grove.termviews.<project>"), so it survives
+ * navigation, refresh, and the expand→back round-trip; is per browser (each admin
+ * keeps their own); and each project keeps its own separate views.
  *
  * Cells are compact TerminalPanes (capture-only) with a per-cell composer; the
  * same pane in multiple cells shares ONE backend pipe. "×" closes a cell (an
@@ -129,10 +154,12 @@ export function TerminalGrid({
   nodes,
   initialNode,
   onExpand,
+  project,
 }: {
   nodes: GroveNode[];
   initialNode?: string | null;
   onExpand: (pane: string) => void;
+  project: string | null;
 }) {
   const { t } = useI18n();
   const viewable = useMemo(
@@ -144,7 +171,7 @@ export function TerminalGrid({
   // already seeded with initialNode — either way the mount effect must not re-seed.
   const seeded = useRef(false);
   const [store, setStore] = useState<Store>(() => {
-    const boot = loadStore(t("termview.name", { n: 1 }), initialNode);
+    const boot = loadStore(project, t("termview.name", { n: 1 }), initialNode);
     seeded.current = boot.restored || Boolean(initialNode);
     return boot.store;
   });
@@ -154,11 +181,11 @@ export function TerminalGrid({
   // Persist on every change (per browser; survives remount / revisit / expand-back).
   useEffect(() => {
     try {
-      localStorage.setItem(STORE_KEY, serialize(store));
+      localStorage.setItem(storeKey(project), serialize(store));
     } catch {
       /* storage unavailable (private mode / quota) — run in-memory */
     }
-  }, [store]);
+  }, [store, project]);
 
   const setActiveRows = (updater: (rows: GridRow[]) => GridRow[]) =>
     setStore((prev) => ({
