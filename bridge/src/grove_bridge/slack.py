@@ -1917,7 +1917,12 @@ class SlackConnector:
                 target_node=assignee,
             ),
             assignee=assignee,
-            status="ready",
+            # chat-origin create -> 'staged' only when the dark flag is ON (else 'ready').
+            status=(
+                "staged"
+                if runtime_task and self._chat_create_staged_enabled(config.board)
+                else "ready"
+            ),
             priority=proposal.priority,
             created_by=pending.actor.member_id,
             metadata={
@@ -2790,6 +2795,17 @@ class SlackConnector:
             status="ok",
             summary=f"chat confirm action applied: {pending.action.kind}",
         )
+
+    def _chat_create_staged_enabled(self, board: str) -> bool:
+        """Dark flag (default OFF, fail-closed): when ON, chat-confirmed task creates
+        land in 'staged' (stack-then-gate). OFF -> 'ready' (live behavior unchanged)."""
+        try:
+            state = self.store.gui_feature_flags(board=board, features=("chat_create_staged",))[
+                "chat_create_staged"
+            ]
+        except Exception:
+            return False
+        return state.get("enabled") is True
 
     def _chat_bridge_runtime_task_preview(
         self,

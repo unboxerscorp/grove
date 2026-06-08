@@ -428,3 +428,65 @@ def test_chat_bridge_tools_are_read_only_no_write_verbs(
     assert tool_names == ["get_project_tasks"]
     write_verbs = ("create", "update", "delete", "dispatch", "transition", "comment", "assign")
     assert not any(verb in name for name in tool_names for verb in write_verbs)
+
+
+def _confirm_chat_proposal(
+    conn: SlackConnector, slack: _FakeSlack, store: SQLiteBoardStore
+) -> None:
+    """Drive the chat proposal -> confirm-card -> approve-button flow."""
+    conn._chat_bridge_adapter = _ProposalAdapter()
+    _enqueue(store)
+    conn.poll_node_chat_queue()
+    blocks = slack.post_kwargs[0]["blocks"]
+    assert isinstance(blocks, tuple)
+    confirmation_id = blocks[1]["elements"][0]["value"]
+    conn.handle_interaction(
+        {
+            "type": "block_actions",
+            "team": {"id": "T"},
+            "channel": {"id": "C1"},
+            "user": {"id": "U"},
+            "message": {"ts": "1.2", "thread_ts": "th"},
+            "actions": [
+                {"action_id": slack_module.INTAKE_CONFIRM_ACTION_ID, "value": confirmation_id}
+            ],
+        }
+    )
+
+
+def _staged_flow_connector(
+    store: SQLiteBoardStore, slack: _FakeSlack, facade: _FakeFacade
+) -> SlackConnector:
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    command_config = SlackCommandConfig(
+        board="dev10", members={"U": SlackCommandMember("lead", "lead", "operator")}
+    )
+    return _connector(store, slack, facade, command_config=command_config)
+
+
+def test_chat_create_defaults_to_ready_when_staged_flag_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Default (chat_create_staged OFF): confirmed chat-created task stays 'ready'
+    # — live behavior unchanged.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    slack, facade = _FakeSlack(), _FakeFacade()
+    conn = _staged_flow_connector(store, slack, facade)
+    _confirm_chat_proposal(conn, slack, store)
+    tasks = store.list_tasks(board="dev10")
+    assert tasks and tasks[0].status == "ready"
+
+
+def test_chat_create_staged_flag_makes_confirmed_task_staged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Dark flag ON: confirmed chat-created task lands in 'staged' (stack-then-gate).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    slack, facade = _FakeSlack(), _FakeFacade()
+    conn = _staged_flow_connector(store, slack, facade)
+    store.set_gui_feature_enabled(board="dev10", feature="chat_create_staged", enabled=True)
+    _confirm_chat_proposal(conn, slack, store)
+    tasks = store.list_tasks(board="dev10")
+    assert tasks and tasks[0].status == "staged"
