@@ -3181,9 +3181,11 @@ def test_master_chat_answer_includes_project_board_org_and_human_facts(
     text = answer["text"]
     assert text == "LLM answer from facts. [fact:board.status_counts]"
     facts = answer["metadata"]["facts"]
+    # dev10 audit: the project facts expose display names only — the raw internal
+    # board id is no longer a separate key. (Web 'selected' = project.name, which is
+    # org-worker's display-name source.)
     assert facts["project"] == {
         "selected": "dev10",
-        "board": "dev10",
         "visible": ["dev10", "dev11"],
     }
     assert facts["board"]["status_counts"] == {

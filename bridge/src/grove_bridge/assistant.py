@@ -184,6 +184,11 @@ class AssistantScope:
     visible_projects: tuple[str, ...]
     origin_surface: AssistantSurface
     origin_page: str | None
+    # User/LLM-facing display names (dev10 audit). When set, facts/text show these
+    # instead of the internal board/session id; queries/routing keep the internal
+    # selected_project/board/visible_projects. Empty => fall back to the internal id.
+    display_project: str = ""
+    display_visible: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -936,9 +941,14 @@ def build_assistant_facts(
         raise ValueError("commit_limit must be non-negative")
     facts: dict[str, object] = {
         "project": {
-            "selected": _safe_public_text(context.scope.selected_project),
-            "board": _safe_public_text(context.scope.board),
-            "visible": [_safe_public_text(project) for project in context.scope.visible_projects],
+            # dev10 audit: expose the DISPLAY name, never the internal board id.
+            "selected": _safe_public_text(
+                context.scope.display_project or context.scope.selected_project
+            ),
+            "visible": [
+                _safe_public_text(project)
+                for project in (context.scope.display_visible or context.scope.visible_projects)
+            ],
         },
         "board": {
             "status_counts": _task_status_counts(context.store, board=context.scope.board),

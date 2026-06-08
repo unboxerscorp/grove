@@ -764,3 +764,31 @@ def _facts_from_prompt(prompt: str) -> dict[str, Any]:
     loaded = json.loads(prompt[start:end].strip())
     assert isinstance(loaded, dict)
     return loaded
+
+
+def test_build_assistant_facts_uses_display_project_and_hides_board(tmp_path: Path) -> None:
+    # dev10 audit: the LLM facts must show the project DISPLAY name (grove-dev),
+    # never the internal board/session id (dev10). Queries still use the board.
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    context = AssistantContext(
+        conversation_id="c",
+        request_id="r",
+        actor=AssistantActor(id="lead", role="operator", is_operator=True, display_name="lead"),
+        scope=AssistantScope(
+            selected_project="dev10",
+            board="dev10",
+            visible_projects=("dev10",),
+            origin_surface="slack",
+            origin_page=None,
+            display_project="grove-dev",
+            display_visible=("grove-dev",),
+        ),
+        store=store,
+        workspace_path=tmp_path,
+    )
+    facts = build_assistant_facts(context)
+    project = facts["project"]
+    assert isinstance(project, dict)
+    assert project["selected"] == "grove-dev"
+    assert project["visible"] == ["grove-dev"]
+    assert "board" not in project  # raw board id no longer exposed

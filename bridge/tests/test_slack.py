@@ -2303,6 +2303,7 @@ def command_connector(
         ),
         digest_config=digest_config,
         assistant_broker=assistant_broker or LLMNoticeAssistantBroker(),
+        bot_user_id="BOT",
     )
 
 
@@ -4313,3 +4314,35 @@ def test_slack_sdk_client_post_message_slackresponse() -> None:
     slack._client = FakeWebClient()
     ts = slack.post_message(channel="C123", text="hello")
     assert ts == "12345.67890"
+
+
+def test_assistant_mentioned_requires_self_mention_fail_closed() -> None:
+    # Live mention-scope bug: the bot must respond ONLY to its own mention. Without a
+    # confirmed bot_user_id it must FAIL CLOSED (never treat an arbitrary <@U...> as
+    # addressing the bot); app_mention is trusted (Slack sends it only for the bot).
+    from grove_bridge.slack import _assistant_mentioned
+
+    def _msg(text: str) -> SlackEvent:
+        return SlackEvent(
+            team="T",
+            channel="C",
+            user="UOTHER",
+            text=text,
+            ts="1.1",
+            thread_ts=None,
+            event_type="message",
+        )
+
+    assert _assistant_mentioned(_msg("<@UOTHER> hey"), bot_user_id=None) is False
+    assert _assistant_mentioned(_msg("<@UOTHER> hey"), bot_user_id="UBOT") is False
+    assert _assistant_mentioned(_msg("<@UBOT> hi"), bot_user_id="UBOT") is True
+    app = SlackEvent(
+        team="T",
+        channel="C",
+        user="UOTHER",
+        text="hi",
+        ts="1.1",
+        thread_ts=None,
+        event_type="app_mention",
+    )
+    assert _assistant_mentioned(app, bot_user_id=None) is True

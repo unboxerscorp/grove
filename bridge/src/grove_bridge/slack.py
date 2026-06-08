@@ -2347,6 +2347,7 @@ class SlackConnector:
 
     def _assistant_context(self, event: SlackEvent, *, thread_ts: str) -> AssistantContext:
         board = self._assistant_board()
+        display = self._project_directory().display_name(board)
         actor = self._assistant_member(event.user)
         actor_role = actor.role if actor is not None else "slack-unmapped"
         return AssistantContext(
@@ -2367,6 +2368,8 @@ class SlackConnector:
                     f"slack://{_safe_slack_text(event.team)}/"
                     f"{_safe_slack_text(event.channel)}/{_safe_slack_text(thread_ts)}"
                 ),
+                display_project=display,
+                display_visible=(display,),
             ),
             store=self.store,
             workspace_path=_assistant_workspace_path(),
@@ -3729,11 +3732,16 @@ def _normalize_slack_command_text(text: str) -> str:
 
 
 def _assistant_mentioned(event: SlackEvent, *, bot_user_id: str | None) -> bool:
+    # ``app_mention`` is delivered by Slack ONLY when the bot itself is mentioned, so
+    # it is trusted. For a plain ``message`` event we require the bot's OWN mention.
     if event.event_type == "app_mention":
         return True
     if bot_user_id:
         return f"<@{bot_user_id}>" in event.text
-    return SLACK_USER_MENTION_RE.search(event.text) is not None
+    # Fail closed: without a confirmed bot_user_id we must NOT treat an arbitrary
+    # <@U...> as addressing the bot — that reacts to other people's mentions. (See
+    # the bot_user_id auth.test resolution; a missing id is the real root cause.)
+    return False
 
 
 def _explicit_reserved_command_text(text: str) -> bool:
