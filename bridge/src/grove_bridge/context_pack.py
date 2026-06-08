@@ -166,20 +166,28 @@ def collapse_foreign_projects(
     return result
 
 
-def _registry_session_lines(project: str, registry_session: str | None) -> list[str]:
-    """The `Registry/session:` line, only when the registry/session differs from
-    the logical project (v1 keeps them 1:1 → empty → byte-identical). Mirror of
-    context-pack.ts:registrySessionLines."""
-    session = (registry_session or "").strip()
-    if session == "" or session == project.strip():
-        return []
-    return [f"Registry/session: {_clean(session)}"]
+# Root/global-plane node names (the .master registry control plane). Rendered
+# bare in the identity line — no @project. Mirror of context-pack.ts:ROOT_NODE_NAMES.
+ROOT_NODE_NAMES = frozenset({"grove-master", "chat-master", "task-master", "web", "slack"})
+_IDENTITY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def _format_node_identity(name: str, project: str) -> str:
+    """Identity label for the `From: <caller> → <target>` line: `node@project`
+    for a project node, bare for a root node, raw for a non-node sentinel
+    (CLI/operator labels that aren't valid node names). Always shows @project for
+    project nodes. Mirror of context-pack.ts:formatNodeIdentity."""
+    trimmed = _clean(name, "")
+    if not _IDENTITY_NAME_RE.match(trimmed):
+        return trimmed
+    if trimmed in ROOT_NODE_NAMES:
+        return trimmed
+    return f"{trimmed}@{_clean(project)}"
 
 
 def build_grove_context_pack(
     *,
     project: str,
-    registry_session: str | None = None,
     caller_node: str | None = None,
     communication_protocol: str | None = None,
     max_bytes: int = DEFAULT_MAX_BYTES,
@@ -205,13 +213,12 @@ def build_grove_context_pack(
         if visible_nodes
         else ["- (visible org summary unavailable in this dispatch context)"]
     )
+    caller_label = _format_node_identity(caller_node or "operator/CLI", project)
+    target_label = _format_node_identity(target, project)
     lines = [
         GROVE_CONTEXT_PACK_HEADER,
-        f"Caller node: {_clean(caller_node, 'operator/CLI')}",
-        f"Project: {_clean(project)}",
-        *_registry_session_lines(project, registry_session),
+        f"From: {caller_label} → {target_label}",
         f"Project lead: {_clean(lead)}",
-        f"Target node: {target}",
         f"Target role: {role or '(not recorded)'}",
         *(
             [f"Target work instructions (advisory): {work_instructions}"]
@@ -228,7 +235,6 @@ def build_grove_context_pack(
 def build_compact_grove_context_pack(
     *,
     project: str,
-    registry_session: str | None = None,
     caller_node: str | None = None,
     max_bytes: int = DEFAULT_MAX_BYTES,
     nodes: Sequence[ContextPackNode] = (),
@@ -237,23 +243,22 @@ def build_compact_grove_context_pack(
     target_work_instructions: str | None = None,
 ) -> str:
     """Compact node-to-node pack: the token-saving default for live `grove send`
-    / `grove ask` between running nodes. Carries identity plus the target's role
-    and work-instructions summary, and an org digest (node count) with a one-line
-    reminder pointing at `grove org --all --json` / `grove task mine` for a full
-    refresh. Keeps the `GROVE CONTEXT PACK` header prefix so the
-    no-duplicate-prepend guard still fires. Mirror of
+    / `grove ask` between running nodes. Carries the `From: <caller> → <target>`
+    identity plus the target's role and work-instructions summary, and an org
+    digest (node count) with a reminder pointing at `grove org --all --json` /
+    `grove task mine` for a full refresh. Keeps the `GROVE CONTEXT PACK` header
+    prefix so the no-duplicate-prepend guard still fires. Mirror of
     context-pack.ts:buildCompactGroveContextPack."""
     target = target_node.strip() if target_node is not None and target_node.strip() else "(none)"
     role = _first_line(target_role)
     work_instructions = _work_instructions_summary(target_work_instructions)
     node_count = len(tuple(nodes))
     noun = "node" if node_count == 1 else "nodes"
+    caller_label = _format_node_identity(caller_node or "operator/CLI", project)
+    target_label = _format_node_identity(target, project)
     lines = [
         f"{GROVE_CONTEXT_PACK_HEADER} (compact)",
-        f"Caller node: {_clean(caller_node, 'operator/CLI')}",
-        f"Project: {_clean(project)}",
-        *_registry_session_lines(project, registry_session),
-        f"Target node: {target}",
+        f"From: {caller_label} → {target_label}",
         *([f"Target role: {role}"] if role else []),
         *(
             [f"Target work instructions (advisory): {work_instructions}"]

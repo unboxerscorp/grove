@@ -180,9 +180,7 @@ describe("delegateTask", () => {
 
     const payload = JSON.parse(state.calls[0]?.init.body ?? "{}") as { body?: string };
     expect(payload.body).toContain("GROVE CONTEXT PACK");
-    expect(payload.body).toContain("Caller node: grove delegate CLI");
-    expect(payload.body).toContain("Project: dev10");
-    expect(payload.body).toContain("Target node: maker");
+    expect(payload.body).toContain("From: grove delegate CLI → maker@dev10");
     expect(payload.body).toContain("Target role: Maker");
     expect(payload.body).toContain("pane=dev10:1.%5");
     expect(payload.body).toContain("Original message:\nRun pnpm check:ts");

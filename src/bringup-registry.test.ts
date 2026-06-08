@@ -221,10 +221,8 @@ describe("bringUp registry tmux pane metadata", () => {
       .mock.calls.map((call) => call[1])
       .find((text) => text.includes("Original message:\nImplementation maker"));
     expect(submitted).toContain("GROVE CONTEXT PACK");
-    expect(submitted).toContain("Caller node: grove launch bootstrap");
-    expect(submitted).toContain("Project: dev10");
+    expect(submitted).toContain("From: grove launch bootstrap → maker@dev10");
     expect(submitted).toContain("Project lead: lead");
-    expect(submitted).toContain("Target node: maker");
     expect(submitted).toContain("Target role: Implementation maker");
     expect(submitted).toContain("lead -> reviewer");
   });

@@ -3,6 +3,7 @@ from __future__ import annotations
 from grove_bridge.context_pack import (
     GROVE_CONTEXT_PACK_HEADER,
     ContextPackNode,
+    _format_node_identity,
     build_compact_grove_context_pack,
     build_grove_context_pack,
     collapse_foreign_projects,
@@ -40,10 +41,9 @@ def test_build_grove_context_pack_redacts_and_bounds_visible_context() -> None:
     )
 
     assert GROVE_CONTEXT_PACK_HEADER in pack
-    assert "Caller node: orch-master" in pack
-    assert "Project: dev10" in pack
+    assert "From: orch-master@dev10 → worker@dev10" in pack
+    assert "Project: dev10" not in pack
     assert "Project lead: lead" in pack
-    assert "Target node: worker" in pack
     assert "Target role: Implementation maker" in pack
     assert "lead -> worker" in pack
     assert "pane=dev10:1.3" in pack
@@ -69,10 +69,8 @@ PARITY_WORK_INSTRUCTIONS = "PR 머지 전 reviewer 승인 필수\n  여러 줄 �
 PARITY_PACK = "\n".join(
     [
         "GROVE CONTEXT PACK",
-        "Caller node: lead",
-        "Project: dev10",
+        "From: lead@dev10 → maker@dev10",
         "Project lead: lead",
-        "Target node: maker",
         "Target role: Builder",
         "Target work instructions (advisory): PR 머지 전 reviewer 승인 필수 여러 줄 가능",
         "Communication protocol: direct comms",
@@ -127,10 +125,8 @@ def test_work_instructions_unset_is_byte_identical_to_un_instructed_pack() -> No
     assert pack == "\n".join(
         [
             "GROVE CONTEXT PACK",
-            "Caller node: lead",
-            "Project: dev10",
+            "From: lead@dev10 → maker@dev10",
             "Project lead: lead",
-            "Target node: maker",
             "Target role: Builder",
             "Communication protocol: direct comms",
             "Visible org summary:",
@@ -249,10 +245,8 @@ def test_collapse_project_field_is_render_inert() -> None:
     assert pack == "\n".join(
         [
             "GROVE CONTEXT PACK",
-            "Caller node: lead",
-            "Project: dev10",
+            "From: lead@dev10 → maker@dev10",
             "Project lead: lead",
-            "Target node: maker",
             "Target role: Builder",
             "Communication protocol: direct comms",
             "Visible org summary:",
@@ -268,9 +262,7 @@ COMPACT_PARITY_WORK_INSTRUCTIONS = "PR 머지 전 reviewer 승인 필수\n  여�
 COMPACT_PARITY_PACK = "\n".join(
     [
         "GROVE CONTEXT PACK (compact)",
-        "Caller node: lead",
-        "Project: dev10",
-        "Target node: maker",
+        "From: lead@dev10 → maker@dev10",
         "Target role: Builder",
         "Target work instructions (advisory): PR 머지 전 reviewer 승인 필수",
         "Visible org: 3 nodes — run `grove org --all --json` for the full "
@@ -310,56 +302,17 @@ def test_compact_pack_omits_unset_lines_and_singularizes_count() -> None:
     assert pack.startswith(GROVE_CONTEXT_PACK_HEADER)
 
 
-# Project vs Registry/session split. REGISTRY_SPLIT_PACK is duplicated verbatim
-# in src/context-pack.test.ts; the line appears ONLY when the registry/session
-# differs from the project, so v1 single-binding packs stay byte-identical.
-REGISTRY_SPLIT_PACK = "\n".join(
-    [
-        "GROVE CONTEXT PACK",
-        "Caller node: lead",
-        "Project: proj-a",
-        "Registry/session: dev10",
-        "Project lead: lead",
-        "Target node: maker",
-        "Target role: Builder",
-        "Communication protocol: direct comms",
-        "Visible org summary:",
-        "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder)",
-    ]
-)
+# Identity label for the From line. Mirrors src/context-pack.test.ts:formatNodeIdentity.
+def test_format_node_identity_project_nodes_get_at_project() -> None:
+    assert _format_node_identity("fe-master", "grove-dev") == "fe-master@grove-dev"
+    assert _format_node_identity("lead", "dev10") == "lead@dev10"
 
 
-def test_registry_session_emitted_only_when_differs() -> None:
-    pack = build_grove_context_pack(
-        caller_node="lead",
-        communication_protocol="direct comms",
-        nodes=(_maker(),),
-        project="proj-a",
-        registry_session="dev10",
-        project_lead="lead",
-        target_node="maker",
-        target_role="Builder",
-    )
-
-    assert pack == REGISTRY_SPLIT_PACK
+def test_format_node_identity_root_nodes_render_bare() -> None:
+    for root in ("grove-master", "chat-master", "task-master", "web", "slack"):
+        assert _format_node_identity(root, "grove-dev") == root
 
 
-def test_registry_session_omitted_when_equal_or_unset() -> None:
-    equal = build_grove_context_pack(
-        nodes=(_maker(),), project="dev10", registry_session="dev10", target_node="maker"
-    )
-    unset = build_grove_context_pack(nodes=(_maker(),), project="dev10", target_node="maker")
-
-    assert "Registry/session:" not in equal
-    assert "Registry/session:" not in unset
-    assert equal == unset
-
-
-def test_compact_registry_session_only_when_differs() -> None:
-    differ = build_compact_grove_context_pack(
-        nodes=(_maker(),), project="proj-a", registry_session="dev10", target_node="maker"
-    )
-    same = build_compact_grove_context_pack(nodes=(_maker(),), project="dev10", target_node="maker")
-
-    assert "Registry/session: dev10" in differ
-    assert "Registry/session:" not in same
+def test_format_node_identity_non_node_sentinels_render_raw() -> None:
+    assert _format_node_identity("grove send CLI", "grove-dev") == "grove send CLI"
+    assert _format_node_identity("operator/CLI", "grove-dev") == "operator/CLI"

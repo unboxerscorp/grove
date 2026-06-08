@@ -31,10 +31,6 @@ export interface GroveContextPackInput {
   maxBytes?: number;
   nodes?: readonly ContextPackNode[];
   project: string;
-  // Registry/session backing the project. Rendered as a separate line ONLY when
-  // it differs from `project` (v1 keeps them 1:1, so the line never appears and
-  // the pack stays byte-identical). Disentangles project identity from storage.
-  registrySession?: string;
   projectLead?: string;
   targetNode?: string;
   targetRole?: string;
@@ -205,13 +201,25 @@ export function contextPackNodesFromContext(ctx: Context): ContextPackNode[] {
   return [...byName.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
-/** The `Registry/session:` line, rendered only when the registry/session differs
- *  from the logical project (v1 keeps them 1:1, so this is empty and the pack is
- *  byte-identical). Mirror of context_pack.py:_registry_session_lines. */
-function registrySessionLines(input: GroveContextPackInput): string[] {
-  const session = input.registrySession?.trim() ?? "";
-  if (session === "" || session === input.project.trim()) return [];
-  return [`Registry/session: ${clean(session)}`];
+// Root/global-plane node names (the .master registry control plane). Rendered
+// bare in the identity line — no @project, because they belong to no project.
+// Mirror of context_pack.py:ROOT_NODE_NAMES.
+const ROOT_NODE_NAMES = new Set(["grove-master", "chat-master", "task-master", "web", "slack"]);
+const IDENTITY_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/**
+ * Identity label for the `From: <caller> → <target>` line: `node@project` for a
+ * project node, bare for a root node, and the raw string for a non-node sentinel
+ * (CLI / operator labels that aren't valid node names, e.g. "grove send CLI").
+ * Always shows @project for project nodes (unlike project-address.ts's
+ * formatNodeAddress, which drops it for the home project) so every dispatch
+ * surfaces the project. Mirror of context_pack.py:_format_node_identity.
+ */
+export function formatNodeIdentity(name: string, project: string): string {
+  const trimmed = clean(name, "");
+  if (!IDENTITY_NAME_RE.test(trimmed)) return trimmed;
+  if (ROOT_NODE_NAMES.has(trimmed)) return trimmed;
+  return `${trimmed}@${clean(project)}`;
 }
 
 export function buildGroveContextPack(input: GroveContextPackInput): string {
@@ -226,13 +234,12 @@ export function buildGroveContextPack(input: GroveContextPackInput): string {
   const orgLines = nodes.length
     ? nodes.map(nodeLine)
     : ["- (visible org summary unavailable in this dispatch context)"];
+  const callerLabel = formatNodeIdentity(input.callerNode || "operator/CLI", input.project);
+  const targetLabel = formatNodeIdentity(targetNode || "(none)", input.project);
   const lines = [
     GROVE_CONTEXT_PACK_HEADER,
-    `Caller node: ${clean(input.callerNode, "operator/CLI")}`,
-    `Project: ${clean(input.project)}`,
-    ...registrySessionLines(input),
+    `From: ${callerLabel} → ${targetLabel}`,
     `Project lead: ${clean(lead)}`,
-    targetNode ? `Target node: ${targetNode}` : "Target node: (none)",
     targetRole ? `Target role: ${targetRole}` : "Target role: (not recorded)",
     ...(targetWorkInstructions
       ? [`Target work instructions (advisory): ${targetWorkInstructions}`]
@@ -249,24 +256,23 @@ export function buildGroveContextPack(input: GroveContextPackInput): string {
 
 /**
  * Compact node-to-node pack: the token-saving default for live `grove send` /
- * `grove ask` between running nodes. Carries identity (caller/project/target),
- * the target's role + work-instructions summary, and an org digest (node count)
- * with a one-line reminder pointing at `grove org --all --json` / `grove task mine`
- * for a full refresh — so the org/rules are still reachable, just not inlined.
- * Keeps the `GROVE CONTEXT PACK` header prefix so the no-duplicate-prepend guard
- * still fires. Mirror of context_pack.py:build_compact_grove_context_pack.
+ * `grove ask` between running nodes. Carries the `From: <caller> → <target>`
+ * identity, the target's role + work-instructions summary, and an org digest
+ * (node count) with a reminder pointing at `grove org --all --json` /
+ * `grove task mine` for a full refresh. Keeps the `GROVE CONTEXT PACK` header
+ * prefix so the no-duplicate-prepend guard still fires. Mirror of
+ * context_pack.py:build_compact_grove_context_pack.
  */
 export function buildCompactGroveContextPack(input: GroveContextPackInput): string {
   const targetNode = input.targetNode?.trim();
   const targetRole = firstLine(input.targetRole);
   const workInstructions = workInstructionsSummary(input.targetWorkInstructions);
   const nodeCount = (input.nodes ?? []).length;
+  const callerLabel = formatNodeIdentity(input.callerNode || "operator/CLI", input.project);
+  const targetLabel = formatNodeIdentity(targetNode || "(none)", input.project);
   const lines = [
     `${GROVE_CONTEXT_PACK_HEADER} (compact)`,
-    `Caller node: ${clean(input.callerNode, "operator/CLI")}`,
-    `Project: ${clean(input.project)}`,
-    ...registrySessionLines(input),
-    targetNode ? `Target node: ${targetNode}` : "Target node: (none)",
+    `From: ${callerLabel} → ${targetLabel}`,
     ...(targetRole ? [`Target role: ${targetRole}`] : []),
     ...(workInstructions ? [`Target work instructions (advisory): ${workInstructions}`] : []),
     `Visible org: ${nodeCount} ${nodeCount === 1 ? "node" : "nodes"} — run \`grove org --all --json\` for the full multi-project tree; \`grove task mine\` for your tasks.`,

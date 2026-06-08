@@ -563,9 +563,8 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
     assert runner.calls[0][0] == "codex-a"
     prompt = runner.calls[0][1]
     assert "GROVE CONTEXT PACK" in prompt
-    assert "Project: dev10" in prompt
+    assert "From: grove pull executor → codex-a@dev10" in prompt
     assert "Project lead: lead" in prompt
-    assert "Target node: codex-a" in prompt
     assert "Target role: Python maker" in prompt
     assert "lead -> codex-a" in prompt
     assert "xoxb-secret" not in prompt

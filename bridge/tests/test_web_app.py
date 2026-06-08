@@ -1450,9 +1450,8 @@ def test_rest_creates_task_on_board(tmp_path: Path) -> None:
     task = created.json()
     assert task["title"] == "New task"
     assert "GROVE CONTEXT PACK" in task["body"]
-    assert "Project: dev10" in task["body"]
+    assert "From: lead@dev10 → worker@dev10" in task["body"]
     assert "Project lead: lead" in task["body"]
-    assert "Target node: worker" in task["body"]
     assert "Target role: Implementation maker" in task["body"]
     assert "Original message:\nTask details" in task["body"]
     assert "xoxb-secret" not in task["body"]
@@ -2200,8 +2199,9 @@ def test_task_create_accepts_project_qualified_assignee_from_existing_project(
     assert created.status_code == 200
     task = created.json()
     assert task["assignee"] == "dev11:worker"
-    assert "Project: dev10" in task["body"]
-    assert "Target node: dev11:worker" in task["body"]
+    # Cross-project target ref still rendered raw (colon) until slice2 canonicalizes
+    # web node-refs to node@project; the identity line carries it as the target.
+    assert "→ dev11:worker" in task["body"]
     assert "Target role: Remote project maker" in task["body"]
     assert "xoxb-secret" not in task["body"]
     assert "Original message:\nDo remote work" in task["body"]
@@ -5666,7 +5666,7 @@ def test_handoff_accept_trust_idempotency_and_receiver_local_only(tmp_path: Path
     assert accepted.status == "ready"
     assert accepted.assignee is None
     assert "GROVE CONTEXT PACK" in (accepted.body or "")
-    assert "Project: dev11" in (accepted.body or "")
+    assert "@dev11" in (accepted.body or "")
     assert "Original message:\nCreate this locally" in (accepted.body or "")
     assert accepted.priority == 3
     assert accepted.metadata["labels"] == ["handoff"]

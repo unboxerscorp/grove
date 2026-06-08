@@ -52,7 +52,7 @@ describe("submitMessage", () => {
     await submitMessage(nc, "ship it");
 
     expect(sequence[0]).toContain("GROVE CONTEXT PACK");
-    expect(sequence[0]).toContain("Target node: agy");
+    expect(sequence[0]).toContain("From: operator/CLI → agy@unknown");
     expect(sequence[0]).toContain("Original message:\nship it");
     expect(sequence[0]?.startsWith("literal:\u001b[200~")).toBe(true);
     expect(sequence[0]?.endsWith("ship it\u001b[201~")).toBe(true);
