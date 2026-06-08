@@ -1662,6 +1662,37 @@ def test_dispatch_delivers_staged_item_and_is_idempotent(tmp_path: Path) -> None
     assert again.status_code == 409
 
 
+def test_cross_project_status_transition_uses_host_token(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "base-web-admin",
+        {"lead": {"name": "lead", "agent": "codex", "group": "lead", "tmux_pane": "bwa:1.0"}},
+    )
+    task = store.create_task(
+        board="base-web-admin", title="cross", body=None, assignee=None, status="ready"
+    )
+    client = make_client(tmp_path, store)  # registry_session=dev10 -> host token
+    headers = auth_headers(client)
+
+    # Host operator token + X-Grove-Project transitions a NON-host project's task.
+    moved = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers | {"X-Grove-Project": "base-web-admin"},
+        json={"board": "base-web-admin", "status": "running"},
+    )
+    assert moved.status_code == 200
+    assert moved.json()["status"] == "running"
+
+    # A registry-less / non-visible project is never addressable (defense-in-depth).
+    unknown = client.patch(
+        f"/api/tasks/{task.id}/status",
+        headers=headers | {"X-Grove-Project": "ghost-project"},
+        json={"board": "ghost-project", "status": "running"},
+    )
+    assert unknown.status_code == 404
+
+
 def test_patch_task_fields_edits_title_and_body(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     client = make_client(tmp_path, store)

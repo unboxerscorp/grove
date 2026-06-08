@@ -29,7 +29,9 @@ export interface TaskInput {
   comment?: string;
   config?: string;
   fromStatus?: string;
+  hostSession?: string;
   idempotencyKey?: string;
+  project?: string;
   reviewer?: string;
   runId?: string;
   session?: string;
@@ -250,11 +252,25 @@ export async function updateTaskStatus(
 ): Promise<TaskTransitionResult> {
   const taskId = validateGroveName(taskIdInput.trim(), "task_id");
   const status = statusForTaskAction(action);
-  const session = resolveSession(input, deps);
-  const board = validateGroveName(trimmed(input.board) ?? DEFAULT_BOARD, "--board");
-  const baseUrl = discoverTaskWebUrl(session, deps);
+  // Host session owns web URL + token (the running grove-web only honors its own
+  // dashboard token); the target project sets X-Grove-Project + board. Decoupling
+  // these lets a host operator token transition a task on ANOTHER (cross-project)
+  // board. Without --project, both collapse to the resolved session (no change).
+  const explicitHost = trimmed(input.hostSession);
+  const hostSession = explicitHost
+    ? validateGroveName(explicitHost, "--host-session")
+    : resolveSession(input, deps);
+  const explicitProject = trimmed(input.project);
+  const targetProject = explicitProject
+    ? validateGroveName(explicitProject, "--project")
+    : hostSession;
+  const board = validateGroveName(
+    trimmed(input.board) ?? explicitProject ?? DEFAULT_BOARD,
+    "--board",
+  );
+  const baseUrl = discoverTaskWebUrl(hostSession, deps);
   assertRemoteAllowed(baseUrl, input, deps);
-  const { path: tokenPath, token } = readToken(session, deps);
+  const { path: tokenPath, token } = readToken(hostSession, deps);
   const endpoint = `${baseUrl}/api/tasks/${encodeURIComponent(taskId)}/status`;
 
   let response: TaskFetchResponse;
@@ -264,7 +280,7 @@ export async function updateTaskStatus(
       headers: {
         "Content-Type": "application/json",
         Origin: new URL(baseUrl).origin,
-        "X-Grove-Project": session,
+        "X-Grove-Project": targetProject,
         "X-Grove-Session-Token": token,
       },
       method: "PATCH",
@@ -272,7 +288,7 @@ export async function updateTaskStatus(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `could not reach grove-web at ${baseUrl} for session ${session}; start grove-web --session ${session} or set GROVE_WEB_URL (${message})`,
+      `could not reach grove-web at ${baseUrl} for session ${hostSession}; start grove-web --session ${hostSession} or set GROVE_WEB_URL (${message})`,
     );
   }
 
@@ -281,13 +297,13 @@ export async function updateTaskStatus(
     const details = errorSnippet(responseText);
     const kind = response.status === 409 ? "task status conflict" : "task status update failed";
     throw new Error(
-      `grove-web ${kind} at ${endpoint} for session ${session} (HTTP ${response.status} ${response.statusText}; token ${tokenPath})${details ? `: ${details}` : ""}`,
+      `grove-web ${kind} at ${endpoint} for session ${hostSession} (HTTP ${response.status} ${response.statusText}; token ${tokenPath})${details ? `: ${details}` : ""}`,
     );
   }
 
   return {
     board,
-    session,
+    session: hostSession,
     status,
     task: parseTask(responseText),
     taskId,

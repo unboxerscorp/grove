@@ -195,6 +195,38 @@ describe("updateTaskStatus", () => {
     expect(state.readPaths).toContain("/home/tester/.grove/alpha/dashboard-token");
   });
 
+  test("targets another project with --project while authing with the host token", async () => {
+    const state = deps({ env: { GROVE_WEB_URL: "http://127.0.0.1:9999" } });
+
+    await updateTaskStatus(
+      "start",
+      "task_1",
+      { fromStatus: "ready", project: "base-web-admin", session: "dev10" },
+      state.deps,
+    );
+
+    // X-Grove-Project follows the target project; token + board come from the host session.
+    expect(state.calls[0]?.init.headers["X-Grove-Project"]).toBe("base-web-admin");
+    expect(state.calls[0]?.init.headers["X-Grove-Session-Token"]).toBe("token-123");
+    expect(state.readPaths).toContain("/home/tester/.grove/dev10/dashboard-token");
+    const body = JSON.parse(state.calls[0]?.init.body ?? "{}") as { board?: string };
+    expect(body.board).toBe("base-web-admin");
+  });
+
+  test("--host-session overrides the auth session for a cross-project transition", async () => {
+    const state = deps({ env: { GROVE_WEB_URL: "http://127.0.0.1:9999" } });
+
+    await updateTaskStatus(
+      "done",
+      "task_1",
+      { hostSession: "dev10", project: "base-web-admin" },
+      state.deps,
+    );
+
+    expect(state.calls[0]?.init.headers["X-Grove-Project"]).toBe("base-web-admin");
+    expect(state.readPaths).toContain("/home/tester/.grove/dev10/dashboard-token");
+  });
+
   test("rejects non-loopback web URLs before reading or sending the dashboard token", async () => {
     const state = deps({ env: { GROVE_WEB_URL: "http://10.0.0.5:8765" } });
 

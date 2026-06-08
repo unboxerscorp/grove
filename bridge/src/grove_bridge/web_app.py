@@ -7736,8 +7736,12 @@ def resolve_project(source: Request | WebSocket) -> ProjectContext:
     name = raw_project.strip()
     if PROJECT_NAME_RE.fullmatch(name) is None:
         raise HTTPException(status_code=400, detail="invalid project")
+    # Defense-in-depth: a header project (incl. cross-project mutations carried by
+    # the host operator token) must be an operator-VISIBLE, registry-backed project.
+    # The visible-name predicate is the same one the visible-project set / org graph
+    # use, so a hidden (./_-prefixed) or registry-less project is never addressable.
     project_config = replace(base_config, registry_session=name)
-    if not _registry_path(project_config).is_file():
+    if not _is_visible_project_registry_name(name) or not _registry_path(project_config).is_file():
         raise HTTPException(status_code=404, detail="project not found")
     return ProjectContext(
         config=project_config,

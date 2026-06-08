@@ -209,8 +209,19 @@ function taskTransitionCommand(action: TaskAction, description: string): void {
   taskCommand
     .command(`${action} <item_id>`)
     .description(description)
-    .option("--board <board>", "target human-facing list slug", "default")
+    .option(
+      "--board <board>",
+      "target human-facing list slug (defaults to --project, else 'default')",
+    )
     .option("--session <session>", "target grove session/project")
+    .option(
+      "--project <project>",
+      "target project board for a cross-project transition (sets X-Grove-Project + board)",
+    )
+    .option(
+      "--host-session <session>",
+      "auth session whose dashboard token reaches grove-web (defaults to --session / registry default)",
+    )
     .option("--allow-remote", "allow sending the dashboard token to a non-loopback grove-web URL")
     .option("--from-status <status>", "expected previous item status")
     .option("--run-id <id>", "item run id for idempotent executor updates")
