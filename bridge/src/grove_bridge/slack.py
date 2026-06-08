@@ -30,6 +30,11 @@ from grove_bridge.assistant import (
     classify_for_task,
 )
 from grove_bridge.auth_status import redact_secret_text
+from grove_bridge.chat_actions import (
+    ChatActionDenied,
+    ChatConfirmAction,
+    apply_chat_confirm_action,
+)
 from grove_bridge.chat_runtime import (
     ChatProviderAdapter,
     ChatTool,
@@ -332,6 +337,19 @@ class SlackPendingCommand:
 
 
 @dataclass(frozen=True)
+class SlackPendingAction:
+    """A one-shot, owner-gated pending typed confirm-action (parallel to
+    :class:`SlackPendingCommand`). On confirm it is applied via the pure
+    ``apply_chat_confirm_action`` dispatcher — never re-interpreted."""
+
+    confirmation_id: str
+    action: ChatConfirmAction
+    event: SlackEvent
+    actor: SlackCommandMember
+    expires_at: float
+
+
+@dataclass(frozen=True)
 class SlackEvent:
     team: str
     channel: str
@@ -555,6 +573,7 @@ class SlackConfirmationStore:
         self.clock = clock
         self.token_factory = token_factory or (lambda: secrets.token_urlsafe(8))
         self._pending: dict[str, SlackPendingCommand] = {}
+        self._actions: dict[str, SlackPendingAction] = {}
         self._lock = threading.Lock()
 
     def create(
@@ -616,6 +635,54 @@ class SlackConfirmationStore:
             self._cleanup(now=now)
             return pending, None
 
+    def register_action(
+        self,
+        *,
+        action: ChatConfirmAction,
+        event: SlackEvent,
+        actor: SlackCommandMember,
+    ) -> SlackPendingAction:
+        """Bind a typed confirm-action to a fresh one-shot confirmation id (parallel
+        to ``create`` for commands). Applied only on the owner's confirm."""
+        now = self.clock()
+        with self._lock:
+            confirmation_id = self.token_factory()
+            while confirmation_id in self._pending or confirmation_id in self._actions:
+                confirmation_id = self.token_factory()
+            pending = SlackPendingAction(
+                confirmation_id=confirmation_id,
+                action=action,
+                event=event,
+                actor=actor,
+                expires_at=now + max(1, self.ttl_seconds),
+            )
+            self._actions[confirmation_id] = pending
+            self._cleanup(now=now)
+            return pending
+
+    def consume_action_for_owner(
+        self,
+        confirmation_id: str,
+        *,
+        member_id: str,
+    ) -> tuple[SlackPendingAction | None, str | None]:
+        now = self.clock()
+        with self._lock:
+            pending = self._actions.get(confirmation_id)
+            if pending is None:
+                self._cleanup(now=now)
+                return None, "confirmation_unknown_or_used"
+            if pending.expires_at <= now:
+                self._actions.pop(confirmation_id, None)
+                self._cleanup(now=now)
+                return None, "confirmation_expired"
+            if pending.actor.member_id != member_id:
+                self._cleanup(now=now)
+                return None, "confirmation_owner_mismatch"
+            self._actions.pop(confirmation_id, None)
+            self._cleanup(now=now)
+            return pending, None
+
     def _cleanup(self, *, now: float) -> None:
         expired = [
             confirmation_id
@@ -624,6 +691,13 @@ class SlackConfirmationStore:
         ]
         for confirmation_id in expired:
             self._pending.pop(confirmation_id, None)
+        expired_actions = [
+            confirmation_id
+            for confirmation_id, action in self._actions.items()
+            if action.expires_at <= now
+        ]
+        for confirmation_id in expired_actions:
+            self._actions.pop(confirmation_id, None)
 
 
 class SlackConnector:
@@ -1035,6 +1109,35 @@ class SlackConnector:
                 thread_ts=thread_ts,
             )
             return True
+        if action_id == INTAKE_CONFIRM_ACTION_ID:
+            pending_action, action_error = self.confirmations.consume_action_for_owner(
+                confirmation_id,
+                member_id=actor.member_id,
+            )
+            if pending_action is not None:
+                self._apply_chat_confirm_action(
+                    pending_action, event=event, actor=actor, thread_ts=thread_ts
+                )
+                return True
+            if action_error is not None and action_error != "confirmation_unknown_or_used":
+                # A registered typed action that expired / owner-mismatch -> deny;
+                # do NOT fall through to the command path.
+                self._audit_slack_command(
+                    command="confirm",
+                    event=event,
+                    actor=_slack_member_actor(event.user, actor),
+                    status="denied",
+                    summary=action_error,
+                )
+                self._post_assistant_notice(
+                    event,
+                    thread_ts=thread_ts,
+                    decision="deny",
+                    reason=action_error,
+                    response_type="denied",
+                )
+                return True
+            # else: not a registered action -> fall through to the existing command path.
         pending, error = self.confirmations.consume_for_owner(
             confirmation_id,
             member_id=actor.member_id,
@@ -2645,6 +2748,48 @@ class SlackConnector:
             return True
         finally:
             runtime.release_session(conversation_id)
+
+    def _apply_chat_confirm_action(
+        self,
+        pending: SlackPendingAction,
+        *,
+        event: SlackEvent,
+        actor: SlackCommandMember,
+        thread_ts: str,
+    ) -> None:
+        """Apply a confirmed typed action via the pure dispatcher (stored fields
+        verbatim; role/scope/[R] enforced there). Denial -> ops-log + a denied
+        notice; never a fabricated success."""
+        chat_actor = {
+            "member_id": actor.member_id,
+            "name": actor.name,
+            "role": actor.role,
+        }
+        try:
+            apply_chat_confirm_action(self.store, pending.action, actor=chat_actor)
+        except ChatActionDenied as exc:
+            self._audit_slack_command(
+                command="confirm",
+                event=event,
+                actor=_slack_member_actor(event.user, actor),
+                status="denied",
+                summary=f"chat action denied: {_safe_log_error(exc)}",
+            )
+            self._post_assistant_notice(
+                event,
+                thread_ts=thread_ts,
+                decision="deny",
+                reason="action not applied",
+                response_type="denied",
+            )
+            return
+        self._audit_slack_command(
+            command="confirm",
+            event=event,
+            actor=_slack_member_actor(event.user, actor),
+            status="ok",
+            summary=f"chat confirm action applied: {pending.action.kind}",
+        )
 
     def _chat_bridge_runtime_task_preview(
         self,

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import grove_bridge.slack as slack_module
+from grove_bridge.chat_actions import ChatConfirmAction
 from grove_bridge.chat_runtime import ChatTool, ProviderRequest
 from grove_bridge.slack import (
     ChatRouteConfig,
@@ -13,6 +14,7 @@ from grove_bridge.slack import (
     SlackCommandConfig,
     SlackCommandMember,
     SlackConnector,
+    SlackEvent,
 )
 from grove_bridge.store import SQLiteBoardStore
 
@@ -362,3 +364,67 @@ def test_flag_on_passes_get_project_tasks_tool_to_adapter(tmp_path: Path) -> Non
     conn.poll_node_chat_queue()
 
     assert "get_project_tasks" in seen
+
+
+def test_registered_typed_action_applies_on_confirm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The generalized path: a typed action bound to a one-shot confirmation applies
+    # ONLY on the human confirm, via the pure dispatcher (no LLM at apply).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    t = store.create_task(board="dev10", title="x", body=None, assignee=None, status="staged")
+    slack, facade = _FakeSlack(), _FakeFacade()
+    command_config = SlackCommandConfig(
+        board="dev10", members={"U": SlackCommandMember("lead", "lead", "operator")}
+    )
+    conn = _connector(store, slack, facade, command_config=command_config)
+    assert conn.confirmations is not None
+    event = SlackEvent(
+        team="T", channel="C1", user="U", text="", ts="1.1", thread_ts="th", event_type="message"
+    )
+    pending = conn.confirmations.register_action(
+        action=ChatConfirmAction(
+            kind="transition",
+            board="dev10",
+            target_task_id=t.id,
+            fields={"to_status": "ready", "from_status": "staged"},
+        ),
+        event=event,
+        actor=command_config.members["U"],
+    )
+    # Before confirm: nothing applied (confirm-before-mutate).
+    assert store.get_task(board="dev10", task_id=t.id).status == "staged"
+
+    handled = conn.handle_interaction(
+        {
+            "type": "block_actions",
+            "team": {"id": "T"},
+            "channel": {"id": "C1"},
+            "user": {"id": "U"},
+            "message": {"ts": "1.2", "thread_ts": "th"},
+            "actions": [
+                {
+                    "action_id": slack_module.INTAKE_CONFIRM_ACTION_ID,
+                    "value": pending.confirmation_id,
+                }
+            ],
+        }
+    )
+    assert handled is True
+    assert store.get_task(board="dev10", task_id=t.id).status == "ready"
+
+
+def test_chat_bridge_tools_are_read_only_no_write_verbs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Writes are NEVER exposed as LLM tools — only read-only queries.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    slack, facade = _FakeSlack(), _FakeFacade()
+    conn = _connector(store, slack, facade)
+    tool_names = [tool.name for tool in conn._chat_bridge_tools()]
+    assert tool_names == ["get_project_tasks"]
+    write_verbs = ("create", "update", "delete", "dispatch", "transition", "comment", "assign")
+    assert not any(verb in name for name in tool_names for verb in write_verbs)
