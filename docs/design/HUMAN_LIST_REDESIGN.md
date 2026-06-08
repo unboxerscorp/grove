@@ -1,9 +1,9 @@
 # Human-facing List Redesign — Candidate Review
 
-> **STATUS — Slack-bot permission slice IMPLEMENTED (2026-06-08, flag-gated):** typed confirm-action dispatcher + Slack wiring + chat-create→`staged` dark flag (default OFF, live-unchanged) — see `SLACK_BOT_LIST_PERMISSION_MODEL.md` STATUS. Backend `staged`/`/dispatch` is task-worker's (`9eeeca8`). Deployment bundled later.
+> **STATUS — revised 2026-06-08:** the V2 Slack-bot permission slice was retired. Slack/web chat now routes node-direct to `chat-master`; chat-created tasks are `staged` by default from the node path. Backend `staged`/`/dispatch` remains task-worker's (`9eeeca8`).
 
 Integrates three node perspectives for the operator's request: list UI/flow + Slack-bot
-list permissions. Refs: `docs/design/SLACK_BOT_LIST_PERMISSION_MODEL.md` (chat-worker).
+list permissions. Current chat semantics live in `docs/design/CHAT_MASTER_PERSONA.md`.
 
 ## Problem (operator)
 
@@ -12,7 +12,7 @@ list permissions. Refs: `docs/design/SLACK_BOT_LIST_PERMISSION_MODEL.md` (chat-w
 2. Concurrent work confuses orch/lead. Items should **stack first**; only when a human
    adds an optional comment and presses **실행/제출** does the item go to the node/lead,
    **one at a time**. Applies to feedback/TODO and needs-human-judgment.
-3. The Slack bot should manage this list, but the chat runtime lacks board write access.
+3. The Slack bot should route list-management requests through `chat-master`; chat-created items stack as `staged` unless explicitly dispatched.
 
 ## Recommended candidate — A (converged across all three perspectives)
 

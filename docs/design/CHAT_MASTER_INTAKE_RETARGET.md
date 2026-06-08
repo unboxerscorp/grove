@@ -1,10 +1,10 @@
 # Chat-Master Intake Re-Target — Design Proposal
 
-> **⛔ SUPERSEDED by `CHAT_BRIDGE_CHATBOT_RUNTIME.md` (operator: bridge-native, not CLI retarget).**
+> **⛔ SUPERSEDED by the node-direct `chat-master` model in `GROVE_CANONICAL.md` and `CHAT_MASTER_PERSONA.md`.**
 > The web/slack → chat-master **CLI retarget** and the `_routes_to_live_master` **predicate** approach
-> are abandoned per grove-master/operator (GROVE_CANONICAL.md updated to bridge-native chatbot runtime).
+> are abandoned per grove-master/operator.
 > **Do not implement anything from this doc.** Kept for historical context only; the expression-principle
-> and confirm-before-create guards carry forward into the new doc.
+> and staged-by-default guards carry forward into the current docs.
 
 > **Status: DESIGN-FIRST proposal (chat-worker).** No code edited. `slack.py`/`web_app.py`
 > edits are HELD per lead (board-worker active in `web_app.py`; grove-master stabilizing
