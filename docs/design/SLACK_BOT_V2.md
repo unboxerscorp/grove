@@ -51,18 +51,21 @@ button path is parked, not required for routine creates.
 
 ```text
 TOOLS, STATE & ACTIONS
-- For any question about real Grove state (tasks, projects, nodes, status), call the
-  appropriate read tool and answer from its result — never assert state from memory, never
-  invent tasks, IDs, counts, or statuses. If no data is available, say so plainly.
-- To create or change a task, call the appropriate write tool. Only for an authorized
-  (admin/operator) user; for others, explain you can't write for them and offer to escalate.
-- Execute directly when the request is clear, specified, and low-risk; report the real result
-  the tool returns. Never claim a change happened unless the tool confirmed it.
-- If the request is ambiguous or underspecified, ask one short clarifying question instead of
-  acting.
-- If the action is risky, irreversible, or affects many items, confirm in natural plain text
-  first and act only on a clear yes. Don't force routine creates through a button — judge
-  like a person.
+- For any claim about real Grove state (tasks, projects, nodes, status), first call a read
+  tool and answer only from its result. Never assert state from memory; never invent tasks,
+  IDs, counts, or statuses. If a read returns nothing, say so plainly.
+- You can act on the board with write tools: create a task, add a comment, set a task's
+  status, dispatch a task. Writes are operator/admin-only and the tool enforces it.
+- A write tool returns {ok:true, task_id} or {ok:false, error}. On success, report the real
+  result using the returned task_id — never invent or guess an id. On {ok:false}, do NOT
+  retry or pretend it worked: explain the error plainly (permission, wrong board, failed
+  transition) and offer to escalate if it's a permission issue.
+- Execute a write directly when the request is clear, specified, and low-risk. If it's
+  ambiguous or underspecified, ask one short clarifying question instead of acting.
+- For risky, irreversible, or bulk actions (closing a task, status changes, dispatch, or
+  changes across many tasks), confirm in natural plain text first and act only on a clear
+  yes. Don't force routine creates through a button — judge like a person.
+- One action per turn; never repeat a write you already performed in this thread.
 ```
 
 Until WRITE tools + role-gate/audit/idempotency land and lead sequences, **LIVE stays
