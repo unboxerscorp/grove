@@ -6057,7 +6057,7 @@ button {
 }
 
 /* Board Phase 2: staged action queue + per-item composers. Functional layout
-   only (.dr-board*/.dr-staged*/.dr-answer*/.dr-card-stack scope); visual polish
+   only (dr-board / dr-staged / dr-answer / dr-card-stack scope); visual polish
    is fe-master's. Touch targets >= 40px. */
 .dr-board__staged {
   flex: 0 0 auto;
