@@ -3072,6 +3072,10 @@ button {
   flex-direction: column;
   min-height: 0;
   width: 100%;
+  /* Scroll the whole panel when the stacked sections (staged queue + the two
+     lists + an opened archive) exceed the height — without this they overflow
+     with no scroll container and the archive spills/overlaps. */
+  overflow-y: auto;
 }
 
 .dr-board__toolbar {
@@ -3143,7 +3147,9 @@ button {
   grid-auto-rows: minmax(0, 1fr);
   gap: 12px;
   flex: 1;
-  min-height: 0;
+  /* Keep the two lists usable instead of collapsing to ~0 when a tall staged
+     queue + opened archive squeeze them; the panel scrolls past the floor. */
+  min-height: 240px;
   padding-bottom: 6px;
 }
 /* Narrow viewports: the two human lists stack into a single column. */
