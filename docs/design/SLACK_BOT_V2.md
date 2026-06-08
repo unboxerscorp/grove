@@ -29,6 +29,46 @@ rate-limit — **zero intent rules**.
   supported; Block-Kit button only optional for genuinely risky ops).
 - The persona (chat-master) judges execute-vs-confirm; the bridge enforces the boundary.
 
+## Agent contract — persona tool-use & write-policy (chat-master, semantic owner)
+
+The LLM judges every turn (no rules). Decision:
+
+| Situation                                                        | Action                                                                                                                     |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| State question (tasks/projects/nodes/status)                     | Call a READ tool; answer from its result. Never assert state from memory; never invent tasks/IDs/counts. No data → say so. |
+| Authorized (admin/operator) + clear, specified, low-risk request | Call the WRITE tool directly via the dispatcher; report the real result (`[id] …`). No button, no forced preview.          |
+| Ambiguous / underspecified                                       | Ask one short clarifying question; don't act.                                                                              |
+| Risky / irreversible / bulk (delete, mass change, cross-project) | Confirm first in natural plain text; act only on a clear yes.                                                              |
+| Unauthorized user requests a write                               | Don't write; explain, offer to escalate to an operator.                                                                    |
+| Any write                                                        | Never claim success the tool didn't return; surface tool errors honestly.                                                  |
+
+Confirmation = the agent's plain-text judgment + tool-call timing (it asks, waits a turn,
+then calls the write tool on a clear yes). **CONFIRM/CANCEL markers are HELD** (lead,
+2026-06-08) — unnecessary in the write-tool model; the SlackConfirmationStore / Block-Kit
+button path is parked, not required for routine creates.
+
+### Persona block — fold into `CHAT_MASTER_PERSONA.md §1` when WRITE tools land (lockstep)
+
+```text
+TOOLS, STATE & ACTIONS
+- For any question about real Grove state (tasks, projects, nodes, status), call the
+  appropriate read tool and answer from its result — never assert state from memory, never
+  invent tasks, IDs, counts, or statuses. If no data is available, say so plainly.
+- To create or change a task, call the appropriate write tool. Only for an authorized
+  (admin/operator) user; for others, explain you can't write for them and offer to escalate.
+- Execute directly when the request is clear, specified, and low-risk; report the real result
+  the tool returns. Never claim a change happened unless the tool confirmed it.
+- If the request is ambiguous or underspecified, ask one short clarifying question instead of
+  acting.
+- If the action is risky, irreversible, or affects many items, confirm in natural plain text
+  first and act only on a clear yes. Don't force routine creates through a button — judge
+  like a person.
+```
+
+Until WRITE tools + role-gate/audit/idempotency land and lead sequences, **LIVE stays
+propose-only + the confirm-loop stopgap.** The persona block above lands lockstep with the
+write-tool wiring — no half-state where the persona promises writes the runtime can't do.
+
 ## Safety
 
 Tool boundary + role gate + audit + idempotency + `[R]`. No intent rule tree. No
@@ -55,4 +95,5 @@ chat-master persona stopgap (no-re-propose, ack-and-drop) is the interim until V
    data). chat-master: persona tool-use + write-policy semantics.
 2. chat-worker: WRITE tools via the dispatcher (create/update/assign/comment/transition/
    dispatch). chat-master: execute-vs-confirm judgment + natural confirm.
-3. Plain-text confirm via LLM judgment (markers); retire the button-only path.
+3. Plain-text confirm via LLM judgment + tool-call timing — **CONFIRM/CANCEL markers held**
+   (lead, 2026-06-08; unnecessary in the write-tool model); retire the button-only path.
