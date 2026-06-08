@@ -161,7 +161,14 @@ def test_flag_on_unconfirmable_proposal_degrades_to_plain_and_completes(
     assert due == []
 
 
-def test_flag_on_missing_provider_defers_without_cli_fallback(tmp_path: Path) -> None:
+def test_flag_on_missing_provider_defers_without_cli_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Hermetic: the connector resolves the provider config via ~/.grove. Point HOME at a
+    # tmp dir (no chat-provider.json) so "missing provider" is genuinely missing — the test
+    # never reads the operator's real config nor calls a live provider. (Same isolation
+    # pattern as test_runtime_flag_and_provider_refresh_without_slack_restart.)
+    monkeypatch.setenv("HOME", str(tmp_path))
     store = SQLiteBoardStore(tmp_path / "b.db")
     store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
     slack, facade = _FakeSlack(), _FakeFacade()
@@ -242,8 +249,12 @@ class _ProposalAdapter:
 
 
 def test_flag_on_runtime_task_proposal_uses_confirm_without_intake_flag(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Hermetic: avoid reading the operator's real ~/.grove provider config (which would
+    # build a live adapter and call the real provider — ~6s/run). The injected
+    # _ProposalAdapter is what should drive this turn.
+    monkeypatch.setenv("HOME", str(tmp_path))
     store = SQLiteBoardStore(tmp_path / "b.db")
     store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
     store.set_gui_feature_enabled(board="dev10", feature="intake", enabled=False)
