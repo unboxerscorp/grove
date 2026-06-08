@@ -44,11 +44,13 @@ list permissions. No code yet. Refs: `docs/design/SLACK_BOT_LIST_PERMISSION_MODE
 
 Both are human-gated; the `staged` state cleanly separates "filed" from "delivered."
 
-## ask-human asymmetry
+## ask-human placement (Decision 2 = board inline)
 
-ask-human asks a human; the answer flows back to the node, so its gate is the existing
-`/api/tasks/{id}/answer` (InboxDrawer). The staged→dispatch gate is therefore mainly for
-feedback/TODO. → **Decision 2** below.
+ask-human asks a human; the answer flows back to the node via `/api/tasks/{id}/answer`.
+**Operator decision: move ask-human answer/submit INLINE onto the board** (replace the
+separate InboxDrawer answer flow). The board card hosts the answer composer + submit;
+the InboxDrawer answer action is superseded to avoid a duplicate action — reconcile the
+two so there is one answer surface.
 
 ## Alternatives (not recommended)
 
@@ -59,12 +61,13 @@ feedback/TODO. → **Decision 2** below.
   the existing `SlackConfirmationStore`; only worth it if a non-Slack redeem surface is
   needed. Fold into A otherwise (chat-worker).
 
-## Decisions needed before implementation
+## Decisions — RESOLVED (operator)
 
-1. **chat-created items**: enter `staged` (need an explicit dispatch) OR skip staged
-   (treat the chat confirm-create as the delivery gate)?
-2. **ask-human on the board**: keep the InboxDrawer `/answer` flow (parallel —
-   recommended, avoids a duplicate answer action) OR replace it with the board inline?
+1. **chat-created items → `staged`.** Chat/intake-created items also land in `staged` and
+   need an explicit dispatch (consistent gate for every item; create ≠ deliver). The chat
+   confirm-create + dispatch is an accepted two-step.
+2. **ask-human → board inline.** Move the ask-human answer/submit inline onto the board
+   and supersede the InboxDrawer answer action (one answer surface; reconcile the two).
 
 ## Minimal implementation order
 
