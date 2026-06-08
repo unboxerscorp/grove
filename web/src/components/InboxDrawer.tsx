@@ -8,8 +8,9 @@ import { useFocusTrap } from "../useFocusTrap";
 
 /**
  * Decision inbox drawer. Consumes GET /api/inbox (project-scoped via the shared
- * client headers) and lists blocked / ask-human tasks awaiting a human, each
- * with an answer box that POSTs to the item's answer.endpoint
+ * client headers) and lists BLOCKED-task decisions awaiting a human (ask-human is
+ * now answered inline on the board — single answer surface), each with an answer
+ * box that POSTs to the item's answer.endpoint
  * (/api/tasks/{id}/answer → comment + unblock). On success the item is removed
  * (refetch) and `onAnswered` bumps liveTick so the board + audit refresh.
  * A team viewer's POST is rejected (403); the drawer then surfaces a safe
@@ -36,7 +37,10 @@ export function InboxDrawer(props: { open: boolean; projectTick: number; onAnswe
     api
       .getInbox()
       .then((page) => {
-        setItems(Array.isArray(page.items) ? page.items : []);
+        const all = Array.isArray(page.items) ? page.items : [];
+        // ask-human is now answered inline on the board (single answer surface);
+        // the inbox keeps only blocked-task decisions.
+        setItems(all.filter((it) => !(it.type === "ask_human" || it.needs_human)));
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : t("inbox.loadError")))
       .finally(() => setLoading(false));

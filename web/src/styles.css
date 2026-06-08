@@ -6048,3 +6048,69 @@ button {
   .dr-termgrid__modal-item { padding: 12px 12px; }
   .dr-termgrid__modal-foot .dr-btn { padding: 11px 18px; }
 }
+
+/* Board Phase 2: staged action queue + per-item composers. Functional layout
+   only (.dr-board*/.dr-staged*/.dr-answer*/.dr-card-stack scope); visual polish
+   is fe-master's. Touch targets >= 40px. */
+.dr-board__staged {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: rgba(15, 18, 25, 0.5);
+}
+.dr-staged-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dr-staged-head__name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+}
+.dr-staged-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+.dr-card-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dr-staged__composer,
+.dr-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dr-staged__comment,
+.dr-answer__input {
+  width: 100%;
+  min-height: 44px;
+  resize: vertical;
+}
+.dr-staged__actions,
+.dr-answer__actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.dr-staged__open,
+.dr-answer__open,
+.dr-staged__submit,
+.dr-answer__submit,
+.dr-staged__actions .dr-btn,
+.dr-answer__actions .dr-btn {
+  min-height: 40px;
+}
+.dr-staged__err,
+.dr-answer__err {
+  font-size: 11px;
+  color: var(--coral, #ff6b6b);
+}

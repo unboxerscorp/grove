@@ -36,10 +36,15 @@ export const HUMAN_LIST_COLUMNS = [
 export const ARCHIVE_STATUSES = new Set<string>(["done", "archived"]);
 
 /** Operator-list bucket for a task, given its ALREADY-canonical status and
- *  needs_human flag. Archive (done/archived) wins first so a completed task never
- *  lingers in the human-decision list; then ask_human; everything else is todo. */
-export function boardBucket(canonStatus: string, needsHuman: boolean): "todo" | "ask_human" | "archive" {
+ *  needs_human flag. Order: archive (done/archived) first so a completed task
+ *  never lingers elsewhere; then `staged` (new items awaiting operator dispatch —
+ *  the top action queue); then ask_human; everything else is todo. */
+export function boardBucket(
+  canonStatus: string,
+  needsHuman: boolean,
+): "staged" | "todo" | "ask_human" | "archive" {
   if (ARCHIVE_STATUSES.has(canonStatus)) return "archive";
+  if (canonStatus === "staged") return "staged";
   if (needsHuman || canonStatus === "ask_human") return "ask_human";
   return "todo";
 }

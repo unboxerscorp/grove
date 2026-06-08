@@ -14,7 +14,10 @@ function shortId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 10)}…` : id;
 }
 
-function boardListKey(task: Task, workflow: BoardWorkflow | null): "todo" | "ask_human" | "archive" {
+function boardListKey(
+  task: Task,
+  workflow: BoardWorkflow | null,
+): "staged" | "todo" | "ask_human" | "archive" {
   return boardBucket(canonicalStatus(task.status, workflow), Boolean(task.needs_human));
 }
 
@@ -278,6 +281,158 @@ function TaskCard(props: {
   );
 }
 
+// Dispatch/answer targets are executor-eligible nodes only (lead + worker
+// groups); the backend rejects others — mirror that so the picker never offers a
+// node the dispatch would 400 on.
+const EXECUTOR_GROUPS = new Set(["lead", "workers"]);
+
+/** Staged item: a stacked, not-yet-dispatched task. The operator executes/submits
+ *  it ONE at a time — optional comment + executor-eligible assignee → POST
+ *  /dispatch (staged -> ready). The composer is collapsed until opened; there is
+ *  no bulk submit (anti-spam). */
+function StagedCard(props: {
+  task: Task;
+  executorNodes: string[];
+  isViewer: boolean;
+  index: number;
+  onOpenTask: (id: string) => void;
+  onDispatch: (id: string, comment: string, assignee: string) => Promise<unknown>;
+}) {
+  const { task, executorNodes, isViewer, index, onOpenTask, onDispatch } = props;
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [comment, setComment] = useState("");
+  const [assignee, setAssignee] = useState(task.assignee ?? "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const submit = () => {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
+    // On success the parent refetches → the card leaves the staged queue (unmounts).
+    onDispatch(task.id, comment.trim(), assignee).catch((e: unknown) => {
+      setBusy(false);
+      setErr(e instanceof Error ? e.message : t("staged.error"));
+    });
+  };
+  return (
+    <div className="dr-card dr-staged" data-task={task.id} style={{ animationDelay: `${Math.min(index, 10) * 22}ms` }}>
+      <button type="button" className="dr-card__open" onClick={() => onOpenTask(task.id)}>
+        <span className="dr-card__title">{task.title?.trim() || shortId(task.id)}</span>
+      </button>
+      <span className="dr-card__meta">
+        <span className="dr-card__id" title={task.id}>
+          {shortId(task.id)}
+        </span>
+        {task.assignee && (
+          <span className="dr-card__who" title={task.assignee}>
+            {initials(task.assignee)}
+          </span>
+        )}
+      </span>
+      {!isViewer &&
+        (open ? (
+          <div className="dr-staged__composer">
+            <textarea
+              className="dr-input dr-staged__comment"
+              rows={2}
+              placeholder={t("staged.commentPh")}
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+            />
+            <select
+              className="dr-select dr-staged__assignee"
+              value={assignee}
+              aria-label={t("staged.assignee")}
+              onChange={(e) => setAssignee(e.target.value)}
+            >
+              <option value="">{t("staged.assigneeNone")}</option>
+              {assignee && !executorNodes.includes(assignee) && <option value={assignee}>{assignee}</option>}
+              {executorNodes.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+            <div className="dr-staged__actions">
+              <button type="button" className="dr-btn dr-btn--ghost" onClick={() => setOpen(false)}>
+                {t("staged.cancel")}
+              </button>
+              <button
+                type="button"
+                className="dr-btn dr-btn--primary dr-staged__submit"
+                disabled={busy}
+                onClick={submit}
+              >
+                {busy ? t("staged.dispatching") : t("staged.submit")}
+              </button>
+            </div>
+            {err && <div className="dr-staged__err">{err}</div>}
+          </div>
+        ) : (
+          <button type="button" className="dr-btn dr-btn--primary dr-staged__open" onClick={() => setOpen(true)}>
+            {t("staged.open")}
+          </button>
+        ))}
+      {task.latest_summary && <span className="dr-card__sum">{task.latest_summary}</span>}
+    </div>
+  );
+}
+
+/** Inline ask-human answer composer (the board IS the answer surface; the inbox no
+ *  longer answers ask-human). Collapsed until opened; submit POSTs the answer and
+ *  unblocks the item (parent refetch drops it from the list). */
+function AnswerComposer(props: { taskId: string; onAnswer: (id: string, text: string) => Promise<unknown> }) {
+  const { taskId, onAnswer } = props;
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const submit = () => {
+    const v = text.trim();
+    if (!v || busy) return;
+    setBusy(true);
+    setErr(null);
+    onAnswer(taskId, v).catch((e: unknown) => {
+      setBusy(false);
+      setErr(e instanceof Error ? e.message : t("answer.error"));
+    });
+  };
+  if (!open) {
+    return (
+      <button type="button" className="dr-btn dr-btn--primary dr-answer__open" onClick={() => setOpen(true)}>
+        {t("answer.open")}
+      </button>
+    );
+  }
+  return (
+    <div className="dr-answer">
+      <textarea
+        className="dr-input dr-answer__input"
+        rows={2}
+        placeholder={t("answer.placeholder")}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+      <div className="dr-answer__actions">
+        <button type="button" className="dr-btn dr-btn--ghost" onClick={() => setOpen(false)}>
+          {t("answer.cancel")}
+        </button>
+        <button
+          type="button"
+          className="dr-btn dr-btn--primary dr-answer__submit"
+          disabled={busy || !text.trim()}
+          onClick={submit}
+        >
+          {busy ? t("answer.submitting") : t("answer.submit")}
+        </button>
+      </div>
+      {err && <div className="dr-answer__err">{err}</div>}
+    </div>
+  );
+}
+
 export function BoardView(props: {
   boardId: string;
   nodes: GroveNode[];
@@ -379,12 +534,32 @@ export function BoardView(props: {
   // separated archive (done/archived) so completed work never clutters the lists.
   // Internal task status still exists for compatibility but does not drive columns.
   const buckets = useMemo(() => {
-    const map: { todo: Task[]; ask_human: Task[]; archive: Task[] } = { todo: [], ask_human: [], archive: [] };
+    const map: { staged: Task[]; todo: Task[]; ask_human: Task[]; archive: Task[] } = {
+      staged: [],
+      todo: [],
+      ask_human: [],
+      archive: [],
+    };
     for (const task of visibleTasks) map[boardListKey(task, workflow)].push(task);
     map.archive.sort((a, b) => updatedMs(b) - updatedMs(a)); // most recently completed first
     return map;
   }, [visibleTasks, workflow]);
   const activeCount = buckets.todo.length + buckets.ask_human.length;
+  // Executor-eligible nodes for the staged dispatch assignee picker (lead/workers).
+  const executorNodes = useMemo(
+    () => nodes.filter((n) => EXECUTOR_GROUPS.has(n.group ?? "")).map((n) => n.name),
+    [nodes],
+  );
+
+  const dispatchStaged = (id: string, comment: string, assignee: string) =>
+    api
+      .dispatchTask(id, { comment: comment || undefined, assignee: assignee || undefined })
+      .then(() => setReloadKey((k) => k + 1)); // staged -> ready: card leaves the queue
+
+  const answerAskHuman = (id: string, text: string) =>
+    api
+      .answerTask(`/api/tasks/${encodeURIComponent(id)}/answer`, text)
+      .then(() => setReloadKey((k) => k + 1)); // answered: card leaves the ask-human list
 
   const transition = (taskId: string, toStatus: string) => {
     setError(null);
@@ -448,6 +623,30 @@ export function BoardView(props: {
 
       {error && <div className="dr-board__msg is-error">{error}</div>}
 
+      {/* Staged action queue (top, full-width): new items the operator triages +
+          dispatches one at a time. Hidden when empty. */}
+      {buckets.staged.length > 0 && (
+        <div className="dr-board__staged" data-col="staged">
+          <div className="dr-staged-head">
+            <span className="dr-staged-head__name">{t("staged.title")}</span>
+            <span className="dr-col__n">{buckets.staged.length}</span>
+          </div>
+          <div className="dr-staged-grid">
+            {buckets.staged.map((task, i) => (
+              <StagedCard
+                key={task.id}
+                task={task}
+                executorNodes={executorNodes}
+                isViewer={isViewer}
+                index={i}
+                onOpenTask={onOpenTask}
+                onDispatch={dispatchStaged}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="dr-board__cols">
         {HUMAN_LIST_COLUMNS.map((col) => {
           const items = buckets[col.key] ?? [];
@@ -479,18 +678,35 @@ export function BoardView(props: {
                 )}
               </div>
               <div className="dr-col__cards">
-                {items.map((task, i) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    canon={canonicalStatus(task.status, workflow)}
-                    manualStatuses={manualStatuses}
-                    isViewer={isViewer}
-                    index={i}
-                    onOpenTask={onOpenTask}
-                    onTransition={transition}
-                  />
-                ))}
+                {items.map((task, i) =>
+                  col.key === "ask_human" ? (
+                    // ask-human: card + the inline answer composer (the board IS the
+                    // answer surface; the inbox no longer answers ask-human).
+                    <div key={task.id} className="dr-card-stack">
+                      <TaskCard
+                        task={task}
+                        canon={canonicalStatus(task.status, workflow)}
+                        manualStatuses={manualStatuses}
+                        isViewer={isViewer}
+                        index={i}
+                        onOpenTask={onOpenTask}
+                        onTransition={transition}
+                      />
+                      {!isViewer && <AnswerComposer taskId={task.id} onAnswer={answerAskHuman} />}
+                    </div>
+                  ) : (
+                    <TaskCard
+                      key={task.id}
+                      task={task}
+                      canon={canonicalStatus(task.status, workflow)}
+                      manualStatuses={manualStatuses}
+                      isViewer={isViewer}
+                      index={i}
+                      onOpenTask={onOpenTask}
+                      onTransition={transition}
+                    />
+                  ),
+                )}
                 {!loading && items.length === 0 && <div className="dr-col__empty">{t("board.empty")}</div>}
               </div>
             </div>

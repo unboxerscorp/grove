@@ -158,14 +158,17 @@ export function App() {
     };
   }, [projectTick, liveTick, view]);
 
-  // Keep the decision count fresh for hidden compatibility hooks and future
-  // badges without reintroducing the decision drawer into the default nav.
+  // Inbox badge = BLOCKED-task decisions only. ask-human is answered inline on the
+  // board now, so it's excluded here to keep the badge matching the (blocked-only)
+  // inbox drawer — one answer surface.
   useEffect(() => {
     let alive = true;
     api
-      .getInbox({ limit: 1 })
+      .getInbox()
       .then((p) => {
-        if (alive) setInboxCount(typeof p.total === "number" ? p.total : (p.items?.length ?? 0));
+        if (!alive) return;
+        const blocked = (p.items ?? []).filter((it) => !(it.type === "ask_human" || it.needs_human));
+        setInboxCount(blocked.length);
       })
       .catch(() => {
         if (alive) setInboxCount(0);

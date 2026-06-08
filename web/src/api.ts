@@ -1097,6 +1097,23 @@ export const api = {
     return (await res.json()) as Task;
   },
 
+  // Operator "execute/submit" for a staged item: optionally set the assignee +
+  // record a comment, then dispatch (staged -> ready). Operator-gated; 409 if the
+  // task is no longer staged (already dispatched — idempotent guard).
+  async dispatchTask(taskId: string, body: { assignee?: string | null; comment?: string }): Promise<Task> {
+    const payload: Record<string, unknown> = {};
+    if (body.assignee != null && body.assignee !== "") payload.assignee = body.assignee;
+    if (body.comment != null && body.comment !== "") payload.comment = body.comment;
+    const res = await fetch(`/api/tasks/${enc(taskId)}/dispatch`, {
+      method: "POST",
+      headers: headers({ "Content-Type": "application/json" }),
+      credentials: "same-origin",
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`task dispatch: HTTP ${res.status}`);
+    return (await res.json()) as Task;
+  },
+
   async patchTask(
     taskId: string,
     fields: { title?: string; body?: string | null },
