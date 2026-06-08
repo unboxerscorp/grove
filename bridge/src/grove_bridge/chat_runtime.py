@@ -37,6 +37,11 @@ from grove_bridge.assistant import (
     AssistantTransportError,
 )
 from grove_bridge.auth_status import redact_secret_text
+from grove_bridge.chat_actions import (
+    ChatActionDenied,
+    ChatConfirmAction,
+    apply_chat_confirm_action,
+)
 from grove_bridge.store import SQLiteBoardStore
 
 # GUI feature flag name (default OFF). Distinct from the ``intake`` flag, which
@@ -541,6 +546,102 @@ def build_get_project_tasks_tool(store: SQLiteBoardStore, *, default_board: str)
         },
         handler=handler,
     )
+
+
+# --------------------------------------------------------------------------- #
+# V2: role-gated WRITE tools (LLM-first agent) — routed through the dispatcher
+# --------------------------------------------------------------------------- #
+# Each write tool maps the model's function-call args -> a ChatConfirmAction and
+# applies it via apply_chat_confirm_action: the tool boundary enforcing the six
+# guards (role-gate operator/admin, board-ownership IDOR, scope, CAS, audit, [R]),
+# and accepting ONLY the action schema (no unvalidated text reaches the DB). A
+# denial is returned as a tool RESULT (so the LLM can tell the user) — never raised
+# (which would break the function-calling loop). Per the operator/lead V2 decision:
+# an explicit operator request authorizes execution; ambiguous/risky ops are handled
+# by the chat-master persona via the PROPOSAL + CONFIRM/CANCEL path, not here.
+_WRITE_TOOL_SPECS: tuple[tuple[str, str, dict[str, object]], ...] = (
+    (
+        "create",
+        "create_task",
+        {
+            "title": {"type": "string", "description": "Short task title (required)."},
+            "body": {"type": "string", "description": "Task details."},
+            "assignee": {"type": "string", "description": "Optional executor node."},
+            "status": {"type": "string", "description": "Optional initial status."},
+        },
+    ),
+    (
+        "comment",
+        "add_task_comment",
+        {
+            "task_id": {"type": "string", "description": "Target task id (required)."},
+            "comment": {"type": "string", "description": "Comment body."},
+        },
+    ),
+    (
+        "transition",
+        "set_task_status",
+        {
+            "task_id": {"type": "string", "description": "Target task id (required)."},
+            "to_status": {"type": "string", "description": "New status."},
+            "from_status": {"type": "string", "description": "Expected current status (CAS)."},
+        },
+    ),
+    (
+        "dispatch",
+        "dispatch_task",
+        {
+            "task_id": {"type": "string", "description": "Staged task id (required)."},
+            "assignee": {"type": "string", "description": "Executor node to assign."},
+            "comment": {"type": "string", "description": "Optional dispatch note."},
+        },
+    ),
+)
+
+
+def build_chat_write_tools(
+    store: SQLiteBoardStore,
+    *,
+    board: str,
+    actor: Mapping[str, object],
+) -> list[ChatTool]:
+    """Role-gated write tools for the V2 LLM-first agent (operator/admin only —
+    enforced in the dispatcher). The LLM calls these on an explicit operator
+    request; the dispatcher applies the stored action schema with the six guards."""
+
+    def _make_handler(kind: str) -> Callable[[Mapping[str, object]], Mapping[str, object]]:
+        def handler(args: Mapping[str, object]) -> Mapping[str, object]:
+            target = args.get("task_id")
+            target_id = target.strip() if isinstance(target, str) and target.strip() else None
+            try:
+                result = apply_chat_confirm_action(
+                    store,
+                    ChatConfirmAction(
+                        kind=kind,  # type: ignore[arg-type]
+                        board=board,
+                        target_task_id=target_id,
+                        fields=args,
+                    ),
+                    actor=actor,
+                )
+            except ChatActionDenied as exc:
+                return {"ok": False, "error": str(exc)}
+            return {"ok": True, **result}
+
+        return handler
+
+    return [
+        ChatTool(
+            name=name,
+            description=(
+                f"Write tool ({kind}). Use ONLY for an explicit operator request. "
+                "Operator/admin only; denials are returned as a result."
+            ),
+            parameters={"type": "object", "properties": props},
+            handler=_make_handler(kind),
+        )
+        for kind, name, props in _WRITE_TOOL_SPECS
+    ]
 
 
 # --------------------------------------------------------------------------- #

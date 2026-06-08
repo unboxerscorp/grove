@@ -152,3 +152,25 @@ def test_target_action_denied_across_boards(tmp_path: Path) -> None:
         apply_chat_confirm_action(store, action, actor=_actor())
     # Defense-in-depth: nothing was applied — the cross-board comment never lands.
     assert store.list_comments_for_task(task_id=t.id) == []
+
+
+# --- V2: role-gated write tools (LLM-first agent, via the dispatcher) -------- #
+def test_write_tools_execute_via_dispatcher_and_return_denial_as_result(tmp_path: Path) -> None:
+    from grove_bridge.chat_runtime import build_chat_write_tools
+
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    tools = build_chat_write_tools(store, board="dev10", actor=_actor())
+    names = {t.name for t in tools}
+    assert {"create_task", "add_task_comment", "set_task_status", "dispatch_task"} <= names
+
+    create = next(t for t in tools if t.name == "create_task")
+    result = create.handler({"title": "ship export", "body": "do it"})
+    assert result["ok"] is True
+    task = store.get_task(board="dev10", task_id=str(result["task_id"]))
+    assert task.title == "ship export"
+
+    # Non-operator -> denial returned as a tool RESULT (not raised; LLM tells user).
+    viewer_tools = build_chat_write_tools(store, board="dev10", actor=_actor(role="viewer"))
+    vcreate = next(t for t in viewer_tools if t.name == "create_task")
+    denied = vcreate.handler({"title": "x"})
+    assert denied["ok"] is False and "error" in denied
