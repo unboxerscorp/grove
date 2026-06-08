@@ -93,6 +93,33 @@ function displayNameForProjectNode(name: string, project: string, homeProject: s
   return project === homeProject ? name : namespacedProjectNodeName(name, project);
 }
 
+// Org-level / control plane: master & services groups, plus the advisor. Like
+// grove-master, these sit ABOVE every project — rendered org-level (no project /
+// session), directly under grove-master — so a project view never drops them and
+// the session name is never inferred as their project. Mirrors the context-pack
+// isInfraNode set and the web org payload's org-level rule.
+const ORG_LEVEL_GROUPS = new Set(["master", "services"]);
+
+function isOrgLevelNode(name: string, group: string | undefined): boolean {
+  return (group ? ORG_LEVEL_GROUPS.has(group) : false) || name === "advisor";
+}
+
+/** Control-plane nodes (master/services groups + advisor) collected once across
+ *  registries, rendered org-level: no project, parent = grove-master, bare name. */
+function orgLevelPlaneNodes(registries: Map<string, Registry>): OrgNode[] {
+  const seen = new Map<string, OrgNode>();
+  for (const registry of registries.values()) {
+    for (const name of Object.keys(registry.nodes)) {
+      if (name === GROVE_MASTER_NODE_NAME || seen.has(name)) continue;
+      const runtime = registry.nodes[name]!;
+      if (!isOrgLevelNode(name, runtime.group)) continue;
+      const node = orgNode(name, runtime, undefined, registry.tmuxSession ?? registry.session);
+      seen.set(name, { ...node, parent: GROVE_MASTER_NODE_NAME });
+    }
+  }
+  return [...seen.values()];
+}
+
 function projectNodesFromRegistry(
   project: string,
   registry: Registry,
@@ -102,6 +129,7 @@ function projectNodesFromRegistry(
   const configured = new Map<string, ResolvedNode>();
   const rawNodes = Object.keys(registry.nodes)
     .filter((name) => name !== GROVE_MASTER_NODE_NAME)
+    .filter((name) => !isOrgLevelNode(name, registry.nodes[name]?.group))
     .map((name) =>
       orgNode(
         name,
@@ -198,6 +226,9 @@ export function buildAllProjectOrg(
     [homeProject, ctx.registry],
     ...Object.entries(projectRegistries).filter(([project]) => project !== homeProject),
   ]);
+  // The control plane (master/services + advisor) renders once at org-level,
+  // above all projects — never project-scoped to whichever registry hosts it.
+  nodes.push(...orgLevelPlaneNodes(registries));
   for (const [project, registry] of [...registries.entries()].sort(([a], [b]) =>
     a.localeCompare(b),
   )) {

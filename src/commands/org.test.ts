@@ -340,6 +340,79 @@ describe("org rendering", () => {
     );
   });
 
+  test("renders the master/control plane (master group + advisor) org-level, not project-scoped", () => {
+    const ctx = makeContext({
+      lead: {
+        agent: "claude",
+        children: [],
+        cwd: "/repo/dev10",
+        group: "lead",
+        name: "lead",
+        parent: "grove-master",
+        role: "Dev lead",
+        tmux_pane: "dev10:2.0",
+      },
+      "chat-master": {
+        agent: "claude",
+        children: [],
+        cwd: "/repo/dev10",
+        group: "master",
+        name: "chat-master",
+        parent: "grove-master",
+        role: "chat master",
+        tmux_pane: "dev10:0.1",
+      },
+      "task-master": {
+        agent: "claude",
+        children: [],
+        cwd: "/repo/dev10",
+        group: "master",
+        name: "task-master",
+        parent: "grove-master",
+        role: "task master",
+        tmux_pane: "dev10:0.2",
+      },
+      advisor: {
+        agent: "claude",
+        children: [],
+        cwd: "/repo/dev10",
+        name: "advisor",
+        parent: "grove-master",
+        role: "advisor",
+        tmux_pane: "dev10:0.3",
+      },
+    });
+    const alpha: Registry = {
+      cwd: "/repo/alpha",
+      nodes: {
+        lead: {
+          agent: "claude",
+          children: [],
+          cwd: "/repo/alpha",
+          name: "lead",
+          parent: "",
+          role: "Alpha lead",
+          tmux_pane: "dev10:3.1",
+        },
+      },
+      session: "alpha",
+      updatedAt: "2026-06-08T00:00:00.000Z",
+    };
+
+    const org = buildAllProjectOrg(ctx, { alpha }, null);
+    const nodes = new Map(org.nodes.map((node) => [node.name, node]));
+
+    // Master/control plane is org-level (above every project): bare names, no
+    // session/project, directly under grove-master — never project=dev10.
+    for (const name of ["chat-master", "task-master", "advisor"]) {
+      expect(nodes.get(name), `${name} present`).toBeDefined();
+      expect(nodes.get(name)?.project ?? "").toBe("");
+      expect(nodes.get(name)?.parent).toBe("grove-master");
+    }
+    expect(nodes.has("chat-master@dev10")).toBe(false);
+    expect(nodes.has("advisor@dev10")).toBe(false);
+  });
+
   test("exposes runtime cwd, tmux pane, status, and session id", () => {
     const ctx = makeContext({
       lead: {
