@@ -44,6 +44,7 @@ from grove_bridge.chat_runtime import (
     RedactingProviderAdapter,
     build_chat_write_tools,
     build_get_project_tasks_tool,
+    build_list_projects_tool,
     chat_bridge_runtime_enabled,
     guard_answer_channel,
     load_chat_bridge_persona,
@@ -2651,10 +2652,10 @@ class SlackConnector:
         user is operator/admin: role-gated WRITE tools (the dispatcher re-checks role +
         the six guards). Flag OFF -> read-only (live behavior unchanged)."""
         board = self.human_gate.board
+        directory = self._project_directory()
         tools = [
-            build_get_project_tasks_tool(
-                self.store, default_board=board, directory=self._project_directory()
-            )
+            build_get_project_tasks_tool(self.store, default_board=board, directory=directory),
+            build_list_projects_tool(directory),
         ]
         if self._chat_write_tools_enabled(board):
             actor = self._assistant_member(item.user_id)
@@ -2668,6 +2669,7 @@ class SlackConnector:
                             "name": actor.name,
                             "role": actor.role,
                         },
+                        directory=directory,
                     )
                 )
         return tools

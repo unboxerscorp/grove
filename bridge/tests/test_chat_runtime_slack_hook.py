@@ -446,7 +446,8 @@ def test_chat_bridge_tools_read_only_when_write_flag_off(
     slack, facade = _FakeSlack(), _FakeFacade()
     conn = _connector(store, slack, facade)
     item = _enqueued_item(store)
-    assert [tool.name for tool in conn._chat_bridge_tools(item)] == ["get_project_tasks"]
+    names = [tool.name for tool in conn._chat_bridge_tools(item)]
+    assert names == ["get_project_tasks", "list_projects"]
 
 
 def test_chat_bridge_write_tools_exposed_when_flag_on_and_operator(
@@ -472,7 +473,8 @@ def test_chat_bridge_write_tools_exposed_when_flag_on_and_operator(
 
     # A non-operator Slack user gets NO write tools even with the flag on.
     item_v = _enqueued_item(store, user_id="V", msg_ts="9.2")
-    assert [tool.name for tool in conn._chat_bridge_tools(item_v)] == ["get_project_tasks"]
+    names_v = [tool.name for tool in conn._chat_bridge_tools(item_v)]
+    assert names_v == ["get_project_tasks", "list_projects"]
 
 
 def _confirm_chat_proposal(

@@ -611,20 +611,65 @@ _WRITE_TOOL_SPECS: tuple[tuple[str, str, dict[str, object]], ...] = (
 )
 
 
+def build_list_projects_tool(directory: ProjectDirectory) -> ChatTool:
+    """READ-ONLY tool: list the visible grove projects by display name so the agent
+    can target a specific project on a cross-project request. No board ids exposed."""
+
+    def handler(args: Mapping[str, object]) -> Mapping[str, object]:
+        _ = args
+        return {"projects": [entry.display_name for entry in directory.list_projects()]}
+
+    return ChatTool(
+        name="list_projects",
+        description=(
+            "List the grove projects you can see, by display name. Use this before "
+            "targeting a task to another project."
+        ),
+        parameters={"type": "object", "properties": {}},
+        handler=handler,
+    )
+
+
 def build_chat_write_tools(
     store: SQLiteBoardStore,
     *,
     board: str,
     actor: Mapping[str, object],
+    directory: ProjectDirectory,
 ) -> list[ChatTool]:
     """Role-gated write tools for the V2 LLM-first agent (operator/admin only —
     enforced in the dispatcher). The LLM calls these on an explicit operator
-    request; the dispatcher applies the stored action schema with the six guards."""
+    request; the dispatcher applies the stored action schema with the six guards.
+
+    Cross-project: an explicit ``project`` (display name) is resolved to the internal
+    board, scoped to VISIBLE projects (``resolve`` -> ``None`` => denied). That scope
+    check plus the dispatcher's operator/admin role-gate is the org-global-over-visible
+    authorization. No ``project`` => the conversation's current board."""
+
+    project_prop: dict[str, object] = {
+        "project": {
+            "type": "string",
+            "description": (
+                "Optional target project (display name). Defaults to the current project."
+            ),
+        }
+    }
 
     def _make_handler(kind: str) -> Callable[[Mapping[str, object]], Mapping[str, object]]:
         def handler(args: Mapping[str, object]) -> Mapping[str, object]:
             target = args.get("task_id")
             target_id = target.strip() if isinstance(target, str) and target.strip() else None
+            target_board = board
+            ref = args.get("project")
+            if isinstance(ref, str) and ref.strip():
+                resolved = directory.resolve(ref.strip())
+                if resolved is None:
+                    return {
+                        "ok": False,
+                        "error": f"unknown project: {ref.strip()}",
+                        "projects": [entry.display_name for entry in directory.list_projects()],
+                    }
+                target_board = resolved
             fields = args
             if kind == "create":
                 # Decision ①: chat-created tasks land in 'staged' (stack-then-gate)
@@ -638,7 +683,7 @@ def build_chat_write_tools(
                     store,
                     ChatConfirmAction(
                         kind=kind,  # type: ignore[arg-type]
-                        board=board,
+                        board=target_board,
                         target_task_id=target_id,
                         fields=fields,
                     ),
@@ -646,7 +691,7 @@ def build_chat_write_tools(
                 )
             except ChatActionDenied as exc:
                 return {"ok": False, "error": str(exc)}
-            return {"ok": True, **result}
+            return {"ok": True, "project": directory.display_name(target_board), **result}
 
         return handler
 
@@ -657,7 +702,7 @@ def build_chat_write_tools(
                 f"Write tool ({kind}). Use ONLY for an explicit operator request. "
                 "Operator/admin only; denials are returned as a result."
             ),
-            parameters={"type": "object", "properties": props},
+            parameters={"type": "object", "properties": {**project_prop, **props}},
             handler=_make_handler(kind),
         )
         for kind, name, props in _WRITE_TOOL_SPECS
