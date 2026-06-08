@@ -61,6 +61,7 @@ LOGGER = logging.getLogger(__name__)
 SLACK_CONFIG_PATH = Path("~/.grove/slack.json").expanduser()
 SLACK_RUNTIME_STATUS_FILENAME = "slack-runtime.json"
 SLACK_RUNTIME_STATUS_TTL_SECONDS = 30
+SLACK_COMMAND_MEMBERS_FILENAME = "slack-command-members.json"
 GROVE_CHAT_TIMEOUT_SECONDS = 120.0
 HUMAN_GATE_PENDING_TTL_SECONDS = 60
 HUMAN_GATE_MODE = "human_gate"
@@ -2641,6 +2642,18 @@ class SlackConnector:
             return False
         return state.get("enabled") is True
 
+    def write_tools_unavailable_reason(self) -> str | None:
+        """Surface the silent misconfig where ``chat_write_tools`` is ON but NO member
+        can use the write tools (no operator/admin mapped) — so they are absent for
+        everyone. ``"no_operator_members"`` when that holds, else ``None``. Drives a
+        startup warning + the runtime-status ``write_tools_unavailable`` field."""
+        if not self._chat_write_tools_enabled(self.human_gate.board):
+            return None
+        members = self.command_config.members.values() if self.command_config is not None else ()
+        if any(member.role in {"operator", "admin"} for member in members):
+            return None
+        return "no_operator_members"
+
     def _project_directory(self) -> ProjectDirectory:
         """Project display/identity directory (single source: ~/.grove registries).
         Resolves display names <-> internal boards so the chat layer never exposes
@@ -3162,6 +3175,9 @@ def _fresh_slack_runtime_status(path: Path | None) -> dict[str, object]:
     last_error = loaded.get("last_error")
     if isinstance(last_error, str) and last_error:
         runtime["last_error"] = redact_secret_text(last_error)
+    write_tools_unavailable = loaded.get("write_tools_unavailable")
+    if isinstance(write_tools_unavailable, str) and write_tools_unavailable:
+        runtime["write_tools_unavailable"] = write_tools_unavailable
     return runtime
 
 
@@ -3172,6 +3188,7 @@ def _write_slack_runtime_status(
     last_event_at: int | None = None,
     last_error: str | None = None,
     node_chat_queue: Mapping[str, int | None] | None = None,
+    write_tools_unavailable: str | None = None,
 ) -> None:
     payload: dict[str, object] = {
         "socket_connected": socket_connected,
@@ -3184,6 +3201,8 @@ def _write_slack_runtime_status(
         payload["last_error"] = redact_secret_text(last_error)
     if node_chat_queue is not None:
         payload["node_chat_queue"] = dict(node_chat_queue)
+    if write_tools_unavailable:
+        payload["write_tools_unavailable"] = write_tools_unavailable
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     temp_path.write_text(f"{json.dumps(payload, sort_keys=True)}\n", encoding="utf-8")
@@ -3221,6 +3240,48 @@ def _parse_command_member(value: str) -> tuple[str, str, str, SlackCommandRole]:
     if raw_role not in {"admin", "operator", "viewer"}:
         raise ValueError("command member role must be admin, operator, or viewer")
     return slack_user, member_id, name, cast(SlackCommandRole, raw_role)
+
+
+def slack_command_members_path(grove_home: Path, session: str) -> Path:
+    return grove_home.expanduser() / session / SLACK_COMMAND_MEMBERS_FILENAME
+
+
+def load_command_members_file(path: Path) -> dict[str, SlackCommandMember]:
+    """Load persisted command members from a 0600 JSON config:
+    ``{"members": [{"slack_user","member_id","name","role"}]}`` (role ∈ admin/operator/
+    viewer). **Fail-closed:** a missing/unreadable/wrong-shaped file yields ``{}`` (no
+    members → read-only). A present-but-INVALID member entry (unknown role / missing
+    field) raises ``ValueError`` — invalid persisted members are never silently dropped.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return {}
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"command members file is not valid JSON: {path}") from exc
+    if not isinstance(loaded, Mapping):
+        return {}
+    entries = loaded.get("members")
+    if not isinstance(entries, list):
+        return {}
+    members: dict[str, SlackCommandMember] = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise ValueError("each command member must be an object")
+        slack_user = str(entry.get("slack_user") or "").strip()
+        member_id = str(entry.get("member_id") or "").strip()
+        name = str(entry.get("name") or "").strip()
+        role = str(entry.get("role") or "").strip()
+        if not (slack_user and member_id and name and role):
+            raise ValueError("command member requires slack_user, member_id, name, role")
+        if role not in {"admin", "operator", "viewer"}:
+            raise ValueError(f"command member role must be admin, operator, or viewer: {role!r}")
+        members[slack_user] = SlackCommandMember(
+            member_id=member_id, name=name, role=cast(SlackCommandRole, role)
+        )
+    return members
 
 
 def _load_command_node_names(grove_home: Path, session: str) -> frozenset[str]:
@@ -3278,6 +3339,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="SLACK_USER:MEMBER_ID:NAME:ROLE",
     )
     parser.add_argument(
+        "--command-members-path",
+        type=Path,
+        help=(
+            "Path to a 0600 JSON config of persisted command members "
+            "({members:[{slack_user,member_id,name,role}]}). Defaults to "
+            "<grove-home>/<session>/slack-command-members.json. --command-member "
+            "(CLI) overrides file entries."
+        ),
+    )
+    parser.add_argument(
         "--grove-home",
         type=Path,
         default=Path(os.environ.get("GROVE_HOME", "~/.grove")).expanduser(),
@@ -3300,10 +3371,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.enable_commands or args.enable_intake or args.enable_digest or args.enable_reminders:
         command_node_names = _load_command_node_names(args.grove_home, args.session)
     if args.enable_commands or args.enable_intake:
+        members_path = args.command_members_path or slack_command_members_path(
+            args.grove_home, args.session
+        )
         try:
-            members = _parse_command_members(args.command_members)
+            # Persisted file members (auto-loaded from the default path when present),
+            # then CLI --command-member as an emergency override (CLI wins).
+            file_members = load_command_members_file(members_path)
+            cli_members = _parse_command_members(args.command_members)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
+        members = {**file_members, **cli_members}
         command_config = SlackCommandConfig(
             board=args.board,
             members=members,
@@ -3334,6 +3412,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         bot_user_id=_bot_user_id_from_client(slack_client),
         route_chat_to_node=args.route_chat_to_node,
     )
+    write_tools_reason = connector.write_tools_unavailable_reason()
+    if write_tools_reason is not None:
+        LOGGER.warning(
+            "chat_write_tools is ON but %s — write tools are unavailable to all users; "
+            "map at least one operator/admin command member (--command-members-path / "
+            "--command-member)",
+            write_tools_reason,
+        )
     socket_client = _build_socket_client(config=config, connector=connector)
     runtime_status_path = args.runtime_status_path or slack_runtime_status_path(
         args.grove_home,
@@ -3389,6 +3475,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 socket_connected=socket_connected,
                 last_error=last_error,
                 node_chat_queue=connector.node_chat_queue_summary(now=int(time.time())),
+                write_tools_unavailable=connector.write_tools_unavailable_reason(),
             )
             connector.poll_human_gates()
             connector.poll_completion_notices()
@@ -3405,6 +3492,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime_status_path,
             socket_connected=False,
             node_chat_queue=connector.node_chat_queue_summary(now=int(time.time())),
+            write_tools_unavailable=connector.write_tools_unavailable_reason(),
         )
         socket_client.close()
 

@@ -4346,3 +4346,71 @@ def test_assistant_mentioned_requires_self_mention_fail_closed() -> None:
         event_type="app_mention",
     )
     assert _assistant_mentioned(app, bot_user_id=None) is True
+
+
+def test_load_command_members_file_valid_failclosed_and_bad_role(tmp_path: Path) -> None:
+    from grove_bridge.slack import load_command_members_file
+
+    # Absent -> {} (fail-closed = read-only, no operators).
+    assert load_command_members_file(tmp_path / "absent.json") == {}
+
+    # Valid (grove-master's persisted schema) -> loaded.
+    good = tmp_path / "m.json"
+    good.write_text(
+        json.dumps(
+            {
+                "members": [
+                    {
+                        "slack_user": "U03B147K2PR",
+                        "member_id": "operator",
+                        "name": "Operator",
+                        "role": "operator",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    members = load_command_members_file(good)
+    assert set(members) == {"U03B147K2PR"}
+    assert members["U03B147K2PR"].role == "operator"
+    assert members["U03B147K2PR"].name == "Operator"
+
+    # Present-but-INVALID role -> ValueError (loud; never silently dropped).
+    bad = tmp_path / "bad.json"
+    bad.write_text(
+        json.dumps(
+            {"members": [{"slack_user": "U", "member_id": "m", "name": "n", "role": "root"}]}
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        load_command_members_file(bad)
+
+    # Malformed container -> {} (fail-closed).
+    weird = tmp_path / "weird.json"
+    weird.write_text("[]", encoding="utf-8")
+    assert load_command_members_file(weird) == {}
+
+
+def test_write_tools_unavailable_reason_surfaces_no_operator(tmp_path: Path) -> None:
+    import dataclasses
+
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    slack = FakeSlackClient()
+    conn = command_connector(store, slack)
+
+    # chat_write_tools OFF -> no surfacing (writes disabled anyway).
+    assert conn.write_tools_unavailable_reason() is None
+
+    store.set_gui_feature_enabled(board="main", feature="chat_write_tools", enabled=True)
+    # ON + an operator/admin is mapped (command_connector maps UOP/UAD) -> None.
+    assert conn.write_tools_unavailable_reason() is None
+
+    # ON + NO operator/admin member -> the silent misconfig is surfaced.
+    assert conn.command_config is not None
+    conn.command_config = dataclasses.replace(
+        conn.command_config,
+        members={"UV": SlackCommandMember("member-view", "vivi", "viewer")},
+    )
+    assert conn.write_tools_unavailable_reason() == "no_operator_members"
