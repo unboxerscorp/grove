@@ -1334,11 +1334,11 @@ def test_chat_routing_can_forward_addressed_turn_to_node(tmp_path: Path) -> None
     assert handled is True
     assert assistant.calls == []
     assert chat.calls == []
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     assert connector.poll_node_chat_queue() == 1
     assert len(chat.calls) == 1 and chat.calls[0][:2] == ("slack:T1:C123:111.222", "channel-node")
     assert "summarize status" in chat.calls[0][2]  # P1: in context-pack
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     assert slack.updates == [("C123", "ts-1", "grove reply", None)]
 
 
@@ -1377,7 +1377,7 @@ def test_chat_routing_task_like_message_goes_directly_to_node(
     )
 
     assert handled is True
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
 
     assert connector.poll_node_chat_queue() == 1
     assert len(chat.calls) == 1 and chat.calls[0][:2] == ("slack:T1:C123:111.222", "grove-master")
@@ -1453,7 +1453,7 @@ def test_chat_routing_updates_waiting_message_while_node_generates(
     )
 
     assert handled is True
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     assert connector.poll_node_chat_queue() == 1
     assert any("답변 생성 중" in update[2] for update in slack.updates)
     assert any("대기열: 총 1개 중 1번째" in update[2] for update in slack.updates)
@@ -1492,7 +1492,7 @@ def test_chat_routing_defers_busy_prompt_guard_and_retries(tmp_path: Path) -> No
 
     assert handled is True
     assert chat.calls == []
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     queued = store.list_due_slack_chat_messages(
         board="main",
         now=9999999999,
@@ -1504,7 +1504,7 @@ def test_chat_routing_defers_busy_prompt_guard_and_retries(tmp_path: Path) -> No
     assert queued[0].attempts == 0
 
     assert connector.poll_node_chat_queue() == 1
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     queued = store.list_due_slack_chat_messages(
         board="main",
         now=9999999999,
@@ -1519,7 +1519,7 @@ def test_chat_routing_defers_busy_prompt_guard_and_retries(tmp_path: Path) -> No
     assert len(chat.calls) == 2
     assert all(c[:2] == ("slack:T1:C123:111.222", "grove-master") for c in chat.calls)
     assert all("summarize status" in c[2] for c in chat.calls)  # P1: msg inside context-pack
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     assert slack.updates == [("C123", "ts-1", "grove reply after retry", None)]
     assert (
         store.list_due_slack_chat_messages(
@@ -1571,7 +1571,7 @@ def test_chat_routing_posts_waiting_notice_for_long_busy_prompt(tmp_path: Path) 
     assert len(chat.calls) == 6
     assert all(c[:2] == ("slack:T1:C123:111.222", "grove-master") for c in chat.calls)
     assert all("summarize status" in c[2] for c in chat.calls)  # P1: msg inside context-pack
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     queued = store.list_due_slack_chat_messages(
         board="main",
         now=9999999999,
@@ -1615,7 +1615,7 @@ def test_chat_routing_defers_timeout_and_retries(tmp_path: Path) -> None:
 
     assert handled is True
     assert connector.poll_node_chat_queue() == 1
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     queued = store.list_due_slack_chat_messages(
         board="main",
         now=9999999999,
@@ -1630,7 +1630,7 @@ def test_chat_routing_defers_timeout_and_retries(tmp_path: Path) -> None:
     assert len(chat.calls) == 2
     assert all(c[:2] == ("slack:T1:C123:111.222", "grove-master") for c in chat.calls)
     assert all("summarize status" in c[2] for c in chat.calls)  # P1: msg inside context-pack
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     assert slack.updates == [("C123", "ts-1", "grove reply after timeout", None)]
     assert (
         store.list_due_slack_chat_messages(
@@ -1710,7 +1710,7 @@ def test_chat_routing_retries_failed_response_delivery_without_duplicate_ask(
     assert connector.poll_node_chat_queue() == 1
     assert len(chat.calls) == 1 and chat.calls[0][:2] == ("slack:T1:C123:111.222", "grove-master")
     assert "summarize status" in chat.calls[0][2]  # P1: in context-pack
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     assert slack.updates == [("C123", "ts-1", "grove reply", None)]
     assert (
         store.list_due_slack_chat_messages(
@@ -1785,7 +1785,7 @@ def test_chat_routing_reclaims_stale_running_item_after_worker_restart(
 
     assert connector.poll_node_chat_queue() == 1
     assert chat.calls == []
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     assert slack.updates == [("C123", "ts-1", "cached grove reply", None)]
     assert (
         store.list_due_slack_chat_messages(
@@ -1827,11 +1827,11 @@ def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
 
     assert handled is True
     assert chat.calls == []
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     assert connector.poll_node_chat_queue() == 1
     assert len(chat.calls) == 1 and chat.calls[0][:2] == ("slack:T1:C123:111.222", "grove-master")
     assert "summarize status" in chat.calls[0][2]  # P1: in context-pack
-    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.posts == [("C123", "⏳ 잠시만 기다려주세요...", "111.222")]
     assert slack.updates == [("C123", "ts-1", "grove reply", None)]
 
 
@@ -2611,7 +2611,7 @@ def test_slack_chat_action_request_routes_to_node_queue_without_decision_preview
     connector = command_connector(store, slack)
 
     assert connector.handle_event(slack_event("UOP", "<@BOT> Alpha 프로젝트 만들어줘"))
-    assert slack.posts[-1][1] == "잠시만 기다리세요!"
+    assert slack.posts[-1][1] == "⏳ 잠시만 기다려주세요..."
     assert store.list_decision_proposals(board="main") == []
 
     assert connector.poll_node_chat_queue() == 1

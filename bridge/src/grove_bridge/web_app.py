@@ -8429,7 +8429,7 @@ def _tmux_pane_exists(pane: str) -> bool:
 
 def _taskmaster_wakeup_enabled() -> bool:
     """Operator opt-in for event-driven task-master wakeup. Default OFF
-    (stability first); set GROVE_TASKMASTER_WAKEUP=1 to enable. The 5-minute
+    (stability first); set GROVE_TASKMASTER_WAKEUP=1 to enable. The 10-minute
     task-master poll remains the fallback either way."""
     return os.environ.get("GROVE_TASKMASTER_WAKEUP", "0").strip().lower() in {
         "1",
@@ -8479,7 +8479,7 @@ def _build_task_wakeup_watcher(app: FastAPI) -> TaskWakeupWatcher:
         now=time.monotonic,
         sleep=asyncio.sleep,
         board_label=store.board_slug_for_id,
-        sweep_interval_seconds=_env_float("GROVE_TASKMASTER_SWEEP_SECONDS", 300.0),
+        sweep_interval_seconds=_env_float("GROVE_TASKMASTER_SWEEP_SECONDS", 600.0),
         coalescer=WakeupCoalescer(
             debounce_seconds=_env_float("GROVE_TASKMASTER_DEBOUNCE_SECONDS", 5.0),
             min_interval_seconds=_env_float("GROVE_TASKMASTER_MIN_INTERVAL_SECONDS", 30.0),

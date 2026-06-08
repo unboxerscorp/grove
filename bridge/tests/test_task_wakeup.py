@@ -257,7 +257,7 @@ def test_watcher_sends_periodic_backstop_when_idle() -> None:
             latest_cursor=lambda: 0,
             send=fake_send,
             now=lambda: clock["t"],
-            sweep_interval_seconds=300.0,
+            sweep_interval_seconds=600.0,
             coalescer=WakeupCoalescer(debounce_seconds=5.0, min_interval_seconds=30.0),
         )
 
@@ -265,7 +265,7 @@ def test_watcher_sends_periodic_backstop_when_idle() -> None:
         assert await watcher.run_once() is None  # baseline set, no events
         clock["t"] = 100.0
         assert await watcher.run_once() is None  # < interval -> no backstop
-        clock["t"] = 301.0
+        clock["t"] = 601.0
         message = await watcher.run_once()  # idle past interval -> periodic sweep
         assert message is not None
         assert "sweep" in message.lower()
@@ -290,7 +290,7 @@ def test_event_nudge_resets_backstop_timer() -> None:
             latest_cursor=lambda: 0,
             send=fake_send,
             now=lambda: clock["t"],
-            sweep_interval_seconds=300.0,
+            sweep_interval_seconds=600.0,
             coalescer=WakeupCoalescer(debounce_seconds=5.0, min_interval_seconds=30.0),
         )
 
@@ -299,9 +299,9 @@ def test_event_nudge_resets_backstop_timer() -> None:
         clock["t"] = 6.0
         assert await watcher.run_once() is not None  # event nudge -> timer reset at t=6
         clock["t"] = 200.0
-        assert await watcher.run_once() is None  # 200-6 < 300 -> no backstop yet
-        clock["t"] = 307.0
-        backstop = await watcher.run_once()  # 307-6 >= 300 -> backstop fires
+        assert await watcher.run_once() is None  # 200-6 < 600 -> no backstop yet
+        clock["t"] = 607.0
+        backstop = await watcher.run_once()  # 607-6 >= 600 -> backstop fires
         assert backstop is not None
         assert "sweep" in backstop.lower()
 

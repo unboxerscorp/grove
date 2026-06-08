@@ -58,8 +58,8 @@ SLACK_EVENT_DEDUPE_MAX = 1000
 SLACK_ASSISTANT_RESPONSE_CHUNK_CHARS = 3000
 SLACK_NODE_CHAT_INPUT_BUSY_MARKER = "target pane has unsent prompt input"
 SLACK_NODE_CHAT_INPUT_BUSY_RETRY_SECONDS = 10
-SLACK_NODE_CHAT_WAIT_TEXT = "잠시만 기다리세요!"
-SLACK_NODE_CHAT_WAIT_UPDATE_SECONDS = 3.0
+SLACK_NODE_CHAT_WAIT_TEXT = "잠시만 기다려주세요..."
+SLACK_NODE_CHAT_WAIT_UPDATE_SECONDS = 1.0
 SLACK_NODE_CHAT_RUNNING_STALE_SECONDS = 300
 SLACK_NODE_CHAT_QUEUE_LIMIT = 5
 SLACK_NODE_CHAT_RESPONSE_ATTEMPTS = 3
@@ -113,7 +113,8 @@ def _node_chat_wait_text(
     elapsed_seconds: int, *, queue_position: Mapping[str, int] | None = None
 ) -> str:
     minutes, seconds = divmod(max(0, elapsed_seconds), 60)
-    text = f"{SLACK_NODE_CHAT_WAIT_TEXT}\n답변 생성 중... {minutes}분 {seconds:02d}초 경과"
+    frame = ("⏳", "⌛", "🔄", "✨")[elapsed_seconds % 4]
+    text = f"{frame} {SLACK_NODE_CHAT_WAIT_TEXT}\n답변 생성 중... {minutes}분 {seconds:02d}초 경과"
     if queue_position is not None:
         position = queue_position.get("position")
         total = queue_position.get("total")
@@ -2360,7 +2361,7 @@ class SlackConnector:
         try:
             ts = self.slack_client.post_message(
                 channel=item.channel_id,
-                text=SLACK_NODE_CHAT_WAIT_TEXT,
+                text=f"⏳ {SLACK_NODE_CHAT_WAIT_TEXT}",
                 thread_ts=item.thread_ts,
             )
             self.store.store_slack_chat_message_placeholder_ts(
@@ -2573,7 +2574,7 @@ class SlackConnector:
             return item
         ts = self.slack_client.post_message(
             channel=item.channel_id,
-            text=SLACK_NODE_CHAT_WAIT_TEXT,
+            text=f"⏳ {SLACK_NODE_CHAT_WAIT_TEXT}",
             thread_ts=item.thread_ts,
         )
         return self.store.store_slack_chat_message_placeholder_ts(
@@ -3454,8 +3455,10 @@ def _slack_live_thread_author(message: Mapping[str, object]) -> str:
 
 def _slack_live_thread_placeholder_text(text: str) -> bool:
     normalized = text.strip()
-    return normalized == SLACK_NODE_CHAT_WAIT_TEXT or normalized.startswith(
-        f"{SLACK_NODE_CHAT_WAIT_TEXT}\n답변 생성 중..."
+    return (
+        normalized == SLACK_NODE_CHAT_WAIT_TEXT
+        or normalized == f"⏳ {SLACK_NODE_CHAT_WAIT_TEXT}"
+        or "답변 생성 중..." in normalized
     )
 
 

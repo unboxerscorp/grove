@@ -1,10 +1,10 @@
 """Event-driven task-master wakeup.
 
-The 5-minute task-master poll reacts slowly. This watcher tails the board event
+The 10-minute task-master poll reacts slowly. This watcher tails the board event
 log and, on a *meaningful* task change (create / assignee change / status change
 incl. needs_human·blocked·ask_human / confirm-created), nudges the task-master to
 sweep immediately — coalesced (debounce), rate-limited, and deduped so rapid
-edits collapse into one nudge instead of a storm. The 5-minute poll remains the
+edits collapse into one nudge instead of a storm. The 10-minute poll remains the
 fallback.
 
 Strictly observe-and-nudge: it never mutates task status or claims work (that
