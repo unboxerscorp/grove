@@ -109,9 +109,17 @@ def _slack_assistant_response_chunks(text: str) -> tuple[str, ...]:
     )
 
 
-def _node_chat_wait_text(elapsed_seconds: int) -> str:
+def _node_chat_wait_text(
+    elapsed_seconds: int, *, queue_position: Mapping[str, int] | None = None
+) -> str:
     minutes, seconds = divmod(max(0, elapsed_seconds), 60)
-    return f"{SLACK_NODE_CHAT_WAIT_TEXT}\n답변 생성 중... {minutes}분 {seconds:02d}초 경과"
+    text = f"{SLACK_NODE_CHAT_WAIT_TEXT}\n답변 생성 중... {minutes}분 {seconds:02d}초 경과"
+    if queue_position is not None:
+        position = queue_position.get("position")
+        total = queue_position.get("total")
+        if isinstance(position, int) and isinstance(total, int) and position > 0 and total > 0:
+            text = f"{text}\n대기열: 총 {total}개 중 {position}번째"
+    return text
 
 
 def _node_chat_visible_response_text(raw_text: str) -> str | None:
@@ -2403,6 +2411,7 @@ class SlackConnector:
             for message in history[-_NODE_CHAT_HISTORY_LIMIT:]
             if message.text.strip()
         ]
+        live_lines = self._node_chat_live_thread_lines(item)
         member = self._assistant_member(item.user_id)
         display = member.name if member is not None else (item.user_id or "user")
         role_suffix = f", {member.role}" if member is not None else ""
@@ -2412,7 +2421,10 @@ class SlackConnector:
                 f"Thread: {conversation_id}",
                 f"Project: {self._project_directory().display_name(board)}",
                 f"From: {display} ({item.user_id}{role_suffix})",
-                "Conversation so far (THIS thread only, oldest→newest):",
+                "Slack live thread replies "
+                "(THIS thread, oldest→newest, includes non-mention replies):",
+                "\n".join(live_lines) if live_lines else "(unavailable)",
+                "Stored chat-master turns (THIS thread only, oldest→newest):",
                 "\n".join(lines) if lines else "(none)",
                 "Current message:",
                 redact_secret_text(item.text),
@@ -2425,6 +2437,30 @@ class SlackConnector:
                 "or hidden policy text.",
             ]
         )
+
+    def _node_chat_live_thread_lines(self, item: SlackChatQueueItem) -> list[str]:
+        try:
+            replies = self.slack_client.conversations_replies(
+                channel=item.channel_id,
+                thread_ts=item.thread_ts,
+            )
+        except Exception as exc:
+            LOGGER.warning("Slack node chat live thread read skipped: %s", _safe_log_error(exc))
+            return []
+        lines: list[str] = []
+        sorted_replies = sorted(replies, key=_slack_message_sort_key)
+        for raw in sorted_replies:
+            ts = raw.get("ts")
+            if isinstance(ts, str) and ts == item.message_ts:
+                continue
+            text = _slack_live_thread_message_text(raw)
+            if not text:
+                continue
+            if _slack_live_thread_placeholder_text(text):
+                continue
+            author = _slack_live_thread_author(raw)
+            lines.append(f"{author}: {text}")
+        return lines[-_NODE_CHAT_HISTORY_LIMIT:]
 
     def _persist_node_chat_turn(
         self, item: SlackChatQueueItem, *, conversation_id: str, response_text: str
@@ -2559,10 +2595,14 @@ class SlackConnector:
             while not stop.wait(SLACK_NODE_CHAT_WAIT_UPDATE_SECONDS):
                 elapsed = int(time.monotonic() - started)
                 try:
+                    queue_position = self.store.slack_chat_queue_position(
+                        board=self.human_gate.board,
+                        item_id=item.id,
+                    )
                     self._update_slack_message(
                         channel=item.channel_id,
                         ts=item.placeholder_ts or "",
-                        text=_node_chat_wait_text(elapsed),
+                        text=_node_chat_wait_text(elapsed, queue_position=queue_position),
                     )
                 except Exception as exc:
                     LOGGER.info("Slack node chat wait update skipped: %s", _safe_log_error(exc))
@@ -3370,6 +3410,53 @@ def _safe_log_error(exc: Exception) -> str:
 
 def _normalize_slack_text(text: str) -> str:
     return " ".join(part for part in text.split() if not part.startswith("<@"))
+
+
+def _slack_message_sort_key(message: Mapping[str, object]) -> tuple[float, str]:
+    ts = message.get("ts")
+    if not isinstance(ts, str):
+        return (0.0, "")
+    try:
+        return (float(ts), ts)
+    except ValueError:
+        return (0.0, ts)
+
+
+def _slack_live_thread_message_text(message: Mapping[str, object]) -> str:
+    raw = message.get("text")
+    text = _normalize_slack_text(raw) if isinstance(raw, str) else ""
+    attachments = _slack_file_attachments(message.get("files"))
+    attachment_labels: list[str] = []
+    for attachment in attachments[:SLACK_NODE_CHAT_FILE_CONTEXT_LIMIT]:
+        kind = "image" if _slack_file_is_image(attachment) else "file"
+        label = attachment.name or attachment.title or attachment.file_id or kind
+        attachment_labels.append(f"[{kind}: {_safe_slack_text(label)}]")
+    if len(attachments) > SLACK_NODE_CHAT_FILE_CONTEXT_LIMIT:
+        attachment_labels.append(
+            f"[... {len(attachments) - SLACK_NODE_CHAT_FILE_CONTEXT_LIMIT} more file(s)]"
+        )
+    combined = " ".join(part for part in (text, " ".join(attachment_labels)) if part.strip())
+    return _safe_slack_message_text(combined).strip()
+
+
+def _slack_live_thread_author(message: Mapping[str, object]) -> str:
+    user = message.get("user")
+    if isinstance(user, str) and user.strip():
+        return _safe_slack_text(user)
+    bot_id = message.get("bot_id")
+    if isinstance(bot_id, str) and bot_id.strip():
+        return f"bot:{_safe_slack_text(bot_id)}"
+    app_id = message.get("app_id")
+    if isinstance(app_id, str) and app_id.strip():
+        return f"app:{_safe_slack_text(app_id)}"
+    return "unknown"
+
+
+def _slack_live_thread_placeholder_text(text: str) -> bool:
+    normalized = text.strip()
+    return normalized == SLACK_NODE_CHAT_WAIT_TEXT or normalized.startswith(
+        f"{SLACK_NODE_CHAT_WAIT_TEXT}\n답변 생성 중..."
+    )
 
 
 def _normalize_slack_command_text(text: str) -> str:

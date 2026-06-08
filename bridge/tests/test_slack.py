@@ -28,6 +28,7 @@ from grove_bridge.slack import (
     GROVE_CHAT_TIMEOUT_SECONDS,
     NODE_CHAT_RESPONSE_RETRY_TEXT,
     SLACK_NODE_CHAT_RUNNING_STALE_SECONDS,
+    SLACK_NODE_CHAT_WAIT_TEXT,
     ChatRouteConfig,
     FakeStatusProbe,
     GroveServeChatFacade,
@@ -65,6 +66,7 @@ class FakeSlackClient:
         self.blocks: list[tuple[str, list[Mapping[str, object]] | None]] = []
         self.updates: list[tuple[str, str, str, list[Mapping[str, object]] | None]] = []
         self.messages: dict[str, dict[str, object]] = {}
+        self.replies: list[Mapping[str, object]] = []
         self.history_failures = 0
         self.raise_after_post = False
 
@@ -126,7 +128,7 @@ class FakeSlackClient:
 
     def conversations_replies(self, *, channel: str, thread_ts: str) -> list[Mapping[str, object]]:
         _ = (channel, thread_ts)
-        return []
+        return list(self.replies)
 
 
 class FakeChatFacade:
@@ -1454,6 +1456,7 @@ def test_chat_routing_updates_waiting_message_while_node_generates(
     assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     assert connector.poll_node_chat_queue() == 1
     assert any("답변 생성 중" in update[2] for update in slack.updates)
+    assert any("대기열: 총 1개 중 1번째" in update[2] for update in slack.updates)
     assert slack.updates[-1] == ("C123", "ts-1", "final grove reply", None)
 
 
@@ -4561,6 +4564,13 @@ def test_node_chat_injects_thread_context_pack_and_persists(tmp_path: Path) -> N
         node="chat-master",
         text=f"새 질문 {secret}",
     )
+    slack.replies = [
+        {"ts": "1.0", "user": "U", "text": "테스트4 올리브유랑 포도씨유랑 섞였어"},
+        {"ts": "1.1", "user": "U", "text": "그것은"},
+        {"ts": "1.2", "user": "U", "text": "페퍼론치노 메론 꼬냑 빙수를 만들 예정이거든"},
+        {"ts": "1.3", "bot_id": "BOT", "text": SLACK_NODE_CHAT_WAIT_TEXT},
+        {"ts": "2.0", "user": "U", "text": "<@BOT> 새 질문"},
+    ]
     store.append_master_chat_message(
         board="dev10", conversation_id=conv, role="user", text="이전 질문", request_id="r0"
     )
@@ -4571,6 +4581,10 @@ def test_node_chat_injects_thread_context_pack_and_persists(tmp_path: Path) -> N
 
     sent = chat.calls[-1][2]
     assert "[GROVE CHAT — THREAD CONTEXT]" in sent
+    assert "Slack live thread replies" in sent
+    assert "그것은" in sent
+    assert "페퍼론치노 메론 꼬냑 빙수" in sent
+    assert SLACK_NODE_CHAT_WAIT_TEXT not in sent
     assert "이전 질문" in sent and "이전 답변" in sent
     assert "Current message:" in sent and "새 질문" in sent
     assert "From: 권성민 (U, operator)" in sent

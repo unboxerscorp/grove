@@ -2172,6 +2172,24 @@ class SQLiteBoardStore:
             "oldest_pending_age_seconds": oldest_age,
         }
 
+    def slack_chat_queue_position(self, *, board: str, item_id: str) -> dict[str, int] | None:
+        board_id = self._ensure_board(board)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM slack_chat_queue
+                WHERE board_id = ?
+                  AND status IN ('pending', 'running')
+                ORDER BY created_at ASC, id ASC
+                """,
+                (board_id,),
+            ).fetchall()
+        ids = [_row_str(row, "id") for row in rows]
+        if item_id not in ids:
+            return None
+        return {"position": ids.index(item_id) + 1, "total": len(ids)}
+
     def mark_slack_chat_message_running(self, item_id: str, *, now: int) -> SlackChatQueueItem:
         with self._connect(immediate=True) as conn:
             conn.execute(
