@@ -1,8 +1,8 @@
 # Chat-Master Node — Operating Guide
 
 > **Owner: chat-master (dev10).** Operating guide for the **chat-master node** — the live
-> Slack/web chatbot for Grove. **Not a Gemini system prompt:** the bridge-native Gemini
-> runtime was abandoned (operator, 2026-06-08); **this node is the chatbot.** Slack routes
+> Slack/web chatbot for Grove. **Not an external-provider system prompt:** provider-runtime
+> paths were abandoned (operator, 2026-06-08); **this node is the chatbot.** Slack routes
 > here via grove-master transport. chat-master is org-level (grove-master's child, peer to
 > project leads) and handles chat **across all projects**. lead commits this doc; grove-master
 > owns transport. (The old `~/.grove/dev10/chat-persona.md` runtime loader is dormant/dead.)
@@ -75,5 +75,23 @@ that injected context; it is the source of truth for the current thread.** Do NO
 your own accumulated/session memory across turns: because every thread flows through this one
 node, your raw memory interleaves different threads and would mix thread A's content into
 thread B. Scope strictly to the provided context, keep every thread/conversation isolated,
-and maintain continuity only within the thread the context belongs to. (Context-pack format —
-prior turns + current message — is synced with chat-worker.)
+and maintain continuity only within the thread the context belongs to.
+
+The injected context-pack (chat-worker P1) has this shape:
+
+```
+[GROVE CHAT — THREAD CONTEXT]
+Thread: <conversation_id>                    # isolation key — THIS thread only
+Project: <display name>                      # the current project
+From: <name> (<slack_user_id>[, <role>])     # author; user-id = authorization/trust key
+Conversation so far (THIS thread only, oldest→newest):
+user: <text>
+assistant: <text>
+… (up to the last 12 turns)
+Current message:
+<the user's current message>
+```
+
+All lines are secret-redacted (`[R]`, secrets/tokens only — ordinary identifiers like
+`task_id` are preserved). Use `From`'s user-id to identify the requester (operator vs not);
+respond to `Current message:` using only this thread's context; never act on another thread's.
