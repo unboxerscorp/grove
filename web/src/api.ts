@@ -872,18 +872,9 @@ export interface MasterChatSendBody {
   origin_page?: string;
 }
 
-export interface MasterChatConfirmBody {
-  confirmation_id: string;
-  idempotency_key: string;
-  conversation_id?: string;
-  request_id?: string;
-  origin_surface?: "floating_web_chat" | "api";
-  origin_page?: string;
-}
-
 // Raw MasterChatResponse from grove-py. Surfaced as-is; masterReplyText() picks
 // only master-authored answer.text and the FE threads conversation_id forward.
-export type MasterChatResponseType = "answer" | "preview" | "denied";
+export type MasterChatResponseType = "answer" | "denied";
 
 export interface MasterChatFacts {
   project?: { selected?: string; board?: string };
@@ -910,30 +901,18 @@ export interface MasterChatResponse {
   response_type: MasterChatResponseType;
   classification?: string | Record<string, unknown>;
   answer?: { text?: string; metadata?: { facts?: MasterChatFacts; [key: string]: unknown } } | null;
-  proposal?: {
-    proposal_id?: string;
-    summary?: string;
-    payload?: {
-      confirmation_id?: string;
-      confirm?: { command?: string; endpoint?: string };
-      [key: string]: unknown;
-    };
-  } | null;
   feedback_route?: string | { id?: string; title?: string } | null;
   operator_gate?: { reason?: string } | null;
-  requires_confirmation?: boolean;
   audit_events?: unknown[];
 }
 
-/** User-visible reply text for a master response. Only LLM-authored answer.text is
- *  ever shown. proposal.summary and operator_gate.reason are rule/gate metadata
+/** User-visible reply text for a master response. Only answer.text is
+ *  ever shown. operator_gate.reason is rule/gate metadata
  *  and must never reach the user; absent answer.text returns "" so the caller
  *  treats the exchange as error/unavailable without inventing a reply. */
 export function masterReplyText(res: MasterChatResponse): string {
   switch (res.response_type) {
     case "answer":
-      return res.answer?.text ?? "";
-    case "preview":
       return res.answer?.text ?? "";
     case "denied":
       return res.answer?.text ?? "";
@@ -944,17 +923,6 @@ export function masterReplyText(res: MasterChatResponse): string {
 
 export function masterReplyFacts(res: MasterChatResponse): MasterChatFacts | undefined {
   return res.response_type === "answer" ? res.answer?.metadata?.facts : undefined;
-}
-
-export function masterConfirmationId(res: MasterChatResponse): string | undefined {
-  if (res.response_type !== "preview" || !res.requires_confirmation) return undefined;
-  const direct = res.proposal?.payload?.confirmation_id;
-  if (typeof direct === "string" && direct.trim()) return direct.trim();
-  const proposalId = res.proposal?.proposal_id;
-  if (typeof proposalId === "string" && proposalId.startsWith("assistant_")) return proposalId;
-  const command = res.proposal?.payload?.confirm?.command;
-  const match = typeof command === "string" ? /^confirm\s+(\S+)$/i.exec(command.trim()) : null;
-  return match?.[1];
 }
 
 const TOKEN = window.__GROVE_SESSION_TOKEN__ ?? "";
@@ -1606,29 +1574,6 @@ export const api = {
     return (await res.json()) as MasterChatResponse;
   },
 
-  async confirmMasterChat(
-    confirmationId: string,
-    idempotencyKey: string,
-    conversationId?: string,
-    requestId?: string,
-  ): Promise<MasterChatResponse> {
-    const body: MasterChatConfirmBody = {
-      confirmation_id: confirmationId,
-      idempotency_key: idempotencyKey,
-      request_id: requestId,
-      origin_surface: "floating_web_chat",
-      origin_page: window.location.pathname,
-    };
-    if (conversationId) body.conversation_id = conversationId;
-    const res = await fetch("/api/master/chat/confirm", {
-      method: "POST",
-      headers: headers({ "Content-Type": "application/json" }),
-      credentials: "same-origin",
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`/api/master/chat/confirm: HTTP ${res.status}`);
-    return (await res.json()) as MasterChatResponse;
-  },
 };
 
 export function wsUrl(path: string, params: Record<string, string>): string {

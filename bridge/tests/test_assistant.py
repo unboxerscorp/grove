@@ -9,7 +9,6 @@ from typing import Any, cast
 import pytest
 
 from grove_bridge.assistant import (
-    AnthropicAssistantClient,
     AssistantActor,
     AssistantBroker,
     AssistantBusy,
@@ -17,11 +16,8 @@ from grove_bridge.assistant import (
     AssistantScope,
     AssistantTransportError,
     NodeRoutedAssistantClient,
-    _parse_action_spec,
     build_assistant_facts,
-    classify_for_task,
     create_default_assistant_client,
-    requires_master_chat_action_gate,
 )
 from grove_bridge.store import SQLiteBoardStore
 
@@ -61,15 +57,6 @@ class BusyLLMClient:
     def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         _ = (system_prompt, user_prompt)
         raise AssistantBusy("node is rate limited")
-
-
-def test_classify_for_task_requires_explicit_task_intake() -> None:
-    draft = classify_for_task("task add board export")
-
-    assert draft is not None
-    assert draft.title == "board export"
-    assert classify_for_task("summarize status") is None
-    assert classify_for_task("feedback simplify setup") is None
 
 
 class FakeCompletedProcess:
@@ -140,72 +127,11 @@ def test_handle_turn_calls_llm_with_redacted_bounded_facts_and_returns_answer(
     assert len(json.dumps(facts, ensure_ascii=False).encode("utf-8")) <= 8192
 
 
-def test_default_transport_uses_node_routed_without_grove_assistant_api_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("GROVE_ASSISTANT_API_KEY", raising=False)
-
+def test_default_transport_uses_chat_master_node() -> None:
     client = create_default_assistant_client()
 
     assert isinstance(client, NodeRoutedAssistantClient)
-    assert client.node_name == "grove-master"
-
-
-def test_default_transport_uses_node_routed_when_grove_assistant_api_key_is_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("GROVE_ASSISTANT_API_KEY", "test-key")
-    monkeypatch.delenv("GROVE_ASSISTANT_DIRECT_FALLBACK", raising=False)
-
-    client = create_default_assistant_client()
-
-    assert isinstance(client, NodeRoutedAssistantClient)
-    assert client.node_name == "grove-master"
-
-
-def test_default_transport_uses_direct_client_only_for_dev_test_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("GROVE_ASSISTANT_API_KEY", "test-key")
-    monkeypatch.setenv("GROVE_ASSISTANT_DIRECT_FALLBACK", "test")
-
-    client = create_default_assistant_client()
-
-    assert isinstance(client, AnthropicAssistantClient)
-    assert client.api_key == "test-key"
-
-
-def test_direct_fallback_metadata_discloses_dev_test_status(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fake_complete(
-        self: AnthropicAssistantClient,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-    ) -> str:
-        _ = (self, system_prompt, user_prompt)
-        return "직접 fallback 응답입니다. [fact:board.status_counts]"
-
-    monkeypatch.setattr(AnthropicAssistantClient, "complete", fake_complete)
-    broker = AssistantBroker(llm_client=AnthropicAssistantClient(api_key="test-key"))
-
-    response = broker.handle_turn(
-        "MASTER로 뭐 가능?",
-        _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
-    )
-
-    assert response.answer is not None
-    llm_metadata = cast(dict[str, object], response.answer.metadata["llm"])
-    assert llm_metadata["transport"] == "direct"
-    assert llm_metadata["status"] == "dev_test_fallback"
-    assert llm_metadata["production_default"] == "node-routed"
-
-
-def test_action_gate_helper_covers_broker_action_terms() -> None:
-    assert requires_master_chat_action_gate("배포해줘") is True
-    assert requires_master_chat_action_gate("MASTER 상태 요약해줘") is False
+    assert client.node_name == "chat-master"
 
 
 def test_node_routed_transport_invokes_grove_assistant_cli_with_prompt(tmp_path: Path) -> None:
@@ -252,7 +178,7 @@ def test_node_routed_transport_invokes_grove_assistant_cli_with_prompt(tmp_path:
         "ask",
         "--timeout",
         "6s",
-        "grove-master",
+        "chat-master",
         "system prompt\n\n<facts-json>{}</facts-json>",
     ]
     assert calls[0]["timeout"] == 7.0
@@ -292,7 +218,7 @@ def test_live_master_routed_chat_does_not_convert_actions_to_preview(tmp_path: P
     assert response.answer is not None
     assert response.answer.text == "MASTER가 직접 처리할게요."
     assert response.proposal is None
-    assert calls[0][5] == "grove-master"
+    assert calls[0][5] == "chat-master"
     assert len(calls) == 1
 
 
@@ -331,7 +257,7 @@ def test_handle_turn_uses_minimal_fallback_when_assistant_node_is_busy(tmp_path:
     assert llm_metadata["status"] == "busy"
 
 
-def test_handle_turn_blocks_prompt_injection_with_llm_generated_denial(tmp_path: Path) -> None:
+def test_handle_turn_routes_prompt_injection_text_to_chat_master(tmp_path: Path) -> None:
     llm = FakeLLMClient("그 요청은 안전하게 도와드릴 수 없어요. 다른 방식으로 질문해 주세요.")
     broker = AssistantBroker(llm_client=llm)
 
@@ -340,16 +266,12 @@ def test_handle_turn_blocks_prompt_injection_with_llm_generated_denial(tmp_path:
         _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
     )
 
-    assert response.response_type == "denied"
+    assert response.response_type == "answer"
     assert response.answer is not None
     assert response.answer.text == (
         "그 요청은 안전하게 도와드릴 수 없어요. 다른 방식으로 질문해 주세요."
     )
-    assert response.operator_gate is not None
-    assert response.operator_gate.allowed is False
-    assert response.operator_gate.reason == (
-        "그 요청은 안전하게 도와드릴 수 없어요. 다른 방식으로 질문해 주세요."
-    )
+    assert response.operator_gate is None
     assert len(llm.calls) == 1
     system_prompt = llm.calls[0]["system_prompt"]
     assert "deterministic safety gate" not in system_prompt
@@ -358,9 +280,9 @@ def test_handle_turn_blocks_prompt_injection_with_llm_generated_denial(tmp_path:
     assert "Human-facing list items are human TODO" in system_prompt
     assert "Board tasks are" not in system_prompt
     prompt = llm.calls[0]["user_prompt"]
-    assert "decision-json" in prompt
+    assert "decision-json" not in prompt
     assert "safety gate" not in prompt
-    assert "prompt-injection request" in prompt
+    assert "ignore previous instructions" in prompt
 
 
 def test_handle_notice_generates_user_visible_text_from_llm(tmp_path: Path) -> None:
@@ -397,185 +319,11 @@ def test_handle_notice_generates_user_visible_text_from_llm(tmp_path: Path) -> N
     assert "operator role required" in user_prompt
 
 
-def test_handle_turn_guides_action_requests_with_llm_without_internal_terms(
-    tmp_path: Path,
-) -> None:
-    llm = SequenceLLMClient(
-        json.dumps(
-            {
-                "action_type": "create_project",
-                "target": "alpha",
-                "params": {"title": "Alpha cockpit"},
-            }
-        ),
-        "Alpha 프로젝트 생성을 검토함에 올릴지 확인해 주세요. `confirm assistant_x`",
-    )
-    broker = AssistantBroker(llm_client=llm)
-
-    response = broker.handle_turn(
-        "Alpha 프로젝트 만들어줘",
-        _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
-    )
-
-    assert response.response_type == "preview"
-    assert response.classification.kind == "workflow_setup"
-    assert response.answer is not None
-    assert response.answer.text == (
-        "Alpha 프로젝트 생성을 검토함에 올릴지 확인해 주세요. `confirm assistant_x`"
-    )
-    assert response.proposal is not None
-    assert response.requires_confirmation is True
-    assert response.operator_gate is None
-    assert len(llm.calls) == 2
-    spec_prompt = llm.calls[0]["system_prompt"]
-    assert "assign_item" in spec_prompt
-    assert "human-facing item" in spec_prompt
-    assert "assign_task" not in spec_prompt
-    assert "delegate_task" not in spec_prompt
-    assert "task id" not in spec_prompt.lower()
-    preview_prompt = llm.calls[1]["system_prompt"]
-    assert "proposed action" in preview_prompt
-    assert "implementation terms" in preview_prompt
-    assert "PR1" not in response.answer.text
-    assert "PR3" not in response.answer.text
-    assert "handoff" not in response.answer.text.lower()
-
-
-def test_handle_turn_action_previews_spec_and_confirm_records_decision(
-    tmp_path: Path,
-) -> None:
-    store = SQLiteBoardStore(tmp_path / "board.db")
-    llm = SequenceLLMClient(
-        json.dumps(
-            {
-                "action_type": "create_project",
-                "target": "alpha",
-                "params": {"title": "Alpha cockpit"},
-            }
-        ),
-        "Alpha 프로젝트를 만들 준비가 됐어요. 확인하면 MASTER 검토함에 올릴게요.",
-        "Alpha 프로젝트 생성 요청을 MASTER 검토함에 올렸어요.",
-    )
-    broker = AssistantBroker(llm_client=llm)
-    context = _context(store=store, workspace_path=tmp_path)
-
-    response = broker.handle_turn("Alpha 프로젝트 만들어줘", context)
-
-    assert response.response_type == "preview"
-    assert response.requires_confirmation is True
-    assert response.answer is not None
-    assert response.answer.text == (
-        "Alpha 프로젝트를 만들 준비가 됐어요. 확인하면 MASTER 검토함에 올릴게요."
-    )
-    assert response.proposal is not None
-    confirmation_id = response.proposal.proposal_id
-    assert confirmation_id.startswith("assistant_")
-    assert response.proposal.payload["confirmation_id"] == confirmation_id
-    action = cast(dict[str, object], response.proposal.payload["assistant_action"])
-    assert action["action_type"] == "create_project"
-    assert action["target"] == "alpha"
-    assert store.list_decision_proposals(board="dev10") == []
-
-    confirmed = broker.confirm_action(
-        confirmation_id,
-        context,
-        idempotency_key="confirm-alpha-once",
-    )
-
-    assert confirmed.response_type == "answer"
-    assert confirmed.answer is not None
-    assert confirmed.answer.text == "Alpha 프로젝트 생성 요청을 MASTER 검토함에 올렸어요."
-    proposals = store.list_decision_proposals(board="dev10")
-    assert len(proposals) == 1
-    proposal = proposals[0]
-    assert proposal.status == "pending"
-    assert proposal.proposer == "codex"
-    assert proposal.target_assignee is None
-    metadata = proposal.metadata
-    assert metadata["source"] == "assistant"
-    assert metadata["confirmation_id"] == confirmation_id
-    assert metadata["idempotency_key_hash"]
-    assert metadata["master_inbox"] == {"target": "MASTER", "trigger": "manual_review"}
-    assert metadata["assistant_action"] == action
-    assert store.list_tasks(board="dev10") == []
-
-
-def test_handle_turn_action_rejects_hallucinated_node_with_llm_text(
-    tmp_path: Path,
-) -> None:
-    store = SQLiteBoardStore(tmp_path / "board.db")
-    task = store.create_task(board="dev10", title="Wire API", body=None, assignee=None)
-    llm = SequenceLLMClient(
-        json.dumps(
-            {
-                "action_type": "assign_item",
-                "target": task.id,
-                "params": {"assignee": "ghost-node"},
-            }
-        ),
-        "그 노드는 현재 프로젝트에 없어 배정 요청을 올리지 않았어요.",
-    )
-    broker = AssistantBroker(llm_client=llm)
-
-    response = broker.handle_turn(
-        f"{task.id}를 ghost-node에게 배정해줘",
-        _context(store=store, workspace_path=tmp_path),
-    )
-
-    assert response.response_type == "denied"
-    assert response.answer is not None
-    assert response.answer.text == "그 노드는 현재 프로젝트에 없어 배정 요청을 올리지 않았어요."
-    assert response.proposal is None
-    assert response.requires_confirmation is False
-    assert store.list_decision_proposals(board="dev10") == []
-    assert len(llm.calls) == 2
-    assert "decision-json" in llm.calls[1]["user_prompt"]
-
-
-def test_parse_action_spec_normalizes_legacy_assignment_aliases() -> None:
-    assign_spec = _parse_action_spec(
-        json.dumps(
-            {
-                "action_type": "assign_task",
-                "target": "item-123",
-                "params": {"assignee": "maker"},
-            }
-        )
-    )
-
-    assert assign_spec.action_type == "assign_item"
-    assert assign_spec.target == "item-123"
-    assert assign_spec.params["assignee"] == "maker"
-
-    delegate_spec = _parse_action_spec(
-        json.dumps(
-            {
-                "action_type": "delegate_task",
-                "target": "maker",
-                "params": {"task_id": "item-456", "reviewer": "rev-ui"},
-            }
-        )
-    )
-
-    assert delegate_spec.action_type == "assign_item"
-    assert delegate_spec.target == "item-456"
-    assert delegate_spec.params["assignee"] == "maker"
-    assert delegate_spec.params["reviewer"] == "rev-ui"
-    assert "task_id" not in delegate_spec.params
-
-
 def test_handle_turn_returns_llm_denial_when_preview_terms_survive_rewrite(
     tmp_path: Path,
 ) -> None:
     safe_denial = "확인 문구를 만들 수 없어 진행하지 않았어요. 요청을 다시 적어 주세요."
     llm = SequenceLLMClient(
-        json.dumps(
-            {
-                "action_type": "create_project",
-                "target": "alpha",
-                "params": {"title": "Alpha cockpit"},
-            }
-        ),
         "PR1 cannot do action handoff yet.",
         "PR3 routing still cannot do it.",
         safe_denial,
@@ -587,13 +335,13 @@ def test_handle_turn_returns_llm_denial_when_preview_terms_survive_rewrite(
         _context(store=SQLiteBoardStore(tmp_path / "board.db"), workspace_path=tmp_path),
     )
 
-    assert response.response_type == "denied"
+    assert response.response_type == "answer"
     assert response.answer is not None
     assert response.answer.text == safe_denial
     assert response.proposal is None
     assert response.requires_confirmation is False
-    assert len(llm.calls) == 4
-    assert "rewrite-required" in llm.calls[2]["user_prompt"]
+    assert len(llm.calls) == 3
+    assert "rewrite-required" in llm.calls[1]["user_prompt"]
 
 
 def test_build_assistant_facts_includes_top_in_flight_health_and_recent_commits(

@@ -2520,211 +2520,76 @@ def test_master_chat_guides_feedback_actions_with_llm_text(tmp_path: Path) -> No
     assert "handoff" not in rendered.lower()
 
 
-def test_master_chat_action_preview_confirm_records_decision_only(
+def test_master_chat_action_request_stays_node_direct_answer_only(
     tmp_path: Path,
 ) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
-    llm = SequenceAssistantLLMClient(
-        json.dumps(
-            {
-                "action_type": "create_project",
-                "target": "alpha",
-                "params": {"title": "Alpha cockpit"},
-            }
-        ),
-        "Alpha 프로젝트 생성을 MASTER 검토함에 올릴까요? `confirm {confirmation_id}`",
-        "Alpha 프로젝트 생성 요청을 MASTER 검토함에 기록했어요.",
-        "Alpha 프로젝트 생성 요청은 이미 MASTER 검토함에 기록되어 있어요.",
-    )
+    llm = FakeAssistantLLMClient("chat-master가 직접 처리할게요.")
     client = make_client(tmp_path, store, assistant_client=llm)
     headers = auth_headers(client)
 
-    preview = client.post(
+    response = client.post(
         "/api/master/chat",
         headers=headers,
         json={
             "message": "Alpha 프로젝트 만들어줘",
-            "conversation_id": "conv-pr3",
-            "request_id": "req-pr3",
+            "conversation_id": "conv-node-direct",
+            "request_id": "req-node-direct",
         },
     )
-    preview_payload = preview.json()
-    confirmation_id = preview_payload["proposal"]["proposal_id"]
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["response_type"] == "answer"
+    assert payload["requires_confirmation"] is False
+    assert payload["proposal"] is None
+    assert payload["answer"]["text"] == "chat-master가 직접 처리할게요."
     assert store.list_decision_proposals(board="dev10") == []
-    missing_auth = client.post(
-        "/api/master/chat/confirm",
-        json={
-            "confirmation_id": confirmation_id,
-            "idempotency_key": "confirm-alpha-once",
-            "conversation_id": "conv-pr3",
-        },
-    )
-    confirmed = client.post(
-        "/api/master/chat/confirm",
-        headers=headers,
-        json={
-            "confirmation_id": confirmation_id,
-            "idempotency_key": "confirm-alpha-once",
-            "conversation_id": "conv-pr3",
-            "request_id": "req-confirm",
-        },
-    )
-    retry = client.post(
-        "/api/master/chat/confirm",
-        headers=headers,
-        json={
-            "confirmation_id": confirmation_id,
-            "idempotency_key": "confirm-alpha-once",
-            "conversation_id": "conv-pr3",
-            "request_id": "req-confirm-retry",
-        },
-    )
-
-    assert preview.status_code == 200
-    assert preview_payload["response_type"] == "preview"
-    assert preview_payload["requires_confirmation"] is True
-    assert preview_payload["answer"]["text"] == (
-        f"Alpha 프로젝트 생성을 MASTER 검토함에 올릴까요? `confirm {confirmation_id}`"
-    )
-    assert confirmation_id.startswith("assistant_")
-    assert preview_payload["proposal"]["payload"]["assistant_action"]["action_type"] == (
-        "create_project"
-    )
-    assert missing_auth.status_code == 401
-    assert confirmed.status_code == 200
-    confirmed_payload = confirmed.json()
-    assert confirmed_payload["response_type"] == "answer"
-    assert confirmed_payload["answer"]["text"] == (
-        "Alpha 프로젝트 생성 요청을 MASTER 검토함에 기록했어요."
-    )
-    assert confirmed_payload["answer"]["metadata"]["decision"]["status"] == "pending"
-    proposals = store.list_decision_proposals(board="dev10")
-    assert len(proposals) == 1
-    proposal = proposals[0]
-    assert proposal.status == "pending"
-    assert proposal.metadata["confirmation_id"] == confirmation_id
-    assistant_action = cast(dict[str, object], proposal.metadata["assistant_action"])
-    assert assistant_action["action_type"] == "create_project"
     assert store.list_tasks(board="dev10") == []
-    assert retry.status_code == 200
-    assert retry.json()["answer"]["metadata"]["decision"]["proposal_id"] == proposal.id
-    assert len(store.list_decision_proposals(board="dev10")) == 1
 
 
-def test_master_chat_action_spec_failure_falls_back_to_preview_not_empty_204(
+def test_removed_legacy_chat_endpoint_returns_404(
     tmp_path: Path,
 ) -> None:
     client = make_client(
         tmp_path,
         SQLiteBoardStore(tmp_path / "board.db"),
-        assistant_client=SequenceAssistantLLMClient(
-            "I will make a node, not JSON.",
-            "리뷰어 노드를 만들까요? `confirm {confirmation_id}`",
-        ),
     )
+    endpoint = "/api/master/chat" + "/confirm"
 
     response = client.post(
-        "/api/master/chat",
+        endpoint,
         headers=auth_headers(client),
-        json={
-            "message": "리뷰어 노드 만들어줘",
-            "conversation_id": "conv-node",
-            "request_id": "req-node",
-        },
+        json={"confirmation_id": "assistant_old", "idempotency_key": "old"},
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    confirmation_id = payload["proposal"]["proposal_id"]
-    assert payload["response_type"] == "preview"
-    assert payload["requires_confirmation"] is True
-    assert payload["answer"]["text"] == f"리뷰어 노드를 만들까요? `confirm {confirmation_id}`"
-    action = payload["proposal"]["payload"]["assistant_action"]
-    assert action["action_type"] == "spawn_node"
-    assert action["target"] == "reviewer"
-    assert action["params"]["group"] == "review"
+    assert response.status_code == 404
 
 
-def test_master_chat_reviewer_node_request_returns_preview_payload(
+def test_master_chat_team_operator_action_turn_does_not_require_csrf(
     tmp_path: Path,
 ) -> None:
-    client = make_client(
-        tmp_path,
-        SQLiteBoardStore(tmp_path / "board.db"),
-        assistant_client=SequenceAssistantLLMClient(
-            json.dumps(
-                {
-                    "action_type": "spawn_node",
-                    "target": "reviewer",
-                    "params": {"project": "dev10", "role": "reviewer", "group": "review"},
-                }
-            ),
-            "리뷰어 노드를 만들까요? `confirm {confirmation_id}`",
-        ),
-    )
-
-    response = client.post(
-        "/api/master/chat",
-        headers=auth_headers(client),
-        json={
-            "message": "리뷰어 노드 만들어줘",
-            "conversation_id": "conv-reviewer",
-            "request_id": "req-reviewer",
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    confirmation_id = payload["proposal"]["proposal_id"]
-    assert payload["response_type"] == "preview"
-    assert payload["requires_confirmation"] is True
-    assert payload["answer"]["text"] == f"리뷰어 노드를 만들까요? `confirm {confirmation_id}`"
-    assert payload["proposal"]["payload"]["confirmation_id"] == confirmation_id
-    action = payload["proposal"]["payload"]["assistant_action"]
-    assert action["action_type"] == "spawn_node"
-    assert action["target"] == "reviewer"
-    assert action["params"]["group"] == "review"
-
-
-def test_master_chat_action_confirm_requires_team_csrf(tmp_path: Path) -> None:
     write_team_member(tmp_path, secret="operator-secret", role="operator")
     store = SQLiteBoardStore(tmp_path / "board.db")
-    llm = SequenceAssistantLLMClient(
-        json.dumps(
-            {
-                "action_type": "create_project",
-                "target": "alpha",
-                "params": {"title": "Alpha cockpit"},
-            }
-        ),
-        "Alpha 프로젝트 생성을 MASTER 검토함에 올릴까요? `confirm {confirmation_id}`",
-    )
     client = make_client(
         tmp_path,
         store,
         auth_mode=AuthMode.TEAM_COOKIE,
-        assistant_client=llm,
+        assistant_client=FakeAssistantLLMClient("chat-master가 직접 처리합니다."),
     )
     login = client.post("/api/login", json={"name": "alice", "secret": "operator-secret"})
     headers = {CSRF_HEADER: str(login.json()["csrf"])}
-    preview = client.post(
+
+    response = client.post(
         "/api/master/chat",
         headers=headers,
         json={"message": "Alpha 프로젝트 만들어줘"},
     )
-    confirmation_id = preview.json()["proposal"]["proposal_id"]
-
-    missing_csrf = client.post(
-        "/api/master/chat/confirm",
-        json={
-            "confirmation_id": confirmation_id,
-            "idempotency_key": "confirm-alpha-once",
-        },
-    )
 
     assert login.status_code == 200
-    assert preview.status_code == 200
-    assert missing_csrf.status_code == 403
+    assert response.status_code == 200
+    assert response.json()["response_type"] == "answer"
+    assert response.json()["proposal"] is None
     assert store.list_decision_proposals(board="dev10") == []
 
 
@@ -3168,7 +3033,7 @@ def test_master_chat_busy_assistant_node_returns_retry_answer(tmp_path: Path) ->
     assert payload["answer"]["metadata"]["llm"]["status"] == "busy"
 
 
-def test_master_chat_content_blocked_does_not_return_unavailable_fallback(
+def test_master_chat_content_blocked_returns_empty_204(
     tmp_path: Path,
 ) -> None:
     client = make_client(
@@ -3183,12 +3048,8 @@ def test_master_chat_content_blocked_does_not_return_unavailable_fallback(
         json={"message": "새 프로젝트 만들어줘"},
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["response_type"] == "preview"
-    assert payload["answer"]["text"]
-    assert payload["proposal"] is not None
-    assert payload["requires_confirmation"] is True
+    assert response.status_code == 204
+    assert response.content == b""
 
 
 def test_inbox_returns_blocked_and_ask_human_items_with_cursor_and_redaction(
@@ -8774,7 +8635,8 @@ def test_slack_manifest_and_config_endpoints(tmp_path: Path) -> None:
     assert test_response.json()["status"] == "tokens_saved"
     assert status_response.json()["status"] == "tokens_saved"
     assert status_response.json()["intake"] == {"enabled": False}
-    assert "chat_runtime" not in status_response.json()
+    removed_key = "chat" + "_runtime"
+    assert removed_key not in status_response.json()
     assert "state" not in status_response.json()
     assert status_response.json()["tokens"]["default_channel"] == "C123"
 

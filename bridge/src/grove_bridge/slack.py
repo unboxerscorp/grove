@@ -28,7 +28,6 @@ from grove_bridge.assistant import (
     AssistantScope,
     AssistantTransportError,
     AssistantUnavailable,
-    classify_for_task,
 )
 from grove_bridge.auth_status import redact_secret_text
 from grove_bridge.config import default_board_db_path
@@ -205,14 +204,6 @@ class SocketResponseFactory(Protocol):
 
 class AssistantBrokerProtocol(Protocol):
     def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse: ...
-
-    def confirm_action(
-        self,
-        confirmation_id: str,
-        context: AssistantContext,
-        *,
-        idempotency_key: str,
-    ) -> MasterChatResponse: ...
 
     def handle_notice(
         self,
@@ -714,7 +705,7 @@ class SlackConnector:
         confirmation_store: SlackConfirmationStore | None = None,
         assistant_broker: AssistantBrokerProtocol | None = None,
         bot_user_id: str | None = None,
-        route_chat_to_node: bool = False,
+        route_chat_to_node: bool = True,
         node_chat_retry_delay_seconds: int = SLACK_NODE_CHAT_INPUT_BUSY_RETRY_SECONDS,
     ) -> None:
         self.store = store
@@ -727,7 +718,8 @@ class SlackConnector:
         self.command_config = command_config
         self.digest_config = digest_config
         self.bot_user_id = bot_user_id or None
-        self.route_chat_to_node = route_chat_to_node
+        _ = route_chat_to_node
+        self.route_chat_to_node = True
         self.node_chat_retry_delay_seconds = node_chat_retry_delay_seconds
         self.confirmations = confirmation_store or (
             SlackConfirmationStore(
@@ -1614,14 +1606,6 @@ class SlackConnector:
                 thread_ts=thread_ts,
             )
             return
-        if _is_assistant_confirmation_id(parts[1]):
-            self._handle_assistant_confirm(
-                event,
-                actor=actor,
-                thread_ts=thread_ts,
-                confirmation_id=parts[1],
-            )
-            return
         if self.confirmations is None:
             self._post_assistant_notice(
                 event,
@@ -1657,90 +1641,6 @@ class SlackConnector:
             response_type=_slack_notice_response_type_from_result(result),
             thread_ts=thread_ts,
         )
-
-    def _handle_assistant_confirm(
-        self,
-        event: SlackEvent,
-        *,
-        actor: SlackCommandMember,
-        thread_ts: str,
-        confirmation_id: str,
-    ) -> None:
-        context = self._assistant_context(event, thread_ts=thread_ts)
-        idempotency_key = _slack_assistant_confirm_idempotency_key(
-            event,
-            confirmation_id=confirmation_id,
-        )
-        try:
-            response = self.assistant_broker.confirm_action(
-                confirmation_id,
-                context,
-                idempotency_key=idempotency_key,
-            )
-        except AssistantContentBlocked as exc:
-            LOGGER.warning("Slack assistant confirm hidden: %s", _safe_log_error(exc))
-            self._audit_slack_command(
-                command="assistant_confirm",
-                event=event,
-                actor=_slack_member_actor(event.user, actor),
-                status="failed",
-                summary="content_blocked",
-            )
-            return
-        except AssistantTransportError as exc:
-            LOGGER.warning("Slack assistant confirm transport failed: %s", _safe_log_error(exc))
-            text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
-            status = "unavailable"
-        except AssistantUnavailable as exc:
-            LOGGER.warning("Slack assistant confirm hidden: %s", _safe_log_error(exc))
-            self._audit_slack_command(
-                command="assistant_confirm",
-                event=event,
-                actor=_slack_member_actor(event.user, actor),
-                status="failed",
-                summary="unavailable_non_transport",
-            )
-            return
-        except Exception as exc:
-            LOGGER.warning("Slack assistant confirm failed: %s", _safe_log_error(exc))
-            self._audit_slack_command(
-                command="assistant_confirm",
-                event=event,
-                actor=_slack_member_actor(event.user, actor),
-                status="failed",
-                summary="broker_exception",
-            )
-            return
-        else:
-            try:
-                text = _assistant_response_text(response)
-            except AssistantContentBlocked as exc:
-                LOGGER.warning("Slack assistant confirm hidden: %s", _safe_log_error(exc))
-                self._audit_slack_command(
-                    command="assistant_confirm",
-                    event=event,
-                    actor=_slack_member_actor(event.user, actor),
-                    status="failed",
-                    summary="missing_answer_text",
-                )
-                return
-            status = response.response_type
-        self._audit_slack_command(
-            command="assistant_confirm",
-            event=event,
-            actor=_slack_member_actor(event.user, actor),
-            status=status,
-            summary=text,
-            payload={"confirmation_id": _safe_slack_text(confirmation_id)},
-        )
-        try:
-            self.slack_client.post_message(
-                channel=event.channel,
-                text=text,
-                thread_ts=thread_ts,
-            )
-        except Exception as exc:
-            LOGGER.warning("Slack assistant confirm could not be posted: %s", _safe_log_error(exc))
 
     def _preview_command(
         self,
@@ -2132,114 +2032,6 @@ class SlackConnector:
             )
         return True
 
-    def _handle_assistant_turn(self, event: SlackEvent, *, thread_ts: str) -> bool:
-        session_id = _slack_assistant_conversation_id(event, thread_ts=thread_ts)
-        text = _normalize_slack_text(event.text)
-        context = self._assistant_context(event, thread_ts=thread_ts)
-        lock = self._locks.setdefault(session_id, threading.Lock())
-        should_post_response = True
-        try:
-            with lock:
-                response = self.assistant_broker.handle_turn(text, context)
-        except AssistantContentBlocked as exc:
-            LOGGER.warning("Slack assistant response hidden: %s", _safe_log_error(exc))
-            response_text = ""
-            should_post_response = False
-            self._audit_slack_command(
-                command="assistant",
-                event=event,
-                actor=self._assistant_actor_payload(event),
-                status="failed",
-                summary="content_blocked",
-            )
-        except AssistantTransportError as exc:
-            LOGGER.warning("Slack assistant transport failed: %s", _safe_log_error(exc))
-            response_text = ASSISTANT_TRANSPORT_FALLBACK_TEXT
-            self._audit_slack_command(
-                command="assistant",
-                event=event,
-                actor=self._assistant_actor_payload(event),
-                status="unavailable",
-                summary=response_text,
-            )
-        except AssistantUnavailable as exc:
-            LOGGER.warning("Slack assistant response hidden: %s", _safe_log_error(exc))
-            response_text = ""
-            should_post_response = False
-            self._audit_slack_command(
-                command="assistant",
-                event=event,
-                actor=self._assistant_actor_payload(event),
-                status="failed",
-                summary="unavailable_non_transport",
-            )
-        except Exception as exc:
-            LOGGER.warning("Slack assistant broker failed: %s", _safe_log_error(exc))
-            response_text = ""
-            should_post_response = False
-            self._audit_slack_command(
-                command="assistant",
-                event=event,
-                actor=self._assistant_actor_payload(event),
-                status="failed",
-                summary="broker_exception",
-            )
-        else:
-            try:
-                response_text = _assistant_response_text(response)
-            except AssistantContentBlocked as exc:
-                LOGGER.warning("Slack assistant response hidden: %s", _safe_log_error(exc))
-                response_text = ""
-                should_post_response = False
-                self._audit_slack_command(
-                    command="assistant",
-                    event=event,
-                    actor=self._assistant_actor_payload(event),
-                    status="failed",
-                    summary="missing_answer_text",
-                    payload={
-                        "conversation_id": _safe_slack_text(response.conversation_id),
-                        "request_id": _safe_slack_text(response.request_id),
-                        "classification": response.classification.kind,
-                    },
-                )
-            else:
-                self._audit_slack_command(
-                    command="assistant",
-                    event=event,
-                    actor=self._assistant_actor_payload(event),
-                    status=response.response_type,
-                    summary=response_text,
-                    payload={
-                        "conversation_id": _safe_slack_text(response.conversation_id),
-                        "request_id": _safe_slack_text(response.request_id),
-                        "classification": response.classification.kind,
-                    },
-                )
-        self.store.upsert_slack_thread(
-            board=self.human_gate.board,
-            task_id=None,
-            team_id=event.team,
-            channel_id=event.channel,
-            thread_ts=thread_ts,
-            mode="chat",
-            node="assistant",
-        )
-        if should_post_response:
-            try:
-                for response_chunk in _slack_assistant_response_chunks(response_text):
-                    self.slack_client.post_message(
-                        channel=event.channel,
-                        text=response_chunk,
-                        thread_ts=thread_ts,
-                    )
-            except Exception as exc:
-                LOGGER.warning(
-                    "Slack assistant response could not be posted: %s",
-                    _safe_log_error(exc),
-                )
-        return True
-
     def _assistant_context(self, event: SlackEvent, *, thread_ts: str) -> AssistantContext:
         board = self._assistant_board()
         display = self._project_directory().display_name(board)
@@ -2373,8 +2165,6 @@ class SlackConnector:
         return self.human_gate.board
 
     def _handle_chat(self, event: SlackEvent, *, thread_ts: str) -> bool:
-        if not self.route_chat_to_node:
-            return self._handle_assistant_turn(event, thread_ts=thread_ts)
         text = self._node_chat_event_text(event, thread_ts=thread_ts)
         node = _select_chat_node(event, self.chat_route)
         item = self.store.enqueue_slack_chat_message(
@@ -2493,8 +2283,6 @@ class SlackConnector:
             )
 
     def poll_node_chat_queue(self) -> int:
-        if not self.route_chat_to_node:
-            return 0
         if not self._node_chat_queue_lock.acquire(blocking=False):
             return 0
         processed = 0
@@ -2743,55 +2531,6 @@ class SlackConnector:
             Path("~/.grove").expanduser(), default_session=self.human_gate.board
         )
 
-    def _process_node_chat_task_intake(self, item: SlackChatQueueItem, *, now: int) -> bool:
-        if self.command_config is None or self.confirmations is None:
-            return False
-        if not self._intake_enabled(self.command_config):
-            return False
-        actor = self._assistant_member(item.user_id)
-        if actor is None or actor.role not in {"admin", "operator"}:
-            return False
-        draft = classify_for_task(item.text)
-        if draft is None:
-            return False
-        event = _slack_event_from_chat_queue_item(item)
-        classification = SlackIntentClassification(
-            intent="task_request",
-            confidence=draft.confidence,
-            title=draft.title,
-            summary=draft.body,
-            labels=("task", "slack-chat"),
-            reason=draft.reason,
-        )
-        preview = self._preview_intake_task(
-            event=event,
-            actor=actor,
-            classification=classification,
-        )
-        if preview is None:
-            return False
-        try:
-            self.slack_client.post_message(
-                channel=item.channel_id,
-                text=preview.text,
-                thread_ts=item.thread_ts,
-                blocks=preview.blocks,
-            )
-        except Exception as exc:
-            LOGGER.warning(
-                "Slack chat task preview delivery deferred: %s",
-                _safe_log_error(exc),
-            )
-            self.store.defer_slack_chat_message(
-                item.id,
-                error=_safe_log_error(exc),
-                next_attempt_at=now + self.node_chat_retry_delay_seconds,
-                now=now,
-            )
-            return True
-        self.store.complete_slack_chat_message(item.id, now=now)
-        return True
-
 
 def slack_manifest() -> dict[str, object]:
     return {
@@ -3002,7 +2741,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--digest-live", action="store_true")
     parser.add_argument("--digest-interval", type=int, default=300)
     parser.add_argument("--enable-reminders", action="store_true")
-    parser.add_argument("--route-chat-to-node", action="store_true")
+    parser.add_argument(
+        "--route-chat-to-node",
+        action="store_true",
+        help="Deprecated compatibility flag; Slack chat is always node-direct.",
+    )
     parser.add_argument("--reminder-after-seconds", type=int, default=3600)
     parser.add_argument("--max-reminders", type=int, default=1)
     parser.add_argument("--intake-assignee")
@@ -3094,19 +2837,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     socket_client.connect()
     stop_node_chat_queue = threading.Event()
-    node_chat_queue_thread: threading.Thread | None = None
-    if args.route_chat_to_node:
-        node_chat_queue_thread = threading.Thread(
-            target=_run_node_chat_queue_worker,
-            kwargs={
-                "connector": connector,
-                "stop_event": stop_node_chat_queue,
-                "poll_interval": args.poll_interval,
-            },
-            name="grove-slack-node-chat-queue",
-            daemon=True,
-        )
-        node_chat_queue_thread.start()
+    node_chat_queue_thread = threading.Thread(
+        target=_run_node_chat_queue_worker,
+        kwargs={
+            "connector": connector,
+            "stop_event": stop_node_chat_queue,
+            "poll_interval": args.poll_interval,
+        },
+        name="grove-slack-node-chat-queue",
+        daemon=True,
+    )
+    node_chat_queue_thread.start()
     socket_disconnected_since: float | None = None
     try:
         while True:
@@ -3569,21 +3310,6 @@ def _explicit_reserved_command_text(text: str) -> bool:
         return True
     first = normalized.split(maxsplit=1)[0].lower() if normalized.split() else ""
     return first in {"status", "approve", "abort", "killswitch", "confirm", "digest"}
-
-
-def _is_assistant_confirmation_id(value: str) -> bool:
-    return value.startswith("assistant_")
-
-
-def _slack_assistant_confirm_idempotency_key(
-    event: SlackEvent,
-    *,
-    confirmation_id: str,
-) -> str:
-    return (
-        f"slack:{_safe_slack_text(event.team)}:{_safe_slack_text(event.channel)}:"
-        f"{_safe_slack_text(event.ts)}:{_safe_slack_text(confirmation_id)}"
-    )
 
 
 def _slack_assistant_conversation_id(event: SlackEvent, *, thread_ts: str) -> str:

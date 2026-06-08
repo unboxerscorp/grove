@@ -196,26 +196,6 @@ class FakeAssistantBroker:
         text = self.notice_text if self.notice_text is not None else reason
         return self._response(message, context, text=text, response_type=response_type)
 
-    def confirm_action(
-        self,
-        confirmation_id: str,
-        context: AssistantContext,
-        *,
-        idempotency_key: str,
-    ) -> MasterChatResponse:
-        self.notice_calls.append(
-            {
-                "message": confirmation_id,
-                "decision": "confirm",
-                "reason": idempotency_key,
-                "response_type": "answer",
-                "requires_confirmation": False,
-                "metadata": {},
-            }
-        )
-        text = self.notice_text if self.notice_text is not None else confirmation_id
-        return self._response(confirmation_id, context, text=text, response_type="answer")
-
     def _response(
         self,
         message: str,
@@ -303,14 +283,6 @@ class LLMNoticeAssistantBroker(FakeAssistantBroker):
 class AssistantBrokerLike(Protocol):
     def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse: ...
 
-    def confirm_action(
-        self,
-        confirmation_id: str,
-        context: AssistantContext,
-        *,
-        idempotency_key: str,
-    ) -> MasterChatResponse: ...
-
     def handle_notice(
         self,
         message: str,
@@ -349,17 +321,6 @@ class FailingAssistantBroker:
         self.notice_calls.append((message, context))
         raise RuntimeError(self.message)
 
-    def confirm_action(
-        self,
-        confirmation_id: str,
-        context: AssistantContext,
-        *,
-        idempotency_key: str,
-    ) -> MasterChatResponse:
-        _ = idempotency_key
-        self.notice_calls.append((confirmation_id, context))
-        raise RuntimeError(self.message)
-
 
 class TransportUnavailableAssistantBroker(FailingAssistantBroker):
     def handle_turn(self, message: str, context: AssistantContext) -> MasterChatResponse:
@@ -379,17 +340,6 @@ class TransportUnavailableAssistantBroker(FailingAssistantBroker):
     ) -> MasterChatResponse:
         _ = (decision, reason, response_type, requires_confirmation, metadata)
         self.notice_calls.append((message, context))
-        raise AssistantTransportError(self.message)
-
-    def confirm_action(
-        self,
-        confirmation_id: str,
-        context: AssistantContext,
-        *,
-        idempotency_key: str,
-    ) -> MasterChatResponse:
-        _ = idempotency_key
-        self.notice_calls.append((confirmation_id, context))
         raise AssistantTransportError(self.message)
 
 
@@ -421,17 +371,6 @@ class ContentBlockedAssistantBroker:
         self.notice_calls.append((message, context))
         raise AssistantContentBlocked(self.message)
 
-    def confirm_action(
-        self,
-        confirmation_id: str,
-        context: AssistantContext,
-        *,
-        idempotency_key: str,
-    ) -> MasterChatResponse:
-        _ = idempotency_key
-        self.notice_calls.append((confirmation_id, context))
-        raise AssistantContentBlocked(self.message)
-
 
 class LegacyDeniedAssistantBroker:
     def __init__(self, reason: str = "RULE BASED GATE") -> None:
@@ -457,17 +396,6 @@ class LegacyDeniedAssistantBroker:
         _ = (decision, reason, response_type, requires_confirmation, metadata)
         self.notice_calls.append((message, context))
         return self._response(message, context)
-
-    def confirm_action(
-        self,
-        confirmation_id: str,
-        context: AssistantContext,
-        *,
-        idempotency_key: str,
-    ) -> MasterChatResponse:
-        _ = idempotency_key
-        self.notice_calls.append((confirmation_id, context))
-        return self._response(confirmation_id, context)
 
     def _response(self, message: str, context: AssistantContext) -> MasterChatResponse:
         return MasterChatResponse(
@@ -2670,44 +2598,20 @@ def test_slack_control_command_copy_uses_item_terms() -> None:
         assert stale not in source
 
 
-def test_slack_assistant_action_preview_confirm_records_decision_only(tmp_path: Path) -> None:
+def test_slack_chat_action_request_routes_to_node_queue_without_decision_preview(
+    tmp_path: Path,
+) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     slack = FakeSlackClient()
-    llm = SequenceLLMClient(
-        json.dumps(
-            {
-                "action_type": "create_project",
-                "target": "alpha",
-                "params": {"title": "Alpha cockpit"},
-            }
-        ),
-        "Alpha 프로젝트 생성을 MASTER 검토함에 올릴까요? `confirm {confirmation_id}`",
-        "Alpha 프로젝트 생성 요청을 MASTER 검토함에 기록했어요.",
-    )
-    connector = command_connector(
-        store,
-        slack,
-        assistant_broker=AssistantBroker(llm_client=llm),
-    )
+    connector = command_connector(store, slack)
 
     assert connector.handle_event(slack_event("UOP", "<@BOT> Alpha 프로젝트 만들어줘"))
-    preview = slack.posts[-1][1]
-    confirmation = confirmation_id(preview)
-    assert confirmation.startswith("assistant_")
+    assert slack.posts[-1][1] == "잠시만 기다리세요!"
     assert store.list_decision_proposals(board="main") == []
 
-    assert connector.handle_event(
-        addressed_slack_event("UOP", f"confirm {confirmation}", ts="444.900")
-    )
-
-    assert slack.posts[-1][1] == "Alpha 프로젝트 생성 요청을 MASTER 검토함에 기록했어요."
-    proposals = store.list_decision_proposals(board="main")
-    assert len(proposals) == 1
-    proposal = proposals[0]
-    assert proposal.status == "pending"
-    assert proposal.metadata["confirmation_id"] == confirmation
-    assistant_action = cast(Mapping[str, object], proposal.metadata["assistant_action"])
-    assert assistant_action["action_type"] == "create_project"
+    assert connector.poll_node_chat_queue() == 1
+    assert slack.updates[-1][2] == "grove reply"
+    assert store.list_decision_proposals(board="main") == []
     assert store.list_tasks(board="main") == []
 
 

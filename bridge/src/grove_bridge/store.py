@@ -192,8 +192,7 @@ class MasterChatMessage:
 class ChatSessionRow:
     """A durable bridge-native chat session (Slack thread or web conversation).
 
-    Stage0 additive: written/read only by the flag-gated chat runtime; nothing in
-    the existing live route references this table.
+    Used by node-direct chat to preserve per-thread context across Slack/web turns.
     """
 
     id: str
@@ -2282,7 +2281,7 @@ class SQLiteBoardStore:
                 (error, now, item_id),
             )
 
-    # --- bridge-native chat runtime (Stage0 additive; flag-gated callers only) ---
+    # --- bridge-native master chat persistence ---
 
     def upsert_chat_session(
         self,
