@@ -8,6 +8,12 @@ inspection, Slack/web chat to the GROVE MASTER, audit, setup, and remote access.
 agent you see is a real, viewable, talk-to-able terminal session, not an invisible
 runtime.
 
+## Screenshots
+
+| Org chart                                                                                                              | Multi-terminal grid                                                                                                       |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| ![Grove org chart showing a root node, project nodes, groups, and live status](docs/assets/readme/grove-org-chart.png) | ![Grove terminal grid with several live panes and per-cell command composers](docs/assets/readme/grove-terminal-grid.png) |
+
 ```bash
 grove up                         # start the org chart in tmux
 grove org --json                  # inspect nodes, roles, panes, cwd, and hierarchy
