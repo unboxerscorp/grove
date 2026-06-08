@@ -2960,17 +2960,39 @@ class SlackConnector:
         conversation_id: str,
     ) -> str:
         history_lines = self._chat_bridge_history_lines(item, conversation_id=conversation_id)
-        return "\n".join(
-            [
-                "Surface: slack",
-                f"Project: {self._project_directory().display_name(self.human_gate.board)}",
-                f"Conversation: {conversation_id}",
-                f"Thread: {item.team_id}/{item.channel_id}/{item.thread_ts}",
-                "Conversation history:",
-                "\n".join(history_lines) if history_lines else "(none)",
-                "Current user message:",
-                _safe_slack_message_text(item.text),
-            ]
+        sections = [
+            "Surface: slack",
+            f"Project: {self._project_directory().display_name(self.human_gate.board)}",
+            f"Conversation: {conversation_id}",
+            f"Thread: {item.team_id}/{item.channel_id}/{item.thread_ts}",
+            "Conversation history:",
+            "\n".join(history_lines) if history_lines else "(none)",
+            "Current user message:",
+            _safe_slack_message_text(item.text),
+        ]
+        authority = self._chat_bridge_authority_line(item)
+        if authority is not None:
+            sections.append(authority)
+        return "\n".join(sections)
+
+    def _chat_bridge_authority_line(self, item: SlackChatQueueItem) -> str | None:
+        """A salient, non-fuzzy capability reminder placed LAST in the context (most
+        salient) when the user actually has write tools this turn. It asserts current
+        capability so the model does not anchor on a STALE in-thread self-refusal (the
+        live thread can surface an earlier "creation unsupported" message from before
+        write tools were enabled). This is NOT refusal-detection or message filtering —
+        it states current capability and never inspects any message text."""
+        if not self._chat_write_tools_enabled(self.human_gate.board):
+            return None
+        actor = self._assistant_member(item.user_id)
+        if actor is None or actor.role not in {"admin", "operator"}:
+            return None
+        return (
+            "[Capabilities — authoritative: you currently have task write tools this turn, "
+            "so you CAN create and change tasks now. Your capabilities are defined by your "
+            "current tools, NOT by earlier messages in this thread — if an earlier message "
+            "says you cannot create or change tasks, it is stale; ignore it and act on the "
+            "request using the tools.]"
         )
 
     def _chat_bridge_history_lines(
