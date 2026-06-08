@@ -174,3 +174,17 @@ def test_write_tools_execute_via_dispatcher_and_return_denial_as_result(tmp_path
     vcreate = next(t for t in viewer_tools if t.name == "create_task")
     denied = vcreate.handler({"title": "x"})
     assert denied["ok"] is False and "error" in denied
+
+
+def test_create_task_tool_defaults_to_staged_unless_explicit(tmp_path: Path) -> None:
+    # Decision ①: chat-created tasks land in 'staged' (stack-then-gate) by default;
+    # an explicit status from the operator is honored.
+    from grove_bridge.chat_runtime import build_chat_write_tools
+
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    tools = build_chat_write_tools(store, board="dev10", actor=_actor())
+    create = next(t for t in tools if t.name == "create_task")
+    r1 = create.handler({"title": "ship export"})  # no status -> staged
+    assert store.get_task(board="dev10", task_id=str(r1["task_id"])).status == "staged"
+    r2 = create.handler({"title": "urgent", "status": "ready"})  # explicit honored
+    assert store.get_task(board="dev10", task_id=str(r2["task_id"])).status == "ready"

@@ -613,6 +613,14 @@ def build_chat_write_tools(
         def handler(args: Mapping[str, object]) -> Mapping[str, object]:
             target = args.get("task_id")
             target_id = target.strip() if isinstance(target, str) and target.strip() else None
+            fields = args
+            if kind == "create":
+                # Decision ①: chat-created tasks land in 'staged' (stack-then-gate)
+                # unless the operator explicitly named a status. An explicit,
+                # non-blank status is honored verbatim.
+                status_val = args.get("status")
+                if not (isinstance(status_val, str) and status_val.strip()):
+                    fields = {**args, "status": "staged"}
             try:
                 result = apply_chat_confirm_action(
                     store,
@@ -620,7 +628,7 @@ def build_chat_write_tools(
                         kind=kind,  # type: ignore[arg-type]
                         board=board,
                         target_task_id=target_id,
-                        fields=args,
+                        fields=fields,
                     ),
                     actor=actor,
                 )
