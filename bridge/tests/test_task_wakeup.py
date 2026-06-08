@@ -38,6 +38,19 @@ def test_is_meaningful_event_filters_to_create_status_assignee() -> None:
     assert is_meaningful_event(_event("audit.task.status", {"action": "x"})) is False
 
 
+def test_is_meaningful_event_excludes_staged() -> None:
+    # staged items just accumulate for human review; they must NOT nudge task-master.
+    assert is_meaningful_event(_event("task.created", {"status": "staged"})) is False
+    assert is_meaningful_event(_event("task.updated", {"status": "staged"})) is False
+    # the dispatch transition staged -> ready DOES nudge.
+    assert (
+        is_meaningful_event(
+            _event("task.updated", {"status": "ready", "previous_status": "staged"})
+        )
+        is True
+    )
+
+
 def test_summarize_event_renders_compact_lines() -> None:
     assert summarize_event(_event("task.created", {"status": "ready"})) == "t1 created"
     assert (

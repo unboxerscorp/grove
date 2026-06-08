@@ -18,17 +18,23 @@ from collections.abc import Awaitable, Callable
 
 from grove_bridge.store import BoardEvent
 
-# task.updated payload keys that represent an actionable change for coordination.
-# (reviewer / title-body edits are intentionally excluded — they don't change
-# dispatch state.) audit.task.* events are duplicates of these and are ignored.
-_MEANINGFUL_UPDATE_KEYS = ("status", "assignee")
+# A "staged" item is filed but not yet dispatched (human-list stack-then-gate);
+# it must not nudge task-master until a human dispatches it (staged -> ready).
+_STAGED_STATUS = "staged"
 
 
 def is_meaningful_event(event: BoardEvent) -> bool:
+    payload = event.payload
     if event.kind == "task.created":
-        return True
+        # New items default to staged (accumulate); only a non-staged create nudges.
+        return payload.get("status") != _STAGED_STATUS
     if event.kind == "task.updated":
-        return any(key in event.payload for key in _MEANINGFUL_UPDATE_KEYS)
+        # A status change is actionable unless it lands in staged; an assignee
+        # change (no status key) is actionable. reviewer/title-body edits are not.
+        # (audit.task.* events duplicate these and are ignored.)
+        if "status" in payload:
+            return payload.get("status") != _STAGED_STATUS
+        return "assignee" in payload
     return False
 
 

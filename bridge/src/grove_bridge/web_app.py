@@ -156,6 +156,7 @@ SUMMARY_OTHER_BUCKET = "other"
 SUMMARY_TRUSTED_KEYS_FILENAME = "summary-trusted-keys.json"
 SUMMARY_TASK_STATUSES = frozenset({"ready", "running", "blocked", "review", "done", "archived"})
 MANUAL_TASK_STATUS_ALIASES = {
+    "staged": "staged",
     "ready": "ready",
     "in_progress": "running",
     "running": "running",
@@ -461,16 +462,19 @@ class TaskCreatePayload(BaseModel):
     body: str | None = Field(default=None, max_length=20_000)
     assignee: str | None = Field(default=None, max_length=500)
     reviewer: str | None = Field(default=None, max_length=500)
-    status: str = Field(default="ready", min_length=1, max_length=100)
+    # New human-facing items accumulate in `staged` (stack-then-gate); a human
+    # dispatches them via POST /api/tasks/{id}/dispatch. Callers that want an item
+    # delivered immediately (or as ask_human) pass an explicit status.
+    status: str = Field(default="staged", min_length=1, max_length=100)
     priority: int = 0
 
     @field_validator("status", mode="before")
     @classmethod
     def _coerce_blank_status(cls, value: object) -> object:
         if value is None:
-            return "ready"
+            return "staged"
         if isinstance(value, str) and not value.strip():
-            return "ready"
+            return "staged"
         return value
 
     @field_validator("priority", mode="before")
@@ -503,6 +507,11 @@ class TaskEditPayload(BaseModel):
 
 class TaskAssigneePayload(BaseModel):
     assignee: str | None = Field(default=None, max_length=500)
+
+
+class TaskDispatchPayload(BaseModel):
+    assignee: str | None = Field(default=None, max_length=500)
+    comment: str | None = Field(default=None, max_length=20_000)
 
 
 class NodeHealthPayload(BaseModel):
@@ -2031,6 +2040,51 @@ def create_app(
             assignee=assignee,
             actor=_actor_payload(auth),
         )
+        return _task_payload(updated)
+
+    @app.post("/api/tasks/{task_id}/dispatch")
+    def dispatch_task_endpoint(
+        request: Request,
+        task_id: str,
+        payload: TaskDispatchPayload,
+    ) -> dict[str, object]:
+        # Human "execute/submit" for a stacked item: set assignee + record an
+        # optional comment, then deliver via staged -> ready. The existing
+        # task-master wakeup nudges the assignee on -> ready (no direct send).
+        auth = _require_operator_state_change(
+            request,
+            detail="task dispatch requires operator role",
+        )
+        project = resolve_project(request)
+        store = _store(request)
+        task = _task_for_project(store, task_id, project=project)
+        board = store.board_slug_for_id(task.board_id)
+        if task.status != "staged":
+            raise HTTPException(
+                status_code=409,
+                detail=f"task is not staged (status={task.status!r}); already dispatched",
+            )
+        actor = _actor_payload(auth)
+        assignee = _validated_task_executor_assignee(payload.assignee, project=project)
+        if assignee is not None:
+            store.set_task_assignee(board=board, task_id=task.id, assignee=assignee, actor=actor)
+        comment = payload.comment.strip() if payload.comment is not None else ""
+        if comment:
+            store.add_comment_to_task(
+                task_id=task.id,
+                author=str(actor.get("login") or actor.get("id") or "operator"),
+                body=comment,
+            )
+        try:
+            updated = store.set_task_status(
+                board=board,
+                task_id=task.id,
+                status="ready",
+                expected_status="staged",
+                actor=actor,
+            )
+        except TaskTransitionConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _task_payload(updated)
 
     @app.patch("/api/tasks/{task_id}")
@@ -9866,6 +9920,14 @@ def _workflow_payload(*, project: ProjectContext, board: str) -> dict[str, objec
 def _workflow_columns() -> list[dict[str, object]]:
     return [
         {
+            "key": "staged",
+            "status": "staged",
+            "label": "Staged",
+            "raw_statuses": ["staged"],
+            "aliases": [],
+            "virtual": False,
+        },
+        {
             "key": "ready",
             "status": "ready",
             "label": "Ready",
@@ -9919,6 +9981,8 @@ def _workflow_columns() -> list[dict[str, object]]:
 
 def _workflow_allowed_transitions() -> list[dict[str, object]]:
     return [
+        # Human dispatch of a stacked item (POST /api/tasks/{id}/dispatch).
+        {"from": "staged", "to": "ready", "requires_reason": False},
         {"from": "ready", "to": "running", "requires_reason": False},
         {"from": "ready", "to": "blocked", "requires_reason": False},
         {"from": "running", "to": "review", "requires_reason": False},

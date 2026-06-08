@@ -616,6 +616,7 @@ def test_shared_access_viewer_is_read_only_for_mutations(
             {"title": "Delegate", "assignee": "worker"},
         ),
         ("PATCH", f"/api/tasks/{task.id}", {"title": "Edited"}),
+        ("POST", f"/api/tasks/{task.id}/dispatch", {"assignee": "worker"}),
         ("POST", f"/api/tasks/{task.id}/comments", {"body": "comment"}),
         ("POST", f"/api/tasks/{task.id}/answer", {"text": "answer"}),
         ("POST", f"/api/tasks/{done_task.id}/retro", {"text": "retro", "node": "worker"}),
@@ -1607,6 +1608,61 @@ def test_task_assignee_patch_reassigns_clears_and_rejects_non_executors(
     assert store.list_audit_events(board="dev10", action="assignee-set")  # none -> lead
 
 
+def test_new_items_default_to_staged_and_honor_explicit_status(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    staged = client.post("/api/boards/main/tasks", headers=headers, json={"title": "feedback"})
+    assert staged.status_code == 200
+    assert staged.json()["status"] == "staged"  # accumulate, not delivered
+
+    explicit = client.post(
+        "/api/boards/main/tasks", headers=headers, json={"title": "q", "status": "ask_human"}
+    )
+    assert explicit.json()["status"] == "ask_human"  # ask-human bypasses staged
+
+
+def test_workflow_exposes_staged_column(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+    columns = client.get("/api/boards/main/workflow", headers=headers).json()["columns"]
+    assert "staged" in [column["key"] for column in columns]
+
+
+def test_dispatch_delivers_staged_item_and_is_idempotent(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    write_registry(
+        tmp_path,
+        "dev10",
+        {"lead": {"name": "lead", "agent": "codex", "group": "lead", "tmux_pane": "dev10:2.0"}},
+    )
+    task = store.create_task(
+        board="dev10", title="feedback", body=None, assignee=None, status="staged"
+    )
+    client = make_client(tmp_path, store)
+    headers = auth_headers(client)
+
+    res = client.post(
+        f"/api/tasks/{task.id}/dispatch",
+        headers=headers,
+        json={"assignee": "lead", "comment": "go ahead"},
+    )
+    assert res.status_code == 200
+    assert res.json()["status"] == "ready"
+    assert res.json()["assignee"] == "lead"
+    comments = client.get(f"/api/tasks/{task.id}/comments", headers=headers).json()
+    assert any("go ahead" in str(comment["body"]) for comment in comments)
+    assert store.get_task(board="dev10", task_id=task.id).status == "ready"
+
+    # already dispatched (no longer staged) -> 409 single-winner
+    again = client.post(
+        f"/api/tasks/{task.id}/dispatch", headers=headers, json={"assignee": "lead"}
+    )
+    assert again.status_code == 409
+
+
 def test_patch_task_fields_edits_title_and_body(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     client = make_client(tmp_path, store)
@@ -1920,6 +1976,7 @@ def test_board_workflow_payload_is_project_scoped_and_aliases_statuses(
     assert payload["board"] == "dev10"
     assert payload["done_visible"] is True
     assert payload["canonical_statuses"] == [
+        "staged",
         "ready",
         "running",
         "review",
@@ -1941,9 +1998,10 @@ def test_board_workflow_payload_is_project_scoped_and_aliases_statuses(
     assert all(transition["to"] != "ask_human" for transition in transitions)
     assert all(transition["from"] != "ask_human" for transition in transitions)
     assert all(transition["requires_reason"] is False for transition in transitions)
-    supported_statuses = {"ready", "running", "review", "blocked", "done"}
+    supported_statuses = {"staged", "ready", "running", "review", "blocked", "done"}
     assert all(transition["from"] in supported_statuses for transition in transitions)
     assert all(transition["to"] in supported_statuses for transition in transitions)
+    assert {"from": "staged", "to": "ready", "requires_reason": False} in transitions
     assert {"from": "review", "to": "done", "requires_reason": False} in payload[
         "allowed_transitions"
     ]
@@ -2042,9 +2100,9 @@ def test_task_create_coerces_nullable_fields_and_rejects_invalid_payloads(
     assert priority_string.status_code == 200
     assert store.get_task(board="dev10", task_id=priority_string.json()["id"]).priority == 12
     assert status_null.status_code == 200
-    assert status_null.json()["status"] == "ready"
+    assert status_null.json()["status"] == "staged"
     assert status_blank.status_code == 200
-    assert status_blank.json()["status"] == "ready"
+    assert status_blank.json()["status"] == "staged"
     assert unknown_assignee.status_code == 200
     assert "assignee" not in unknown_assignee.json()
     assert missing_title.status_code == 422
