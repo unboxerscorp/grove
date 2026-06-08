@@ -651,3 +651,98 @@ def test_non_thread_mention_uses_persisted_history_without_fetch(
 
     assert slack.replies_calls == []  # no fetch for a standalone top-level mention
     assert "earlier persisted message" in text  # persisted history used
+
+
+class _RetryResolvingAdapter:
+    """Persona-hardened behavior: on the operator's retry, the model resolves the
+    thread's create intent and CALLS create_task — it does NOT repeat a stale
+    'creation unsupported' refusal it sees earlier in the same thread."""
+
+    def __init__(self) -> None:
+        self.seen_user_text: str | None = None
+
+    def generate(self, request: ProviderRequest, *, tools: Sequence[ChatTool] = ()) -> str:
+        self.seen_user_text = request.user_text
+        create = next((tool for tool in tools if tool.name == "create_task"), None)
+        if create is None:  # tools absent -> the (correct) "not enabled" path
+            return "태스크 생성 기능이 아직 활성화되지 않았습니다"
+        result = create.handler({"title": "조직도 구상 태스크"})
+        return f"만들었습니다 (id: {result.get('task_id')})."
+
+
+def test_thread_retry_after_stale_refusal_resolves_to_create_not_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression (live false-refusal): the bot earlier replied "creation unsupported"
+    # (BEFORE write tools were enabled). With write tools now available, the live thread
+    # (REPLACE) surfaces that stale refusal — the operator's "다시" must resolve the
+    # thread's create intent and create_task, NOT re-refuse.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    store.set_gui_feature_enabled(board="dev10", feature="chat_write_tools", enabled=True)
+    slack, facade = _FakeSlack(), _FakeFacade()
+    command_config = SlackCommandConfig(
+        board="dev10", members={"U03": SlackCommandMember("operator", "권성민", "operator")}
+    )
+    conn = _connector(store, slack, facade, command_config=command_config)
+    conn.bot_user_id = "BOT"
+    adapter = _RetryResolvingAdapter()
+    conn._chat_bridge_adapter = adapter
+    slack.replies = {
+        "th": [
+            {"user": "U03", "text": "base-web-admin 태스크를 생성해야 해", "ts": "1"},
+            {"user": "BOT", "text": "태스크 직접 생성 기능은 미지원입니다", "ts": "2"},
+            {"user": "U03", "text": "@그로브 다시", "ts": "3"},
+        ]
+    }
+    store.enqueue_slack_chat_message(
+        board="dev10",
+        team_id="T",
+        channel_id="C1",
+        thread_ts="th",
+        message_ts="3",
+        user_id="U03",
+        node="chat-master",
+        text="@그로브 다시",
+    )
+    conn.poll_node_chat_queue()
+
+    # (b) create_task called -> (c) a staged task with an id now exists.
+    tasks = store.list_tasks(board="dev10")
+    assert len(tasks) == 1 and tasks[0].status == "staged"
+    # The runtime handed the model the resolution material: the prior create request
+    # AND its own stale refusal are both in context (so "다시" is resolvable).
+    assert adapter.seen_user_text is not None
+    assert "생성해야 해" in adapter.seen_user_text
+    assert "미지원" in adapter.seen_user_text
+    # The authority line is present (current capability stated salient-last) so a real
+    # model is told its current tools — not the stale in-thread refusal — are authoritative.
+    assert "Capabilities — authoritative" in adapter.seen_user_text
+    # (a) zero re-refusal: the published answer reports the creation, not "미지원".
+    assert slack.posts and "미지원" not in slack.posts[-1][1]
+    assert str(tasks[0].id) in slack.posts[-1][1]
+
+
+def test_authority_line_present_only_with_write_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The authority line appears only when the user actually has write tools this turn
+    # (flag ON + operator/admin). It is a current-capability statement, never message
+    # inspection — read-only turns don't get it.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
+    slack, facade = _FakeSlack(), _FakeFacade()
+    command_config = SlackCommandConfig(
+        board="dev10", members={"U": SlackCommandMember("operator", "op", "operator")}
+    )
+    conn = _connector(store, slack, facade, command_config=command_config)
+    item = _enqueued_item(store, user_id="U")
+
+    marker = "Capabilities — authoritative"
+    # write flag OFF -> read-only, no authority line.
+    assert marker not in conn._chat_bridge_slack_user_text(item, conversation_id="c")
+    # write flag ON + operator -> authority line present.
+    store.set_gui_feature_enabled(board="dev10", feature="chat_write_tools", enabled=True)
+    assert marker in conn._chat_bridge_slack_user_text(item, conversation_id="c")
