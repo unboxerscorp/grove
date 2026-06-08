@@ -32,10 +32,29 @@ grove repair --all
 
 - **Real tmux agent tree** - bring up an org chart of `codex`, `claude`, and `agy`
   nodes; each node is a live tmux pane with adapter-specific turn detection.
-- **Web cockpit SPA** - `grove-web` serves human-facing lists, org chart, live
-  terminal viewer, project switcher, login/setup panels, Slack configuration UX, audit
-  drawer, setup panels, terminal connect copy, tutorial, and the floating MasterChat
-  widget.
+- **Web cockpit SPA** - `grove-web` serves human-facing lists, org chart, a multi-pane
+  live terminal grid, project switcher, login/setup panels, Slack configuration UX,
+  audit drawer, setup panels, terminal connect copy, tutorial, and direct GROVE MASTER
+  chat (the earlier floating chat button was removed in favor of asking the master node
+  directly).
+- **Multi-pane terminal grid** - v1.32 makes the terminal view a per-client grid: drag
+  nodes from the node list into the grid - with mouse, touch, or pen via Pointer Events -
+  to open them side by side, add a column to any row or a new row independently (a ragged
+  grid up to 3x3), reorder cells by dragging their titlebar, and tab between named views.
+  Each cell is a read-only `capture-pane` mirror plus its own command composer that posts
+  to that node's pane. The layout, tabs, and views persist per browser in localStorage,
+  and it stays read-only capture so a viewer never resizes or freezes the operator's tmux.
+- **Task master** - v1.32 adds an optional master-group node that watches every project's
+  human-facing board, nudges the assigned node to claim/start ready work, monitors running
+  items, and escalates unassigned/blocked/ask-human items. It only observes and nudges -
+  it never executes code, creates items, or forces a status. An event-driven wakeup
+  (default OFF, `GROVE_TASKMASTER_WAKEUP=1`) wakes it on meaningful board changes for an
+  immediate sweep, with the 5-minute poll as a fallback.
+- **Node addressing** - v1.32 introduces canonical `node@project` addressing (for example
+  `lead@dev10`, with root nodes bare like `grove-master`) that matches how the org view
+  displays nodes. The legacy `project:node` form and bare names still parse, and
+  `--session` becomes the explicit selector with `--project` kept as a deprecated alias,
+  so registry/session selection is no longer overloaded with display.
 - **Grouped sidebar navigation** - v1.24 moved the crowded top nav into a grouped,
   collapsible left sidebar from user UI feedback. It keeps every panel reachable and
   collapses into a responsive drawer on narrow screens; it is a layout change, not a
@@ -86,7 +105,10 @@ grove repair --all
 - **GROVE MASTER chat and org** - v1.30 makes `POST /api/master/chat` produce real
   answers from scoped project, org, human-item, and runtime facts. The org view adds a
   cross-project GROVE MASTER root that opens chat, project lead nodes that switch
-  projects, and human-as-node assignment for human-owned work.
+  projects, and human-as-node assignment for human-owned work. v1.32 lets the Slack/web
+  chat runtime call read-only tools (such as a project task lookup) so answers come from
+  live board state instead of guessed values, with tool output redacted before it leaves
+  the bridge.
 - **Web-to-node input** - v1.27 can send a prompt or command from a node's terminal
   panel to that node's tmux pane when `grove-web --enable-node-input` is set. It is
   operator-gated, project/pane allowlisted, rate-limited, sent as literal tmux input,
