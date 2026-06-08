@@ -38,15 +38,15 @@ function harness(): {
       readCompletionSince,
       size: vi.fn(() => 10),
     },
-    addr: "dev10:1.%1",
+    addr: "sample:1.%1",
     node: { agent: "codex", children: [], cwd: "/repo", name: "maker" },
   } as unknown as NodeCtx;
   const ctx = {
     byName: new Map([["maker", nc]]),
-    config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "dev10" },
+    config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "sample" },
     configPath: "/repo/grove.yaml",
     nodes: [nc.node],
-    registry: { cwd: "/repo", nodes: {}, session: "dev10", updatedAt: "now" },
+    registry: { cwd: "/repo", nodes: {}, session: "sample", updatedAt: "now" },
   } as Context;
   const lines: string[] = [];
   vi.spyOn(console, "error").mockImplementation(() => undefined);

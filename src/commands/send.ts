@@ -16,11 +16,24 @@ import { poll } from "../util/time.js";
 
 const SUBMISSION_WRITE_TIMEOUT_MS = 8000;
 const SUBMISSION_WRITE_INTERVAL_MS = 150;
+const ROOT_NODE_NAMES = new Set(["grove-master", "chat-master", "task-master", "web", "slack"]);
+const IDENTITY_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 interface PendingSubmission {
   transcript: string;
   fromOffset: number;
   binding?: PendingBinding;
+}
+
+function callerNodeForDispatch(
+  callerNode: string,
+  target: ReturnType<typeof resolveProjectNodeTarget> | null,
+): string {
+  if (!target?.crossProject || !IDENTITY_NAME_RE.test(callerNode)) return callerNode;
+  if (ROOT_NODE_NAMES.has(callerNode)) return callerNode;
+  const runtime = target.callerCtx.registry.nodes[callerNode];
+  if (runtime?.group === "master" || runtime?.group === "services") return callerNode;
+  return `${callerNode}@${target.callerCtx.config.session}`;
 }
 
 export async function cmdSend(
@@ -70,10 +83,10 @@ export async function cmdSend(
   }
   await (target
     ? submitMessage(nc, message, {
-        callerNode,
-        context: target.callerCtx,
+        callerNode: callerNodeForDispatch(callerNode, target),
+        context: target.targetCtx,
         contextMode,
-        project: target.callerCtx.config.session,
+        project: target.project,
       })
     : submitMessage(nc, message, { callerNode, contextMode, context: ctx }));
 

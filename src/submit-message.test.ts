@@ -40,7 +40,7 @@ describe("submitMessage", () => {
     });
     const nc: NodeCtx = {
       adapter: antigravityAdapter,
-      addr: "dev10:1.%5",
+      addr: "sample:1.%5",
       node: {
         agent: "antigravity",
         children: [],
@@ -65,7 +65,7 @@ describe("submitMessage", () => {
     );
     const nc: NodeCtx = {
       adapter: antigravityAdapter,
-      addr: "dev10:0.0",
+      addr: "sample:0.0",
       node: {
         agent: "antigravity",
         children: [],

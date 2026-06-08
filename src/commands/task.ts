@@ -8,7 +8,7 @@ import { warn } from "../util/log.js";
 import { validateGroveName } from "../util/names.js";
 import { GROVE_HOME, sessionDir } from "../util/paths.js";
 
-const DEFAULT_SESSION = "dev10";
+const DEFAULT_SESSION = "default";
 const DEFAULT_BOARD = "default";
 const FALLBACK_WEB_URL = "http://127.0.0.1:8765";
 

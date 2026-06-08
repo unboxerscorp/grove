@@ -40,7 +40,7 @@ Four features harvested in parallel (worktree-isolated orchestrators), merged af
 
 ### Auth + project lifecycle
 
-- Dashboard **login** + session model (replacing the injected-token bootstrap), **project lifecycle** (create / GitHub import via `new-project --clone`, 1:1:1 session+board+project-master), and a project **display name** (e.g. show dev10 as "grove-dev").
+- Dashboard **login** + session model (replacing the injected-token bootstrap), **project lifecycle** (create / GitHub import via `new-project --clone`, 1:1:1 session+board+project-master), and a project **display name** (e.g. show sample as "Sample Project").
 
 ### GUI for everything + branding
 
@@ -79,7 +79,7 @@ The meta-assistant chat, a node list that never lies, and the lead as a first-cl
 
 ### The lead is a real node
 
-- The lead/orchestrator is a real, **project-scoped** node (e.g. `dev10:0.0`), not a synthetic placeholder injected into every project. Its terminal is **viewable read-only** (capture/WS), while **node-input/send to the orchestrator pane stays blocked** — separate view vs. input pane allowlists (`terminal_allowed` / `input_allowed`). The FE consumes those flags so the UI offers exactly what the backend permits (view for the lead, no send box).
+- The lead/orchestrator is a real, **project-scoped** node (e.g. `sample:0.0`), not a synthetic placeholder injected into every project. Its terminal is **viewable read-only** (capture/WS), while **node-input/send to the orchestrator pane stays blocked** — separate view vs. input pane allowlists (`terminal_allowed` / `input_allowed`). The FE consumes those flags so the UI offers exactly what the backend permits (view for the lead, no send box).
 
 ## [0.28.0] — v1.27 (2026-06-04)
 
@@ -117,7 +117,7 @@ Find on the board + fix the board feedback. Auto-started after v1.25.0; folds in
 
 ### Board-scope hardening + lead (user feedback)
 
-- `_resolve_board_id`: empty/invalid → 400, board outside the project scope → clear 404 "board 'X' not in project 'Y'"; empty board-id guarded. The delegate board (dev-room) is **owned by its session project** (reachable only under that scope; a foreign project header is blocked — closing a cross-project hole the adversarial review caught). `grove delegate --session dev10` works again.
+- `_resolve_board_id`: empty/invalid → 400, board outside the project scope → clear 404 "board 'X' not in project 'Y'"; empty board-id guarded. The delegate board (dev-room) is **owned by its session project** (reachable only under that scope; a foreign project header is blocked — closing a cross-project hole the adversarial review caught). `grove delegate --session sample` works again.
 - `/api/org` now includes an external **lead/orchestrator** node (display-only, no pane/privilege) with the grove-dev/review groups under it — the dashboard Org shows the team head.
 - **Board card** shows the task **title** (not the raw id) and wraps — the raw id is a small secondary slug; long titles/ids wrap (overflow-wrap/word-break); verify asserts zero horizontal overflow.
 
@@ -914,7 +914,7 @@ right after v1.1.0 per the standing 24/7 directive (no user gate between version
   poll in the wait path (ops/tail/fanin): near-instant on transcript append, with a
   deadline-bounded safety fallback (can never hang). Durable submit baseline
   preserved; a bound session with a missing or empty (size 0) transcript fails fast
-  with a rebind/repair hint instead of timing out. Live-verified on the dev10 fleet.
+  with a rebind/repair hint instead of timing out. Live-verified on the sample fleet.
 
 ### Resilience
 

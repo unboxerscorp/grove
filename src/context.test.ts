@@ -36,7 +36,7 @@ describe("loadContext", () => {
         cwd: "/tmp/grove",
         defaults: { agent: "codex" },
         nodes: {},
-        session: "dev10",
+        session: "sample",
       },
       path: "/tmp/grove/grove.yaml",
     });
@@ -55,16 +55,16 @@ describe("loadContext", () => {
         viewer: {
           agent: "claude",
           name: "viewer",
-          tmux_pane: "dev10:1.%7",
+          tmux_pane: "sample:1.%7",
         },
       },
-      session: "dev10",
+      session: "sample",
       updatedAt: "2026-06-03T00:00:00.000Z",
     });
 
     const ctx = loadContext();
 
-    expect(ctx.byName.get("viewer")?.addr).toBe("dev10:1.%7");
+    expect(ctx.byName.get("viewer")?.addr).toBe("sample:1.%7");
     expect(ctx.byName.get("viewer")?.node.agent).toBe("codex");
     expect(getAdapter).toHaveBeenCalledWith("codex");
     expect(getAdapter).not.toHaveBeenCalledWith("claude");
@@ -76,7 +76,7 @@ describe("loadContext", () => {
         cwd: "/tmp/grove",
         defaults: { agent: "codex" },
         nodes: {},
-        session: "dev10",
+        session: "sample",
       },
       path: "/tmp/grove/grove.yaml",
     });
@@ -94,7 +94,7 @@ describe("loadContext", () => {
         lead: {
           agent: "codex",
           name: "lead",
-          tmux_pane: "dev10:1.0",
+          tmux_pane: "sample:1.0",
         },
         "orch-platform": {
           agent: "claude",
@@ -104,7 +104,7 @@ describe("loadContext", () => {
           parent: "lead",
           role: "Sub-orchestrator",
           sessionId: "session-orch",
-          tmux_pane: "dev10:13.2",
+          tmux_pane: "sample:13.2",
           transcript: "/tmp/live-registry/orch.jsonl",
         },
         "grove-auth": {
@@ -115,7 +115,7 @@ describe("loadContext", () => {
           transcript: "/tmp/live-registry/auth.log",
         },
       },
-      session: "dev10",
+      session: "sample",
       updatedAt: "2026-06-03T00:00:00.000Z",
     });
 
@@ -125,7 +125,7 @@ describe("loadContext", () => {
 
     expect(ctx.nodes.map((node) => node.name)).toEqual(["lead"]);
     expect(ctx.byName.has("lead")).toBe(true);
-    expect(live.addr).toBe("dev10:13.2");
+    expect(live.addr).toBe("sample:13.2");
     expect(live.node).toEqual(
       expect.objectContaining({
         agent: "claude",
@@ -137,7 +137,7 @@ describe("loadContext", () => {
         role: "Sub-orchestrator",
       }),
     );
-    expect(fallback.addr).toBe("dev10:grove-auth");
+    expect(fallback.addr).toBe("sample:grove-auth");
     expect(fallback.node).toEqual(
       expect.objectContaining({
         agent: "antigravity",

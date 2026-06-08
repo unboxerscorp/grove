@@ -10,8 +10,8 @@ from test_web_app import make_client, write_registry, write_team_member
 def setup_harness(tmp_path: Path) -> tuple[SQLiteBoardStore, TestClient, str]:
     store = SQLiteBoardStore(tmp_path / "board.db")
 
-    # We will use dev10 as default board, and proj_b as another project
-    write_registry(tmp_path, session="dev10", nodes={"dev10-node": {"name": "dev10-node"}})
+    # We will use sample as default board, and proj_b as another project
+    write_registry(tmp_path, session="sample", nodes={"sample-node": {"name": "sample-node"}})
     write_registry(tmp_path, session="proj_b", nodes={"proj_b-node": {"name": "proj_b-node"}})
 
     # Setup team member and registries
@@ -38,15 +38,15 @@ def test_skeleton_board_task_crud_and_status(tmp_path: Path) -> None:
 
     # Create task
     res = client.post(
-        "/api/boards/dev10/tasks",
-        json={"title": "Test CRUD", "assignee": "dev10-node"},
+        "/api/boards/sample/tasks",
+        json={"title": "Test CRUD", "assignee": "sample-node"},
         headers=headers,
     )
     assert res.status_code == 200
     task_id = res.json()["id"]
 
     # Read task
-    res = client.get("/api/boards/dev10/tasks", headers=headers)
+    res = client.get("/api/boards/sample/tasks", headers=headers)
     assert res.status_code == 200
     tasks = res.json()
     assert any(t["id"] == task_id for t in tasks)
@@ -65,7 +65,7 @@ def test_skeleton_board_task_crud_and_status(tmp_path: Path) -> None:
     assert res.status_code == 200
 
     # Check it's preserved (immortal)
-    res = client.get("/api/boards/dev10/tasks", headers=headers)
+    res = client.get("/api/boards/sample/tasks", headers=headers)
     assert res.status_code == 200
     task = next(t for t in res.json() if t["id"] == task_id)
     assert task["status"] == "done"
@@ -75,9 +75,9 @@ def test_skeleton_project_scoping_isolation(tmp_path: Path) -> None:
     store, client, csrf = setup_harness(tmp_path)
     headers = {"X-Grove-CSRF": csrf}
 
-    # Create task in dev10
+    # Create task in sample
     res = client.post(
-        "/api/boards/dev10/tasks", json={"title": "T1", "assignee": "dev10-node"}, headers=headers
+        "/api/boards/sample/tasks", json={"title": "T1", "assignee": "sample-node"}, headers=headers
     )
     assert res.status_code == 200
     t1_id = res.json()["id"]
@@ -92,12 +92,12 @@ def test_skeleton_project_scoping_isolation(tmp_path: Path) -> None:
     assert res.status_code == 200
     t2_id = res.json()["id"]
 
-    # Check dev10 human-facing items
-    res = client.get("/api/boards/dev10/tasks", headers=headers)
+    # Check sample human-facing items
+    res = client.get("/api/boards/sample/tasks", headers=headers)
     assert res.status_code == 200
-    dev10_ids = [t["id"] for t in res.json()]
-    assert t1_id in dev10_ids
-    assert t2_id not in dev10_ids
+    sample_ids = [t["id"] for t in res.json()]
+    assert t1_id in sample_ids
+    assert t2_id not in sample_ids
 
     # Check proj_b human-facing items
     res = client.get("/api/boards/proj_b/tasks", headers=headers_b)
@@ -113,12 +113,12 @@ def test_skeleton_health_auth(tmp_path: Path) -> None:
 
     # Without token
     client.cookies.clear()
-    res = client.get("/api/boards/dev10/tasks")
+    res = client.get("/api/boards/sample/tasks")
     assert res.status_code == 401
 
     # With token (requires relogin to get cookie back for test client)
     client.post("/api/login", json={"name": "op_user", "secret": "op-sec"})
-    res = client.get("/api/boards/dev10/tasks", headers=headers)
+    res = client.get("/api/boards/sample/tasks", headers=headers)
     assert res.status_code == 200
 
 
@@ -128,8 +128,8 @@ def test_skeleton_idempotency_cas(tmp_path: Path) -> None:
 
     # Create task
     res = client.post(
-        "/api/boards/dev10/tasks",
-        json={"title": "Test CAS", "assignee": "dev10-node"},
+        "/api/boards/sample/tasks",
+        json={"title": "Test CAS", "assignee": "sample-node"},
         headers=headers,
     )
     assert res.status_code == 200

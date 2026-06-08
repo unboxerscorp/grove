@@ -2658,7 +2658,7 @@ class SlackConnector:
     def _project_directory(self) -> ProjectDirectory:
         """Project display/identity directory (single source: ~/.grove registries).
         Resolves display names <-> internal boards so the chat layer never exposes
-        the internal board/session id (e.g. 'dev10') to the model."""
+        the internal board/session id (e.g. 'sample') to the model."""
         return ProjectDirectory(
             Path("~/.grove").expanduser(), default_session=self.human_gate.board
         )
@@ -2903,7 +2903,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         default=Path(os.environ.get("GROVE_HOME", "~/.grove")).expanduser(),
     )
-    parser.add_argument("--session", default=os.environ.get("GROVE_VIEWER_SESSION", "dev10"))
+    parser.add_argument("--session", default=os.environ.get("GROVE_VIEWER_SESSION", "default"))
     parser.add_argument("--runtime-status-path", type=Path)
     args = parser.parse_args(argv)
 

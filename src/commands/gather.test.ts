@@ -50,7 +50,7 @@ describe("cmdGather", () => {
   });
 
   test("waits for all nodes and writes JSON output", async () => {
-    const ctx = { config: { session: "dev10" } };
+    const ctx = { config: { session: "sample" } };
     const result = fanIn(false);
     const writes: string[] = [];
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -72,7 +72,7 @@ describe("cmdGather", () => {
   test("sets exitCode when the fan-in deadline is exceeded", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    vi.mocked(loadContext).mockReturnValue({ config: { session: "dev10" } } as never);
+    vi.mocked(loadContext).mockReturnValue({ config: { session: "sample" } } as never);
     vi.mocked(waitForFanIn).mockResolvedValue(fanIn(true));
     vi.mocked(renderGatherText).mockReturnValue("partial");
 
@@ -82,7 +82,7 @@ describe("cmdGather", () => {
   });
 
   test("waits on target project nodes resolved from qualified gather addresses", async () => {
-    const callerCtx = { config: { session: "dev10" } };
+    const callerCtx = { config: { session: "sample" } };
     const targetCtx = { config: { session: "dev11" } };
     const result = fanIn(false);
     const writes: string[] = [];
@@ -119,7 +119,7 @@ describe("cmdGather", () => {
   });
 
   test("merges fan-in results from multiple project groups", async () => {
-    const callerCtx = { config: { session: "dev10" } };
+    const callerCtx = { config: { session: "sample" } };
     const dev11Ctx = { config: { session: "dev11" } };
     const dev12Ctx = { config: { session: "dev12" } };
     const writes: string[] = [];

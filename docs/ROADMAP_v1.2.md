@@ -14,7 +14,7 @@ team auth.
 ## Definition of "v1.2 Stable" (exit criteria)
 
 1. Event-driven turn detection live (no fixed poll floor); send→wait never misses a
-   fast turn; the dev10 fleet runs on it without regression.
+   fast turn; the sample fleet runs on it without regression.
 2. agy parity: an agy node operates with the same AGENTS.md/skills conventions as
    codex/claude; interactive submit live-verified.
 3. Resilience: `grove despawn` + clean node teardown; session token stable across
@@ -49,7 +49,7 @@ team auth.
    V2-W3 stable token (both bridge, no orchestration-hot-path risk) + V2-W2 agy parity
    (docs/skills) — in parallel.
 2. V2-W1 turn detection — implement + test + review in isolation, then deploy-verify the
-   dev10 fleet carefully (this changes send/wait that the office itself runs on).
+   sample fleet carefully (this changes send/wait that the office itself runs on).
 3. V2-W3 despawn/repair, V2-W6 delegate; then V2-W5 team-auth design.
 4. v1.2 review pass (5-node swarm) → fix → coverage → e2e → CHANGELOG + 0.3.0.
 

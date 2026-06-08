@@ -82,17 +82,17 @@ def test_handle_turn_calls_llm_with_redacted_bounded_facts_and_returns_answer(
 ) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     secret = "xoxb-" + ("m" * 44)
-    store.create_task(board="dev10", title="Ready task", body=None, assignee="maker")
+    store.create_task(board="sample", title="Ready task", body=None, assignee="maker")
     store.create_task(
-        board="dev10",
+        board="sample",
         title=f"Running {secret} /Users/chopin/private",
         body=None,
         assignee="maker",
         status="running",
     )
     store.record_node_health(
-        project="dev10",
-        session="dev10",
+        project="sample",
+        session="sample",
         node="maker",
         status="rate_limited",
         reason=f"token {secret}",
@@ -351,7 +351,7 @@ def test_build_assistant_facts_includes_top_in_flight_health_and_recent_commits(
     store = SQLiteBoardStore(tmp_path / "board.db")
     for index in range(6):
         store.create_task(
-            board="dev10",
+            board="sample",
             title=f"Running task {index}",
             body=None,
             assignee="maker",
@@ -359,8 +359,8 @@ def test_build_assistant_facts_includes_top_in_flight_health_and_recent_commits(
             priority=index,
         )
     store.record_node_health(
-        project="dev10",
-        session="dev10",
+        project="sample",
+        session="sample",
         node="maker",
         status="crashed",
         reason="trace",
@@ -404,7 +404,7 @@ def test_build_assistant_facts_includes_registry_nodes_when_health_is_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     grove_home = tmp_path / ".grove"
-    registry_dir = grove_home / "dev10"
+    registry_dir = grove_home / "sample"
     registry_dir.mkdir(parents=True)
     secret = "xoxb-" + ("r" * 44)
     (registry_dir / "registry.json").write_text(
@@ -416,7 +416,7 @@ def test_build_assistant_facts_includes_registry_nodes_when_health_is_empty(
                         "agent": "codex",
                         "role": "builder",
                         "group": "dev",
-                        "tmux_pane": "dev10:1.1",
+                        "tmux_pane": "sample:1.1",
                         "transcript_path": f"/Users/chopin/private/{secret}.jsonl",
                     },
                     "rev-ui": {
@@ -424,7 +424,7 @@ def test_build_assistant_facts_includes_registry_nodes_when_health_is_empty(
                         "agent": "claude",
                         "role": "reviewer",
                         "group": "review",
-                        "tmux_pane": "dev10:2.1",
+                        "tmux_pane": "sample:2.1",
                     },
                     "grove-reviewer": {
                         "name": "grove-reviewer",
@@ -452,7 +452,7 @@ def test_build_assistant_facts_includes_registry_nodes_when_health_is_empty(
     rendered = json.dumps(agent_health, ensure_ascii=False, sort_keys=True)
     assert "tmux_pane" not in rendered
     assert "transcript" not in rendered
-    assert "dev10:1.1" not in rendered
+    assert "sample:1.1" not in rendered
     assert secret not in rendered
     assert "/Users/chopin" not in rendered
     assert len(json.dumps(facts, ensure_ascii=False).encode("utf-8")) <= 8192
@@ -493,11 +493,11 @@ def _context(*, store: SQLiteBoardStore, workspace_path: Path) -> AssistantConte
             display_name="lead",
         ),
         scope=AssistantScope(
-            selected_project="dev10",
-            board="dev10",
-            visible_projects=("dev10",),
+            selected_project="sample",
+            board="sample",
+            visible_projects=("sample",),
             origin_surface="floating_web_chat",
-            origin_page="/boards/dev10",
+            origin_page="/boards/sample",
         ),
         store=store,
         workspace_path=workspace_path,
@@ -515,21 +515,21 @@ def _facts_from_prompt(prompt: str) -> dict[str, Any]:
 
 
 def test_build_assistant_facts_uses_display_project_and_hides_board(tmp_path: Path) -> None:
-    # dev10 audit: the LLM facts must show the project DISPLAY name (grove-dev),
-    # never the internal board/session id (dev10). Queries still use the board.
+    # sample audit: the LLM facts must show the project DISPLAY name,
+    # never the internal board/session id (sample). Queries still use the board.
     store = SQLiteBoardStore(tmp_path / "b.db")
     context = AssistantContext(
         conversation_id="c",
         request_id="r",
         actor=AssistantActor(id="lead", role="operator", is_operator=True, display_name="lead"),
         scope=AssistantScope(
-            selected_project="dev10",
-            board="dev10",
-            visible_projects=("dev10",),
+            selected_project="sample",
+            board="sample",
+            visible_projects=("sample",),
             origin_surface="slack",
             origin_page=None,
-            display_project="grove-dev",
-            display_visible=("grove-dev",),
+            display_project="Sample Project",
+            display_visible=("Sample Project",),
         ),
         store=store,
         workspace_path=tmp_path,
@@ -537,6 +537,6 @@ def test_build_assistant_facts_uses_display_project_and_hides_board(tmp_path: Pa
     facts = build_assistant_facts(context)
     project = facts["project"]
     assert isinstance(project, dict)
-    assert project["selected"] == "grove-dev"
-    assert project["visible"] == ["grove-dev"]
+    assert project["selected"] == "Sample Project"
+    assert project["visible"] == ["Sample Project"]
     assert "board" not in project  # raw board id no longer exposed

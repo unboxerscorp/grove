@@ -43,7 +43,7 @@ Expected org node fields:
   "parent": "lead",
   "children": [],
   "group": "core",
-  "tmux_pane": "dev10:1.2",
+  "tmux_pane": "sample:1.2",
   "cwd": "/repo/project",
   "session_id": "session-id",
   "status": "idle"

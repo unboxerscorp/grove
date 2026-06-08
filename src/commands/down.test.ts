@@ -22,10 +22,10 @@ afterEach(() => {
 function ctx(): Context {
   return {
     byName: new Map(),
-    config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "dev10" },
+    config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "sample" },
     configPath: "/repo/grove.yaml",
     nodes: [],
-    registry: { cwd: "/repo", nodes: {}, session: "dev10", updatedAt: "now" },
+    registry: { cwd: "/repo", nodes: {}, session: "sample", updatedAt: "now" },
   };
 }
 
@@ -37,8 +37,8 @@ describe("cmdDown", () => {
 
     await cmdDown({ config: "grove.yaml" });
 
-    expect(hasSession).toHaveBeenCalledWith("dev10");
-    expect(killSession).toHaveBeenCalledWith("dev10");
+    expect(hasSession).toHaveBeenCalledWith("sample");
+    expect(killSession).toHaveBeenCalledWith("sample");
   });
 
   test("does not kill when the session is already down", async () => {

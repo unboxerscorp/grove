@@ -54,7 +54,7 @@ function makeContext(registry: Registry): Context {
       [
         "lead",
         {
-          addr: "dev10:lead",
+          addr: "sample:lead",
           adapter: adapter("claude"),
           node: lead,
         },
@@ -64,7 +64,7 @@ function makeContext(registry: Registry): Context {
       cwd: "/repo",
       defaults: { agent: "codex" },
       nodes: { lead: { agent: "claude", children: [], group: "core", role: "Lead" } },
-      session: "dev10",
+      session: "sample",
     },
     configPath: "/repo/grove.yaml",
     nodes: [lead],
@@ -84,7 +84,7 @@ function registry(): Registry {
         role: "Lead",
       },
     },
-    session: "dev10",
+    session: "sample",
     updatedAt: "2026-06-03T00:00:00.000Z",
   };
 }
@@ -106,7 +106,7 @@ function deps(opts: { bindTranscript?: boolean } = {}): {
     deps: {
       createPane: async (request) => {
         paneRequests.push(request);
-        return "dev10:2.0";
+        return "sample:2.0";
       },
       getAdapter: (agent) => adapter(agent),
       ensureCodexTrustedProject: (cwd) => {
@@ -205,7 +205,7 @@ describe("spawnNode", () => {
       expect.objectContaining({
         agent: "claude",
         name: "probe",
-        pane: "dev10:2.0",
+        pane: "sample:2.0",
         role: "x",
         session: "spawn-no-config",
       }),
@@ -276,7 +276,7 @@ describe("spawnNode", () => {
     const reg = registry();
     reg.cwd = "/project/alpha";
     reg.session = "alpha";
-    reg.tmuxSession = "dev10";
+    reg.tmuxSession = "sample";
     const base = makeContext(reg);
     const ctx = {
       ...base,
@@ -301,11 +301,11 @@ describe("spawnNode", () => {
     expect(state.paneRequests[0]).toMatchObject({
       cwd: "/project/alpha",
       name: "alpha-maker",
-      session: "dev10",
+      session: "sample",
       window: "alpha",
     });
     expect(result.session).toBe("alpha");
-    expect(result.tmuxSession).toBe("dev10");
+    expect(result.tmuxSession).toBe("sample");
   });
 
   test("uses explicit --cwd before registry cwd while preserving role preset expansion", async () => {
@@ -433,11 +433,11 @@ describe("spawnNode", () => {
       {
         cwd: "/repo",
         name: "maker",
-        session: "dev10",
+        session: "sample",
         window: undefined,
       },
     ]);
-    expect(state.launched[0]?.addr).toBe("dev10:2.0");
+    expect(state.launched[0]?.addr).toBe("sample:2.0");
     expect(state.launched[0]?.node).toEqual(
       expect.objectContaining({
         agent: "codex",
@@ -459,19 +459,19 @@ describe("spawnNode", () => {
         role: "Builder",
         cwd: "/repo",
         sessionId: "session-new",
-        tmux_pane: "dev10:2.0",
+        tmux_pane: "sample:2.0",
         transcript: "/repo/transcript.jsonl",
       }),
     );
     expect(ctx.registry.nodes.lead?.children).toEqual(["maker"]);
-    expect(state.guardSessions).toEqual(["dev10"]);
+    expect(state.guardSessions).toEqual(["sample"]);
     expect(result).toEqual(
       expect.objectContaining({
         agent: "codex",
         cwd: "/repo",
         description: "Owns implementation tasks",
         name: "maker",
-        pane: "dev10:2.0",
+        pane: "sample:2.0",
         transcriptDetected: true,
       }),
     );
@@ -494,7 +494,7 @@ describe("spawnNode", () => {
         parent: "lead",
         role: "Builder",
         session: "alpha",
-        tmuxSession: "dev10",
+        tmuxSession: "sample",
         window: "alpha",
       },
       state.deps,
@@ -504,26 +504,26 @@ describe("spawnNode", () => {
       {
         cwd: "/repo",
         name: "maker",
-        session: "dev10",
+        session: "sample",
         window: "alpha",
       },
     ]);
-    expect(state.guardSessions).toEqual(["dev10"]);
+    expect(state.guardSessions).toEqual(["sample"]);
     expect(ctx.registry.session).toBe("alpha");
     expect(ctx.registry.nodes.maker).toEqual(
       expect.objectContaining({
         cwd: "/repo",
         name: "maker",
         parent: "lead",
-        tmux_pane: "dev10:2.0",
+        tmux_pane: "sample:2.0",
       }),
     );
     expect(result).toEqual(
       expect.objectContaining({
         name: "maker",
-        pane: "dev10:2.0",
+        pane: "sample:2.0",
         session: "alpha",
-        tmuxSession: "dev10",
+        tmuxSession: "sample",
       }),
     );
   });
@@ -548,7 +548,7 @@ describe("spawnNode", () => {
       {
         cwd: "/repo",
         name: "viewer",
-        session: "dev10",
+        session: "sample",
         window: "lead",
       },
     ]);
@@ -559,7 +559,7 @@ describe("spawnNode", () => {
         cwd: "/repo",
         name: "viewer",
         role: "Viewer",
-        tmux_pane: "dev10:2.0",
+        tmux_pane: "sample:2.0",
       }),
     );
     expect(result.transcriptDetected).toBe(false);
@@ -603,11 +603,11 @@ describe("spawnNode", () => {
       kind: "service",
       group: "core",
       name: "maker",
-      pane: "dev10:2.0",
+      pane: "sample:2.0",
       parent: "lead",
       rebindHint: undefined,
       role: "Builder",
-      session: "dev10",
+      session: "sample",
       sessionId: "session-new",
       transcript: "/repo/transcript.jsonl",
       transcriptDetected: true,
@@ -617,7 +617,7 @@ describe("spawnNode", () => {
     expect(renderSpawnText(result)).toContain("description: Owns implementation tasks");
     expect(renderSpawnText(result)).toContain("work_instructions: PR 머지 전 reviewer 승인 필수");
     expect(renderSpawnText(result)).toContain("kind: service");
-    expect(renderSpawnText(result)).toContain("pane: dev10:2.0");
+    expect(renderSpawnText(result)).toContain("pane: sample:2.0");
     expect(JSON.parse(renderSpawnJson(result))).toEqual(result);
   });
 });

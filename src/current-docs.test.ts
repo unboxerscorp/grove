@@ -13,8 +13,8 @@ describe("current design docs", () => {
     expect(masterNode).toContain("Status: current v2 live model");
     expect(masterNode).toContain("Slack and web chat route to the live `grove-master` node");
     expect(masterNode).toContain("Human-facing list items are operator-visible records");
-    expect(masterNode).toContain("grove-master -> lead@dev10");
-    expect(masterNode).toContain("lead@dev10 -> jester");
+    expect(masterNode).toContain("grove-master -> lead@sample");
+    expect(masterNode).toContain("lead@sample -> jester");
     expect(masterNode).toContain("GROVE MASTER -> project lead -> selected project nodes");
     expect(masterNode).toContain("## Node Communication Transport");
     expect(masterNode).toContain("Before writing to a human-facing target pane");

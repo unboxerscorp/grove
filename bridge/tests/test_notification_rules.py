@@ -29,7 +29,7 @@ def test_notification_rules_notify_blocked_once_and_redact_payload(tmp_path: Pat
     store = SQLiteBoardStore(tmp_path / "board.db")
     secret = "xoxb-" + ("a" * 44)
     task = store.create_task(
-        board="dev10",
+        board="sample",
         title=f"Blocked at /Users/chopin/dev/{secret}",
         body=f"Need answer for /etc/passwd {secret}",
         assignee="maker",
@@ -39,8 +39,8 @@ def test_notification_rules_notify_blocked_once_and_redact_payload(tmp_path: Pat
     notifier = RecordingNotifier()
     rules = NotificationRuleRunner(store=store, notifier=notifier)
 
-    first = rules.poll_board("dev10")
-    second = rules.poll_board("dev10")
+    first = rules.poll_board("sample")
+    second = rules.poll_board("sample")
 
     assert first == 1
     assert second == 0
@@ -53,13 +53,13 @@ def test_notification_rules_notify_blocked_once_and_redact_payload(tmp_path: Pat
     assert sub.channel_kind == "inbox"
     assert sub.room_id == "ops"
     assert sub.thread_id == f"blocked:{task.id}"
-    assert len(store.list_notify_subs(board="dev10", task_id=task.id)) == 1
+    assert len(store.list_notify_subs(board="sample", task_id=task.id)) == 1
 
 
 def test_notification_rules_notify_ask_human_pending_once(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = store.create_task(
-        board="dev10",
+        board="sample",
         title="Human needed",
         body=None,
         assignee="maker",
@@ -67,7 +67,7 @@ def test_notification_rules_notify_ask_human_pending_once(tmp_path: Path) -> Non
         metadata={"needs_human": True},
     )
     store.upsert_slack_thread(
-        board="dev10",
+        board="sample",
         task_id=task.id,
         team_id="",
         channel_id="C123",
@@ -77,17 +77,17 @@ def test_notification_rules_notify_ask_human_pending_once(tmp_path: Path) -> Non
     )
     notifier = RecordingNotifier()
 
-    sent = NotificationRuleRunner(store=store, notifier=notifier).poll_board("dev10")
+    sent = NotificationRuleRunner(store=store, notifier=notifier).poll_board("sample")
 
     assert sent == 1
     assert notifier.calls[0][1].thread_id == f"ask_human_pending:{task.id}"
-    assert NotificationRuleRunner(store=store, notifier=notifier).poll_board("dev10") == 0
+    assert NotificationRuleRunner(store=store, notifier=notifier).poll_board("sample") == 0
 
 
 def test_notification_rules_respect_dry_run_noop(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = store.create_task(
-        board="dev10",
+        board="sample",
         title="Dry run",
         body=None,
         assignee="maker",
@@ -97,10 +97,10 @@ def test_notification_rules_respect_dry_run_noop(tmp_path: Path) -> None:
         NotifierConfig(enabled=True, dry_run=True, channel_kind="inbox", room_id="ops")
     )
 
-    sent = NotificationRuleRunner(store=store, notifier=notifier).poll_board("dev10")
+    sent = NotificationRuleRunner(store=store, notifier=notifier).poll_board("sample")
 
     assert sent == 0
-    assert store.list_notify_subs(board="dev10", task_id=task.id) == []
+    assert store.list_notify_subs(board="sample", task_id=task.id) == []
 
 
 def test_notification_routing_v2_matches_conditions_escalates_and_redacts(
@@ -109,7 +109,7 @@ def test_notification_routing_v2_matches_conditions_escalates_and_redacts(
     store = SQLiteBoardStore(tmp_path / "board.db")
     secret = "xoxb-" + ("a" * 44)
     task = store.create_task(
-        board="dev10",
+        board="sample",
         title=f"Spike for alice@example.com in /Users/chopin/{secret}",
         body=f"Cost anomaly in /etc/private {secret}",
         assignee="maker",
@@ -150,10 +150,10 @@ def test_notification_routing_v2_matches_conditions_escalates_and_redacts(
     runner = NotificationRuleRunner(store=store, notifier=notifier)
     now = int(time.time())
 
-    first = runner.poll_board("dev10", routing=routing, now=now)
-    early = runner.poll_board("dev10", routing=routing, now=now + 5)
-    escalated = runner.poll_board("dev10", routing=routing, now=now + 11)
-    bounded = runner.poll_board("dev10", routing=routing, now=now + 200)
+    first = runner.poll_board("sample", routing=routing, now=now)
+    early = runner.poll_board("sample", routing=routing, now=now + 5)
+    escalated = runner.poll_board("sample", routing=routing, now=now + 11)
+    bounded = runner.poll_board("sample", routing=routing, now=now + 200)
 
     assert first == 1
     assert early == 0
@@ -173,7 +173,7 @@ def test_notification_routing_v2_matches_conditions_escalates_and_redacts(
 def test_notification_routing_v2_dry_run_default_sends_nothing(tmp_path: Path) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
     task = store.create_task(
-        board="dev10",
+        board="sample",
         title="Dry routed",
         body=None,
         assignee="maker",
@@ -194,10 +194,10 @@ def test_notification_routing_v2_dry_run_default_sends_nothing(tmp_path: Path) -
     notifier = RecordingNotifier()
 
     sent = NotificationRuleRunner(store=store, notifier=notifier).poll_board(
-        "dev10",
+        "sample",
         routing=routing,
     )
 
     assert sent == 0
     assert notifier.calls == []
-    assert store.list_notify_subs(board="dev10", task_id=task.id) == []
+    assert store.list_notify_subs(board="sample", task_id=task.id) == []

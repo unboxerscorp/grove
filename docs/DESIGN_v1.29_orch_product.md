@@ -4,7 +4,7 @@
 > board as the required node-to-node communication channel. Current operation
 > uses direct node communication, human-facing list items for operator
 > TODO/feedback/ask-human records, concrete project lead nodes, and a shared host
-> tmux session such as `dev10`. Legacy board/task/delegation terminology below is
+> tmux session such as `sample`. Legacy board/task/delegation terminology below is
 > retained as historical design context and compatibility API vocabulary.
 
 상태: 구현 전 handoff spec. 코드 변경 없이 source task 두 건을 기준으로 정리했다.
@@ -125,7 +125,7 @@ Product graph:
 
 ```text
 GROVE MASTER
-  -> project lead: dev10
+  -> project lead: sample
        -> project-master
        -> workers/reviewers
   -> project lead: other-project

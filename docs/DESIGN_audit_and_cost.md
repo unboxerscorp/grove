@@ -68,8 +68,8 @@ audit payload 최소형:
     "id": "task_...|node-name",
     "node": "assignee-or-target-node"
   },
-  "project": "dev10",
-  "board": "dev10",
+  "project": "sample",
+  "board": "sample",
   "from_node": "lead",
   "to_node": "maker-1",
   "status": "ok|failed",
@@ -123,7 +123,7 @@ Response:
       "id": "event_...",
       "ts": 1780000000,
       "type": "audit.task.delegate",
-      "project": "dev10",
+      "project": "sample",
       "board_id": "board_...",
       "task_id": "task_...",
       "run_id": null,
@@ -229,7 +229,7 @@ BoardView 연결:
 
 ```json
 {
-  "project": "dev10",
+  "project": "sample",
   "generated_at": 1780000000,
   "window": { "since": 1779990000, "until": 1780000000 },
   "totals": {
@@ -295,7 +295,7 @@ node-status detail:
       "last_seen_at": 1780000000,
       "pending_since": null,
       "transcript_mtime": 1779999900,
-      "tmux_pane": "dev10:1.2",
+      "tmux_pane": "sample:1.2",
       "tmux_alive": true,
       "current_task_id": null,
       "blocked_task_count": 0,

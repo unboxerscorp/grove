@@ -64,7 +64,7 @@ function makeContext(runtimeNodes: Record<string, NodeRuntime>): Context {
     byName.set(node.name, {
       node,
       adapter: adapter(node.agent),
-      addr: `dev10:${node.name}`,
+      addr: `sample:${node.name}`,
     });
   }
   return {
@@ -95,14 +95,14 @@ function makeContext(runtimeNodes: Record<string, NodeRuntime>): Context {
           role: "Viewer",
         },
       },
-      session: "dev10",
+      session: "sample",
     },
     configPath: "/tmp/grove/grove.yaml",
     nodes,
     registry: {
       cwd: "/tmp/grove",
       nodes: runtimeNodes,
-      session: "dev10",
+      session: "sample",
       updatedAt: "2026-06-03T00:00:00.000Z",
     },
   };
@@ -127,7 +127,7 @@ describe("team graph config", () => {
           role: "Builder",
         },
       },
-      session: "dev10",
+      session: "sample",
     });
 
     expect(resolveNodes(config)).toEqual([
@@ -180,7 +180,7 @@ describe("org rendering", () => {
 
     expect(renderOrgText(buildOrg(ctx, null))).toBe(
       [
-        "dev10",
+        "sample",
         "grove-master [codex] GROVE MASTER — governs all projects; project leads are children",
         "  lead [claude] Lead",
         "    cwd: /tmp/grove",
@@ -265,7 +265,7 @@ describe("org rendering", () => {
         },
       ],
       roots: ["grove-master"],
-      session: "dev10",
+      session: "sample",
     });
   });
 
@@ -274,22 +274,22 @@ describe("org rendering", () => {
       lead: {
         agent: "claude",
         children: ["maker"],
-        cwd: "/repo/dev10",
+        cwd: "/repo/sample",
         group: "lead",
         name: "lead",
         parent: "grove-master",
         role: "Dev lead",
-        tmux_pane: "dev10:2.0",
+        tmux_pane: "sample:2.0",
       },
       maker: {
         agent: "codex",
         children: [],
-        cwd: "/repo/dev10",
+        cwd: "/repo/sample",
         group: "workers",
         name: "maker",
         parent: "lead",
         role: "Maker",
-        tmux_pane: "dev10:2.1",
+        tmux_pane: "sample:2.1",
       },
     });
     const alpha: Registry = {
@@ -303,7 +303,7 @@ describe("org rendering", () => {
           name: "lead",
           parent: "",
           role: "Alpha lead",
-          tmux_pane: "dev10:3.1",
+          tmux_pane: "sample:3.1",
         },
         worker: {
           agent: "claude",
@@ -313,11 +313,11 @@ describe("org rendering", () => {
           name: "worker",
           parent: "lead",
           role: "Alpha worker",
-          tmux_pane: "dev10:3.2",
+          tmux_pane: "sample:3.2",
         },
       },
       session: "alpha",
-      tmuxSession: "dev10",
+      tmuxSession: "sample",
       updatedAt: "2026-06-06T00:00:00.000Z",
     };
 
@@ -325,12 +325,12 @@ describe("org rendering", () => {
     const nodes = new Map(org.nodes.map((node) => [node.name, node]));
 
     expect(org.roots).toEqual(["grove-master"]);
-    expect(nodes.get("grove-master")?.children).toEqual(["lead@alpha", "lead@dev10"]);
-    expect(nodes.get("lead@dev10")).toEqual(
-      expect.objectContaining({ parent: "grove-master", project: "dev10" }),
+    expect(nodes.get("grove-master")?.children).toEqual(["lead@alpha", "lead@sample"]);
+    expect(nodes.get("lead@sample")).toEqual(
+      expect.objectContaining({ parent: "grove-master", project: "sample" }),
     );
     expect(nodes.get("maker")).toEqual(
-      expect.objectContaining({ parent: "lead@dev10", project: "dev10" }),
+      expect.objectContaining({ parent: "lead@sample", project: "sample" }),
     );
     expect(nodes.get("lead@alpha")).toEqual(
       expect.objectContaining({ parent: "grove-master", project: "alpha" }),
@@ -345,41 +345,41 @@ describe("org rendering", () => {
       lead: {
         agent: "claude",
         children: [],
-        cwd: "/repo/dev10",
+        cwd: "/repo/sample",
         group: "lead",
         name: "lead",
         parent: "grove-master",
         role: "Dev lead",
-        tmux_pane: "dev10:2.0",
+        tmux_pane: "sample:2.0",
       },
       "chat-master": {
         agent: "claude",
         children: [],
-        cwd: "/repo/dev10",
+        cwd: "/repo/sample",
         group: "master",
         name: "chat-master",
         parent: "grove-master",
         role: "chat master",
-        tmux_pane: "dev10:0.1",
+        tmux_pane: "sample:0.1",
       },
       "task-master": {
         agent: "claude",
         children: [],
-        cwd: "/repo/dev10",
+        cwd: "/repo/sample",
         group: "master",
         name: "task-master",
         parent: "grove-master",
         role: "task master",
-        tmux_pane: "dev10:0.2",
+        tmux_pane: "sample:0.2",
       },
       advisor: {
         agent: "claude",
         children: [],
-        cwd: "/repo/dev10",
+        cwd: "/repo/sample",
         name: "advisor",
         parent: "grove-master",
         role: "advisor",
-        tmux_pane: "dev10:0.3",
+        tmux_pane: "sample:0.3",
       },
     });
     const alpha: Registry = {
@@ -392,7 +392,7 @@ describe("org rendering", () => {
           name: "lead",
           parent: "",
           role: "Alpha lead",
-          tmux_pane: "dev10:3.1",
+          tmux_pane: "sample:3.1",
         },
       },
       session: "alpha",
@@ -403,14 +403,14 @@ describe("org rendering", () => {
     const nodes = new Map(org.nodes.map((node) => [node.name, node]));
 
     // Master/control plane is org-level (above every project): bare names, no
-    // session/project, directly under grove-master — never project=dev10.
+    // session/project, directly under grove-master — never project=sample.
     for (const name of ["chat-master", "task-master", "advisor"]) {
       expect(nodes.get(name), `${name} present`).toBeDefined();
       expect(nodes.get(name)?.project ?? "").toBe("");
       expect(nodes.get(name)?.parent).toBe("grove-master");
     }
-    expect(nodes.has("chat-master@dev10")).toBe(false);
-    expect(nodes.has("advisor@dev10")).toBe(false);
+    expect(nodes.has("chat-master@sample")).toBe(false);
+    expect(nodes.has("advisor@sample")).toBe(false);
   });
 
   test("a lead mis-grouped under services stays the per-project lead, not org-level", () => {
@@ -418,20 +418,20 @@ describe("org rendering", () => {
       lead: {
         agent: "claude",
         children: [],
-        cwd: "/repo/dev10",
+        cwd: "/repo/sample",
         group: "services",
         name: "lead",
         parent: "grove-master",
         role: "Dev lead",
-        tmux_pane: "dev10:1.0",
+        tmux_pane: "sample:1.0",
       },
     });
 
     const org = buildAllProjectOrg(ctx, {}, null);
     const nodes = new Map(org.nodes.map((node) => [node.name, node]));
 
-    expect(nodes.get("lead@dev10")).toEqual(
-      expect.objectContaining({ parent: "grove-master", project: "dev10" }),
+    expect(nodes.get("lead@sample")).toEqual(
+      expect.objectContaining({ parent: "grove-master", project: "sample" }),
     );
     expect(nodes.has("lead")).toBe(false);
   });
@@ -441,25 +441,25 @@ describe("org rendering", () => {
       lead: {
         agent: "claude",
         children: ["maker"],
-        cwd: "/repo/dev10",
+        cwd: "/repo/sample",
         group: "core",
         name: "lead",
         role: "Lead",
         sessionId: "lead-session",
         status: "active",
-        tmux_pane: "dev10:1.0",
+        tmux_pane: "sample:1.0",
       },
       maker: {
         agent: "codex",
         children: [],
-        cwd: "/repo/dev10/packages/app",
+        cwd: "/repo/sample/packages/app",
         group: "core",
         name: "maker",
         parent: "lead",
         role: "Builder",
         sessionId: "maker-session",
         status: "running",
-        tmux_pane: "dev10:1.1",
+        tmux_pane: "sample:1.1",
       },
     });
 
@@ -470,24 +470,24 @@ describe("org rendering", () => {
 
     expect(nodes.get("lead")).toEqual(
       expect.objectContaining({
-        cwd: "/repo/dev10",
+        cwd: "/repo/sample",
         session_id: "lead-session",
         status: "active",
-        tmux_pane: "dev10:1.0",
+        tmux_pane: "sample:1.0",
       }),
     );
     expect(nodes.get("maker")).toEqual(
       expect.objectContaining({
-        cwd: "/repo/dev10/packages/app",
+        cwd: "/repo/sample/packages/app",
         session_id: "maker-session",
         status: "running",
-        tmux_pane: "dev10:1.1",
+        tmux_pane: "sample:1.1",
       }),
     );
-    expect(text).toContain("pane: dev10:1.0");
-    expect(text).toContain("cwd: /repo/dev10");
-    expect(text).toContain("pane: dev10:1.1");
-    expect(text).toContain("cwd: /repo/dev10/packages/app");
+    expect(text).toContain("pane: sample:1.0");
+    expect(text).toContain("cwd: /repo/sample");
+    expect(text).toContain("pane: sample:1.1");
+    expect(text).toContain("cwd: /repo/sample/packages/app");
   });
 
   test("marks registry nodes with missing tmux panes as pane-missing", async () => {
@@ -495,29 +495,29 @@ describe("org rendering", () => {
       lead: {
         agent: "claude",
         children: ["maker"],
-        cwd: "/repo/dev10",
+        cwd: "/repo/sample",
         group: "core",
         name: "lead",
         role: "Lead",
         status: "active",
-        tmux_pane: "dev10:1.0",
+        tmux_pane: "sample:1.0",
       },
       maker: {
         agent: "codex",
         children: [],
-        cwd: "/repo/dev10",
+        cwd: "/repo/sample",
         group: "core",
         name: "maker",
         parent: "lead",
         role: "Builder",
         status: "active",
-        tmux_pane: "dev10:2.0",
+        tmux_pane: "sample:2.0",
       },
     });
 
     const org = await annotateOrgPaneStatus(
       buildOrg(ctx, null),
-      async (pane) => pane !== "dev10:2.0",
+      async (pane) => pane !== "sample:2.0",
     );
     const nodes = new Map(org.nodes.map((node) => [node.name, node]));
     const text = renderOrgText(org);

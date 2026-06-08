@@ -163,11 +163,11 @@ const LEAD_NODE: OrgNodeMock = {
 // web/slack are kind="service" (flat services section); chat/task/advisor nest.
 const MASTER_PLANE_NODES: OrgNodeMock[] = [
   { name: "grove-master", agent: "codex", role: "GROVE MASTER", description: "GROVE MASTER root.", parent: "", group: "master", kind: "meta", tmux_pane: "", session_id: "", status: "active" },
-  { name: "chat-master", agent: "claude", role: "CHAT MASTER", parent: "grove-master", group: "master", tmux_pane: "dev10:0.2", session_id: "sess-cm", status: "running" },
-  { name: "task-master", agent: "claude", role: "TASK MASTER", parent: "grove-master", group: "master", tmux_pane: "dev10:0.1", session_id: "sess-tm", status: "running" },
-  { name: "advisor", agent: "claude", role: "advisor", parent: "grove-master", group: "master", tmux_pane: "dev10:0.3", session_id: "sess-adv", status: "running" },
-  { name: "web", agent: "codex", role: "web service", parent: "grove-master", group: "services", kind: "service", tmux_pane: "dev10:1.0", session_id: "sess-web", status: "active" },
-  { name: "slack", agent: "codex", role: "slack service", parent: "grove-master", group: "services", kind: "service", tmux_pane: "dev10:1.1", session_id: "sess-slack", status: "active" },
+  { name: "chat-master", agent: "claude", role: "CHAT MASTER", parent: "grove-master", group: "master", tmux_pane: "sample:0.2", session_id: "sess-cm", status: "running" },
+  { name: "task-master", agent: "claude", role: "TASK MASTER", parent: "grove-master", group: "master", tmux_pane: "sample:0.1", session_id: "sess-tm", status: "running" },
+  { name: "advisor", agent: "claude", role: "advisor", parent: "grove-master", group: "master", tmux_pane: "sample:0.3", session_id: "sess-adv", status: "running" },
+  { name: "web", agent: "codex", role: "web service", parent: "grove-master", group: "services", kind: "service", tmux_pane: "sample:1.0", session_id: "sess-web", status: "active" },
+  { name: "slack", agent: "codex", role: "slack service", parent: "grove-master", group: "services", kind: "service", tmux_pane: "sample:1.1", session_id: "sess-slack", status: "active" },
 ];
 
 // v2 access flags — mirror web_app.py NodeRecord + _pane_allowed: any valid pane
@@ -292,7 +292,7 @@ function buildMasterOrg(selected: string) {
   };
 }
 
-function buildOrg(proj = "dev10") {
+function buildOrg(proj = "sample") {
   const orgNodes = [...MASTER_PLANE_NODES, ...ORG_NODES, LEAD_NODE];
   const children = childMap();
   const groups: Record<string, string[]> = {};
@@ -745,7 +745,7 @@ function setGuiFeatureEnabled(key: GuiFeatureKey, enabled: boolean): void {
 
 function guiFeaturesPayload() {
   return {
-    project: "dev10",
+    project: "sample",
     features: Object.fromEntries(
       guiFeatureKeys.map((key) => [
         key,
@@ -943,7 +943,7 @@ function retroAnalyticsPayload(): Record<string, unknown> {
   const themes = low ? [theme("testing", 1)] : [theme("testing", 4), theme("blocked", 2), theme("review", 1)];
   return {
     ok: true,
-    project: "dev10",
+    project: "sample",
     mode: "advisory",
     actions: [],
     generated_at: ledMetric(AUDIT_TS0 + 700, "server", "explicit"),
@@ -1139,7 +1139,7 @@ function usageTrendPayload(windowName: string): Record<string, unknown> {
   if (!hasAgy) limitations.pop();
   return {
     ok: true,
-    project: "dev10",
+    project: "sample",
     mode: "advisory",
     actions: [],
     enforcement: { called: false },
@@ -1194,9 +1194,9 @@ interface ProjectMock {
   node_count: number;
   status: string;
 }
-// internal name (e.g. dev10) stays the identity; display_name is the human label.
+// internal name (e.g. sample) stays the identity; display_name is the human label.
 const PROJECTS: ProjectMock[] = [
-  { name: "dev10", display_name: "grove-dev", workspace: "~/dev/grove", node_count: 5, status: "running" },
+  { name: "sample", display_name: "Sample Project", workspace: "~/dev/grove", node_count: 5, status: "running" },
   { name: "infra-ops", workspace: "~/dev/infra", node_count: 2, status: "idle", display_name: "grove-infra" },
   { name: SOLO_PROJECT, workspace: "~/dev/solo", node_count: 1, status: "running", display_name: "solo-x" },
 ];
@@ -1232,11 +1232,11 @@ function resolveMockBoard(rawBoard: string, project: string): string | null {
 // (GET /api/node-health -> { project, session, nodes: [...] }). Covers a spread
 // of the six real statuses; nodes absent here render a neutral "unknown" badge.
 const MOCK_NODE_HEALTH = [
-  { node: "root", status: "healthy", reason: null, message: null, detected_at: 1780540000, reset_at: null, source: "watchdog", project: "dev10", session: "grove", updated_at: 1780540000 },
-  { node: "backend", status: "rate_limited", reason: "provider 429", message: "retry after 30s", detected_at: 1780540100, reset_at: 1780540400, source: "watchdog", project: "dev10", session: "grove", updated_at: 1780540100 },
-  { node: "frontend", status: "login_required", reason: "session expired", message: null, detected_at: 1780540200, reset_at: null, source: "watchdog", project: "dev10", session: "grove", updated_at: 1780540200 },
-  { node: "researcher", status: "crashed", reason: "exited non-zero", message: null, detected_at: 1780540300, reset_at: null, source: "watchdog", project: "dev10", session: "grove", updated_at: 1780540300 },
-  { node: "docs", status: "cooldown", reason: "post-rate-limit backoff", message: null, detected_at: 1780540400, reset_at: 1780540700, source: "watchdog", project: "dev10", session: "grove", updated_at: 1780540400 },
+  { node: "root", status: "healthy", reason: null, message: null, detected_at: 1780540000, reset_at: null, source: "watchdog", project: "sample", session: "grove", updated_at: 1780540000 },
+  { node: "backend", status: "rate_limited", reason: "provider 429", message: "retry after 30s", detected_at: 1780540100, reset_at: 1780540400, source: "watchdog", project: "sample", session: "grove", updated_at: 1780540100 },
+  { node: "frontend", status: "login_required", reason: "session expired", message: null, detected_at: 1780540200, reset_at: null, source: "watchdog", project: "sample", session: "grove", updated_at: 1780540200 },
+  { node: "researcher", status: "crashed", reason: "exited non-zero", message: null, detected_at: 1780540300, reset_at: null, source: "watchdog", project: "sample", session: "grove", updated_at: 1780540300 },
+  { node: "docs", status: "cooldown", reason: "post-rate-limit backoff", message: null, detected_at: 1780540400, reset_at: 1780540700, source: "watchdog", project: "sample", session: "grove", updated_at: 1780540400 },
 ];
 
 // --- mock REST --------------------------------------------------------------
@@ -1256,12 +1256,12 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     diag.nodeHealthFetched = true;
     const one = u.searchParams.get("node");
     const nodes = one ? MOCK_NODE_HEALTH.filter((h) => h.node === one) : MOCK_NODE_HEALTH;
-    return Promise.resolve(json({ project: "dev10", session: "grove", nodes }));
+    return Promise.resolve(json({ project: "sample", session: "grove", nodes }));
   }
 
   if (p === "/api/status") {
     diag.statusFetches = ((diag.statusFetches as number) ?? 0) + 1;
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     // Mirrors web_app.py _node_liveness_summary: each node classified once into
     // running/stale/error, everything else idle. Registry "active" aliases to
     // running/live; error is NOT folded into stale.
@@ -1321,7 +1321,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     return Promise.resolve(
       json({
         ok: true,
-        project: "dev10",
+        project: "sample",
         key,
         feature: {
           enabled: guiFeatureEnabled(key),
@@ -1370,7 +1370,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     // credit_status + warnings[]. codex = explicit (not flagged); claude/agy =
     // partial + estimate source (flagged).
     diag.costFetched = true;
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     const m = (value: number | null, source: string, confidence: string, status?: string) =>
       status ? { value, source, confidence, status } : { value, source, confidence };
     return Promise.resolve(
@@ -1428,7 +1428,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     // Mirrors web_app.py _usage_payload: node/day rollup. agy stays honestly
     // unknown (credit_remaining null/unknown + warnings) — never fabricated.
     diag.usageFetched = true;
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     const um = (value: number | null, source: string, confidence: string, status?: string) =>
       status ? { value, source, confidence, status } : { value, source, confidence };
     // Mirrors web_app.py _usage_from_runs/_usage_*_metric: tokens come from run
@@ -1505,7 +1505,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       return Promise.resolve(new Response(JSON.stringify({ detail: "summary export is not enabled" }), { status: 404 }));
     }
     diag.summaryFetched = true;
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     return Promise.resolve(
       json({
         algorithm: "hmac-sha256",
@@ -1640,7 +1640,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     if (!handoffEnabled) {
       return Promise.resolve(new Response(JSON.stringify({ detail: "handoff is not enabled" }), { status: 404 }));
     }
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     const body = (init?.body ? JSON.parse(init.body as string) : {}) as { task_id?: string };
     const taskId = body.task_id ?? "G-4";
     const task = findTask(taskId) ?? { id: taskId, title: `task ${taskId}`, status: "ready" };
@@ -1759,7 +1759,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 
   if (p === "/api/notifications/routing") {
     // Mirrors web_app.py: GET any member (read-only view); POST operator-only.
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     if (method === "POST") {
       if (viewerMode)
         return Promise.resolve(
@@ -1817,7 +1817,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     // = self-only (scope "self"); operator = all (scope "all"). cost + agy credit
     // stay honestly unknown; soft quota never hard-kills (hard_kill:false).
     diag.ledgerFetches = ((diag.ledgerFetches as number) ?? 0) + 1;
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     const members = viewerMode
       ? [ledgerRollup("v1", 4, 5_000, false)] // self only
       : [
@@ -1868,7 +1868,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     return Promise.resolve(
       json({
         ok: true,
-        project: (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10",
+        project: (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample",
         member: { id: memberId, name: meta.name || null, role: meta.role },
         quota: quotaPublic(memberId, 0, null), // fresh quota uses unknown usage
       }),
@@ -1977,7 +1977,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
           text: `received: “${message.slice(0, 60)}” — root will follow up. Reviewers: 2. Human items: ready=1, running=1, blocked=1, done=1. Human queue: ask-human=1, needs_human=1. (mock)`,
           metadata: {
             facts: {
-              project: { selected: "dev10", board: "dev10" },
+              project: { selected: "sample", board: "sample" },
               projects: { visible: PROJECTS.map((p) => p.name).sort() },
               org: { node_count: ORG_NODES.length, project_master: { name: "root", present: true, default_assignee: true } },
               board: { status_counts: { ready: 1, running: 1, blocked: 1, done: 1, archived: 0 } },
@@ -2052,7 +2052,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 
   if (p === "/api/execution") {
     // Mirrors web_app.py _execution_gate_payload + POST partial update.
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     if (method === "POST") {
       if (diag.denyExecution) {
         diag.execDenied = ((diag.execDenied as number) ?? 0) + 1;
@@ -2075,7 +2075,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     // id/secret) + anonymous_count 0; local → [{kind:"anonymous",count}] +
     // anonymous_count. Default team (member chips); setPresenceMode toggles.
     diag.presenceFetches = ((diag.presenceFetches as number) ?? 0) + 1;
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     if (presenceMode === "local") {
       return Promise.resolve(
         json({
@@ -2111,7 +2111,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       // never leaks the request path / role input.
       return Promise.resolve(new Response(JSON.stringify({ detail: "plan failed" }), { status: 500 }));
     }
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     const role = u.searchParams.get("role") ?? "";
     const taskId = u.searchParams.get("task_id") ?? "";
     diag.planRole = role;
@@ -2210,7 +2210,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (p === "/api/inbox") {
     // Mirrors web_app.py _inbox_payload: {project, items, next_cursor, total}.
     diag.inboxFetches = ((diag.inboxFetches as number) ?? 0) + 1;
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     const cursor = Number(u.searchParams.get("cursor") ?? "0") || 0;
     const limit = Number(u.searchParams.get("limit") ?? "50") || 50;
     const page = INBOX_ITEMS.slice(cursor, cursor + limit);
@@ -2237,7 +2237,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   let m = p.match(/^\/api\/boards\/([^/]+)\/tasks$/);
   if (m) {
     const rawBoard = decodeURIComponent(m[1]!);
-    const boardProj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const boardProj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     // Mirror web_app.py _resolve_board_id: the "default"/"main" alias resolves to
     // the active project's single board (project.board) for both reads and writes.
     // Hidden/legacy mock boards must not be silently addressable.
@@ -2283,7 +2283,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (m) {
     // Mirror web_app.py board_workflow_endpoint/_workflow_payload.
     const rawBoard = decodeURIComponent(m[1]!);
-    const boardProj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const boardProj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     const board = resolveMockBoard(rawBoard, boardProj);
     if (!board) return Promise.resolve(jsonError(404, `board '${rawBoard}' not in project '${boardProj}'`));
     diag.workflowFetched = board;
@@ -2347,7 +2347,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (m) {
     // Mirrors web_app.py _task_execution_payload {state, approved, gate, execution}.
     const id = decodeURIComponent(m[1]!);
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     const e = taskExec[id] ?? { state: "none", approved: false, node: "root" };
     return Promise.resolve(
       json({
@@ -2365,7 +2365,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   m = p.match(/^\/api\/tasks\/([^/]+)\/approve$/);
   if (m && method === "POST") {
     const id = decodeURIComponent(m[1]!);
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     if (diag.denyExecution) {
       diag.execDenied = ((diag.execDenied as number) ?? 0) + 1;
       return Promise.resolve(new Response(JSON.stringify({ detail: "execution requires operator role" }), { status: 403 }));
@@ -2386,7 +2386,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   m = p.match(/^\/api\/tasks\/([^/]+)\/abort$/);
   if (m && method === "POST") {
     const id = decodeURIComponent(m[1]!);
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     if (diag.denyExecution) {
       diag.execDenied = ((diag.execDenied as number) ?? 0) + 1;
       return Promise.resolve(new Response(JSON.stringify({ detail: "execution requires operator role" }), { status: 403 }));
@@ -2464,7 +2464,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const hdrs = init?.headers as Record<string, string> | undefined;
     const proj = hdrs?.["X-Grove-Project"] ?? "";
     diag.projectHeader = proj;
-    const response = json(proj === SOLO_PROJECT ? buildSoloOrg() : buildOrg(proj || "dev10"));
+    const response = json(proj === SOLO_PROJECT ? buildSoloOrg() : buildOrg(proj || "sample"));
     if (orgDelayMs > 0) {
       return new Promise((resolve) => setTimeout(() => resolve(response), orgDelayMs));
     }
@@ -2516,7 +2516,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     // 404 when --enable-node-input is off / node unknown, 429 rate-limited. On
     // success the live terminal streams the result; returns {ok,project,node,pane}.
     const node = decodeURIComponent(m[1]!).trim();
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     const reject = (status: number, detail: string) =>
       Promise.resolve(new Response(JSON.stringify({ detail }), { status }));
     if (viewerMode) return reject(403, "node input requires operator role");
@@ -2538,7 +2538,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     // Mirrors web_app.py node_connect_endpoint/_node_connect_payload: any member
     // can read the tmux attach/select-pane connect commands; 404 unknown node.
     const node = decodeURIComponent(m[1]!).trim();
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     const projNodes = proj === SOLO_PROJECT ? SOLO_NODES : ORG_NODES;
     const rec = projNodes.find((n) => n.name === node);
     if (!rec)
@@ -2570,7 +2570,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     // Normalize like backend _validated_node_ref (trim) ONCE, then use the
     // canonical name everywhere — payload `node`, store key, and diag.
     const node = decodeURIComponent(m[1]!).trim();
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(node)) {
       return Promise.resolve(
         new Response(JSON.stringify({ detail: "node must contain only letters, digits, hyphen, or underscore" }), {
@@ -2620,7 +2620,7 @@ window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (m) {
     // Mirrors web_app.py _node_execution_payload + _node_in_project (400/404).
     const node = decodeURIComponent(m[1]!).trim();
-    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "dev10";
+    const proj = (init?.headers as Record<string, string> | undefined)?.["X-Grove-Project"] ?? "sample";
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(node)) {
       return Promise.resolve(new Response(JSON.stringify({ detail: "node must contain only letters, digits, hyphen, or underscore" }), { status: 400, headers: { "Content-Type": "application/json" } }));
     }

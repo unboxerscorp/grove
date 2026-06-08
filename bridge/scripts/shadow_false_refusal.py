@@ -27,6 +27,7 @@ from grove_bridge.chat_runtime import (
     load_chat_bridge_persona,
     load_gemini_provider_config,
 )
+
 from grove_bridge.project_directory import ProjectDirectory
 from grove_bridge.slack import (
     ChatRouteConfig,
@@ -91,29 +92,29 @@ class _FakeFacade:
 def main() -> int:
     per = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     home = Path("~/.grove").expanduser()
-    cfg = load_gemini_provider_config(home / "dev10" / "chat-provider.json")
+    cfg = load_gemini_provider_config(home / "sample" / "chat-provider.json")
     if not cfg["api_key"]:
         print("NO GEMINI KEY — cannot run shadow")
         return 2
     adapter = RedactingProviderAdapter(
         inner=GeminiChatProviderAdapter(api_key=cfg["api_key"], model=cfg["model"])
     )
-    persona = load_chat_bridge_persona(home / "dev10" / "chat-persona.md")
+    persona = load_chat_bridge_persona(home / "sample" / "chat-persona.md")
 
     store = SQLiteBoardStore(Path(tempfile.mkdtemp()) / "shadow.db")
-    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
-    store.set_gui_feature_enabled(board="dev10", feature="chat_write_tools", enabled=True)
-    directory = ProjectDirectory(home, default_session="dev10")
+    store.set_gui_feature_enabled(board="sample", feature="chat_bridge_runtime", enabled=True)
+    store.set_gui_feature_enabled(board="sample", feature="chat_write_tools", enabled=True)
+    directory = ProjectDirectory(home, default_session="sample")
     slack = _FakeSlack()
     command_config = SlackCommandConfig(
-        board="dev10",
+        board="sample",
         members={"U03B147K2PR": SlackCommandMember("operator", "권성민", "operator")},
     )
     conn = SlackConnector(
         store=store,
         slack_client=slack,
         chat_facade=_FakeFacade(),
-        human_gate=HumanGateConfig(board="dev10", channel="C1"),
+        human_gate=HumanGateConfig(board="sample", channel="C1"),
         chat_route=ChatRouteConfig(default_node="chat-master"),
         command_config=command_config,
         route_chat_to_node=True,
@@ -159,7 +160,7 @@ def main() -> int:
             ]
         }
         item = store.enqueue_slack_chat_message(
-            board="dev10",
+            board="sample",
             team_id="T",
             channel_id="C1",
             thread_ts=thread,

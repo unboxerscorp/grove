@@ -17,7 +17,7 @@ function registry(): Registry {
         children: ["maker", "viewer"],
         name: "lead",
         role: "Lead",
-        tmux_pane: "dev10:1.%1",
+        tmux_pane: "sample:1.%1",
       },
       maker: {
         agent: "codex",
@@ -26,7 +26,7 @@ function registry(): Registry {
         name: "maker",
         parent: "lead",
         role: "Maker",
-        tmux_pane: "dev10:2.%5",
+        tmux_pane: "sample:2.%5",
       },
       viewer: {
         agent: "antigravity",
@@ -35,10 +35,10 @@ function registry(): Registry {
         name: "viewer",
         parent: "lead",
         role: "Viewer",
-        tmux_pane: "dev10:2.%6",
+        tmux_pane: "sample:2.%6",
       },
     },
-    session: "dev10",
+    session: "sample",
     updatedAt: "2026-06-03T00:00:00.000Z",
   };
 }
@@ -105,15 +105,15 @@ describe("despawnNodes", () => {
 
     const result = await despawnNodes(ctx, { node: "maker", operatorOverride: true }, state.deps);
 
-    expect(state.guardSessions).toEqual(["dev10"]);
-    expect(state.killed).toEqual(["dev10:2.%5"]);
+    expect(state.guardSessions).toEqual(["sample"]);
+    expect(state.killed).toEqual(["sample:2.%5"]);
     expect(ctx.registry.nodes.maker).toBeUndefined();
     expect(ctx.registry.nodes.lead?.children).toEqual(["viewer"]);
     expect(state.saves).toBe(1);
     expect(result.removed).toEqual([
       {
         name: "maker",
-        pane: "dev10:2.%5",
+        pane: "sample:2.%5",
         paneKilled: true,
         paneMissing: false,
       },
@@ -126,7 +126,7 @@ describe("despawnNodes", () => {
 
     const result = await despawnNodes(ctx, { node: "maker", operatorOverride: true }, state.deps);
 
-    expect(state.killed).toEqual(["dev10:2.%5"]);
+    expect(state.killed).toEqual(["sample:2.%5"]);
     expect(ctx.registry.nodes.maker).toBeUndefined();
     expect(result.removed[0]).toEqual(
       expect.objectContaining({
@@ -139,7 +139,7 @@ describe("despawnNodes", () => {
 
   test("skips killing ambiguous pane targets and cleans only the registry", async () => {
     const reg = registry();
-    reg.nodes.maker!.tmux_pane = "dev10:2";
+    reg.nodes.maker!.tmux_pane = "sample:2";
     const ctx = context(reg);
     const state = deps();
 
@@ -150,7 +150,7 @@ describe("despawnNodes", () => {
     expect(result.removed[0]).toEqual(
       expect.objectContaining({
         name: "maker",
-        pane: "dev10:2",
+        pane: "sample:2",
         paneKilled: false,
         paneMissing: true,
       }),
@@ -198,27 +198,27 @@ describe("despawnNodes", () => {
 
     const result = await despawnNodes(ctx, { node: "viewer", operatorOverride: true }, state.deps);
 
-    expect(state.killed).toEqual(["dev10:2.%6"]);
+    expect(state.killed).toEqual(["sample:2.%6"]);
     expect(ctx.registry.nodes.viewer).toBeUndefined();
     expect(result.removed.map((item) => item.name)).toEqual(["viewer"]);
   });
 
   test("rebinds surviving pane targets after tmux pane indexes shift", async () => {
     const reg = registry();
-    reg.nodes.maker!.tmux_pane = "dev10:2.1";
-    reg.nodes.viewer!.tmux_pane = "dev10:2.2";
+    reg.nodes.maker!.tmux_pane = "sample:2.1";
+    reg.nodes.viewer!.tmux_pane = "sample:2.2";
     const ctx = context(reg);
     const state = deps();
-    state.paneIdByAddr.set("dev10:1.%1", "%1");
-    state.paneIdByAddr.set("dev10:2.2", "%6");
-    state.paneTargetById.set("%1", "dev10:1.0");
-    state.paneTargetById.set("%6", "dev10:2.1");
+    state.paneIdByAddr.set("sample:1.%1", "%1");
+    state.paneIdByAddr.set("sample:2.2", "%6");
+    state.paneTargetById.set("%1", "sample:1.0");
+    state.paneTargetById.set("%6", "sample:2.1");
 
     await despawnNodes(ctx, { node: "maker", operatorOverride: true }, state.deps);
 
-    expect(state.killed).toEqual(["dev10:2.1"]);
-    expect(ctx.registry.nodes.viewer?.tmux_pane).toBe("dev10:2.1");
-    expect(ctx.registry.nodes.lead?.tmux_pane).toBe("dev10:1.0");
+    expect(state.killed).toEqual(["sample:2.1"]);
+    expect(ctx.registry.nodes.viewer?.tmux_pane).toBe("sample:2.1");
+    expect(ctx.registry.nodes.lead?.tmux_pane).toBe("sample:1.0");
   });
 
   test("bulk group despawn requires operator override after confirmation", async () => {
@@ -246,7 +246,7 @@ describe("despawnNodes", () => {
       state.deps,
     );
 
-    expect(state.killed).toEqual(["dev10:2.%5", "dev10:2.%6"]);
+    expect(state.killed).toEqual(["sample:2.%5", "sample:2.%6"]);
     expect(Object.keys(ctx.registry.nodes)).toEqual(["lead"]);
     expect(ctx.registry.nodes.lead?.children).toEqual([]);
     expect(result.removed.map((item) => item.name)).toEqual(["maker", "viewer"]);
@@ -274,15 +274,15 @@ describe("despawnNodes", () => {
       removed: [
         {
           name: "maker",
-          pane: "dev10:2.%5",
+          pane: "sample:2.%5",
           paneKilled: true,
           paneMissing: false,
         },
       ],
-      session: "dev10",
+      session: "sample",
     };
 
-    expect(renderDespawnText(result)).toContain("maker: killed pane=dev10:2.%5");
+    expect(renderDespawnText(result)).toContain("maker: killed pane=sample:2.%5");
     expect(JSON.parse(renderDespawnJson(result))).toEqual(result);
   });
 });

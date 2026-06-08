@@ -1,10 +1,9 @@
 """Single source of project identity for the Python web/chat/API layer.
 
-`board` is the internal registry/session routing key (e.g. "dev10") — the value
+`board` is the internal registry/session routing key (e.g. "sample") — the value
 behind X-Grove-Project, the tmux session, and the registry path. `display_name`
-is the user-facing project identity (e.g. "grove-dev"). Only display_name is ever
-shown to a human; the board name must never surface as the project name (that was
-the "dev10 프로젝트" chatbot leak).
+is the user-facing project identity. When a registry does not define one, the
+board name is the display name; there is no project-specific fallback label.
 
 Low-level: depends only on the filesystem + registry JSON, so web_app, slack,
 pull_executor, and assistant can all consume it without import cycles.
@@ -79,11 +78,6 @@ class ProjectDirectory:
             explicit = _display_from_mapping(nested)
             if explicit is not None:
                 return explicit
-        # Migration label for the default session until its registry carries a
-        # display_name; every other project falls back to its board name (never
-        # the literal word "project").
-        if board == self._default_session:
-            return "grove-dev"
         return board
 
 

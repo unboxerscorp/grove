@@ -19,14 +19,14 @@ describe("grove runtime paths", () => {
     const outside = path.join(tempRoot, "outside");
     mkdirSync(groveHome);
     mkdirSync(outside);
-    symlinkSync(outside, path.join(groveHome, "dev10"), "dir");
+    symlinkSync(outside, path.join(groveHome, "sample"), "dir");
 
     try {
       process.env.GROVE_HOME = groveHome;
       vi.resetModules();
       const paths = await import("./paths.js");
 
-      expect(() => paths.sessionDir("dev10")).toThrow("session path escaped GROVE_HOME");
+      expect(() => paths.sessionDir("sample")).toThrow("session path escaped GROVE_HOME");
     } finally {
       if (previous === undefined) {
         delete process.env.GROVE_HOME;

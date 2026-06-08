@@ -173,7 +173,7 @@ export interface BoardWorkflow {
 
 // v1.29 cross-project org metadata (web_app.py _org_payload additions).
 export interface ProjectMeta {
-  name: string; // internal name (e.g. "dev10")
+  name: string; // internal name (e.g. "sample")
   board: string;
   display_name: string; // human label (e.g. "grove-dev")
 }

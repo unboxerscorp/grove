@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DRY_RUN=1
-SESSION="dev10-resilience"
+SESSION="sample-resilience"
 SOURCE_GROVE_HOME="${GROVE_SOURCE_HOME:-$HOME/.grove-clone}"
 PROJECT_DIR="$HOME/grove-projects/$SESSION"
 PROJECT_DIR_SET=0
@@ -18,7 +18,7 @@ Dry-run is the default. Add --execute to write snapshot files.
 
 Options:
   --execute                    create files and run grove export-project
-  --session <name>             clone/test session name (default: dev10-resilience)
+  --session <name>             clone/test session name (default: sample-resilience)
   --source-grove-home <path>   cloned GROVE_HOME to archive (default: ~/.grove-clone)
   --project-dir <path>         cloned project dir with grove.project.json
   --out-root <path>            snapshot root (default: ~/grove-snapshots)
@@ -191,7 +191,7 @@ done
 [[ -n "$SESSION" ]] || die "--session is required"
 validate_grove_name "$SESSION" "--session"
 validate_snapshot_id "$SNAPSHOT_ID"
-[[ "$SESSION" != "dev10" ]] || die "refusing live session dev10; use a clone session"
+[[ "$SESSION" != "sample" ]] || die "refusing live session sample; use a clone session"
 
 SOURCE_GROVE_HOME="$(expand_path "$SOURCE_GROVE_HOME")"
 PROJECT_DIR="$(expand_path "$PROJECT_DIR")"

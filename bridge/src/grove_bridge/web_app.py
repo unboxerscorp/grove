@@ -111,7 +111,7 @@ from grove_bridge.team_auth import (
 SESSION_HEADER = "X-Grove-Session-Token"
 PROJECT_HEADER = "X-Grove-Project"
 TARGET_PROJECT_HEADER = "X-Grove-Target-Project"
-DEFAULT_SESSION = "dev10"
+DEFAULT_SESSION = "default"
 LOGGER = logging.getLogger(__name__)
 try:
     APP_VERSION = importlib.metadata.version("grove-bridge")
@@ -222,7 +222,6 @@ DELEGATE_BOARD_ALIASES = frozenset({"dev-room"})
 # (group "services"), the advisor (ungrouped), and audit/whip (group "audit") are
 # deliberately excluded so dev work is owned by the lead and worker groups only.
 EXECUTOR_ASSIGNEE_GROUPS = frozenset({"lead", "workers"})
-DELEGATE_BOARD_OWNER_PROJECT = "dev10"
 LEAD_NODE_NAME = "lead"
 GROVE_MASTER_NODE_NAME = "grove-master"
 WEB_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 5
@@ -250,6 +249,7 @@ class WebAppConfig:
     dist_dir: Path = field(default_factory=lambda: _repo_root() / "web" / "dist")
     grove_home: Path = field(default_factory=lambda: Path("~/.grove").expanduser())
     registry_session: str = DEFAULT_SESSION
+    host_registry_session: str = ""
     board_db_path: Path = field(default_factory=default_board_db_path)
     token: str = ""
     auth_required: bool = True
@@ -278,6 +278,8 @@ class WebAppConfig:
         object.__setattr__(self, "board_db_path", self.board_db_path.expanduser())
         session = self.registry_session.strip() or DEFAULT_SESSION
         object.__setattr__(self, "registry_session", session)
+        host_session = self.host_registry_session.strip() or session
+        object.__setattr__(self, "host_registry_session", host_session)
         token = self.token.strip()
         if not token:
             token = _load_or_create_dashboard_token(self.grove_home, session)
@@ -2118,7 +2120,7 @@ def create_app(
         )
         return [
             _node_payload(node, health=health_by_node.get(str(node["name"])))
-            for node in _registry_nodes(project.config)
+            for node in _terminal_node_payloads(project.config)
         ]
 
     @app.post("/api/nodes")
@@ -6423,8 +6425,8 @@ def _master_chat_facts(
     directory = _project_directory(project.config)
     selected_display = directory.display_name(project.config.registry_session)
     return {
-        # User-facing project identity = display_name (e.g. grove-dev), never the
-        # internal session/board ("dev10") — that was the chatbot "dev10 프로젝트" leak.
+        # User-facing project identity = display_name, not an internal
+        # session/board routing key.
         "project": {"selected": selected_display, "board": selected_display},
         "projects": {
             "visible": [directory.display_name(name) for name in _visible_project_names(project)]
@@ -7150,7 +7152,7 @@ def _resolve_board_id(board_id: str, *, project: ProjectContext) -> str:
         return clean
     if clean == project.board or clean in PROJECT_BOARD_ALIASES:
         return project.board
-    if clean in DELEGATE_BOARD_ALIASES and project.name == DELEGATE_BOARD_OWNER_PROJECT:
+    if clean in DELEGATE_BOARD_ALIASES and project.name == project.config.host_registry_session:
         return clean
     raise HTTPException(
         status_code=404,
@@ -7411,8 +7413,8 @@ def _project_metadata(config: WebAppConfig) -> dict[str, object]:
 
 
 def _project_directory(config: WebAppConfig) -> ProjectDirectory:
-    """Shared project-identity source (display_name single source / dev10 leak
-    core). web/chat/UI all resolve user-facing names through this."""
+    """Shared project-identity source. web/chat/UI all resolve user-facing names
+    through this."""
     return ProjectDirectory(config.grove_home, default_session=DEFAULT_SESSION)
 
 
@@ -7428,8 +7430,6 @@ def _project_display_name(session: str, registry: Mapping[str, object]) -> str:
             value = _mapping_string(project, key)
             if value is not None:
                 return _safe_public_text(value)
-    if session == DEFAULT_SESSION:
-        return "grove-dev"
     return _safe_public_text(session)
 
 
@@ -7702,6 +7702,56 @@ def _registry_nodes(config: WebAppConfig) -> list[dict[str, object]]:
         }
         for node in _org_node_records(config)
     ]
+
+
+def _terminal_node_payloads(config: WebAppConfig) -> list[dict[str, object]]:
+    return [_node_payload_base(node) for node in _terminal_node_records(config)]
+
+
+def _node_payload_base(node: NodeRecord) -> dict[str, object]:
+    return {
+        "name": node["name"],
+        "agent": node["agent"],
+        "cwd": node["cwd"],
+        "tmux_pane": node["tmux_pane"],
+        "session_id": node["session_id"],
+        "status": node["status"],
+        "description": node["description"],
+        "work_instructions": node["work_instructions"],
+        "role": node["role"],
+        "parent": node["parent"],
+        "group": node["group"],
+        "kind": node["kind"],
+        "exposed": node["exposed"],
+        "terminal_allowed": node["terminal_allowed"],
+        "input_allowed": node["input_allowed"],
+        "unavailable_reason": node["unavailable_reason"],
+        "pane_exists": node["pane_exists"],
+    }
+
+
+def _terminal_node_records(config: WebAppConfig) -> list[NodeRecord]:
+    nodes_by_name: dict[str, NodeRecord] = {
+        str(node["name"]): node for node in _org_node_records(config)
+    }
+    for node in _org_level_terminal_records(config):
+        nodes_by_name.setdefault(str(node["name"]), node)
+    return sorted(nodes_by_name.values(), key=_terminal_node_sort_key)
+
+
+def _org_level_terminal_records(config: WebAppConfig) -> list[NodeRecord]:
+    records: list[NodeRecord] = [cast(NodeRecord, _org_graph_master_record(config))]
+    records.extend(cast(NodeRecord, node) for node in _org_graph_master_plane_records(config))
+    return [node for node in records if node["terminal_allowed"]]
+
+
+def _terminal_node_sort_key(node: Mapping[str, object]) -> tuple[int, str]:
+    name = str(node.get("name") or "")
+    if name == GROVE_MASTER_NODE_NAME:
+        return (0, name)
+    if _is_org_level_node(node):
+        return (1, name)
+    return (2, name)
 
 
 def _registry_node_records(config: WebAppConfig) -> list[NodeRecord]:
@@ -8051,9 +8101,9 @@ def _is_org_level_node(node: Mapping[str, object]) -> bool:
 
 def _org_graph_master_plane_records(config: WebAppConfig) -> list[OrgGraphRecord]:
     """grove-master's org-level siblings (chat-master/task-master/advisor/web/slack)
-    collected once across visible registries — rendered project="" under
-    grove-master so they appear in EVERY project view, never scoped to the host
-    session (the dev10-as-project leak root)."""
+    collected once across visible registries. They render under grove-master with
+    project="" so they appear in every project view instead of being scoped to
+    whichever project hosts the web process."""
     seen: dict[str, NodeRecord] = {}
     for project_name in _visible_project_names_for_config(config):
         project_config = replace(config, registry_session=project_name)
@@ -8359,7 +8409,7 @@ def _node_status(node: Mapping[str, object]) -> str:
 
 def _allowed_panes(config: WebAppConfig) -> set[str]:
     return {
-        node["tmux_pane"] for node in _registry_node_records(config) if node["terminal_allowed"]
+        node["tmux_pane"] for node in _terminal_node_records(config) if node["terminal_allowed"]
     }
 
 

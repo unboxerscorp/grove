@@ -27,10 +27,10 @@ describe("cmdUp", () => {
   test("loads context, brings nodes up, then renders status", async () => {
     const ctx = {
       byName: new Map(),
-      config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "dev10" },
+      config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "sample" },
       configPath: "/repo/grove.yaml",
       nodes: [],
-      registry: { cwd: "/repo", nodes: {}, session: "dev10", updatedAt: "now" },
+      registry: { cwd: "/repo", nodes: {}, session: "sample", updatedAt: "now" },
     } satisfies Context;
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -59,10 +59,10 @@ describe("cmdUp", () => {
     };
     const ctx = {
       byName: new Map([
-        ["lead", { adapter: {} as never, addr: "dev10:0.0", node: configured }],
-        ["orch-platform", { adapter: {} as never, addr: "dev10:1.1", node: spawned }],
+        ["lead", { adapter: {} as never, addr: "sample:0.0", node: configured }],
+        ["orch-platform", { adapter: {} as never, addr: "sample:1.1", node: spawned }],
       ]),
-      config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "dev10" },
+      config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "sample" },
       configPath: "/repo/grove.yaml",
       nodes: [configured],
       registry: {
@@ -72,10 +72,10 @@ describe("cmdUp", () => {
             agent: "claude",
             name: "orch-platform",
             parent: "lead",
-            tmux_pane: "dev10:1.1",
+            tmux_pane: "sample:1.1",
           },
         },
-        session: "dev10",
+        session: "sample",
         updatedAt: "now",
       },
     } satisfies Context;

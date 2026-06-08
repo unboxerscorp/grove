@@ -479,7 +479,7 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
     tmp_path: Path,
 ) -> None:
     grove_config = tmp_path / "cockpit.grove.yaml"
-    grove_config.write_text("session: dev10\ncwd: /repo\nnodes: {}\n", encoding="utf-8")
+    grove_config.write_text("session: sample\ncwd: /repo\nnodes: {}\n", encoding="utf-8")
     registry = tmp_path / "registry.json"
     registry.write_text(
         json.dumps(
@@ -490,7 +490,7 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
                         "group": "product",
                         "name": "codex-a",
                         "parent": "lead",
-                        "role": "Python maker token=xoxb-secret dev10:1.2",
+                        "role": "Python maker token=xoxb-secret sample:1.2",
                     },
                     "lead": {
                         "agent": "codex",
@@ -499,7 +499,7 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
                         "role": "Project lead",
                     },
                 },
-                "session": "dev10",
+                "session": "sample",
             }
         ),
         encoding="utf-8",
@@ -563,12 +563,12 @@ def test_run_once_claims_assignee_node_task_and_completes_with_grove_metadata(
     assert runner.calls[0][0] == "codex-a"
     prompt = runner.calls[0][1]
     assert "GROVE CONTEXT PACK" in prompt
-    assert "From: grove pull executor → codex-a@dev10" in prompt
+    assert "From: grove pull executor → codex-a@sample" in prompt
     assert "Project lead: lead" in prompt
     assert "Target role: Python maker" in prompt
     assert "lead -> codex-a" in prompt
     assert "xoxb-secret" not in prompt
-    assert "dev10:1.2" in prompt
+    assert "sample:1.2" in prompt
     assert "You are working on a grove human-facing item." in prompt
     assert "You are executing a grove board task." not in prompt
     assert "Implement native board" in prompt
@@ -1143,7 +1143,7 @@ def test_guarded_execution_requires_approval_then_dispatches(tmp_path: Path) -> 
             session_id="session-1",
             transcript_path="/tmp/transcript.jsonl",
             turn_id="turn-1",
-            tmux_pane="dev10:1.0",
+            tmux_pane="sample:1.0",
         )
     )
     config = BridgeConfig(
@@ -1985,15 +1985,15 @@ def test_main_builds_session_board_config_from_registry(
     monkeypatch: MonkeyPatch,
 ) -> None:
     grove_home = tmp_path / ".grove"
-    registry_path = grove_home / "dev10" / "registry.json"
+    registry_path = grove_home / "sample" / "registry.json"
     registry_path.parent.mkdir(parents=True)
     registry_path.write_text(
         """
 {
   "nodes": {
-    "lead": {"name": "lead", "tmux_pane": "dev10:0.0"},
-    "fe": {"name": "fe", "agent": "codex", "tmux_pane": "dev10:1.1"},
-    "qa": {"name": "qa", "agent": "claude", "tmux_pane": "dev10:1.2"}
+    "lead": {"name": "lead", "tmux_pane": "sample:0.0"},
+    "fe": {"name": "fe", "agent": "codex", "tmux_pane": "sample:1.1"},
+    "qa": {"name": "qa", "agent": "claude", "tmux_pane": "sample:1.2"}
   }
 }
 """.strip(),
@@ -2025,7 +2025,7 @@ def test_main_builds_session_board_config_from_registry(
     exit_code = pull_executor_module.main(
         [
             "--session",
-            "dev10",
+            "sample",
             "--board",
             "live",
             "--grove-config",

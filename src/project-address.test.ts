@@ -25,15 +25,15 @@ afterEach(() => {
 function callerContext(): Context {
   const nc = {
     adapter: { label: "codex" },
-    addr: "dev10:1.0",
-    node: { agent: "codex", children: [], cwd: "/repo/dev10", name: "local" },
+    addr: "sample:1.0",
+    node: { agent: "codex", children: [], cwd: "/repo/sample", name: "local" },
   } as unknown as NodeCtx;
   return {
     byName: new Map([["local", nc]]),
-    config: { cwd: "/repo/dev10", defaults: { agent: "codex" }, nodes: {}, session: "dev10" },
-    configPath: "/repo/dev10/grove.yaml",
+    config: { cwd: "/repo/sample", defaults: { agent: "codex" }, nodes: {}, session: "sample" },
+    configPath: "/repo/sample/grove.yaml",
     nodes: [nc.node],
-    registry: { cwd: "/repo/dev10", nodes: {}, session: "dev10", updatedAt: "now" },
+    registry: { cwd: "/repo/sample", nodes: {}, session: "sample", updatedAt: "now" },
   };
 }
 
@@ -134,14 +134,14 @@ describe("project node addresses", () => {
   });
 
   test("formatNodeAddress emits the canonical form and round-trips with the parser", () => {
-    expect(formatNodeAddress("worker", "dev11", { homeProject: "dev10" })).toBe("worker@dev11");
-    expect(formatNodeAddress("worker", "dev10", { homeProject: "dev10" })).toBe("worker");
+    expect(formatNodeAddress("worker", "dev11", { homeProject: "sample" })).toBe("worker@dev11");
+    expect(formatNodeAddress("worker", "sample", { homeProject: "sample" })).toBe("worker");
     for (const [node, project] of [
       ["worker", "dev11"],
       ["lead", "base-web-admin"],
     ] as const) {
       expect(
-        parseProjectNodeAddress(formatNodeAddress(node, project, { homeProject: "dev10" })),
+        parseProjectNodeAddress(formatNodeAddress(node, project, { homeProject: "sample" })),
       ).toEqual({
         node,
         project,

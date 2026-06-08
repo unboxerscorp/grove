@@ -6,7 +6,7 @@ import { defineConfig } from "@playwright/test";
 // browser binaries are downloaded — important in offline/CI sandboxes. Each
 // worker boots a fully isolated grove-web server (see fixtures.ts -> bootTier1):
 // temp port + temp GROVE_HOME + throwaway board db + fresh seed, serving the real
-// built SPA from web/dist. Nothing here touches ~/.grove, dev10, or a live agent.
+// built SPA from web/dist. Nothing here touches ~/.grove, sample, or a live agent.
 //
 // Scope: dashboard load -> board render -> project switch -> tasks visible. These
 // are deliberately shallow (the org hierarchy / master-chat / project-create form

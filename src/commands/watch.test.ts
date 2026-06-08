@@ -19,7 +19,7 @@ afterEach(() => {
 
 describe("cmdWatch", () => {
   test("starts a watcher and stops it on SIGINT", async () => {
-    const ctx = { config: { session: "dev10" } };
+    const ctx = { config: { session: "sample" } };
     const stop = vi.fn();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.mocked(loadContext).mockReturnValue(ctx as never);

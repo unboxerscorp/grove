@@ -51,7 +51,7 @@ export function parseProjectNodeAddress(
     return { node: validateGroveName(rawNode, "node"), project: addressProject };
   };
 
-  // Canonical: node@project — the same form the org displays (e.g. lead@dev10).
+  // Canonical: node@project — the same form the org displays (e.g. lead@sample).
   const at = trimmed.indexOf("@");
   if (at >= 0) {
     const rawNode = trimmed.slice(0, at).trim();

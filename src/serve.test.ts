@@ -125,7 +125,7 @@ function makeNodeContext(name: string): NodeCtx {
   } satisfies AgentAdapter;
   return {
     adapter,
-    addr: `dev10:${name}`,
+    addr: `sample:${name}`,
     node: {
       agent: "codex",
       children: [],
@@ -441,12 +441,12 @@ describe("grove chat completions facade", () => {
         "maker-a": {
           agent: "codex",
           name: "maker-a",
-          tmux_pane: "dev10:1.0",
+          tmux_pane: "sample:1.0",
         },
         "maker-b": {
           agent: "codex",
           name: "maker-b",
-          tmux_pane: "dev10:1.1",
+          tmux_pane: "sample:1.1",
         },
       },
       session,

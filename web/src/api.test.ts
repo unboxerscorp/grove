@@ -75,7 +75,7 @@ describe("node termination API", () => {
     const fetchMock = mockFetch({ confirmed: false, confirmation_id: "confirm-1", node: "child" });
     vi.stubGlobal("fetch", fetchMock);
     const { api, setProject } = await import("./api");
-    setProject("dev10");
+    setProject("sample");
 
     await api.terminateNode("child", { caller: "lead" });
 
@@ -84,7 +84,7 @@ describe("node termination API", () => {
     expect(init).toMatchObject({ credentials: "same-origin", method: "POST" });
     expect(init?.headers).toMatchObject({
       "Content-Type": "application/json",
-      "X-Grove-Project": "dev10",
+      "X-Grove-Project": "sample",
       "X-Grove-Session-Token": "tok",
     });
     expect(JSON.parse(String(init?.body))).toEqual({ caller: "lead" });
@@ -127,7 +127,7 @@ describe("node termination API", () => {
     const fetchMock = mockFetch({ name: "worker" });
     vi.stubGlobal("fetch", fetchMock);
     const { api, setProject } = await import("./api");
-    setProject("dev10");
+    setProject("sample");
 
     await api.patchNode("worker", { work_instructions: "Focus on G7", description: "edited" });
 

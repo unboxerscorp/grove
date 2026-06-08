@@ -28,9 +28,9 @@ def _context(*, is_operator: bool = True) -> MasterRequestContext:
             selected_project="example",
             visible_projects=("example", "grove-dev"),
             origin_surface="floating_web_chat",
-            origin_page="/projects/example/boards/dev10",
+            origin_page="/projects/example/boards/sample",
         ),
-        metadata={"session": "dev10"},
+        metadata={"session": "sample"},
     )
 
 
@@ -151,7 +151,7 @@ def test_feedback_message_drafts_grove_dev_route_without_creating_task() -> None
         MasterChatRequest(
             turn=_turn("피드백: 보드 검색이 너무 느려서 작업을 찾기 어려워"),
             route_target=FeedbackRouteTarget.grove_dev_default(
-                board="dev10", assignee="grove-master"
+                board="sample", assignee="grove-master"
             ),
         )
     )
@@ -159,7 +159,7 @@ def test_feedback_message_drafts_grove_dev_route_without_creating_task() -> None
     assert response.response_type == "preview"
     assert response.feedback_route is not None
     assert response.feedback_route.route.project == "grove-dev"
-    assert response.feedback_route.route.board == "dev10"
+    assert response.feedback_route.route.board == "sample"
     assert response.feedback_route.route.assignee == "grove-master"
     assert response.feedback_route.title == "보드 검색이 너무 느려서 작업을 찾기 어려워"
     gating = response.feedback_route.metadata["gating"]
@@ -176,13 +176,13 @@ def test_draft_feedback_route_builds_title_body_and_assignee_candidates() -> Non
         turn=_turn("버그: 터미널 로그가 가끔 끊겨요. 새로고침하면 돌아와요."),
         category="bug",
         severity="medium",
-        route=FeedbackRouteTarget.grove_dev_default(board="dev10"),
+        route=FeedbackRouteTarget.grove_dev_default(board="sample"),
     )
 
     assert draft.title == "터미널 로그가 가끔 끊겨요"
     assert "새로고침하면 돌아와요" in draft.body
     assert draft.assignee_candidates == ("grove-master", "grove-py", "grove-qa")
-    assert draft.metadata["board_session"] == "dev10"
+    assert draft.metadata["board_session"] == "sample"
     assert draft.metadata["execution"] == "not_created"
 
 

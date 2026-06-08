@@ -20,47 +20,47 @@ describe("buildGroveContextPack", () => {
       nodes: [
         {
           agent: "codex",
-          cwd: "/repo/dev10",
+          cwd: "/repo/sample",
           name: "lead",
           parent: "grove-master",
-          role: "Project lead token=xoxb-secret dev10:1.2",
-          tmuxPane: "dev10:1.2",
+          role: "Project lead token=xoxb-secret sample:1.2",
+          tmuxPane: "sample:1.2",
         },
         {
           agent: "codex",
-          cwd: "/repo/dev10",
+          cwd: "/repo/sample",
           group: "product",
           name: "maker",
           parent: "lead",
           role: "Implementation maker",
-          tmuxPane: "dev10:1.3",
+          tmuxPane: "sample:1.3",
         },
       ],
-      project: "dev10",
+      project: "sample",
       projectLead: "lead",
       targetNode: "maker",
       targetRole: "Implementation maker",
     });
 
     expect(pack).toContain(GROVE_CONTEXT_PACK_HEADER);
-    expect(pack).toContain("From: orch-master@dev10 → maker@dev10");
-    expect(pack).not.toContain("Project: dev10");
+    expect(pack).toContain("From: orch-master@sample → maker@sample");
+    expect(pack).not.toContain("Project: sample");
     expect(pack).toContain("Project lead: lead");
     expect(pack).toContain("Target role: Implementation maker");
     expect(pack).toContain("lead -> maker");
-    expect(pack).toContain("pane=dev10:1.3");
-    expect(pack).toContain("cwd=/repo/dev10");
+    expect(pack).toContain("pane=sample:1.3");
+    expect(pack).toContain("cwd=/repo/sample");
     expect(pack).toContain("Human-facing list items are for human TODO");
     expect(pack).not.toContain("Board tasks are");
     expect(pack).not.toContain("xoxb-secret");
-    expect(pack).toContain("dev10:1.2");
+    expect(pack).toContain("sample:1.2");
     expect(Buffer.byteLength(pack, "utf8")).toBeLessThanOrEqual(1_200);
   });
 
   test("does not prepend twice", () => {
     const message = `${GROVE_CONTEXT_PACK_HEADER}\n\nOriginal message:\nhello`;
 
-    expect(prependGroveContextPack(message, { project: "dev10" })).toBe(message);
+    expect(prependGroveContextPack(message, { project: "sample" })).toBe(message);
   });
 
   test("includes registry-only visible nodes from a loaded context", () => {
@@ -72,7 +72,7 @@ describe("buildGroveContextPack", () => {
         nodes: {
           maker: { agent: "codex", children: [], parent: "lead", role: "Maker" },
         },
-        session: "dev10",
+        session: "sample",
       },
       configPath: "/repo/grove.yaml",
       nodes: [
@@ -95,10 +95,10 @@ describe("buildGroveContextPack", () => {
             name: "reviewer",
             parent: "lead",
             role: "Reviewer",
-            tmux_pane: "dev10:2.0",
+            tmux_pane: "sample:2.0",
           },
         },
-        session: "dev10",
+        session: "sample",
         updatedAt: "2026-06-05T00:00:00.000Z",
       },
     });
@@ -113,7 +113,7 @@ describe("buildGroveContextPack", () => {
         cwd: "/repo",
         defaults: { agent: "codex" },
         nodes: {},
-        session: "dev10",
+        session: "sample",
       },
       configPath: "/repo/grove.yaml",
       nodes: [],
@@ -129,7 +129,7 @@ describe("buildGroveContextPack", () => {
             work_instructions: "PR 머지 전 reviewer 승인 필수",
           },
         },
-        session: "dev10",
+        session: "sample",
         updatedAt: "2026-06-06T00:00:00.000Z",
       },
     });
@@ -148,13 +148,13 @@ describe("buildGroveContextPack", () => {
 const PARITY_WORK_INSTRUCTIONS = "PR 머지 전 reviewer 승인 필수\n  여러 줄 가능";
 const PARITY_PACK = [
   "GROVE CONTEXT PACK",
-  "From: lead@dev10 → maker@dev10",
+  "From: lead@sample → maker@sample",
   "Project lead: lead",
   "Target role: Builder",
   "Target work instructions (advisory): PR 머지 전 reviewer 승인 필수 여러 줄 가능",
   "Communication protocol: direct comms",
   "Visible org summary:",
-  "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder; work_instructions=PR 머지 전 reviewer 승인 필수)",
+  "- lead -> maker (codex; group=product; pane=sample:1.3; cwd=/repo; role=Builder; work_instructions=PR 머지 전 reviewer 승인 필수)",
 ].join("\n");
 
 describe("buildGroveContextPack work_instructions", () => {
@@ -166,7 +166,7 @@ describe("buildGroveContextPack work_instructions", () => {
       name: "maker",
       parent: "lead",
       role: "Builder",
-      tmuxPane: "dev10:1.3",
+      tmuxPane: "sample:1.3",
       workInstructions,
     };
   }
@@ -176,7 +176,7 @@ describe("buildGroveContextPack work_instructions", () => {
       callerNode: "lead",
       communicationProtocol: "direct comms",
       nodes: [maker(PARITY_WORK_INSTRUCTIONS)],
-      project: "dev10",
+      project: "sample",
       projectLead: "lead",
       targetNode: "maker",
       targetRole: "Builder",
@@ -191,7 +191,7 @@ describe("buildGroveContextPack work_instructions", () => {
       callerNode: "lead",
       communicationProtocol: "direct comms",
       nodes: [maker()],
-      project: "dev10",
+      project: "sample",
       projectLead: "lead",
       targetNode: "maker",
       targetRole: "Builder",
@@ -202,19 +202,19 @@ describe("buildGroveContextPack work_instructions", () => {
     expect(pack).toBe(
       [
         "GROVE CONTEXT PACK",
-        "From: lead@dev10 → maker@dev10",
+        "From: lead@sample → maker@sample",
         "Project lead: lead",
         "Target role: Builder",
         "Communication protocol: direct comms",
         "Visible org summary:",
-        "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder)",
+        "- lead -> maker (codex; group=product; pane=sample:1.3; cwd=/repo; role=Builder)",
       ].join("\n"),
     );
   });
 
   test("redacts secrets that appear inside work instructions", () => {
     const pack = buildGroveContextPack({
-      project: "dev10",
+      project: "sample",
       targetNode: "maker",
       targetWorkInstructions: "deploy with token=xoxb-deadbeef now",
     });
@@ -225,7 +225,7 @@ describe("buildGroveContextPack work_instructions", () => {
 
   test("caps pathologically long work instructions in the advisory line", () => {
     const pack = buildGroveContextPack({
-      project: "dev10",
+      project: "sample",
       targetNode: "maker",
       targetWorkInstructions: "a".repeat(600),
     });
@@ -244,11 +244,11 @@ function cn(name: string, project: string, extra: Partial<ContextPackNode> = {})
   return { agent: "claude", name, project, ...extra };
 }
 
-// Mixed multi-project org: home (dev10), shared control plane, and three foreign
+// Mixed multi-project org: home (sample), shared control plane, and three foreign
 // projects (alpha has a "lead"; delta has a root "delta-lead"; beta has none).
 const COLLAPSE_FIXTURE: ContextPackNode[] = [
-  cn("lead", "dev10"),
-  cn("org-worker", "dev10", { parent: "lead" }),
+  cn("lead", "sample"),
+  cn("org-worker", "sample", { parent: "lead" }),
   cn("grove-master", "control", { group: "master" }),
   cn("web", "control", { group: "services" }),
   cn("advisor", "control"),
@@ -259,8 +259,8 @@ const COLLAPSE_FIXTURE: ContextPackNode[] = [
   cn("beta-worker", "beta"),
 ];
 const COLLAPSE_EXPECTED = [
-  "dev10/lead",
-  "dev10/org-worker",
+  "sample/lead",
+  "sample/org-worker",
   "control/grove-master",
   "control/web",
   "control/advisor",
@@ -270,9 +270,9 @@ const COLLAPSE_EXPECTED = [
 
 describe("collapseForeignProjects", () => {
   test("keeps every node unchanged when none are foreign (single-project no-op)", () => {
-    const nodes = [cn("lead", "dev10"), cn("org-worker", "dev10", { parent: "lead" })];
+    const nodes = [cn("lead", "sample"), cn("org-worker", "sample", { parent: "lead" })];
 
-    expect(collapseForeignProjects(nodes, "dev10")).toEqual(nodes);
+    expect(collapseForeignProjects(nodes, "sample")).toEqual(nodes);
   });
 
   test("treats nodes without a project as home (legacy single-project packs)", () => {
@@ -281,17 +281,17 @@ describe("collapseForeignProjects", () => {
       { agent: "claude", name: "maker" },
     ];
 
-    expect(collapseForeignProjects(nodes, "dev10")).toEqual(nodes);
+    expect(collapseForeignProjects(nodes, "sample")).toEqual(nodes);
   });
 
   test("collapses foreign projects to their lead, keeps home + infra, drops lead-less foreign", () => {
-    const result = collapseForeignProjects(COLLAPSE_FIXTURE, "dev10");
+    const result = collapseForeignProjects(COLLAPSE_FIXTURE, "sample");
 
     expect(result.map((node) => `${node.project ?? ""}/${node.name}`)).toEqual(COLLAPSE_EXPECTED);
   });
 
   test("preserves the input order of the surviving nodes", () => {
-    const result = collapseForeignProjects(COLLAPSE_FIXTURE, "dev10");
+    const result = collapseForeignProjects(COLLAPSE_FIXTURE, "sample");
     const survivors = COLLAPSE_FIXTURE.filter((node) =>
       COLLAPSE_EXPECTED.includes(`${node.project ?? ""}/${node.name}`),
     );
@@ -310,12 +310,12 @@ describe("collapseForeignProjects", () => {
           group: "product",
           name: "maker",
           parent: "lead",
-          project: "dev10",
+          project: "sample",
           role: "Builder",
-          tmuxPane: "dev10:1.3",
+          tmuxPane: "sample:1.3",
         },
       ],
-      project: "dev10",
+      project: "sample",
       projectLead: "lead",
       targetNode: "maker",
       targetRole: "Builder",
@@ -325,12 +325,12 @@ describe("collapseForeignProjects", () => {
     expect(pack).toBe(
       [
         "GROVE CONTEXT PACK",
-        "From: lead@dev10 → maker@dev10",
+        "From: lead@sample → maker@sample",
         "Project lead: lead",
         "Target role: Builder",
         "Communication protocol: direct comms",
         "Visible org summary:",
-        "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder)",
+        "- lead -> maker (codex; group=product; pane=sample:1.3; cwd=/repo; role=Builder)",
       ].join("\n"),
     );
   });
@@ -343,7 +343,7 @@ describe("collapseForeignProjects", () => {
 const COMPACT_PARITY_WORK_INSTRUCTIONS = "PR 머지 전 reviewer 승인 필수\n  여러 줄 가능";
 const COMPACT_PARITY_PACK = [
   "GROVE CONTEXT PACK (compact)",
-  "From: lead@dev10 → maker@dev10",
+  "From: lead@sample → maker@sample",
   "Target role: Builder",
   "Target work instructions (advisory): PR 머지 전 reviewer 승인 필수",
   "Visible org: 3 nodes — run `grove org --all --json` for the full multi-project tree; `grove task mine` for your tasks.",
@@ -358,7 +358,7 @@ describe("buildCompactGroveContextPack", () => {
     const pack = buildCompactGroveContextPack({
       callerNode: "lead",
       nodes: [node("lead"), node("maker"), node("reviewer")],
-      project: "dev10",
+      project: "sample",
       projectLead: "lead",
       targetNode: "maker",
       targetRole: "Builder",
@@ -371,7 +371,7 @@ describe("buildCompactGroveContextPack", () => {
   test("starts with the GROVE CONTEXT PACK header so the no-duplicate-prepend guard still applies", () => {
     const pack = buildCompactGroveContextPack({
       nodes: [node("lead")],
-      project: "dev10",
+      project: "sample",
       targetNode: "maker",
     });
 
@@ -382,7 +382,7 @@ describe("buildCompactGroveContextPack", () => {
     const pack = buildCompactGroveContextPack({
       callerNode: "lead",
       nodes: [node("lead")],
-      project: "dev10",
+      project: "sample",
       targetNode: "maker",
     });
 
@@ -394,7 +394,7 @@ describe("buildCompactGroveContextPack", () => {
   test("redacts secrets in the compact pack too", () => {
     const pack = buildCompactGroveContextPack({
       nodes: [node("lead")],
-      project: "dev10",
+      project: "sample",
       targetNode: "maker",
       targetWorkInstructions: "deploy token=xoxb-deadbeef now",
     });
@@ -443,7 +443,7 @@ describe("resolveContextMode", () => {
 describe("formatNodeIdentity", () => {
   test("project nodes render node@project (always, even for the home project)", () => {
     expect(formatNodeIdentity("fe-master", "grove-dev")).toBe("fe-master@grove-dev");
-    expect(formatNodeIdentity("lead", "dev10")).toBe("lead@dev10");
+    expect(formatNodeIdentity("lead", "sample")).toBe("lead@sample");
   });
 
   test("root/global nodes render bare (no @project)", () => {

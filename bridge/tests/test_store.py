@@ -338,8 +338,8 @@ def test_node_health_persists_upserts_and_redacts_display_text(tmp_path: Path) -
     secret = "xoxb-" + ("a" * 44)
 
     first = store.record_node_health(
-        project="dev10",
-        session="dev10",
+        project="sample",
+        session="sample",
         node="worker",
         status="rate_limited",
         reason="429",
@@ -349,8 +349,8 @@ def test_node_health_persists_upserts_and_redacts_display_text(tmp_path: Path) -
         source="grove-ts-watchdog",
     )
     second = store.record_node_health(
-        project="dev10",
-        session="dev10",
+        project="sample",
+        session="sample",
         node="worker",
         status="healthy",
         reason=None,
@@ -359,7 +359,7 @@ def test_node_health_persists_upserts_and_redacts_display_text(tmp_path: Path) -
         reset_at=None,
         source="watchdog",
     )
-    listed = store.list_node_health(project="dev10", session="dev10")
+    listed = store.list_node_health(project="sample", session="sample")
 
     assert first.status == "rate_limited"
     assert first.reset_at == 160
@@ -1059,7 +1059,7 @@ def test_master_chat_messages_roundtrip_idempotent_and_scoped(tmp_path: Path) ->
     store = SQLiteBoardStore(tmp_path / "board.db")
 
     store.append_master_chat_message(
-        board="dev10",
+        board="sample",
         conversation_id="conv-1",
         role="user",
         text="hello",
@@ -1067,7 +1067,7 @@ def test_master_chat_messages_roundtrip_idempotent_and_scoped(tmp_path: Path) ->
         origin_surface="floating_web_chat",
     )
     store.append_master_chat_message(
-        board="dev10",
+        board="sample",
         conversation_id="conv-1",
         role="assistant",
         text="hi there",
@@ -1077,34 +1077,34 @@ def test_master_chat_messages_roundtrip_idempotent_and_scoped(tmp_path: Path) ->
     # Idempotent on (board, conversation, request_id, role): a retried user turn
     # with the same request_id is ignored, not duplicated.
     store.append_master_chat_message(
-        board="dev10",
+        board="sample",
         conversation_id="conv-1",
         role="user",
         text="hello AGAIN",
         request_id="req-1",
     )
 
-    conv1 = store.list_master_chat_messages(board="dev10", conversation_id="conv-1")
+    conv1 = store.list_master_chat_messages(board="sample", conversation_id="conv-1")
     assert [(m.role, m.text) for m in conv1] == [("user", "hello"), ("assistant", "hi there")]
     assert conv1[0].origin_surface == "floating_web_chat"
 
     # Conversation isolation: a different conversation_id is a separate thread.
     store.append_master_chat_message(
-        board="dev10", conversation_id="conv-2", role="user", text="other", request_id="req-2"
+        board="sample", conversation_id="conv-2", role="user", text="other", request_id="req-2"
     )
     assert [
-        m.text for m in store.list_master_chat_messages(board="dev10", conversation_id="conv-2")
+        m.text for m in store.list_master_chat_messages(board="sample", conversation_id="conv-2")
     ] == ["other"]
-    assert len(store.list_master_chat_messages(board="dev10", conversation_id="conv-1")) == 2
+    assert len(store.list_master_chat_messages(board="sample", conversation_id="conv-1")) == 2
 
     # Board scope + empty/unknown lookups return nothing (no board side effects).
     assert store.list_master_chat_messages(board="other-board", conversation_id="conv-1") == []
-    assert store.list_master_chat_messages(board="dev10", conversation_id="") == []
+    assert store.list_master_chat_messages(board="sample", conversation_id="") == []
     # Empty/invalid role or text is a no-op, not an error.
     store.append_master_chat_message(
-        board="dev10", conversation_id="conv-1", role="user", text="  "
+        board="sample", conversation_id="conv-1", role="user", text="  "
     )
     store.append_master_chat_message(
-        board="dev10", conversation_id="conv-1", role="system", text="x"
+        board="sample", conversation_id="conv-1", role="system", text="x"
     )
-    assert len(store.list_master_chat_messages(board="dev10", conversation_id="conv-1")) == 2
+    assert len(store.list_master_chat_messages(board="sample", conversation_id="conv-1")) == 2

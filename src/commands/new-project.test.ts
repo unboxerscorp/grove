@@ -177,7 +177,7 @@ describe("createNewProject", () => {
   test("can keep the project registry while hosting panes in an existing shared tmux session", async () => {
     const state = deps({ sessionExists: true });
 
-    const result = await createNewProject("alpha", { tmuxSession: "dev10" }, state.deps);
+    const result = await createNewProject("alpha", { tmuxSession: "sample" }, state.deps);
 
     expect(state.newSessions).toEqual([]);
     expect(state.spawnInputs).toEqual([
@@ -185,7 +185,7 @@ describe("createNewProject", () => {
         cwd: "/home/tester/grove-projects/alpha",
         name: "lead",
         session: "alpha",
-        tmuxSession: "dev10",
+        tmuxSession: "sample",
         window: "alpha",
       }),
     ]);
@@ -195,7 +195,7 @@ describe("createNewProject", () => {
         dashboardCommand: "grove-web --session alpha",
         dir: "/home/tester/grove-projects/alpha",
         session: "alpha",
-        tmuxSession: "dev10",
+        tmuxSession: "sample",
       }),
     );
     const savedRegistry = JSON.parse(state.writes[0]!.text) as {
@@ -204,13 +204,13 @@ describe("createNewProject", () => {
       nodes: Record<string, Record<string, unknown>>;
     };
     expect(savedRegistry.session).toBe("alpha");
-    expect(savedRegistry.tmuxSession).toBe("dev10");
+    expect(savedRegistry.tmuxSession).toBe("sample");
     expect(savedRegistry.nodes["lead"]).toEqual(
       expect.objectContaining({
         cwd: "/home/tester/grove-projects/alpha",
         name: "lead",
         parent: "",
-        tmux_pane: "dev10:alpha.0",
+        tmux_pane: "sample:alpha.0",
       }),
     );
   });
@@ -228,8 +228,8 @@ describe("createNewProject", () => {
   test("errors when a requested shared tmux session does not exist", async () => {
     const state = deps({ sessionExists: false });
 
-    await expect(createNewProject("alpha", { tmuxSession: "dev10" }, state.deps)).rejects.toThrow(
-      "tmux session not found: dev10",
+    await expect(createNewProject("alpha", { tmuxSession: "sample" }, state.deps)).rejects.toThrow(
+      "tmux session not found: sample",
     );
     expect(state.mkdirs).toEqual([]);
     expect(state.spawnInputs).toEqual([]);

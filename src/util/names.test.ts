@@ -4,7 +4,7 @@ import { GROVE_NAME_RE, GroveNameSchema, validateGroveName } from "./names.js";
 
 describe("grove name validation", () => {
   test("accepts bridge-compatible project/session names", () => {
-    for (const name of ["a", "A1", "0root", "dev10", "maker-1", "maker_1"]) {
+    for (const name of ["a", "A1", "0root", "sample", "maker-1", "maker_1"]) {
       expect(GROVE_NAME_RE.test(name)).toBe(true);
       expect(GroveNameSchema.parse(name)).toBe(name);
       expect(validateGroveName(name, "name")).toBe(name);

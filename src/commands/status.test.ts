@@ -51,8 +51,8 @@ function context(): Context {
     parent: "lead",
   };
   const byName = new Map<string, NodeCtx>([
-    ["lead", { adapter: adapter("lead-adapter"), addr: "dev10:1.%1", node: lead }],
-    ["maker", { adapter: adapter("maker-adapter"), addr: "dev10:1.%2", node: maker }],
+    ["lead", { adapter: adapter("lead-adapter"), addr: "sample:1.%1", node: lead }],
+    ["maker", { adapter: adapter("maker-adapter"), addr: "sample:1.%2", node: maker }],
   ]);
   return {
     byName,
@@ -60,14 +60,14 @@ function context(): Context {
       cwd: "/repo",
       defaults: { agent: "codex" },
       nodes: {},
-      session: "dev10",
+      session: "sample",
     },
     configPath: "/repo/grove.yaml",
     nodes: [lead, maker],
     registry: {
       cwd: "/repo",
       nodes: {},
-      session: "dev10",
+      session: "sample",
       updatedAt: "2026-06-03T00:00:00.000Z",
     },
   };
@@ -85,7 +85,7 @@ describe("renderStatus", () => {
 
     await renderStatus(context());
 
-    expect(lines.join("\n")).toContain("dev10");
+    expect(lines.join("\n")).toContain("sample");
     expect(lines.join("\n")).toContain("lead [lead-adapter]");
     expect(lines.join("\n")).toContain("maker [maker-adapter]");
     expect(lines.join("\n")).toContain("last turn summary");
@@ -116,14 +116,14 @@ describe("renderStatus", () => {
     };
     ctx.byName.set("ephemeral", {
       adapter: adapter("ephemeral-adapter"),
-      addr: "dev10:2.0",
+      addr: "sample:2.0",
       node: ephemeralNode,
     });
     ctx.registry.nodes.ephemeral = {
       agent: "codex",
       name: "ephemeral",
       parent: "lead",
-      tmux_pane: "dev10:2.0",
+      tmux_pane: "sample:2.0",
     };
 
     const lines: string[] = [];

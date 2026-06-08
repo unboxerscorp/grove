@@ -289,14 +289,14 @@ beforeEach(() => {
 describe("tmux detached pane commands", () => {
   test("validates single-pane targets before kill-pane", async () => {
     expect(isSinglePaneTarget("%5")).toBe(true);
-    expect(isSinglePaneTarget("dev10:1.0")).toBe(true);
-    expect(isSinglePaneTarget("dev10:1.%5")).toBe(true);
-    expect(isSinglePaneTarget("dev10")).toBe(false);
-    expect(isSinglePaneTarget("dev10:1")).toBe(false);
+    expect(isSinglePaneTarget("sample:1.0")).toBe(true);
+    expect(isSinglePaneTarget("sample:1.%5")).toBe(true);
+    expect(isSinglePaneTarget("sample")).toBe(false);
+    expect(isSinglePaneTarget("sample:1")).toBe(false);
     expect(isSinglePaneTarget("")).toBe(false);
 
-    expect(await killPane("dev10")).toBe(false);
-    expect(await killPane("dev10:1")).toBe(false);
+    expect(await killPane("sample")).toBe(false);
+    expect(await killPane("sample:1")).toBe(false);
     expect(await killPane("")).toBe(false);
   });
 
@@ -304,7 +304,7 @@ describe("tmux detached pane commands", () => {
     expect(
       detachedNewWindowPaneArgs({
         cwd: "/repo",
-        session: "dev10",
+        session: "sample",
         window: "maker",
       }),
     ).toEqual([
@@ -314,7 +314,7 @@ describe("tmux detached pane commands", () => {
       "-F",
       PANE_ID_FORMAT,
       "-t",
-      "dev10",
+      "sample",
       "-n",
       "maker",
       "-c",
@@ -326,7 +326,7 @@ describe("tmux detached pane commands", () => {
     expect(
       detachedSplitPaneArgs({
         cwd: "/repo",
-        session: "dev10",
+        session: "sample",
         window: "lead",
       }),
     ).toEqual([
@@ -336,24 +336,24 @@ describe("tmux detached pane commands", () => {
       "-F",
       PANE_ID_FORMAT,
       "-t",
-      "dev10:lead",
+      "sample:lead",
       "-c",
       "/repo",
     ]);
-    expect(tiledLayoutArgs("dev10", "lead")).toEqual([
+    expect(tiledLayoutArgs("sample", "lead")).toEqual([
       "select-layout",
       "-t",
-      "dev10:lead",
+      "sample:lead",
       "tiled",
     ]);
   });
 
   test("builds detached args for the shared newWindow helper", () => {
-    expect(newWindowArgs("dev10", "maker", "/repo")).toEqual([
+    expect(newWindowArgs("sample", "maker", "/repo")).toEqual([
       "new-window",
       "-d",
       "-t",
-      "dev10",
+      "sample",
       "-n",
       "maker",
       "-c",
@@ -362,11 +362,11 @@ describe("tmux detached pane commands", () => {
   });
 
   test("matches pane existence by exact list-panes output", () => {
-    const panes = "dev10:0.0\ndev10:1.0\n";
+    const panes = "sample:0.0\nsample:1.0\n";
 
-    expect(paneListIncludesTarget(panes, "dev10:1.0")).toBe(true);
-    expect(paneListIncludesTarget(panes, "dev10:2.0")).toBe(false);
-    expect(paneListIncludesTarget(panes, "dev10:1")).toBe(false);
+    expect(paneListIncludesTarget(panes, "sample:1.0")).toBe(true);
+    expect(paneListIncludesTarget(panes, "sample:2.0")).toBe(false);
+    expect(paneListIncludesTarget(panes, "sample:1")).toBe(false);
   });
 
   test("leaves the active window unchanged while spawning and launching into a new pane", async () => {

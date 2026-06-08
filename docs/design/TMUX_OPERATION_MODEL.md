@@ -7,7 +7,7 @@ operator/master-owned and are NOT performed by this doc.
 
 ## Problem
 
-The live dev10 session runs background **server processes** (`grove-web`,
+The live sample session runs background **server processes** (`grove-web`,
 `grove-slack`) in tmux windows that look like ordinary agent nodes. They are
 declared in `grove.yaml` with fixed pane targets (`web` → `tmux: "1.0"`,
 `slack` → `tmux: "2.0"`, `agent: codex`) and brought up by `grove up`, but the
@@ -97,7 +97,7 @@ recurring. No code.
 - Frontend: `GroveNode.kind`; a "service / background" badge.
 - Tests mirror the work_instructions pattern: schema/registry roundtrip, org
   payload classification, **unmarked → org payload byte-identical** (backward
-  compat, like WI-unset), FE types. dev10 6-node baseline must not regress.
+  compat, like WI-unset), FE types. sample 6-node baseline must not regress.
 
 **Activation (make the live web/slack distinguishable). APPROVAL-GATED MUTATION,
 proposed not auto-applied.** Per master directive, A2 ships a concrete activation
@@ -107,7 +107,7 @@ before applying and moves no panes:
 - Durable: add `kind: service` to `web` and `slack` in `grove.yaml` (exact diff
   proposed to operator/master; operational fleet config edit is approval-gated).
 - Live: a surgical registry patch adding `"kind": "service"` to the `web`/`slack`
-  entries in the dev10 registry (exact command proposed; field-only, no restart,
+  entries in the sample registry (exact command proposed; field-only, no restart,
   no pane move). Takes visible effect once the bridge change is redeployed
   (rides the normal master-owned redeploy).
 

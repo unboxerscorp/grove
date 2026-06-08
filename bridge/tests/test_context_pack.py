@@ -19,46 +19,46 @@ def test_build_grove_context_pack_redacts_and_bounds_visible_context() -> None:
             ContextPackNode(
                 name="lead",
                 agent="codex",
-                cwd="/repo/dev10",
+                cwd="/repo/sample",
                 parent="grove-master",
-                role="Project lead token=xoxb-secret dev10:1.2",
-                tmux_pane="dev10:1.2",
+                role="Project lead token=xoxb-secret sample:1.2",
+                tmux_pane="sample:1.2",
             ),
             ContextPackNode(
                 name="worker",
                 agent="codex",
-                cwd="/repo/dev10",
+                cwd="/repo/sample",
                 parent="lead",
                 group="product",
                 role="Implementation maker",
-                tmux_pane="dev10:1.3",
+                tmux_pane="sample:1.3",
             ),
         ),
-        project="dev10",
+        project="sample",
         project_lead="lead",
         target_node="worker",
         target_role="Implementation maker",
     )
 
     assert GROVE_CONTEXT_PACK_HEADER in pack
-    assert "From: orch-master@dev10 → worker@dev10" in pack
-    assert "Project: dev10" not in pack
+    assert "From: orch-master@sample → worker@sample" in pack
+    assert "Project: sample" not in pack
     assert "Project lead: lead" in pack
     assert "Target role: Implementation maker" in pack
     assert "lead -> worker" in pack
-    assert "pane=dev10:1.3" in pack
-    assert "cwd=/repo/dev10" in pack
+    assert "pane=sample:1.3" in pack
+    assert "cwd=/repo/sample" in pack
     assert "Human-facing list items are for human TODO" in pack
     assert "Board tasks are" not in pack
     assert "xoxb-secret" not in pack
-    assert "dev10:1.2" in pack
+    assert "sample:1.2" in pack
     assert len(pack.encode("utf-8")) <= 1_200
 
 
 def test_prepend_grove_context_pack_is_idempotent() -> None:
     message = f"{GROVE_CONTEXT_PACK_HEADER}\n\nOriginal message:\nhello"
 
-    assert prepend_grove_context_pack(message, project="dev10") == message
+    assert prepend_grove_context_pack(message, project="sample") == message
 
 
 # Advisory work-instructions (작업지침). PARITY_* fixtures are duplicated verbatim
@@ -69,13 +69,13 @@ PARITY_WORK_INSTRUCTIONS = "PR 머지 전 reviewer 승인 필수\n  여러 줄 �
 PARITY_PACK = "\n".join(
     [
         "GROVE CONTEXT PACK",
-        "From: lead@dev10 → maker@dev10",
+        "From: lead@sample → maker@sample",
         "Project lead: lead",
         "Target role: Builder",
         "Target work instructions (advisory): PR 머지 전 reviewer 승인 필수 여러 줄 가능",
         "Communication protocol: direct comms",
         "Visible org summary:",
-        "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; "
+        "- lead -> maker (codex; group=product; pane=sample:1.3; cwd=/repo; "
         "role=Builder; work_instructions=PR 머지 전 reviewer 승인 필수)",
     ]
 )
@@ -90,7 +90,7 @@ def _maker(work_instructions: str = "") -> ContextPackNode:
         group="product",
         role="Builder",
         work_instructions=work_instructions,
-        tmux_pane="dev10:1.3",
+        tmux_pane="sample:1.3",
     )
 
 
@@ -99,7 +99,7 @@ def test_work_instructions_render_is_byte_identical_to_the_typescript_renderer()
         caller_node="lead",
         communication_protocol="direct comms",
         nodes=(_maker(PARITY_WORK_INSTRUCTIONS),),
-        project="dev10",
+        project="sample",
         project_lead="lead",
         target_node="maker",
         target_role="Builder",
@@ -114,7 +114,7 @@ def test_work_instructions_unset_is_byte_identical_to_un_instructed_pack() -> No
         caller_node="lead",
         communication_protocol="direct comms",
         nodes=(_maker(),),
-        project="dev10",
+        project="sample",
         project_lead="lead",
         target_node="maker",
         target_role="Builder",
@@ -125,19 +125,19 @@ def test_work_instructions_unset_is_byte_identical_to_un_instructed_pack() -> No
     assert pack == "\n".join(
         [
             "GROVE CONTEXT PACK",
-            "From: lead@dev10 → maker@dev10",
+            "From: lead@sample → maker@sample",
             "Project lead: lead",
             "Target role: Builder",
             "Communication protocol: direct comms",
             "Visible org summary:",
-            "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder)",
+            "- lead -> maker (codex; group=product; pane=sample:1.3; cwd=/repo; role=Builder)",
         ]
     )
 
 
 def test_work_instructions_redacts_secrets() -> None:
     pack = build_grove_context_pack(
-        project="dev10",
+        project="sample",
         target_node="maker",
         target_work_instructions="deploy with token=xoxb-deadbeef now",
     )
@@ -148,7 +148,7 @@ def test_work_instructions_redacts_secrets() -> None:
 
 def test_work_instructions_caps_pathologically_long_text() -> None:
     pack = build_grove_context_pack(
-        project="dev10",
+        project="sample",
         target_node="maker",
         target_work_instructions="a" * 600,
     )
@@ -167,8 +167,8 @@ def _cn(name: str, project: str, **extra: str) -> ContextPackNode:
 
 
 COLLAPSE_FIXTURE = (
-    _cn("lead", "dev10"),
-    _cn("org-worker", "dev10", parent="lead"),
+    _cn("lead", "sample"),
+    _cn("org-worker", "sample", parent="lead"),
     _cn("grove-master", "control", group="master"),
     _cn("web", "control", group="services"),
     _cn("advisor", "control"),
@@ -179,8 +179,8 @@ COLLAPSE_FIXTURE = (
     _cn("beta-worker", "beta"),
 )
 COLLAPSE_EXPECTED = [
-    "dev10/lead",
-    "dev10/org-worker",
+    "sample/lead",
+    "sample/org-worker",
     "control/grove-master",
     "control/web",
     "control/advisor",
@@ -190,9 +190,9 @@ COLLAPSE_EXPECTED = [
 
 
 def test_collapse_is_noop_for_single_project() -> None:
-    nodes = (_cn("lead", "dev10"), _cn("org-worker", "dev10", parent="lead"))
+    nodes = (_cn("lead", "sample"), _cn("org-worker", "sample", parent="lead"))
 
-    assert collapse_foreign_projects(nodes, "dev10") == list(nodes)
+    assert collapse_foreign_projects(nodes, "sample") == list(nodes)
 
 
 def test_collapse_treats_missing_project_as_home() -> None:
@@ -201,17 +201,17 @@ def test_collapse_treats_missing_project_as_home() -> None:
         ContextPackNode(name="maker", agent="claude"),
     )
 
-    assert collapse_foreign_projects(nodes, "dev10") == list(nodes)
+    assert collapse_foreign_projects(nodes, "sample") == list(nodes)
 
 
 def test_collapse_foreign_projects_to_lead_keeps_home_and_infra() -> None:
-    result = collapse_foreign_projects(COLLAPSE_FIXTURE, "dev10")
+    result = collapse_foreign_projects(COLLAPSE_FIXTURE, "sample")
 
     assert [f"{node.project}/{node.name}" for node in result] == COLLAPSE_EXPECTED
 
 
 def test_collapse_preserves_input_order_of_survivors() -> None:
-    result = collapse_foreign_projects(COLLAPSE_FIXTURE, "dev10")
+    result = collapse_foreign_projects(COLLAPSE_FIXTURE, "sample")
     survivors = [
         node for node in COLLAPSE_FIXTURE if f"{node.project}/{node.name}" in COLLAPSE_EXPECTED
     ]
@@ -231,11 +231,11 @@ def test_collapse_project_field_is_render_inert() -> None:
                 parent="lead",
                 group="product",
                 role="Builder",
-                tmux_pane="dev10:1.3",
-                project="dev10",
+                tmux_pane="sample:1.3",
+                project="sample",
             ),
         ),
-        project="dev10",
+        project="sample",
         project_lead="lead",
         target_node="maker",
         target_role="Builder",
@@ -245,12 +245,12 @@ def test_collapse_project_field_is_render_inert() -> None:
     assert pack == "\n".join(
         [
             "GROVE CONTEXT PACK",
-            "From: lead@dev10 → maker@dev10",
+            "From: lead@sample → maker@sample",
             "Project lead: lead",
             "Target role: Builder",
             "Communication protocol: direct comms",
             "Visible org summary:",
-            "- lead -> maker (codex; group=product; pane=dev10:1.3; cwd=/repo; role=Builder)",
+            "- lead -> maker (codex; group=product; pane=sample:1.3; cwd=/repo; role=Builder)",
         ]
     )
 
@@ -262,7 +262,7 @@ COMPACT_PARITY_WORK_INSTRUCTIONS = "PR 머지 전 reviewer 승인 필수\n  여�
 COMPACT_PARITY_PACK = "\n".join(
     [
         "GROVE CONTEXT PACK (compact)",
-        "From: lead@dev10 → maker@dev10",
+        "From: lead@sample → maker@sample",
         "Target role: Builder",
         "Target work instructions (advisory): PR 머지 전 reviewer 승인 필수",
         "Visible org: 3 nodes — run `grove org --all --json` for the full "
@@ -279,7 +279,7 @@ def test_compact_pack_render_is_byte_identical_to_the_typescript_renderer() -> N
             ContextPackNode(name="maker", agent="claude"),
             ContextPackNode(name="reviewer", agent="claude"),
         ),
-        project="dev10",
+        project="sample",
         target_node="maker",
         target_role="Builder",
         target_work_instructions=COMPACT_PARITY_WORK_INSTRUCTIONS,
@@ -292,7 +292,7 @@ def test_compact_pack_omits_unset_lines_and_singularizes_count() -> None:
     pack = build_compact_grove_context_pack(
         caller_node="lead",
         nodes=(ContextPackNode(name="lead", agent="claude"),),
-        project="dev10",
+        project="sample",
         target_node="maker",
     )
 
@@ -305,7 +305,7 @@ def test_compact_pack_omits_unset_lines_and_singularizes_count() -> None:
 # Identity label for the From line. Mirrors src/context-pack.test.ts:formatNodeIdentity.
 def test_format_node_identity_project_nodes_get_at_project() -> None:
     assert _format_node_identity("fe-master", "grove-dev") == "fe-master@grove-dev"
-    assert _format_node_identity("lead", "dev10") == "lead@dev10"
+    assert _format_node_identity("lead", "sample") == "lead@sample"
 
 
 def test_format_node_identity_root_nodes_render_bare() -> None:

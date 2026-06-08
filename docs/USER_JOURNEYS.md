@@ -3,7 +3,7 @@
 > Status: historical v1.1 coverage map. Do not use this file as the current
 > product model. Current grove uses direct node communication, a human-facing
 > list for operator TODO/feedback/ask-human records, concrete project lead nodes,
-> and a shared host tmux session such as `dev10`. Legacy terms below such as
+> and a shared host tmux session such as `sample`. Legacy terms below such as
 > board/task/delegation describe old API/test names or historical journeys, not a
 > required node-to-node protocol.
 

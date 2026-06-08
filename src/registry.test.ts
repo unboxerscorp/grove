@@ -24,15 +24,15 @@ describe("registry persistence", () => {
     const { registryPath, sessionDir } = await import("./util/paths.js");
 
     try {
-      const reg = emptyRegistry("dev10", "/repo");
+      const reg = emptyRegistry("sample", "/repo");
       reg.nodes.maker = { agent: "codex", name: "maker" };
 
       saveRegistry(reg);
 
-      expect(loadRegistry("dev10")?.nodes.maker?.agent).toBe("codex");
-      expect(existsSync(registryPath("dev10"))).toBe(true);
-      expect(readFileSync(registryPath("dev10"), "utf8")).toContain('"maker"');
-      expect(readdirSync(sessionDir("dev10")).filter((name) => name.includes(".tmp"))).toEqual([]);
+      expect(loadRegistry("sample")?.nodes.maker?.agent).toBe("codex");
+      expect(existsSync(registryPath("sample"))).toBe(true);
+      expect(readFileSync(registryPath("sample"), "utf8")).toContain('"maker"');
+      expect(readdirSync(sessionDir("sample")).filter((name) => name.includes(".tmp"))).toEqual([]);
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
@@ -47,10 +47,10 @@ describe("registry persistence", () => {
     const { registryPath, sessionDir } = await import("./util/paths.js");
 
     try {
-      expect(loadRegistry("dev10")).toBeNull();
-      mkdirSync(sessionDir("dev10"), { recursive: true });
-      writeFileSync(registryPath("dev10"), "{broken");
-      expect(loadRegistry("dev10")).toBeNull();
+      expect(loadRegistry("sample")).toBeNull();
+      mkdirSync(sessionDir("sample"), { recursive: true });
+      writeFileSync(registryPath("sample"), "{broken");
+      expect(loadRegistry("sample")).toBeNull();
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
@@ -77,11 +77,11 @@ describe("registry persistence", () => {
             role: "stale-worker",
           },
         },
-        session: "dev10",
+        session: "sample",
         updatedAt: "before",
       };
       saveRegistry(stale);
-      const latest = loadRegistry("dev10")!;
+      const latest = loadRegistry("sample")!;
       delete latest.nodes.deleted;
       latest.nodes.worker = {
         agent: "codex",
@@ -100,7 +100,7 @@ describe("registry persistence", () => {
         },
       }));
 
-      const reloaded = loadRegistry("dev10");
+      const reloaded = loadRegistry("sample");
       expect(reloaded?.nodes.deleted).toBeUndefined();
       expect(reloaded?.nodes.worker?.role).toBe("live-worker");
       expect(reloaded?.nodes.worker?.pending?.transcript).toBe("/tmp/worker.jsonl");
@@ -132,10 +132,10 @@ describe("registry persistence", () => {
             role: "beta-live",
           },
         },
-        session: "dev10",
+        session: "sample",
         updatedAt: "before",
       });
-      const stale = loadRegistry("dev10")!;
+      const stale = loadRegistry("sample")!;
 
       updateRegistryNode(stale, "alpha", (current) => {
         updateRegistryNode(stale, "beta", (innerCurrent) => ({
@@ -159,11 +159,13 @@ describe("registry persistence", () => {
         };
       });
 
-      const reloaded = loadRegistry("dev10");
+      const reloaded = loadRegistry("sample");
       expect(reloaded?.nodes.alpha?.pending?.transcript).toBe("/tmp/alpha.jsonl");
       expect(reloaded?.nodes.beta?.role).toBe("beta-updated");
       expect(reloaded?.nodes.beta?.pending?.transcript).toBe("/tmp/beta.jsonl");
-      expect(readdirSync(sessionDir("dev10")).filter((name) => name.endsWith(".lock"))).toEqual([]);
+      expect(readdirSync(sessionDir("sample")).filter((name) => name.endsWith(".lock"))).toEqual(
+        [],
+      );
     } finally {
       rmSync(root, { force: true, recursive: true });
     }

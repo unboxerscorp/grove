@@ -28,7 +28,7 @@ def test_live_journey_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     # 2. task create
     task_res = client.post(
-        "/api/boards/dev10/tasks",
+        "/api/boards/sample/tasks",
         json={"title": "Test item", "assignee": "lead"},
         headers=headers,
     )
@@ -93,11 +93,11 @@ def test_live_journey_viewer_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     headers = {"X-CSRF-Token": csrf}
 
     # viewer can access read-only
-    assert viewer.get("/api/boards/dev10/tasks").status_code == 200
+    assert viewer.get("/api/boards/sample/tasks").status_code == 200
 
     # viewer cannot create task
     task_res = viewer.post(
-        "/api/boards/dev10/tasks",
+        "/api/boards/sample/tasks",
         json={"title": "Test item", "assignee": "lead"},
         headers=headers,
     )

@@ -91,7 +91,7 @@ const defaultDeps: SpawnDeps = {
   saveRegistry,
 };
 
-const DEFAULT_SPAWN_SESSION = "dev10";
+const DEFAULT_SPAWN_SESSION = "default";
 
 function required(value: string | undefined, flag: string): string {
   const trimmed = value?.trim();

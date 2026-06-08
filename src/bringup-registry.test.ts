@@ -64,7 +64,7 @@ function makeContext(nodes: ResolvedNode[]): Context {
     byName.set(node.name, {
       node,
       adapter: makeAdapter(),
-      addr: `dev10:${node.tmux ?? node.name}`,
+      addr: `sample:${node.tmux ?? node.name}`,
     });
   }
   return {
@@ -72,7 +72,7 @@ function makeContext(nodes: ResolvedNode[]): Context {
       cwd: "/tmp/grove",
       defaults: { agent: "codex" },
       nodes: Object.fromEntries(nodes.map((node) => [node.name, { children: [] }])),
-      session: "dev10",
+      session: "sample",
     },
     configPath: "/tmp/grove/grove.yaml",
     byName,
@@ -80,7 +80,7 @@ function makeContext(nodes: ResolvedNode[]): Context {
     registry: {
       cwd: "/tmp/grove",
       nodes: {},
-      session: "dev10",
+      session: "sample",
       updatedAt: "2026-06-03T00:00:00.000Z",
     },
   };
@@ -125,7 +125,7 @@ describe("bringUp registry tmux pane metadata", () => {
 
     expect(ctx.registry.nodes.viewer).toEqual(
       expect.objectContaining({
-        tmux_pane: "dev10:1.2",
+        tmux_pane: "sample:1.2",
       }),
     );
   });
@@ -139,13 +139,13 @@ describe("bringUp registry tmux pane metadata", () => {
     await bringUp(ctx);
 
     expect(vi.mocked(sendText)).toHaveBeenCalledWith(
-      "dev10:1.2",
+      "sample:1.2",
       "cd '/tmp/grove dir; rm -rf nope'",
     );
     expect(ctx.registry.nodes.viewer).toEqual(
       expect.objectContaining({
         sessionId: "session-new",
-        tmux_pane: "dev10:1.2",
+        tmux_pane: "sample:1.2",
         transcript: "/tmp/grove/session-new.jsonl",
       }),
     );
@@ -186,7 +186,7 @@ describe("bringUp registry tmux pane metadata", () => {
         description: "Coordinates handoffs",
         group: "core",
         role: "Lead",
-        tmux_pane: "dev10:1.1",
+        tmux_pane: "sample:1.1",
       }),
     );
     expect(ctx.registry.nodes.maker).toEqual(
@@ -221,7 +221,7 @@ describe("bringUp registry tmux pane metadata", () => {
       .mock.calls.map((call) => call[1])
       .find((text) => text.includes("Original message:\nImplementation maker"));
     expect(submitted).toContain("GROVE CONTEXT PACK");
-    expect(submitted).toContain("From: grove launch bootstrap → maker@dev10");
+    expect(submitted).toContain("From: grove launch bootstrap → maker@sample");
     expect(submitted).toContain("Project lead: lead");
     expect(submitted).toContain("Target role: Implementation maker");
     expect(submitted).toContain("lead -> reviewer");
@@ -247,7 +247,7 @@ describe("bringUp registry tmux pane metadata", () => {
         group: "runtime",
         cwd: "/tmp/grove",
         role: "Runtime role",
-        tmux_pane: "dev10:1.1",
+        tmux_pane: "sample:1.1",
       }),
     );
   });

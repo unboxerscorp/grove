@@ -26,7 +26,7 @@ sizing), streamed bidirectionally over the websocket and rendered in the existin
 xterm.js. It fills the web width and supports direct typing. All viewers are C-level
 admins (Tailscale-gated), so the read-only constraint + send-box are dropped.
 
-Canonical tmux socket: `tmux -L dev10`.
+Canonical tmux socket: `tmux -L sample`.
 
 ## Current (to replace)
 
@@ -37,17 +37,17 @@ Canonical tmux socket: `tmux -L dev10`.
 
 ## Target architecture
 
-- **Per-connection grouped session**: on ws connect, `tmux -L dev10 new-session -d
+- **Per-connection grouped session**: on ws connect, `tmux -L sample new-session -d
 -s web-<uid> -t <target-session>` (same group = shares windows, **independent size**).
   Set `window-size`/`aggressive-resize` so this session sizes to the attached client,
   not the smallest — this is what fills the web width without shrinking anyone.
-- **PTY attach**: spawn `tmux -L dev10 attach-session -t web-<uid>` in a PTY
+- **PTY attach**: spawn `tmux -L sample attach-session -t web-<uid>` in a PTY
   (`pty.fork`/`os.openpty`). PTY stdout → ws frames; ws input → PTY stdin (keystrokes);
   ws resize msg → PTY winsize (`TIOCSWINSZ`) → tmux resizes that session.
 - **Pane focus**: on attach, `select-pane -t <pane>` (+ optional `resize-pane -Z` zoom)
   to focus the node's pane. ⚠ active-pane is shared within a group — decide v1: zoom the
   target per-session, or accept shared focus. (Investigate.)
-- **Lifecycle**: on ws close → kill the PTY + `tmux -L dev10 kill-session -t web-<uid>`
+- **Lifecycle**: on ws close → kill the PTY + `tmux -L sample kill-session -t web-<uid>`
   (NEVER the target). Idle/timeout cleanup. One session + PTY per viewer; cap + idle-kill.
 - **Frontend**: xterm `disableStdin=false`; `term.onData` → ws (input);
   `term.onResize` → ws (resize); render raw PTY bytes (drop the CLEAR+snapshot mirror).
@@ -62,7 +62,7 @@ Canonical tmux socket: `tmux -L dev10`.
   confirmed and may be impossible for the SAME node-window. **Stage 0 gate** = a CONCLUSIVE
   isolated-replica test (2 real PTY clients at different sizes, aggressive-resize,
   same-vs-DIFFERENT current-window). Run ONLY on a throwaway socket — NEVER live `tmux -L
-dev10` (it runs everyone). Build only on PASS. On FAIL, pivot: (a) accept shared size +
+sample` (it runs everyone). Build only on PASS. On FAIL, pivot: (a) accept shared size +
   zoom the target pane, (b) per-web-client SEPARATE window, (c) keep capture output + add a
   real input channel only (no grouped resize). Pane-focus (select-pane/zoom) is likely shared
   too — settle in the same gate.
@@ -78,7 +78,7 @@ dev10` (it runs everyone). Build only on PASS. On FAIL, pivot: (a) accept shared
 ## Stages (stability first; split-screen is a later iteration)
 
 0. **Gate (board-worker)**: conclusive sizing-isolation test on a throwaway socket (NOT
-   live dev10) → PASS/FAIL with evidence + the chosen approach if FAIL. No build until this
+   live sample) → PASS/FAIL with evidence + the chosen approach if FAIL. No build until this
    settles. Ownership for the build: **task-worker** owns Stage 1 backend (heavy PTY work in
    shared `web_app.py`); board-worker owns the gate + design + Stage 2 FE + no-regression.
 1. **Backend (task-worker, post-gate)**: PTY manager + bidirectional `/ws/terminal`

@@ -15,14 +15,14 @@
 5. 조직도 변경은 사람 소유다. 노드는 자율 spawn/despawn하지 않는다. 다만 사람이 CLI/GUI/API에서 명시 지시하면 operator-marked 경로로 생성/삭제할 수 있어야 한다.
 6. 모든 노드는 항상 조직도, 각 노드 역할, tmux pane 좌표, cwd를 볼 수 있어야 한다. `grove org --json`, `/api/org`, context pack, startup docs가 이 정보를 보존한다.
 7. Slack과 web chat은 MASTER와 자유 대화/지시 경로다. rule-based facts-only 응답이나 arbitrary gate로 가두지 않는다.
-8. 현재 운영은 Mac mini의 단일 `dev10` tmux를 기본으로 한다. 다른 프로젝트 registry는 MASTER가 볼 수 있어야 하되, 실제 node pane/cwd가 권위다.
+8. 현재 운영은 Mac mini의 단일 `sample` tmux를 기본으로 한다. 다른 프로젝트 registry는 MASTER가 볼 수 있어야 하되, 실제 node pane/cwd가 권위다.
 9. 웹 기본 UI는 사람이 쓰는 핵심 cockpit만 노출한다. 사람용 목록, 조직도, 터미널 모니터링, Slack/master chat, inbox/audit/setup이 기본 표면이다. 터미널별 attach/connect 정보와 join 딥링크는 호환 경로로 유지하되 기본 탐색 표면은 아니다. 구형 execution/cost/ledger/aggregation/handoff/routing/chain 패널은 기본 탐색에서 제거한다.
 10. 실시간 터미널 모니터링은 core 기능이다. terminal tab은 선택 pane이 없으면 첫 viewable pane에 자동 연결하고, 첫 방문 overlay가 클릭을 막지 않아야 하며, 실제 사용자 클릭으로 `/api/ws-ticket` terminal ticket + `/ws/terminal` frame 수신 + xterm 렌더를 e2e 검증한다.
 
 ## 캐논 스켈레톤 8항 (현재 기준)
 
 1. 계층: `GROVE MASTER → 각 프로젝트 lead → 프로젝트별(가변) 조직도`.
-2. 프로젝트는 자체 tmux 또는 공유 tmux 가능. 현재 기본 운영은 단일 `dev10` tmux 공유다. 단 각 프로젝트의 lead+멤버 노드는 **그 프로젝트 디렉토리(cwd)** 에서 CLI 실행.
+2. 프로젝트는 자체 tmux 또는 공유 tmux 가능. 현재 기본 운영은 단일 `sample` tmux 공유다. 단 각 프로젝트의 lead+멤버 노드는 **그 프로젝트 디렉토리(cwd)** 에서 CLI 실행.
 3. 노드는 계층과 무관하게 자유 통신. **다른 프로젝트** 노드에게도 질문/지시 가능.
 4. 조직도 변경은 사람 소유다. 노드는 자율 spawn/terminate하지 않지만, 사람이 명시 지시하면 operator-marked CLI/GUI/API 경로로 생성/삭제할 수 있다.
 5. 모든 노드는 역할 기재. 역할은 사람이 명시한 GUI/API/CLI 생성 경로에서 **템플릿(프리셋)** 으로 주입.
@@ -82,7 +82,7 @@
 
 - `src/registry.ts NodeRuntime`: **`cwd` 필드 추가** + spawn/registerExisting에서 persist. `src/context.ts`가 registry.cwd 우선 복원.
 - `src/commands/spawn.ts:106-119`: cwd 우선순위 `input.cwd > registry.cwd(per-project) > project-dir > process.cwd`. **`findGroveRoot` 설치루트 폴백 제거/최후순위.**
-- 2026-06-05 현재 `Registry.tmuxSession`/`new-project --tmux-session`/`spawn --tmux-session`으로 프로젝트 ID와 host tmux 세션을 분리했다. web 프로젝트 생성은 현재 web session(`dev10`)을 host로 넘긴다.
+- 2026-06-05 현재 `Registry.tmuxSession`/`new-project --tmux-session`/`spawn --tmux-session`으로 프로젝트 ID와 host tmux 세션을 분리했다. web 프로젝트 생성은 현재 web session(`sample`)을 host로 넘긴다.
 - `bridge/.../web_app.py _spawn_node`: `args += ["--cwd", workspace]`. `NodeCreatePayload`에 cwd/workspace 필드(또는 서버가 `_project_workspace`로 도출).
 - adoption(`src/ops.ts:494-497`) 시 `pane_current_path` 검증.
 
@@ -111,7 +111,7 @@
 - dispatch context는 노드가 조직도, 역할, tmux pane, cwd를 잃지 않게 하는 보조 정보다. 사람용 목록 항목을 노드 간 필수 통신 프로토콜로 강제하지 않는다.
 - 베이스 MD 강화: `AGENTS.md`에 "기동 시 `grove org --json`로 자기 정체성 블록 고정" 강제 섹션 + **`CLAUDE.md` 신설**(역할+조직+업무방식 강하게). 캐논과 **모순 제거**: AGENTS.md `:16` "Makers scoped"·`:17` "Reviewers read-only"를 자유통신·사람이 명시한 operator-marked 조직 변경과 정합화.
 - 과거 보드 중심 통신 스킬은 폐기됐다. 현재 스킬은 direct node communication과 human-facing item model을 설명한다.
-- 2026-06-05 현재 `build_assistant_facts`는 live `dev10` registry에서 `agent_health.node_count=3`을 반환한다. facts JSON은 참고 컨텍스트이며, MASTER는 repo/runtime/org를 자유롭게 직접 확인할 수 있다.
+- 2026-06-05 현재 `build_assistant_facts`는 live `sample` registry에서 `agent_health.node_count=3`을 반환한다. facts JSON은 참고 컨텍스트이며, MASTER는 repo/runtime/org를 자유롭게 직접 확인할 수 있다.
 
 ### PR-G 사람↔lead SSH/터미널 (owner: orch-product)
 
@@ -133,7 +133,7 @@
 - 게이트: 코드 변경 최종 게이트 `pnpm check`. PR-별 검증(아래) 통과 전 done 금지.
 - 충돌방지: 공통 파일(web_app.py·ops.ts·registry.ts·context.ts) 동시편집 회피 → 본 발주서의 웨이브 순서 준수. worktree 격리 가능 PR은 격리.
 - 상태: 노드 진행 상황은 직접 통신 또는 사람이 남기는 human-facing 기록으로 공유한다. ask-human은 사람 판단이 필요한 항목만 남긴다.
-- 라이브 보호: dev10 흐름·세션 비파괴, 게시 history 비재작성, web 단일인스턴스 재배포.
+- 라이브 보호: sample 흐름·세션 비파괴, 게시 history 비재작성, web 단일인스턴스 재배포.
 
 ## 검증 (PR별)
 

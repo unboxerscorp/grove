@@ -53,7 +53,7 @@ uv run --project bridge grove-web --help
 프로젝트 세션이 이미 있거나 `grove new-project`로 만든 뒤, 로컬에서 웹 서버를 띄웁니다.
 
 ```bash
-uv run --project bridge grove-web --host 127.0.0.1 --port 8765 --session dev10
+uv run --project bridge grove-web --host 127.0.0.1 --port 8765 --session sample
 ```
 
 브라우저에서 `http://127.0.0.1:8765`에 접속합니다. 서버 프로세스가 생성한 `X-Grove-Session-Token`은 SPA index에 주입되고, REST API 호출에 자동으로 붙습니다.

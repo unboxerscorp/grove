@@ -82,13 +82,13 @@ function makeContext(transcripts: string[]): {
       children: [],
     },
     adapter,
-    addr: "dev10:0.15",
+    addr: "sample:0.15",
   };
 
   const ctx: Context = {
     configPath: "/repo/grove.yaml",
     config: {
-      session: "dev10",
+      session: "sample",
       cwd,
       defaults: { agent: "codex" },
       nodes: { docs: { agent: "codex", role, children: [] } },
@@ -96,7 +96,7 @@ function makeContext(transcripts: string[]): {
     nodes: [nc.node],
     byName: new Map([["docs", nc]]),
     registry: {
-      session: "dev10",
+      session: "sample",
       cwd,
       updatedAt: "2026-06-03T00:00:00.000Z",
       nodes: {
@@ -195,7 +195,7 @@ describe("planTranscriptRebinds", () => {
         cwd: "/repo",
         defaults: { agent: "codex" },
         nodes: {},
-        session: "dev10",
+        session: "sample",
       },
       configPath: "/repo/grove.yaml",
       nodes: [],
@@ -207,10 +207,10 @@ describe("planTranscriptRebinds", () => {
             children: [],
             name: "spawned",
             role,
-            tmux_pane: "dev10:2.0",
+            tmux_pane: "sample:2.0",
           },
         },
-        session: "dev10",
+        session: "sample",
         updatedAt: "2026-06-03T00:00:00.000Z",
       },
     };

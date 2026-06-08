@@ -41,7 +41,7 @@ from grove_bridge.notification_rules import (
 from grove_bridge.notifier import NotifierProtocol, build_notifier
 from grove_bridge.store import ClaimedTask, NotifySub, SQLiteBoardStore, Task
 
-DEFAULT_SESSION = "dev10"
+DEFAULT_SESSION = "default"
 TMUX_PANE_RE = re.compile(r"^(?P<session>[A-Za-z0-9_.-]+):(?P<window>[0-9]+)\.(?P<pane>[0-9]+)$")
 
 

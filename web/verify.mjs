@@ -618,12 +618,12 @@ async function coreMain() {
       noStatusFilters: document.querySelectorAll(".dr-board__filters, .dr-filter").length === 0,
     }));
     const mockBoards = await page.evaluate(async () => {
-      const res = await fetch("/api/boards", { headers: { "X-Grove-Project": "dev10" } });
+      const res = await fetch("/api/boards", { headers: { "X-Grove-Project": "sample" } });
       return await res.json();
     });
     const mockBoardsOk = mockBoards.length === 1 && mockBoards[0]?.id === "grove";
     const mockGhostBoardHidden = await page.evaluate(async () => {
-      const res = await fetch("/api/boards/infra/tasks", { headers: { "X-Grove-Project": "dev10" } });
+      const res = await fetch("/api/boards/infra/tasks", { headers: { "X-Grove-Project": "sample" } });
       return res.status === 404;
     });
     const boardGroupFilter = { initial: board.totalCards, filtered: 0, values: [] };
@@ -2003,8 +2003,8 @@ async function main() {
       header: window.__MOCK__?.projectHeader ?? "",
     }));
     await page.click(".proj-switcher__btn");
-    await page.waitForSelector('.proj-item[data-project="dev10"]', { timeout: 6000 });
-    await page.click('.proj-item[data-project="dev10"]');
+    await page.waitForSelector('.proj-item[data-project="sample"]', { timeout: 6000 });
+    await page.click('.proj-item[data-project="sample"]');
     await page.waitForFunction(
       () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "grove-dev",
       { timeout: 6000 },
@@ -3619,10 +3619,10 @@ async function main() {
         (e.textContent ?? "").trim().startsWith("G-"),
       ),
     }));
-    // switch back to dev10 -> default context returns (no permanent loss).
+    // switch back to sample -> default context returns (no permanent loss).
     await page.click(".proj-switcher__btn");
-    await page.waitForSelector('.proj-item[data-project="dev10"]', { timeout: 6000 });
-    await page.click('.proj-item[data-project="dev10"]');
+    await page.waitForSelector('.proj-item[data-project="sample"]', { timeout: 6000 });
+    await page.click('.proj-item[data-project="sample"]');
     await page.waitForFunction(
       () => (document.querySelector(".proj-switcher__name")?.textContent ?? "").trim() === "grove-dev",
       { timeout: 6000 },
@@ -3708,7 +3708,7 @@ async function main() {
 
     const projectOk =
       projItems >= 2 &&
-      projInitial === "grove-dev" && // display_name (internal: dev10)
+      projInitial === "Sample Project" && // display_name (internal: sample)
       projAfterSwitch === "grove-infra" && // display_name (internal: infra-ops)
       newCfg.name === "demo-proj" &&
       createResult.buckets >= 3 &&
@@ -3958,7 +3958,7 @@ async function main() {
       const tok = window.__GROVE_SESSION_TOKEN__ ?? "";
       const res = await fetch("/api/ws-ticket", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Grove-Session-Token": tok, "X-Grove-Project": "dev10" },
+        headers: { "Content-Type": "application/json", "X-Grove-Session-Token": tok, "X-Grove-Project": "sample" },
         body: JSON.stringify({ kind: "board" }),
       });
       const { ticket } = await res.json();

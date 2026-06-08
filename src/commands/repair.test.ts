@@ -39,7 +39,7 @@ function registry(): Registry {
         agent: "codex",
         name: "dead",
         role: "Dead",
-        tmux_pane: "dev10:old.%5",
+        tmux_pane: "sample:old.%5",
       },
       empty: {
         agent: "codex",
@@ -52,18 +52,18 @@ function registry(): Registry {
         agent: "codex",
         name: "gone",
         role: "Gone",
-        tmux_pane: "dev10:gone.%8",
+        tmux_pane: "sample:gone.%8",
       },
       ok: {
         agent: "codex",
         name: "ok",
         role: "Ok",
         sessionId: "session-ok",
-        tmux_pane: "dev10:ok.%9",
+        tmux_pane: "sample:ok.%9",
         transcript: "/repo/ok.jsonl",
       },
     },
-    session: "dev10",
+    session: "sample",
     updatedAt: "2026-06-04T00:00:00.000Z",
   };
 }
@@ -75,7 +75,7 @@ function context(reg = registry(), agent = adapter({ "/repo/ok.jsonl": 10 })): C
         "dead",
         {
           adapter: agent,
-          addr: "dev10:1.2",
+          addr: "sample:1.2",
           node: {
             agent: "codex",
             children: [],
@@ -93,7 +93,7 @@ function context(reg = registry(), agent = adapter({ "/repo/ok.jsonl": 10 })): C
       nodes: {
         dead: { agent: "codex", children: [], role: "Dead", tmux: "1.2" },
       },
-      session: "dev10",
+      session: "sample",
     },
     configPath: "/repo/grove.yaml",
     nodes: [
@@ -132,9 +132,9 @@ function deps(agent = adapter({ "/repo/ok.jsonl": 10 })): {
       loadContext: () => context(registry(), agent),
       paneTarget: async (addr) => {
         paneTargets.push(addr);
-        if (addr === "dev10:old.%5") throw new Error("pane not found");
-        if (addr === "dev10:1.2") return "dev10:1.7";
-        if (addr === "dev10:gone.%8") throw new Error("pane not found");
+        if (addr === "sample:old.%5") throw new Error("pane not found");
+        if (addr === "sample:1.2") return "sample:1.7";
+        if (addr === "sample:gone.%8") throw new Error("pane not found");
         return addr;
       },
       preserveActiveWindow: async (session, fn) => {
@@ -161,13 +161,13 @@ describe("repairNodes", () => {
 
     const result = await repairNodes(ctx, { node: "dead" }, state.deps);
 
-    expect(state.guardSessions).toEqual(["dev10"]);
-    expect(state.paneTargets).toEqual(["dev10:old.%5", "dev10:1.2"]);
-    expect(ctx.registry.nodes.dead?.tmux_pane).toBe("dev10:1.7");
+    expect(state.guardSessions).toEqual(["sample"]);
+    expect(state.paneTargets).toEqual(["sample:old.%5", "sample:1.2"]);
+    expect(ctx.registry.nodes.dead?.tmux_pane).toBe("sample:1.7");
     expect(result.recovered).toEqual([
       expect.objectContaining({
-        after: "dev10:1.7",
-        before: "dev10:old.%5",
+        after: "sample:1.7",
+        before: "sample:old.%5",
         kind: "pane",
         node: "dead",
         reason: "pane-rebound",
@@ -179,16 +179,16 @@ describe("repairNodes", () => {
   test("uses registry tmuxSession when project registry is hosted in a shared tmux session", async () => {
     const reg = registry();
     reg.session = "base-math";
-    reg.tmuxSession = "dev10";
+    reg.tmuxSession = "sample";
     const state = deps();
     const ctx = context(reg);
     ctx.config.session = "base-math";
 
     await repairNodes(ctx, { node: "dead" }, state.deps);
 
-    expect(state.hasSessions).toEqual(["dev10"]);
-    expect(state.guardSessions).toEqual(["dev10"]);
-    expect(state.paneTargets).toEqual(["dev10:old.%5", "dev10:1.2"]);
+    expect(state.hasSessions).toEqual(["sample"]);
+    expect(state.guardSessions).toEqual(["sample"]);
+    expect(state.paneTargets).toEqual(["sample:old.%5", "sample:1.2"]);
   });
 
   test("classifies an empty bound transcript as stale when no replacement is resolved", async () => {
@@ -217,7 +217,7 @@ describe("repairNodes", () => {
 
     expect(result.unrecoverable).toEqual([
       expect.objectContaining({
-        before: "dev10:gone.%8",
+        before: "sample:gone.%8",
         kind: "pane",
         node: "gone",
         reason: "pane-missing",
@@ -235,7 +235,7 @@ describe("repairNodes", () => {
 
     expect(result).toEqual({
       recovered: [],
-      session: "dev10",
+      session: "sample",
       stale: [],
       unrecoverable: [],
     });

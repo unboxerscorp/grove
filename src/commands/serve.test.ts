@@ -22,13 +22,13 @@ afterEach(() => {
 function ctx(): Context {
   return {
     byName: new Map(),
-    config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "dev10" },
+    config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "sample" },
     configPath: "/repo/grove.yaml",
     nodes: [
       { agent: "codex", children: [], cwd: "/repo", name: "lead" },
       { agent: "claude", children: [], cwd: "/repo", name: "maker" },
     ],
-    registry: { cwd: "/repo", nodes: {}, session: "dev10", updatedAt: "now" },
+    registry: { cwd: "/repo", nodes: {}, session: "sample", updatedAt: "now" },
   };
 }
 

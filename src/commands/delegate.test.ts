@@ -25,10 +25,10 @@ function registry(): Registry {
         agent: "codex",
         name: "maker",
         role: "Maker",
-        tmux_pane: "dev10:1.%5",
+        tmux_pane: "sample:1.%5",
       },
     },
-    session: "dev10",
+    session: "sample",
     updatedAt: "2026-06-04T00:00:00.000Z",
   };
 }
@@ -119,7 +119,7 @@ describe("discoverWebUrl", () => {
       webJson: JSON.stringify({ url: "http://127.0.0.1:8765" }),
     });
 
-    expect(discoverWebUrl("dev10", state.deps)).toBe("http://127.0.0.1:9999");
+    expect(discoverWebUrl("sample", state.deps)).toBe("http://127.0.0.1:9999");
     expect(state.readPaths).toEqual([]);
   });
 
@@ -128,9 +128,9 @@ describe("discoverWebUrl", () => {
     const withPort = deps({ webJson: JSON.stringify({ host: "127.0.0.1", port: 7778 }) });
     const fallback = deps();
 
-    expect(discoverWebUrl("dev10", withUrl.deps)).toBe("http://localhost:7777");
-    expect(discoverWebUrl("dev10", withPort.deps)).toBe("http://127.0.0.1:7778");
-    expect(discoverWebUrl("dev10", fallback.deps)).toBe("http://127.0.0.1:8765");
+    expect(discoverWebUrl("sample", withUrl.deps)).toBe("http://localhost:7777");
+    expect(discoverWebUrl("sample", withPort.deps)).toBe("http://127.0.0.1:7778");
+    expect(discoverWebUrl("sample", fallback.deps)).toBe("http://127.0.0.1:8765");
   });
 });
 
@@ -141,7 +141,7 @@ describe("delegateTask", () => {
     const result = await delegateTask(
       "maker",
       "Fix issue",
-      { board: "default", body: "Run pnpm check:ts", session: "dev10" },
+      { board: "default", body: "Run pnpm check:ts", session: "sample" },
       state.deps,
     );
 
@@ -150,7 +150,7 @@ describe("delegateTask", () => {
     expect(state.calls[0]?.init.headers).toEqual({
       "Content-Type": "application/json",
       Origin: "http://127.0.0.1:9999",
-      "X-Grove-Project": "dev10",
+      "X-Grove-Project": "sample",
       "X-Grove-Session-Token": "token-123",
     });
     expect(state.calls[0]?.init.method).toBe("POST");
@@ -174,15 +174,15 @@ describe("delegateTask", () => {
     await delegateTask(
       "maker",
       "Fix issue",
-      { board: "default", body: "Run pnpm check:ts", session: "dev10" },
+      { board: "default", body: "Run pnpm check:ts", session: "sample" },
       state.deps,
     );
 
     const payload = JSON.parse(state.calls[0]?.init.body ?? "{}") as { body?: string };
     expect(payload.body).toContain("GROVE CONTEXT PACK");
-    expect(payload.body).toContain("From: grove delegate CLI → maker@dev10");
+    expect(payload.body).toContain("From: grove delegate CLI → maker@sample");
     expect(payload.body).toContain("Target role: Maker");
-    expect(payload.body).toContain("pane=dev10:1.%5");
+    expect(payload.body).toContain("pane=sample:1.%5");
     expect(payload.body).toContain("Original message:\nRun pnpm check:ts");
   });
 
@@ -219,15 +219,15 @@ describe("delegateTask", () => {
     const state = deps({ fetchError: new Error("connect ECONNREFUSED") });
 
     await expect(
-      delegateTask("maker", "Fix issue", { session: "dev10" }, state.deps),
-    ).rejects.toThrow("could not reach grove-web at http://127.0.0.1:8765 for session dev10");
+      delegateTask("maker", "Fix issue", { session: "sample" }, state.deps),
+    ).rejects.toThrow("could not reach grove-web at http://127.0.0.1:8765 for session sample");
   });
 
   test("reports non-2xx human-facing item creation failures", async () => {
     const state = deps({ responseStatus: 502 });
 
     await expect(
-      delegateTask("maker", "Fix issue", { session: "dev10" }, state.deps),
+      delegateTask("maker", "Fix issue", { session: "sample" }, state.deps),
     ).rejects.toThrow("grove-web human-facing item create failed");
   });
 
@@ -235,17 +235,17 @@ describe("delegateTask", () => {
     const state = deps({ env: { GROVE_WEB_URL: "http://10.0.0.5:8765" } });
 
     await expect(
-      delegateTask("maker", "Fix issue", { session: "dev10" }, state.deps),
+      delegateTask("maker", "Fix issue", { session: "sample" }, state.deps),
     ).rejects.toThrow("refusing to send dashboard token to non-loopback grove-web URL");
 
     expect(state.calls).toEqual([]);
-    expect(state.readPaths).not.toContain("/home/tester/.grove/dev10/dashboard-token");
+    expect(state.readPaths).not.toContain("/home/tester/.grove/sample/dashboard-token");
   });
 
   test("allows non-loopback web URLs with explicit opt-in and warns", async () => {
     const state = deps({ env: { GROVE_WEB_URL: "http://10.0.0.5:8765" } });
 
-    await delegateTask("maker", "Fix issue", { allowRemote: true, session: "dev10" }, state.deps);
+    await delegateTask("maker", "Fix issue", { allowRemote: true, session: "sample" }, state.deps);
 
     expect(state.calls[0]?.url).toBe("http://10.0.0.5:8765/api/boards/default/tasks");
     expect(state.warnings).toEqual([
@@ -258,7 +258,7 @@ describe("delegateTask", () => {
       env: { GROVE_DELEGATE_ALLOW_REMOTE: "1", GROVE_WEB_URL: "http://10.0.0.5:8765" },
     });
 
-    await delegateTask("maker", "Fix issue", { session: "dev10" }, state.deps);
+    await delegateTask("maker", "Fix issue", { session: "sample" }, state.deps);
 
     expect(state.calls).toHaveLength(1);
     expect(state.warnings[0]).toContain("non-loopback grove-web URL");
@@ -269,7 +269,7 @@ describe("delegateTask", () => {
     const result = await delegateTask("maker", "Fix issue", {}, state.deps);
 
     expect(renderDelegateText(result)).toBe(
-      "created human-facing item task-1 for maker on default (dev10)",
+      "created human-facing item task-1 for maker on default (sample)",
     );
     expect(JSON.parse(renderDelegateJson(result))).toEqual(result.task);
   });

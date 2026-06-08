@@ -39,12 +39,12 @@ Each project is a first-class lifecycle unit:
 ```text
 project name == human-facing list backing slug
 project workspace/cwd is explicit
-tmux host session may be shared, e.g. dev10
+tmux host session may be shared, e.g. sample
 ```
 
 The project/list mapping keeps audit, list filtering, and project switching
 predictable. The tmux session is operational placement metadata; on the current
-Mac mini deployment multiple projects may place panes in the single `dev10`
+Mac mini deployment multiple projects may place panes in the single `sample`
 session while still preserving per-project cwd and registry ownership.
 
 Project creation is an operator-only mutation. It should create or verify these
@@ -65,7 +65,7 @@ list/registry creation fails, the response should surface a repairable degraded
 state and include the exact missing resource. Follow-up repair must be explicit
 and audited.
 
-Current live `dev10` uses `grove-master` as the global master and project-level
+Current live `sample` uses `grove-master` as the global master and project-level
 direct operator. New project scaffolds create a concrete `lead` node rather than
 a synthetic `project-master`.
 
@@ -180,14 +180,14 @@ Recommended command payload shape:
 ```json
 {
   "project": "alpha",
-  "session": "dev10",
+  "session": "sample",
   "list_slug": "alpha",
   "workspace": "/repo/alpha",
   "commands": {
-    "tmux_attach": "tmux attach -t dev10",
-    "tmux_list_windows": "tmux list-windows -t dev10",
-    "ssh_attach": "ssh dev-host -t 'tmux attach -t dev10'",
-    "iterm_attach": "osascript -e 'tell application \"iTerm\" to create window with default profile command \"tmux attach -t dev10\"'"
+    "tmux_attach": "tmux attach -t sample",
+    "tmux_list_windows": "tmux list-windows -t sample",
+    "ssh_attach": "ssh dev-host -t 'tmux attach -t sample'",
+    "iterm_attach": "osascript -e 'tell application \"iTerm\" to create window with default profile command \"tmux attach -t sample\"'"
   }
 }
 ```

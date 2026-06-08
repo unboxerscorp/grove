@@ -10,7 +10,7 @@ import {
 } from "../tmux.js";
 import { validateGroveName } from "../util/names.js";
 
-const DEFAULT_DESPAWN_SESSION = "dev10";
+const DEFAULT_DESPAWN_SESSION = "default";
 
 export interface DespawnInput {
   node?: string;

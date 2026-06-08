@@ -17,7 +17,7 @@ def setup_harness(
     tuple[TestClient, dict[str, str]],
 ]:
     store = SQLiteBoardStore(tmp_path / "board.db")
-    write_registry(tmp_path, session="dev10", nodes={"lead": {"name": "lead"}})
+    write_registry(tmp_path, session="sample", nodes={"lead": {"name": "lead"}})
     write_team_member(tmp_path, secret="v-sec", role="viewer", name="viewer_user", member_id="m-1")
     write_team_member(
         tmp_path, secret="o-sec", role="operator", name="op_user", append=True, member_id="m-2"

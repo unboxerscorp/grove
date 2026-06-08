@@ -34,7 +34,7 @@ export interface NodeRuntime {
   sessionId?: string;
   /** resolved transcript path, once detected */
   transcript?: string;
-  /** full tmux pane target for explicit pane-bound nodes, e.g. "dev10:1.2" */
+  /** full tmux pane target for explicit pane-bound nodes, e.g. "sample:1.2" */
   tmux_pane?: string;
   /** Runtime health/status label written by service or adoption flows. */
   status?: string;

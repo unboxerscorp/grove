@@ -795,7 +795,7 @@ export interface Presence {
 }
 
 export interface Project {
-  name: string; // = session (internal identity, e.g. "dev10")
+  name: string; // = session (internal identity, e.g. "sample")
   display_name?: string;
   project?: string;
   session?: string;

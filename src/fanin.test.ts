@@ -168,7 +168,7 @@ describe("fan-in wait", () => {
     } satisfies AgentAdapter;
     ctx.byName.set("orch-platform", {
       adapter: liveAdapter,
-      addr: "dev10:13.2",
+      addr: "sample:13.2",
       node: liveNode,
     });
     ctx.registry.nodes["orch-platform"] = {
@@ -181,7 +181,7 @@ describe("fan-in wait", () => {
         transcript,
       },
       sessionId: "orch-platform",
-      tmux_pane: "dev10:13.2",
+      tmux_pane: "sample:13.2",
       transcript,
     };
     appendTurnEvent(eventLogDir, turnEvent("orch-platform", "orch-platform", 20));
@@ -458,7 +458,7 @@ describe("fan-in wait", () => {
     } satisfies AgentAdapter;
     ctx.byName.set("registry-only", {
       adapter: registryOnlyAdapter,
-      addr: "dev10:13.4",
+      addr: "sample:13.4",
       node: registryOnlyNode,
     });
     ctx.registry.nodes["registry-only"] = {

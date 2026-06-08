@@ -23,18 +23,18 @@ describe("cmdSession", () => {
   test("prints node session metadata as JSON", async () => {
     const nc = {
       adapter: { size: () => 123 },
-      addr: "dev10:1.%1",
+      addr: "sample:1.%1",
       node: { agent: "codex", children: [], cwd: "/repo", name: "maker", resume: "resume-id" },
     } as unknown as NodeCtx;
     const ctx = {
       byName: new Map([["maker", nc]]),
-      config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "dev10" },
+      config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "sample" },
       configPath: "/repo/grove.yaml",
       nodes: [nc.node],
       registry: {
         cwd: "/repo",
         nodes: { maker: { agent: "codex", name: "maker", sessionId: "session-id" } },
-        session: "dev10",
+        session: "sample",
         updatedAt: "now",
       },
     } as Context;

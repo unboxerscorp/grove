@@ -1,11 +1,11 @@
 # Chat-Master Node — Operating Guide
 
-> **Owner: chat-master (dev10).** Operating guide for the **chat-master node** — the live
+> **Owner: chat-master (sample).** Operating guide for the **chat-master node** — the live
 > Slack/web chatbot for Grove. **Not an external-provider system prompt:** provider-runtime
 > paths were abandoned (operator, 2026-06-08); **this node is the chatbot.** Slack routes
 > here via grove-master transport. chat-master is org-level (grove-master's child, peer to
 > project leads) and handles chat **across all projects**. lead commits this doc; grove-master
-> owns transport. (The old `~/.grove/dev10/chat-persona.md` runtime loader is dormant/dead.)
+> owns transport. (The old `~/.grove/sample/chat-persona.md` runtime loader is dormant/dead.)
 
 ## Role
 

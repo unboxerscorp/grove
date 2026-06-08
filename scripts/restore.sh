@@ -354,7 +354,7 @@ TARGET_PROJECT_DIR="$(expand_path "$TARGET_PROJECT_DIR")"
 
 validate_grove_name "$TARGET_SESSION" "--target-session"
 validate_port "$WEB_PORT"
-[[ "$TARGET_SESSION" != "dev10" ]] || die "refusing live session dev10; use a clone session"
+[[ "$TARGET_SESSION" != "sample" ]] || die "refusing live session sample; use a clone session"
 LIVE_GROVE_HOME="$(resolve_existing_path "$HOME/.grove")"
 RESOLVED_TARGET_HOME="$(resolve_real_target_path "$TARGET_GROVE_HOME")"
 if path_inside_or_equal "$RESOLVED_TARGET_HOME" "$LIVE_GROVE_HOME"; then

@@ -18,14 +18,15 @@ const webRoot = path.resolve(here, "..");
 const artifactDir = path.join(webRoot, "e2e", "artifacts");
 
 const BASE_URL = process.env.GROVE_LIVE_URL ?? "http://127.0.0.1:8765";
-const REAL_PROJECT = "dev10";
-const REAL_PROJECT_LABEL_RE = /grove-dev|dev10/i;
+const REAL_PROJECT = process.env.GROVE_LIVE_PROJECT ?? "sample";
+const REAL_PROJECT_LABEL = process.env.GROVE_LIVE_PROJECT_LABEL ?? REAL_PROJECT;
+const REAL_PROJECT_LABEL_RE = new RegExp(REAL_PROJECT_LABEL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
 const TEST_PROJECT = process.env.GROVE_LIVE_TEST_PROJECT ?? "p2-test";
 const TEST_PROJECT_LABEL_RE = new RegExp(TEST_PROJECT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
 const SWITCH_PROJECT = "base-voca";
 const RUN_ID = `p2-live-${Date.now().toString(36)}`;
 const TEST_TERMINAL_NODE = `p2-terminal-${RUN_ID.replace(/^p2-live-/, "")}`;
-const HOST_TMUX_SOCKET = process.env.GROVE_LIVE_TMUX_SOCKET ?? "dev10";
+const HOST_TMUX_SOCKET = process.env.GROVE_LIVE_TMUX_SOCKET ?? "sample";
 const HOST_TMUX_SESSION = process.env.GROVE_LIVE_HOST_TMUX_SESSION ?? REAL_PROJECT;
 const RAW_SECRET_RE =
   /\b(?:xox[baprs]-[A-Za-z0-9-]{8,}|xapp-[A-Za-z0-9-]{8,}|sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,})\b/;
@@ -571,7 +572,7 @@ async function waitForNodeVisible(page, nodeName) {
   }
 }
 
-async function dev10LiveFixtures(page) {
+async function sampleLiveFixtures(page) {
   const response = await apiFetch(page, "/api/boards/default/tasks", { project: REAL_PROJECT });
   if (!response.ok || !Array.isArray(response.json)) {
     return { ok: false, detail: `HTTP ${response.status} ${safeJson(response.json ?? response.text)}`, items: [] };
@@ -700,8 +701,8 @@ async function main() {
       check("live role is operator-equivalent local-token", me.json?.auth_mode === "local-token" && me.json?.member === null, safeJson(me.json));
       skip("viewer browser role", "live cockpit is local-token; /api/share is disabled, so no real viewer cookie fixture is available");
       skip("admin browser role", "live cockpit is local-token; no real admin team session is exposed");
-      const pollution = await dev10LiveFixtures(page);
-      assertCheck("dev10 board has no p2-live fixtures before run", pollution.ok && pollution.items.length === 0, pollution.detail);
+      const pollution = await sampleLiveFixtures(page);
+      assertCheck("sample board has no p2-live fixtures before run", pollution.ok && pollution.items.length === 0, pollution.detail);
     });
 
     await runStep(page, "Tier-2 hard-block: external/destructive requests are aborted (no live egress)", async () => {
@@ -877,8 +878,8 @@ async function main() {
         "grove-master SSH attach command targets the master pane",
           typeof masterConnect.json?.commands?.ssh_attach === "string" &&
           masterConnect.json.commands.ssh_attach.includes("ssh ") &&
-          masterConnect.json.commands.ssh_attach.includes("tmux -L dev10 select-pane -t dev10:0.0") &&
-          masterConnect.json.commands.ssh_attach.includes("tmux -L dev10 attach -t dev10"),
+          masterConnect.json.commands.ssh_attach.includes("tmux -L sample select-pane -t sample:0.0") &&
+          masterConnect.json.commands.ssh_attach.includes("tmux -L sample attach -t sample"),
         safeJson(masterConnect.json),
       );
 
@@ -972,7 +973,7 @@ async function main() {
       const nodes = await apiFetch(page, "/api/nodes", { project: SWITCH_PROJECT });
       check("base-voca nodes API is scoped and readable", nodes.ok && Array.isArray(nodes.json), `HTTP ${nodes.status}`);
       await selectProject(page, REAL_PROJECT, REAL_PROJECT_LABEL_RE);
-      check("project switcher shows grove-dev/dev10", REAL_PROJECT_LABEL_RE.test(await textContent(page, ".proj-switcher__name")));
+      check("project switcher shows live project", REAL_PROJECT_LABEL_RE.test(await textContent(page, ".proj-switcher__name")));
       await selectProject(page, TEST_PROJECT, TEST_PROJECT_LABEL_RE);
       check("project switcher returns to isolated p2-test", TEST_PROJECT_LABEL_RE.test(await textContent(page, ".proj-switcher__name")));
     });
@@ -1002,7 +1003,7 @@ async function main() {
               typeof node?.cwd === "string" &&
               node.cwd.length > 0 &&
               typeof node?.tmux_pane === "string" &&
-              /^dev10:\d+\.\d+$/.test(node.tmux_pane) &&
+              /^sample:\d+\.\d+$/.test(node.tmux_pane) &&
               node.pane_exists === true,
           ),
         safeJson(orgNodes),
@@ -1017,7 +1018,7 @@ async function main() {
       const leadProjects = await page.$$eval(".org-plead, .master-org__project", (items) =>
         items.map((item) => item.getAttribute("data-project") || item.textContent || "").filter(Boolean),
       );
-      check("org chart shows project leads", leadProjects.some((item) => /dev10|grove-dev/i.test(item)), leadProjects.join(","));
+      check("org chart shows project leads", leadProjects.some((item) => REAL_PROJECT_LABEL_RE.test(item) || item.includes(REAL_PROJECT)), leadProjects.join(","));
     });
 
     await runStep(page, "sidebar and logo", async () => {
@@ -1031,9 +1032,9 @@ async function main() {
       check("Grove logo image loads", logoLoaded);
     });
 
-    await runStep(page, "dev10 pollution guard after live mutations", async () => {
-      const pollution = await dev10LiveFixtures(page);
-      assertCheck("dev10 board has no p2-live fixtures after run", pollution.ok && pollution.items.length === 0, pollution.detail);
+    await runStep(page, "sample pollution guard after live mutations", async () => {
+      const pollution = await sampleLiveFixtures(page);
+      assertCheck("sample board has no p2-live fixtures after run", pollution.ok && pollution.items.length === 0, pollution.detail);
     });
 
     await screenshot(page, "live-final");

@@ -46,7 +46,7 @@ AuditEventKind = Literal[
     "master.execute.failed",
 ]
 DEFAULT_FEEDBACK_PROJECT = "grove-dev"
-DEFAULT_FEEDBACK_BOARD = "dev10"
+DEFAULT_FEEDBACK_BOARD = DEFAULT_FEEDBACK_PROJECT
 DEFAULT_FEEDBACK_LABEL = "grove-feedback"
 DEFAULT_FEEDBACK_ASSIGNEE_CANDIDATES = ("grove-master", "grove-py", "grove-qa")
 ACTION_KEYWORDS = (

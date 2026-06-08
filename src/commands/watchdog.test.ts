@@ -54,7 +54,7 @@ function context(names: string[], runtime: MockRuntime = {}): Context {
   const byName = new Map<string, NodeCtx>();
   const registryNodes: Context["registry"]["nodes"] = {};
   for (const [index, node] of nodes.entries()) {
-    const pane = `dev10:${index}.0`;
+    const pane = `sample:${index}.0`;
     const transcript = `/repo/${node.name}.jsonl`;
     byName.set(node.name, {
       adapter: adapter(runtime, transcript),
@@ -75,14 +75,14 @@ function context(names: string[], runtime: MockRuntime = {}): Context {
       cwd: "/repo",
       defaults: { agent: "codex" },
       nodes: {},
-      session: "dev10",
+      session: "sample",
     },
     configPath: "/repo/grove.yaml",
     nodes,
     registry: {
       cwd: "/repo",
       nodes: registryNodes,
-      session: "dev10",
+      session: "sample",
       updatedAt: "2026-06-05T00:00:00.000Z",
     },
   };
@@ -120,9 +120,9 @@ describe("watchdog node health", () => {
     const now = new Date(2026, 0, 1, 10, 0, 0);
     const runtime: MockRuntime = {
       paneText: {
-        "dev10:0.0": "temporarily limiting requests; try again later",
-        "dev10:1.0": "session limit reached, resets 11:45",
-        "dev10:2.0": "Authentication expired. Please sign in.",
+        "sample:0.0": "temporarily limiting requests; try again later",
+        "sample:1.0": "session limit reached, resets 11:45",
+        "sample:2.0": "Authentication expired. Please sign in.",
       },
       transcriptBytes: {
         "/repo/login.jsonl": 10,
@@ -140,7 +140,7 @@ describe("watchdog node health", () => {
     );
     const nodes = healthByNode(snapshot);
 
-    expect(snapshot).toMatchObject({ schema: 1, session: "dev10", type: "node_health" });
+    expect(snapshot).toMatchObject({ schema: 1, session: "sample", type: "node_health" });
     expect(nodes.get("rate")?.health).toBe("rate_limited");
     expect(nodes.get("usage")?.health).toBe("cooldown");
     expect(nodes.get("usage")?.reset_at).toBe(new Date(2026, 0, 1, 11, 45, 0, 0).toISOString());
@@ -154,10 +154,10 @@ describe("watchdog node health", () => {
     const now = new Date(2026, 0, 1, 10, 0, 0);
     const runtime: MockRuntime = {
       paneText: {
-        "dev10:0.0": "Claude API (limit) · Rate limited",
-        "dev10:1.0":
+        "sample:0.0": "Claude API (limit) · Rate limited",
+        "sample:1.0":
           "리뷰: rate-limit 회피 전략을 문서화하고 node_health status에 rate_limited를 넣지 말 것",
-        "dev10:2.0": "const status = 'rate_limited'; // node_health fixture",
+        "sample:2.0": "const status = 'rate_limited'; // node_health fixture",
       },
       transcriptBytes: {
         "/repo/diag-code.jsonl": 10,
@@ -190,7 +190,7 @@ describe("watchdog node health", () => {
     const now = new Date(2026, 0, 1, 10, 0, 0);
     const runtime: MockRuntime = {
       paneText: {
-        "dev10:0.0": "⏺ API Error: Server is temporarily limiting requests\n\n❯ ",
+        "sample:0.0": "⏺ API Error: Server is temporarily limiting requests\n\n❯ ",
       },
       transcriptBytes: { "/repo/real.jsonl": 10 },
     };
@@ -213,7 +213,7 @@ describe("watchdog node health", () => {
     const now = new Date(2026, 0, 1, 10, 0, 0);
     const runtime: MockRuntime = {
       paneText: {
-        "dev10:0.0": [
+        "sample:0.0": [
           "⏺ API Error: Server is temporarily limiting requests",
           "old review output mentioning rate_limit",
           ...Array.from({ length: 16 }, (_, index) => `scrollback line ${index}`),
@@ -247,9 +247,9 @@ describe("watchdog node health", () => {
     const performed = vi.fn<WatchdogDeps["performRecoveryAction"]>(async () => undefined);
     const runtime: MockRuntime = {
       paneText: {
-        "dev10:0.0": "temporarily limiting requests; try again later",
-        "dev10:1.0": "session limit reached, resets 11:45",
-        "dev10:2.0": "Authentication expired. Please sign in.",
+        "sample:0.0": "temporarily limiting requests; try again later",
+        "sample:1.0": "session limit reached, resets 11:45",
+        "sample:2.0": "Authentication expired. Please sign in.",
       },
       transcriptBytes: {
         "/repo/login.jsonl": 10,
@@ -296,8 +296,8 @@ describe("watchdog node health", () => {
     const performed = vi.fn<WatchdogDeps["performRecoveryAction"]>(async () => undefined);
     const runtime: MockRuntime = {
       paneText: {
-        "dev10:0.0": "temporarily limiting requests",
-        "dev10:1.0": "temporarily limiting requests",
+        "sample:0.0": "temporarily limiting requests",
+        "sample:1.0": "temporarily limiting requests",
       },
       transcriptBytes: {
         "/repo/alpha.jsonl": 10,
@@ -362,7 +362,7 @@ describe("watchdog node health", () => {
     const nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const performed = vi.fn<WatchdogDeps["performRecoveryAction"]>(async () => undefined);
     const runtime: MockRuntime = {
-      paneText: { "dev10:0.0": "temporarily limiting requests" },
+      paneText: { "sample:0.0": "temporarily limiting requests" },
       transcriptBytes: { "/repo/worker.jsonl": 10 },
     };
     const ctx = context(["worker"], runtime);
@@ -404,7 +404,7 @@ describe("watchdog node health", () => {
       throw new Error("tmux send failed");
     });
     const runtime: MockRuntime = {
-      paneText: { "dev10:0.0": "temporarily limiting requests" },
+      paneText: { "sample:0.0": "temporarily limiting requests" },
       transcriptBytes: { "/repo/worker.jsonl": 10 },
     };
     const ctx = context(["worker"], runtime);
@@ -470,7 +470,7 @@ describe("watchdog node health", () => {
   test("schedules usage-limit resets across midnight using local time", async () => {
     const now = new Date(2026, 0, 1, 23, 50, 0, 0);
     const runtime: MockRuntime = {
-      paneText: { "dev10:0.0": "session limit reached, resets 00:10" },
+      paneText: { "sample:0.0": "session limit reached, resets 00:10" },
       transcriptBytes: { "/repo/worker.jsonl": 10 },
     };
     const ctx = context(["worker"], runtime);
@@ -495,8 +495,8 @@ describe("watchdog node health", () => {
   test("detects crashed nodes when the pane or pane process is missing", async () => {
     const now = new Date(2026, 0, 1, 10, 0, 0);
     const runtime: MockRuntime = {
-      commands: { "dev10:1.0": "", "dev10:2.0": "zsh" },
-      paneTargets: { "dev10:0.0": new Error("pane missing") },
+      commands: { "sample:1.0": "", "sample:2.0": "zsh" },
+      paneTargets: { "sample:0.0": new Error("pane missing") },
     };
     const ctx = context(["gone", "dead-process", "shell"], runtime);
 
@@ -529,7 +529,7 @@ describe("watchdog node health", () => {
     let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const performed = vi.fn<WatchdogDeps["performRecoveryAction"]>(async () => undefined);
     const runtime: MockRuntime = {
-      paneTargets: { "dev10:0.0": new Error("pane missing") },
+      paneTargets: { "sample:0.0": new Error("pane missing") },
     };
     const ctx = context(["gone"], runtime);
     const memory = new Map<string, WatchdogMemory>();
@@ -568,7 +568,7 @@ describe("watchdog node health", () => {
   test("marks a node hung on first invocation from transcript activity timestamps", async () => {
     const nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const runtime: MockRuntime = {
-      paneText: { "dev10:0.0": "same output" },
+      paneText: { "sample:0.0": "same output" },
       transcriptBytes: { "/repo/worker.jsonl": 42 },
       transcriptMtimeMs: { "/repo/worker.jsonl": nowMs - 301_000 },
     };
@@ -591,7 +591,7 @@ describe("watchdog node health", () => {
   test("marks a node hung after repeated ticks with no pane or transcript output", async () => {
     let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const runtime: MockRuntime = {
-      paneText: { "dev10:0.0": "same output" },
+      paneText: { "sample:0.0": "same output" },
       transcriptBytes: { "/repo/worker.jsonl": 42 },
     };
     const ctx = context(["worker"], runtime);
@@ -612,7 +612,7 @@ describe("watchdog node health", () => {
   test("does not mark idle prompt panes as hung without transcript output", async () => {
     let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const runtime: MockRuntime = {
-      paneText: { "dev10:0.0": "╭── ready ──╮\n│ ❯ > │\n╰──────────╯" },
+      paneText: { "sample:0.0": "╭── ready ──╮\n│ ❯ > │\n╰──────────╯" },
       transcriptBytes: { "/repo/worker.jsonl": 42 },
       transcriptMtimeMs: { "/repo/worker.jsonl": nowMs - 301_000 },
     };
@@ -638,7 +638,7 @@ describe("watchdog node health", () => {
     let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const runtime: MockRuntime = {
       paneText: {
-        "dev10:0.0": "› Summarize recent commits\n\n  gpt-5.5 xhigh · /repo",
+        "sample:0.0": "› Summarize recent commits\n\n  gpt-5.5 xhigh · /repo",
       },
       transcriptBytes: { "/repo/worker.jsonl": 42 },
       transcriptMtimeMs: { "/repo/worker.jsonl": nowMs - 301_000 },
@@ -665,7 +665,7 @@ describe("watchdog node health", () => {
     let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const runtime: MockRuntime = {
       paneText: {
-        "dev10:0.0": "Gemini\n? for shortcuts\nesc to cancel",
+        "sample:0.0": "Gemini\n? for shortcuts\nesc to cancel",
       },
       transcriptBytes: { "/repo/worker.jsonl": 42 },
       transcriptMtimeMs: { "/repo/worker.jsonl": nowMs - 301_000 },
@@ -694,7 +694,7 @@ describe("watchdog node health", () => {
   test("does not mark active panes as hung without transcript output", async () => {
     let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const runtime: MockRuntime = {
-      paneText: { "dev10:0.0": "Working | esc to interrupt | elapsed 00:00 1%" },
+      paneText: { "sample:0.0": "Working | esc to interrupt | elapsed 00:00 1%" },
       transcriptBytes: { "/repo/worker.jsonl": 42 },
     };
     const ctx = context(["worker"], runtime);
@@ -703,7 +703,7 @@ describe("watchdog node health", () => {
 
     const first = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
     nowMs += 301_000;
-    runtime.paneText!["dev10:0.0"] = "Working / esc to interrupt / elapsed 00:05 2%";
+    runtime.paneText!["sample:0.0"] = "Working / esc to interrupt / elapsed 00:05 2%";
     const second = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
 
     expect(healthByNode(first).get("worker")?.health).toBe("healthy");
@@ -716,12 +716,12 @@ describe("watchdog node health", () => {
   test("marks ambiguous non-pane tmux targets unknown instead of hung", async () => {
     const nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const runtime: MockRuntime = {
-      paneText: { "dev10:grove-dev": "same output" },
-      transcriptBytes: { "/repo/grove-dev.jsonl": 42 },
-      transcriptMtimeMs: { "/repo/grove-dev.jsonl": nowMs - 301_000 },
+      paneText: { "sample:worker-one": "same output" },
+      transcriptBytes: { "/repo/worker-one.jsonl": 42 },
+      transcriptMtimeMs: { "/repo/worker-one.jsonl": nowMs - 301_000 },
     };
-    const ctx = context(["grove-dev"], runtime);
-    ctx.registry.nodes["grove-dev"]!.tmux_pane = "dev10:grove-dev";
+    const ctx = context(["worker-one"], runtime);
+    ctx.registry.nodes["worker-one"]!.tmux_pane = "sample:worker-one";
 
     const snapshot = await collectWatchdogSnapshot(
       ctx,
@@ -730,7 +730,7 @@ describe("watchdog node health", () => {
       deps(ctx, runtime, () => new Date(nowMs)),
     );
 
-    expect(healthByNode(snapshot).get("grove-dev")).toMatchObject({
+    expect(healthByNode(snapshot).get("worker-one")).toMatchObject({
       health: "unknown",
       pane_exists: false,
       reason: "ambiguous-pane-target",
@@ -745,7 +745,7 @@ describe("watchdog node health", () => {
   test("ignores spinner and clock-only pane redraws without active or idle markers", async () => {
     let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const runtime: MockRuntime = {
-      paneText: { "dev10:0.0": "| elapsed 00:00 1%" },
+      paneText: { "sample:0.0": "| elapsed 00:00 1%" },
       transcriptBytes: { "/repo/worker.jsonl": 42 },
     };
     const ctx = context(["worker"], runtime);
@@ -754,7 +754,7 @@ describe("watchdog node health", () => {
 
     const first = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
     nowMs += 301_000;
-    runtime.paneText!["dev10:0.0"] = "/ elapsed 00:05 2%";
+    runtime.paneText!["sample:0.0"] = "/ elapsed 00:05 2%";
     const second = await collectWatchdogSnapshot(ctx, memory, { hungAfterMs: 300_000 }, injected);
 
     expect(healthByNode(first).get("worker")?.health).toBe("healthy");
@@ -767,7 +767,7 @@ describe("watchdog node health", () => {
   test("prunes stale node entries from watchdog memory", async () => {
     const now = new Date(2026, 0, 1, 10, 0, 0);
     const runtime: MockRuntime = {
-      paneText: { "dev10:0.0": "ready" },
+      paneText: { "sample:0.0": "ready" },
       transcriptBytes: { "/repo/worker.jsonl": 1 },
     };
     const ctx = context(["worker"], runtime);
@@ -795,8 +795,8 @@ describe("watchdog node health", () => {
     let nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const runtime: MockRuntime = {
       paneText: {
-        "dev10:0.0": "busy-1",
-        "dev10:0.1": "quiet-output",
+        "sample:0.0": "busy-1",
+        "sample:0.1": "quiet-output",
       },
       transcriptBytes: {
         "/repo/busy.jsonl": 1,
@@ -806,10 +806,10 @@ describe("watchdog node health", () => {
     const ctx = context(["busy", "silent"], runtime);
     const busy = ctx.byName.get("busy")!;
     const silent = ctx.byName.get("silent")!;
-    busy.addr = "dev10:0.0";
-    silent.addr = "dev10:0.1";
-    ctx.registry.nodes.busy!.tmux_pane = "dev10:0.0";
-    ctx.registry.nodes.silent!.tmux_pane = "dev10:0.1";
+    busy.addr = "sample:0.0";
+    silent.addr = "sample:0.1";
+    ctx.registry.nodes.busy!.tmux_pane = "sample:0.0";
+    ctx.registry.nodes.silent!.tmux_pane = "sample:0.1";
     const writes: string[] = [];
     vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
       writes.push(String(chunk));
@@ -820,7 +820,7 @@ describe("watchdog node health", () => {
     try {
       const watchdog = await import("./watchdog.js");
       const { sessionDir } = await import("../util/paths.js");
-      const statePath = path.join(sessionDir("dev10"), "watchdog-state.json");
+      const statePath = path.join(sessionDir("sample"), "watchdog-state.json");
 
       await watchdog.cmdWatchdog({ hungAfter: "5m", json: true }, injected);
       const firstPayload = JSON.parse(writes.join("")) as {
@@ -834,7 +834,7 @@ describe("watchdog node health", () => {
 
       writes.length = 0;
       nowMs += 301_000;
-      runtime.paneText!["dev10:0.0"] = "busy-2";
+      runtime.paneText!["sample:0.0"] = "busy-2";
       await watchdog.cmdWatchdog({ hungAfter: "5m", json: true }, injected);
 
       const secondPayload = JSON.parse(writes.join("")) as {
@@ -873,7 +873,7 @@ describe("watchdog node health", () => {
     const nowMs = new Date(2026, 0, 1, 10, 0, 0).getTime();
     const performed = vi.fn<WatchdogDeps["performRecoveryAction"]>(async () => undefined);
     const runtime: MockRuntime = {
-      paneTargets: { "dev10:0.0": new Error("pane missing") },
+      paneTargets: { "sample:0.0": new Error("pane missing") },
     };
     const ctx = context(["gone"], runtime);
     const writes: string[] = [];
@@ -889,7 +889,7 @@ describe("watchdog node health", () => {
     try {
       const watchdog = await import("./watchdog.js");
       const { sessionDir } = await import("../util/paths.js");
-      const statePath = path.join(sessionDir("dev10"), "watchdog-state.json");
+      const statePath = path.join(sessionDir("sample"), "watchdog-state.json");
 
       await watchdog.cmdWatchdog({ hungAfter: "1m", json: true }, injected);
       expect(performed).not.toHaveBeenCalled();
@@ -929,7 +929,7 @@ describe("watchdog node health", () => {
       await new Promise((resolve) => setTimeout(resolve, 40));
     });
     const runtime: MockRuntime = {
-      paneText: { "dev10:0.0": "temporarily limiting requests" },
+      paneText: { "sample:0.0": "temporarily limiting requests" },
       transcriptBytes: { "/repo/worker.jsonl": 10 },
     };
     const ctx = context(["worker"], runtime);
@@ -946,7 +946,7 @@ describe("watchdog node health", () => {
     try {
       const watchdog = await import("./watchdog.js");
       const { sessionDir } = await import("../util/paths.js");
-      const statePath = path.join(sessionDir("dev10"), "watchdog-state.json");
+      const statePath = path.join(sessionDir("sample"), "watchdog-state.json");
       writeFileAtomicSync(
         statePath,
         `${JSON.stringify(
@@ -959,7 +959,7 @@ describe("watchdog node health", () => {
             },
             recovery: {},
             schema: 1,
-            session: "dev10",
+            session: "sample",
             type: "watchdog_state",
             updated_at: new Date(nowMs).toISOString(),
           },

@@ -1,7 +1,7 @@
 # grove Docker Draft
 
 This image is for clone-to-test and cloud-portable experiments. It must not be built with or run
-against live `dev10`, the host `~/.grove`, or host live web ports `8765`/legacy `9131`. Mapping a
+against live `sample`, the host `~/.grove`, or host live web ports `8765`/legacy `9131`. Mapping a
 non-live host port to the container's internal `8765` is fine.
 
 Build:
@@ -16,9 +16,9 @@ Run a clone room by mounting isolated state and workspace directories:
 docker run --rm -it \
   -p 18765:8765 \
   -e GROVE_HOME=/data/grove-home \
-  -e GROVE_VIEWER_SESSION=dev10-resilience-restore \
+  -e GROVE_VIEWER_SESSION=sample-resilience-restore \
   -v "$HOME/.grove-restore:/data/grove-home" \
-  -v "$HOME/grove-projects/dev10-resilience-restore:/workspace" \
+  -v "$HOME/grove-projects/sample-resilience-restore:/workspace" \
   -v "$HOME/grove-snapshots:/snapshots:ro" \
   grove-cockpit:resilience
 ```

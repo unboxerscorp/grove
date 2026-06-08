@@ -186,9 +186,9 @@ def test_summarize_event_tags_project_when_provided() -> None:
     assert (
         summarize_event(
             _event("task.updated", {"status": "running", "previous_status": "ready"}),
-            project="dev10",
+            project="sample",
         )
-        == "dev10/t1 ready->running"
+        == "sample/t1 ready->running"
     )
     # no project -> unchanged
     assert summarize_event(_event("task.created", {"status": "ready"})) == "t1 created"
@@ -210,7 +210,7 @@ def test_watcher_run_once_tags_and_nudges_cross_project() -> None:
                         {"status": "ready", "previous_status": "staged"},
                         cursor=5,
                         task_id="t1",
-                        board_id="bid-dev10",
+                        board_id="bid-sample",
                     ),
                     _event(
                         "task.created",
@@ -222,7 +222,7 @@ def test_watcher_run_once_tags_and_nudges_cross_project() -> None:
                 ]
             ]
         )
-        labels = {"bid-dev10": "dev10", "bid-base": "base-web-admin"}
+        labels = {"bid-sample": "sample", "bid-base": "base-web-admin"}
         watcher = TaskWakeupWatcher(
             list_events_after=lambda cursor: store.list_events_after(cursor=cursor),
             latest_cursor=lambda: 0,
@@ -237,7 +237,7 @@ def test_watcher_run_once_tags_and_nudges_cross_project() -> None:
         clock["t"] = 6.0
         message = await watcher.run_once()
         assert message is not None
-        assert "dev10/t1" in message  # host project tagged
+        assert "sample/t1" in message  # host project tagged
         assert "base-web-admin/t9" in message  # NON-host project also surfaced
 
     asyncio.run(scenario())

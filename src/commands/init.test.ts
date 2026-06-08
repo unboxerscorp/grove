@@ -53,10 +53,10 @@ describe("cmdInit", () => {
     const { cmdInit, loadRegistry } = await initModules(groveHome);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    await cmdInit({ session: "dev10" });
+    await cmdInit({ session: "sample" });
 
     const config = readFileSync(path.join(root, "grove.yaml"), "utf8");
-    expect(config).toContain("session: dev10");
+    expect(config).toContain("session: sample");
     expect(config).toContain(`cwd: ${root}`);
     expect(config).toContain("nodes:");
     expect(config).not.toContain("delegation protocol");
@@ -69,7 +69,7 @@ describe("cmdInit", () => {
     expect(context).toContain("grove org --all --json");
     expect(context).not.toContain("delegation protocol");
     expect(context).not.toContain("board task");
-    const lead = loadRegistry("dev10")?.nodes.lead;
+    const lead = loadRegistry("sample")?.nodes.lead;
     expect(lead).toEqual(
       expect.objectContaining({
         cwd: root,

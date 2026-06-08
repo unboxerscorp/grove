@@ -4096,14 +4096,14 @@ def test_slack_main_wires_command_config_when_enabled(
     config_path = tmp_path / "slack.json"
     board_db_path = tmp_path / "board.db"
     grove_home = tmp_path / ".grove"
-    registry_dir = grove_home / "dev10"
+    registry_dir = grove_home / "sample"
     registry_dir.mkdir(parents=True)
     (registry_dir / "registry.json").write_text(
         json.dumps(
             {
                 "nodes": {
-                    "worker": {"name": "worker", "tmux_pane": "dev10:1.0"},
-                    "lead": {"name": "lead", "tmux_pane": "dev10:0.0"},
+                    "worker": {"name": "worker", "tmux_pane": "sample:1.0"},
+                    "lead": {"name": "lead", "tmux_pane": "sample:0.0"},
                     "hidden": {"name": "hidden"},
                 }
             }
@@ -4188,7 +4188,7 @@ def test_slack_main_wires_command_config_when_enabled(
                 "--grove-home",
                 str(grove_home),
                 "--session",
-                "dev10",
+                "sample",
             ]
         )
 
@@ -4513,13 +4513,13 @@ def test_node_direct_queue_routes_chat_to_node_unconditionally(tmp_path: Path) -
         store=store,
         slack_client=slack,
         chat_facade=chat,
-        human_gate=HumanGateConfig(board="dev10", channel="C123"),
+        human_gate=HumanGateConfig(board="sample", channel="C123"),
         chat_route=ChatRouteConfig(default_node="chat-master"),
         route_chat_to_node=True,
         bot_user_id="BOT",
     )
     store.enqueue_slack_chat_message(
-        board="dev10",
+        board="sample",
         team_id="T",
         channel_id="C123",
         thread_ts="th",
@@ -4544,10 +4544,10 @@ def test_node_chat_injects_thread_context_pack_and_persists(tmp_path: Path) -> N
         store=store,
         slack_client=slack,
         chat_facade=chat,
-        human_gate=HumanGateConfig(board="dev10", channel="C123"),
+        human_gate=HumanGateConfig(board="sample", channel="C123"),
         chat_route=ChatRouteConfig(default_node="chat-master"),
         command_config=SlackCommandConfig(
-            board="dev10", members={"U": SlackCommandMember("operator", "권성민", "operator")}
+            board="sample", members={"U": SlackCommandMember("operator", "권성민", "operator")}
         ),
         route_chat_to_node=True,
         bot_user_id="BOT",
@@ -4555,7 +4555,7 @@ def test_node_chat_injects_thread_context_pack_and_persists(tmp_path: Path) -> N
     conv = "slack:T:C123:th"
     secret = "xoxb-" + ("m" * 44)
     store.enqueue_slack_chat_message(
-        board="dev10",
+        board="sample",
         team_id="T",
         channel_id="C123",
         thread_ts="th",
@@ -4572,10 +4572,10 @@ def test_node_chat_injects_thread_context_pack_and_persists(tmp_path: Path) -> N
         {"ts": "2.0", "user": "U", "text": "<@BOT> 새 질문"},
     ]
     store.append_master_chat_message(
-        board="dev10", conversation_id=conv, role="user", text="이전 질문", request_id="r0"
+        board="sample", conversation_id=conv, role="user", text="이전 질문", request_id="r0"
     )
     store.append_master_chat_message(
-        board="dev10", conversation_id=conv, role="assistant", text="이전 답변", request_id="r0a"
+        board="sample", conversation_id=conv, role="assistant", text="이전 답변", request_id="r0a"
     )
     assert connector.poll_node_chat_queue() == 1
 
@@ -4589,7 +4589,7 @@ def test_node_chat_injects_thread_context_pack_and_persists(tmp_path: Path) -> N
     assert "Current message:" in sent and "새 질문" in sent
     assert "From: 권성민 (U, operator)" in sent
     assert secret not in sent  # [R] redaction
-    history = store.list_master_chat_messages(board="dev10", conversation_id=conv)
+    history = store.list_master_chat_messages(board="sample", conversation_id=conv)
     assert any(m.role == "user" and "새 질문" in m.text for m in history)
     assert any(m.role == "assistant" for m in history)
 
@@ -4605,7 +4605,7 @@ def test_node_chat_includes_image_attachment_local_path(
         store=store,
         slack_client=slack,
         chat_facade=chat,
-        human_gate=HumanGateConfig(board="dev10", channel="C123"),
+        human_gate=HumanGateConfig(board="sample", channel="C123"),
         chat_route=ChatRouteConfig(default_node="chat-master"),
         route_chat_to_node=True,
         bot_user_id="BOT",

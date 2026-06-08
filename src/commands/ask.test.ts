@@ -29,15 +29,15 @@ afterEach(() => {
 function harness(): { ctx: Context; nc: NodeCtx; writes: string[] } {
   const nc = {
     adapter: { label: "codex" },
-    addr: "dev10:1.%1",
+    addr: "sample:1.%1",
     node: { agent: "codex", children: [], cwd: "/repo", name: "maker" },
   } as unknown as NodeCtx;
   const ctx = {
     byName: new Map([["maker", nc]]),
-    config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "dev10" },
+    config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "sample" },
     configPath: "/repo/grove.yaml",
     nodes: [nc.node],
-    registry: { cwd: "/repo", nodes: {}, session: "dev10", updatedAt: "now" },
+    registry: { cwd: "/repo", nodes: {}, session: "sample", updatedAt: "now" },
   } as Context;
   const writes: string[] = [];
   vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -108,7 +108,7 @@ describe("cmdAsk", () => {
       callerNode: "grove ask CLI",
       contextMode: "compact",
       submissionContext: ctx,
-      submissionProject: "dev10",
+      submissionProject: "sample",
     });
     expect(writes).toEqual(["remote answer\n"]);
   });

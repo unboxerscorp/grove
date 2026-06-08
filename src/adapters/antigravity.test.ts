@@ -106,7 +106,7 @@ describe("antigravity config parsing", () => {
         assistant: { agent: "antigravity" },
         maker: {},
       },
-      session: "dev10",
+      session: "sample",
     });
 
     expect(config.defaults.agent).toBe("antigravity");

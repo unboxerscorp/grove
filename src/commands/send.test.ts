@@ -71,9 +71,9 @@ describe("cmdSend", () => {
     vi.mocked(eventLogSize).mockReturnValue(0);
   });
 
-  test("sends to a target project node while preserving caller context for dispatch", async () => {
+  test("sends to a target project node with the target project context", async () => {
     const callerCtx = {
-      config: { session: "dev10" },
+      config: { session: "sample" },
       registry: { nodes: {} },
     };
     const targetCtx = {
@@ -119,9 +119,9 @@ describe("cmdSend", () => {
     );
     expect(submitMessage).toHaveBeenCalledWith(targetNc, "hello", {
       callerNode: "grove send CLI",
-      context: callerCtx,
+      context: targetCtx,
       contextMode: "compact",
-      project: "dev10",
+      project: "dev11",
     });
   });
 
@@ -335,7 +335,7 @@ describe("cmdSend", () => {
             submittedAt: "before",
             transcript: "/tmp/grove-test/old.jsonl",
           },
-          tmux_pane: "dev10:1.0",
+          tmux_pane: "sample:1.0",
         },
       },
       session,
@@ -382,7 +382,7 @@ describe("cmdSend", () => {
           transcript: "/tmp/grove-test/current.jsonl",
         }),
       );
-      expect(reloaded?.nodes.worker?.tmux_pane).toBe("dev10:1.0");
+      expect(reloaded?.nodes.worker?.tmux_pane).toBe("sample:1.0");
     } finally {
       rmSync(sessionDir(session), { force: true, recursive: true });
     }

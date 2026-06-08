@@ -34,10 +34,10 @@ afterEach(() => {
 function ctx(): Context {
   return {
     byName: new Map(),
-    config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "dev10" },
+    config: { cwd: "/repo", defaults: { agent: "codex" }, nodes: {}, session: "sample" },
     configPath: "/repo/grove.yaml",
     nodes: [],
-    registry: { cwd: "/repo", nodes: {}, session: "dev10", updatedAt: "now" },
+    registry: { cwd: "/repo", nodes: {}, session: "sample", updatedAt: "now" },
   };
 }
 
@@ -105,7 +105,7 @@ describe("cmdRebind", () => {
           "viewer",
           {
             adapter: {} as never,
-            addr: "dev10:1.2",
+            addr: "sample:1.2",
             node: {
               agent: "codex",
               children: [],
@@ -131,10 +131,10 @@ describe("cmdRebind", () => {
           viewer: {
             agent: "codex",
             name: "viewer",
-            tmux_pane: "dev10:1.2",
+            tmux_pane: "sample:1.2",
           },
         },
-        session: "dev10",
+        session: "sample",
         updatedAt: "now",
       },
     };
@@ -142,12 +142,12 @@ describe("cmdRebind", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.mocked(loadContext).mockReturnValue(loaded);
     vi.mocked(planTranscriptRebinds).mockReturnValue({ skipped: [], updates: [] });
-    vi.mocked(paneTarget).mockResolvedValue("dev10:1.7");
+    vi.mocked(paneTarget).mockResolvedValue("sample:1.7");
 
     await cmdRebind({});
 
-    expect(paneTarget).toHaveBeenCalledWith("dev10:1.2");
-    expect(loaded.registry.nodes.viewer?.tmux_pane).toBe("dev10:1.7");
+    expect(paneTarget).toHaveBeenCalledWith("sample:1.2");
+    expect(loaded.registry.nodes.viewer?.tmux_pane).toBe("sample:1.7");
     expect(saveRegistry).toHaveBeenCalledWith(loaded.registry);
   });
 });

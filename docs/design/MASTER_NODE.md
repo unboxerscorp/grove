@@ -45,11 +45,11 @@ Current live topology uses a single operational tmux session:
 
 ```text
 root -> grove-master
-grove-master -> lead@dev10
-lead@dev10 -> web
-lead@dev10 -> slack
-lead@dev10 -> advisor
-lead@dev10 -> jester
+grove-master -> lead@sample
+lead@sample -> web
+lead@sample -> slack
+lead@sample -> advisor
+lead@sample -> jester
 ```
 
 The registry may still contain legacy or service nodes whose raw parent is

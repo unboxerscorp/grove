@@ -51,7 +51,7 @@ grove repair --all
   (default OFF, `GROVE_TASKMASTER_WAKEUP=1`) wakes it on meaningful board changes for an
   immediate sweep, with the 5-minute poll as a fallback.
 - **Node addressing** - v1.32 introduces canonical `node@project` addressing (for example
-  `lead@dev10`, with root nodes bare like `grove-master`) that matches how the org view
+  `lead@sample`, with root nodes bare like `grove-master`) that matches how the org view
   displays nodes. The legacy `project:node` form and bare names still parse, and
   `--session` becomes the explicit selector with `--project` kept as a deprecated alias,
   so registry/session selection is no longer overloaded with display.
@@ -85,11 +85,11 @@ grove repair --all
   explicit workspace/registry, and one project-scoped human-facing list store. The old
   board selector is gone; the `"default"` board alias resolves to the active project's
   list store. New projects keep an explicit workspace/cwd and a live project lead node;
-  panes may share an operational tmux host session such as `dev10`. New human-facing
+  panes may share an operational tmux host session such as `sample`. New human-facing
   item creation uses a required assignee dropdown that defaults from the current org
-  metadata, such as the project lead or GROVE MASTER in the single dev10 room.
+  metadata, such as the project lead or GROVE MASTER in the single sample room.
   v1.30 adds dashboard project creation, GitHub import through `new-project --clone`,
-  and display names such as showing project `dev10` as `grove-dev`.
+  and display names such as showing project `sample` as `Sample Project`.
 - **Human list query and saved views** - v1.26 adds status/assignee/label filters,
   full-text search over item title/body, pagination, and live list results. Operators
   can save named views; results are project-scoped, role-aware, and redacted.
@@ -123,7 +123,7 @@ grove repair --all
   silently disappearing. v1.29 adds a tmux/registry reconciler so orphan panes are
   adopted and dead panes are marked rather than hidden.
 - **Lead as a real node** - the project lead is a project-scoped real node, such as
-  `dev10:0.0`, not a synthetic placeholder. Its terminal can be viewed and, when
+  `sample:0.0`, not a synthetic placeholder. Its terminal can be viewed and, when
   node input is enabled for the operator, addressed like any other live pane.
 - **List card clarity** - list cards show item titles as primary text with long
   titles/summaries wrapping instead of widening columns.
@@ -361,7 +361,7 @@ grove is built for local-first operation. The sharp edges are deliberately opt-i
   opt-in.
 - The dashboard follows a project-scoped model: one project identity, one explicit
   workspace/registry, and one human-facing list store. The tmux host session is
-  placement metadata and may be shared, for example the single live `dev10` session.
+  placement metadata and may be shared, for example the single live `sample` session.
   The `"default"` alias resolves to the active project list, not a global board picker.
   New item forms require choosing an assignee from project candidates; unknown
   assignees are omitted rather than accepted as free text.

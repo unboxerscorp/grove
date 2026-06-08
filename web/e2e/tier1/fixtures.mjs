@@ -5,7 +5,7 @@
 // a browser drives the actual UI against a fully isolated backend. Seeds a board
 // (tasks across columns) + a registry (input-capable nodes) per the consensus
 // "temp port + throwaway board db + temp GROVE_HOME + fresh seed". Nothing here
-// touches ~/.grove, dev10, or any live agent; any disposable tmux session is
+// touches ~/.grove, sample, or any live agent; any disposable tmux session is
 // unique by default and removed during teardown.
 //
 // Roles: operator runs on the loopback local-token (operator-equivalent). viewer

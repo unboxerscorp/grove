@@ -11,12 +11,12 @@ def test_api_oracle_exhaustive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     store = SQLiteBoardStore(tmp_path / "board.db")
     write_registry(
         tmp_path,
-        session="dev10",
+        session="sample",
         nodes={
             "lead": {
                 "agent": "codex",
                 "name": "lead",
-                "tmux_pane": "dev10:1.0",
+                "tmux_pane": "sample:1.0",
             },
         },
     )
@@ -47,21 +47,21 @@ def test_api_oracle_exhaustive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     )
 
     # Create task for references
-    task_res = op_client.post("/api/boards/dev10/tasks", json={"title": "ask"}, headers=op_headers)
+    task_res = op_client.post("/api/boards/sample/tasks", json={"title": "ask"}, headers=op_headers)
     task_id = task_res.json()["id"]
 
     # Board CRUD gaps check (Views)
     view_res = op_client.post(
-        "/api/boards/dev10/views", json={"name": "my-view", "filters": {}}, headers=op_headers
+        "/api/boards/sample/views", json={"name": "my-view", "filters": {}}, headers=op_headers
     )
     assert view_res.status_code == 200, "Operator can create view"
     assert (
         viewer_client.post(
-            "/api/boards/dev10/views", json={"name": "v-view", "filters": {}}, headers=v_headers
+            "/api/boards/sample/views", json={"name": "v-view", "filters": {}}, headers=v_headers
         ).status_code
         == 403
     ), "Viewer cannot create view"
-    assert viewer_client.get("/api/boards/dev10/views", headers=v_headers).status_code == 200, (
+    assert viewer_client.get("/api/boards/sample/views", headers=v_headers).status_code == 200, (
         "Viewer can list views"
     )
 
