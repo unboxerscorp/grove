@@ -62,6 +62,7 @@ SLACK_NODE_CHAT_WAIT_TEXT = "잠시만 기다리세요!"
 SLACK_NODE_CHAT_WAIT_UPDATE_SECONDS = 3.0
 SLACK_NODE_CHAT_RUNNING_STALE_SECONDS = 300
 SLACK_NODE_CHAT_QUEUE_LIMIT = 5
+SLACK_NODE_CHAT_RESPONSE_ATTEMPTS = 3
 SLACK_NODE_CHAT_FILE_CONTEXT_LIMIT = 5
 SLACK_NODE_CHAT_FILE_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
 SLACK_SOCKET_DISCONNECTED_RESTART_SECONDS = 60.0
@@ -83,9 +84,14 @@ NODE_CHAT_RESPONSE_BLOCK_RE = re.compile(
     r"\[RESPONSE\](?P<text>.*?)\[/RESPONSE\]",
     re.I | re.S,
 )
-NODE_CHAT_FINAL_LABEL_RE = re.compile(
-    r"(?:^|\n)(?:final answer|final|response|답변)\s*[:：]\s*(?P<text>.+)\Z",
-    re.I | re.S,
+NODE_CHAT_RESPONSE_RETRY_TEXT = (
+    "[GROVE CHAT TRANSPORT FEEDBACK]\n"
+    "방금 출력은 [RESPONSE]...[/RESPONSE] 블록이 없어 Slack 전송이 차단됐습니다.\n"
+    "새 요청이 아닙니다. 직전 답변을 사용자에게 보일 최종 문장만 담아 다시 출력하세요.\n"
+    "[RESPONSE]\n"
+    "사용자에게 보낼 답변\n"
+    "[/RESPONSE]\n"
+    "내부 메모, 분석, 컨텍스트 요약, 원문 프롬프트는 쓰지 마세요."
 )
 COMMAND_CONFIRM_TTL_SECONDS = 300
 SlackCommandRole = Literal["admin", "operator", "viewer"]
@@ -108,21 +114,18 @@ def _node_chat_wait_text(elapsed_seconds: int) -> str:
     return f"{SLACK_NODE_CHAT_WAIT_TEXT}\n답변 생성 중... {minutes}분 {seconds:02d}초 경과"
 
 
-def _node_chat_visible_response_text(raw_text: str) -> str:
+def _node_chat_visible_response_text(raw_text: str) -> str | None:
     text = str(raw_text).strip()
     if not text:
-        return ASSISTANT_TRANSPORT_FALLBACK_TEXT
+        return None
     block = NODE_CHAT_RESPONSE_BLOCK_RE.search(text)
-    if block is not None:
-        text = block.group("text").strip()
-    else:
-        labeled = NODE_CHAT_FINAL_LABEL_RE.search(text)
-        if labeled is not None:
-            text = labeled.group("text").strip()
+    if block is None:
+        return None
+    text = block.group("text").strip()
     text = _safe_slack_message_text(text).strip()
     text = _drop_node_chat_internal_preamble(text)
     if not text or _node_chat_contains_internal_text(text):
-        return ASSISTANT_TRANSPORT_FALLBACK_TEXT
+        return None
     return text
 
 
@@ -653,23 +656,30 @@ class GroveServeChatFacade:
 
     def send(self, *, session_id: str, node: str, text: str) -> str:
         _ = session_id
-        proc = subprocess.run(
-            [
-                self.grove_binary,
-                "ask",
-                node,
-                "--timeout",
-                f"{int(GROVE_CHAT_TIMEOUT_SECONDS)}s",
-                text,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=GROVE_CHAT_TIMEOUT_SECONDS,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or f"grove ask exited {proc.returncode}")
-        return _node_chat_visible_response_text(proc.stdout)
+        prompt = text
+        for attempt in range(SLACK_NODE_CHAT_RESPONSE_ATTEMPTS):
+            proc = subprocess.run(
+                [
+                    self.grove_binary,
+                    "ask",
+                    node,
+                    "--timeout",
+                    f"{int(GROVE_CHAT_TIMEOUT_SECONDS)}s",
+                    prompt,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=GROVE_CHAT_TIMEOUT_SECONDS,
+                check=False,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(proc.stderr.strip() or f"grove ask exited {proc.returncode}")
+            visible = _node_chat_visible_response_text(proc.stdout)
+            if visible is not None:
+                return visible
+            if attempt < SLACK_NODE_CHAT_RESPONSE_ATTEMPTS - 1:
+                prompt = NODE_CHAT_RESPONSE_RETRY_TEXT
+        return ASSISTANT_TRANSPORT_FALLBACK_TEXT
 
 
 def _default_grove_binary() -> str:

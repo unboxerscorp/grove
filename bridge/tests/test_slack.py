@@ -26,6 +26,7 @@ from grove_bridge.master import (
 )
 from grove_bridge.slack import (
     GROVE_CHAT_TIMEOUT_SECONDS,
+    NODE_CHAT_RESPONSE_RETRY_TEXT,
     SLACK_NODE_CHAT_RUNNING_STALE_SECONDS,
     ChatRouteConfig,
     FakeStatusProbe,
@@ -4212,7 +4213,12 @@ def test_grove_chat_facade_uses_timeout_and_literal_argv(monkeypatch: pytest.Mon
                 "check": check,
             }
         )
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="reply\n", stderr="")
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="[RESPONSE]\nreply\n[/RESPONSE]\n",
+            stderr="",
+        )
 
     monkeypatch.setattr("grove_bridge.slack.subprocess.run", fake_run)
 
@@ -4254,10 +4260,75 @@ def test_node_chat_visible_response_extracts_response_block() -> None:
 def test_node_chat_visible_response_fails_closed_on_internal_text() -> None:
     raw = "A live operator turn in the grove-dev thread...\nConversation so far: secret context"
 
+    assert _node_chat_visible_response_text(raw) is None
+
+
+def test_grove_chat_facade_retries_response_contract_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        _ = (capture_output, text, timeout, check)
+        calls.append(args)
+        stdout = "raw internal text"
+        if len(calls) == 3:
+            stdout = "[RESPONSE]\n복구 답변\n[/RESPONSE]"
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("grove_bridge.slack.subprocess.run", fake_run)
+
     assert (
-        _node_chat_visible_response_text(raw)
+        GroveServeChatFacade(grove_binary="/repo/dist/cli.js").send(
+            session_id="s1",
+            node="chat-master",
+            text="original prompt",
+        )
+        == "복구 답변"
+    )
+    assert len(calls) == 3
+    assert calls[0][-1] == "original prompt"
+    assert calls[1][-1] == NODE_CHAT_RESPONSE_RETRY_TEXT
+    assert calls[2][-1] == NODE_CHAT_RESPONSE_RETRY_TEXT
+
+
+def test_grove_chat_facade_reports_error_after_three_contract_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        _ = (capture_output, text, timeout, check)
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="raw internal text", stderr=""
+        )
+
+    monkeypatch.setattr("grove_bridge.slack.subprocess.run", fake_run)
+
+    assert (
+        GroveServeChatFacade(grove_binary="/repo/dist/cli.js").send(
+            session_id="s1",
+            node="chat-master",
+            text="original prompt",
+        )
         == "지금은 답변을 만들 수 없어요. 잠시 뒤 다시 시도해 주세요."
     )
+    assert len(calls) == 3
 
 
 def blocked_human_task(store: SQLiteBoardStore, *, board: str) -> Task:
