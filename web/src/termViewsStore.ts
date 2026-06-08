@@ -109,7 +109,13 @@ function updateTarget(x: number, y: number): void {
   let bestD = Infinity;
   for (const z of zones) {
     const r = z.getBoundingClientRect();
-    const d = Math.hypot((r.left + r.right) / 2 - x, (r.top + r.bottom) / 2 - y);
+    // Distance to the nearest point on the zone's rect (0 if inside) — NOT to its
+    // centre. A column slot spans the full row height, so a pointer anywhere in
+    // the gap between cells (even near the top/bottom) snaps to it instead of a
+    // full-width row slot whose centre happens to be closer in one axis.
+    const dx = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
+    const dy = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+    const d = Math.hypot(dx, dy);
     if (d < bestD) {
       bestD = d;
       best = z;
