@@ -5825,7 +5825,9 @@ button {
 
 /* node→grid drag-and-drop (NodeList = drag source). Affordance/dim are toggled
    only while the terminal grid is mounted (see termViewsStore). */
-.dr-node.is-draggable { cursor: grab; }
+/* pan-y keeps vertical list scrolling on touch while letting a horizontal
+   drag (rail → grid) start; a tap still selects (drag begins past a threshold). */
+.dr-node.is-draggable { cursor: grab; touch-action: pan-y; }
 .dr-node.is-draggable:active { cursor: grabbing; }
 .dr-node.is-dragging { opacity: 0.4; }
 .dr-node.is-inview { opacity: 0.5; cursor: default; }
@@ -5942,11 +5944,14 @@ button {
     background 0.13s ease;
 }
 .dr-termgrid__empty.is-over { border-color: var(--teal); background: rgba(84, 199, 184, 0.06); }
-/* custom drag ghost (rendered off-screen, used only as the drag image) */
+/* floating drag ghost — follows the pointer (controller sets transform). */
 .dr-drag-ghost {
   position: fixed;
-  top: -1000px;
-  left: -1000px;
+  top: 0;
+  left: 0;
+  transform: translate(-9999px, -9999px);
+  pointer-events: none;
+  z-index: 1000;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--ink);
@@ -5954,6 +5959,7 @@ button {
   border-radius: 7px;
   padding: 5px 10px;
   box-shadow: 0 10px 26px -10px rgba(0, 0, 0, 0.8);
+  will-change: transform;
 }
 /* add buttons: per-row right "+" = tall (add a column to that row), bottom "+" =
    wide (add a new row). The per-row button stretches to its row's height. */

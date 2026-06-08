@@ -149,12 +149,7 @@ export function TerminalGrid({
     return boot.store;
   });
   const [picking, setPicking] = useState<Picking>(null);
-  // Active drop-zone key (the slot the pointer is over during a drag).
-  const [overKey, setOverKey] = useState<string | null>(null);
   const dnd = useTermDnd();
-  useEffect(() => {
-    if (dnd.draggingNode === null) setOverKey(null); // drag ended -> clear highlight
-  }, [dnd.draggingNode]);
 
   // Persist on every change (per browser; survives remount / revisit / expand-back).
   useEffect(() => {
@@ -248,9 +243,7 @@ export function TerminalGrid({
       return { views, activeId };
     });
 
-  // --- node→grid drop (D3) -------------------------------------------------
-  const getDropNode = (e: React.DragEvent) =>
-    e.dataTransfer.getData("application/x-grove-node") || e.dataTransfer.getData("text/plain");
+  // --- node→grid drop (Pointer Events) -------------------------------------
   // Insert a cell at `index` within a row (no-dup: a node already in the active
   // view is rejected — the source also blocks dragging in-view nodes).
   const insertCellAt = (rowId: string, index: number, node: string) =>
@@ -273,25 +266,28 @@ export function TerminalGrid({
       return [...rs.slice(0, index), makeRow(node), ...rs.slice(index)];
     });
   const dragging = dnd.draggingNode !== null;
-  // A thin drop strip; the hovered one shows a teal insert line + glow (CSS).
-  const dropSlot = (key: string, orient: "col" | "row", onNode: (n: string) => void) => (
-    <div
-      key={key}
-      className={cx("dr-termgrid__drop", `dr-termgrid__drop--${orient}`, overKey === key && "is-over")}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      }}
-      onDragEnter={() => setOverKey(key)}
-      onDragLeave={() => setOverKey((k) => (k === key ? null : k))}
-      onDrop={(e) => {
-        e.preventDefault();
-        setOverKey(null);
-        const node = getDropNode(e);
-        if (node) onNode(node);
-      }}
-    />
+  // Each drop zone is a thin strip tagged with a data-dropkey. The pointer drag
+  // controller (termViewsStore) hit-tests these, toggles `.is-over` imperatively
+  // (teal insert line + glow — pure DOM, no React re-render), and on drop calls
+  // the commit handler below with the zone's key.
+  const dropSlot = (key: string, orient: "col" | "row") => (
+    <div key={key} data-dropkey={key} className={cx("dr-termgrid__drop", `dr-termgrid__drop--${orient}`)} />
   );
+  // Commit handler: parse a data-dropkey ("empty" | "row:i" | "col:rowId:i") and
+  // insert. Held in a ref so the controller registration stays stable while the
+  // closures still see current state.
+  const commitRef = useRef<(dropKey: string, node: string) => void>(() => {});
+  commitRef.current = (dropKey, node) => {
+    if (dropKey === "empty") return insertRowAt(0, node);
+    const parts = dropKey.split(":");
+    if (parts[0] === "row" && parts[1] !== undefined) insertRowAt(Number(parts[1]), node);
+    else if (parts[0] === "col" && parts[1] !== undefined && parts[2] !== undefined)
+      insertCellAt(parts[1], Number(parts[2]), node);
+  };
+  useEffect(() => {
+    termDnd.registerCommit((k, n) => commitRef.current(k, n));
+    return () => termDnd.registerCommit(null);
+  }, []);
   const renderCell = (row: GridRow, cell: GridCell) => {
     const node = nodes.find((n) => n.name === cell.node) ?? null;
     return (
@@ -368,33 +364,7 @@ export function TerminalGrid({
       </div>
 
       {total === 0 ? (
-        <div
-          className={cx(
-            "dr-termgrid__empty",
-            dragging && "is-droptarget",
-            overKey === "empty" && "is-over",
-          )}
-          onDragOver={
-            dragging
-              ? (e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "copy";
-                }
-              : undefined
-          }
-          onDragEnter={dragging ? () => setOverKey("empty") : undefined}
-          onDragLeave={dragging ? () => setOverKey((k) => (k === "empty" ? null : k)) : undefined}
-          onDrop={
-            dragging
-              ? (e) => {
-                  e.preventDefault();
-                  setOverKey(null);
-                  const node = getDropNode(e);
-                  if (node) insertRowAt(0, node);
-                }
-              : undefined
-          }
-        >
+        <div className={cx("dr-termgrid__empty", dragging && "is-droptarget")} data-dropkey="empty">
           <p className="dr-termgrid__empty-msg">{t("termgrid.empty")}</p>
           <button
             type="button"
@@ -407,19 +377,15 @@ export function TerminalGrid({
         </div>
       ) : (
         <div className="dr-termgrid__rows">
-          {dragging && canAddRow && dropSlot("r:0", "row", (n) => insertRowAt(0, n))}
+          {dragging && canAddRow && dropSlot("row:0", "row")}
           {rows.map((row, ri) => (
             <Fragment key={row.id}>
               <div className="dr-termgrid__row">
-                {dragging &&
-                  canAddCol(row) &&
-                  dropSlot(`c:${row.id}:0`, "col", (n) => insertCellAt(row.id, 0, n))}
+                {dragging && canAddCol(row) && dropSlot(`col:${row.id}:0`, "col")}
                 {row.cells.map((cell, ci) => (
                   <Fragment key={cell.id}>
                     {renderCell(row, cell)}
-                    {dragging &&
-                      canAddCol(row) &&
-                      dropSlot(`c:${row.id}:${ci + 1}`, "col", (n) => insertCellAt(row.id, ci + 1, n))}
+                    {dragging && canAddCol(row) && dropSlot(`col:${row.id}:${ci + 1}`, "col")}
                   </Fragment>
                 ))}
                 <button
@@ -433,7 +399,7 @@ export function TerminalGrid({
                   +
                 </button>
               </div>
-              {dragging && canAddRow && dropSlot(`r:${ri + 1}`, "row", (n) => insertRowAt(ri + 1, n))}
+              {dragging && canAddRow && dropSlot(`row:${ri + 1}`, "row")}
             </Fragment>
           ))}
           <button

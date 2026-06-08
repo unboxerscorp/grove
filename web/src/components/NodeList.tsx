@@ -91,7 +91,6 @@ export function NodeList(props: {
               data-node={n.name}
               data-depth={depth}
               data-section={section}
-              draggable={canDrag}
               className={cx(
                 "dr-node",
                 n.tmux_pane === selectedPane && "is-selected",
@@ -112,24 +111,11 @@ export function NodeList(props: {
               disabled={locked}
               title={locked ? t("nodes.notViewable") : canDrag ? t("nodes.dragHint") : undefined}
               onClick={() => onSelect(n.tmux_pane)}
-              onDragStart={
+              onPointerDown={
                 canDrag
-                  ? (e) => {
-                      e.dataTransfer.setData("application/x-grove-node", n.name);
-                      e.dataTransfer.setData("text/plain", n.name);
-                      e.dataTransfer.effectAllowed = "copy";
-                      // Custom drag image: a small node-name chip (off-screen el).
-                      const ghost = document.createElement("div");
-                      ghost.className = "dr-drag-ghost";
-                      ghost.textContent = n.name;
-                      document.body.appendChild(ghost);
-                      e.dataTransfer.setDragImage(ghost, 14, 14);
-                      window.setTimeout(() => ghost.remove(), 0);
-                      termDnd.setDragging(n.name);
-                    }
+                  ? (e) => termDnd.startPointerDrag(n.name, e.clientX, e.clientY, e.pointerId)
                   : undefined
               }
-              onDragEnd={canDrag ? () => termDnd.setDragging(null) : undefined}
             >
               <span className={cx("dr-node__dot", statusClass(n.status))} />
               <span className="dr-node__body">
