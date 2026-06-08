@@ -268,7 +268,7 @@ def test_flag_on_runtime_task_proposal_uses_confirm_without_intake_flag(
     assert slack.posts == [("C1", "이 요청을 Slack task로 등록할까요?")]
     blocks = slack.post_kwargs[0]["blocks"]
     assert isinstance(blocks, tuple)
-    confirmation_id = blocks[1]["elements"][0]["value"]  # type: ignore[index]
+    confirmation_id = blocks[1]["elements"][0]["value"]
     handled = conn.handle_interaction(
         {
             "type": "block_actions",
@@ -288,7 +288,9 @@ def test_flag_on_runtime_task_proposal_uses_confirm_without_intake_flag(
     assert handled is True
     tasks = store.list_tasks(board="dev10")
     assert [task.title for task in tasks] == ["Slack task"]
-    assert tasks[0].metadata["chat_runtime"]["source"] == "slack"
+    runtime_meta = tasks[0].metadata["chat_runtime"]
+    assert isinstance(runtime_meta, dict)
+    assert runtime_meta["source"] == "slack"
     assert len(slack.posts) == 2
 
 
