@@ -5987,3 +5987,14 @@ button {
 .dr-termfull__back:hover { color: var(--text); border-color: var(--teal); }
 /* compact TerminalPane fills its grid cell with a slimmer header */
 .dr-term--compact .dr-term__bar { padding: 4px 8px; }
+
+/* Touch-capable devices: grow the small terminal-grid controls to a ~40px+ touch
+   target. Desktop (fine pointer only) keeps the compact sizes above. Placed last
+   in the terminal block so these win over the base sizes regardless of order. */
+@media (any-pointer: coarse) {
+  .dr-termgrid__addcol { flex-basis: 40px; }
+  .dr-termgrid__addrow { flex-basis: 40px; }
+  .dr-termgrid__icon { padding: 8px 10px; }
+  .dr-termgrid__modal-item { padding: 12px 12px; }
+  .dr-termgrid__modal-foot .dr-btn { padding: 11px 18px; }
+}
