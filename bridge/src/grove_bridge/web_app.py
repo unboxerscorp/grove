@@ -8143,11 +8143,61 @@ def _contains_grove_master(nodes: Sequence[Mapping[str, object]]) -> bool:
     return any(node.get("name") == GROVE_MASTER_NODE_NAME for node in nodes)
 
 
+_ORG_LEVEL_GROUPS = frozenset({"master", "services"})
+
+
+def _is_org_level_node(node: Mapping[str, object]) -> bool:
+    """Control-plane node (master/services groups + advisor) — sits ABOVE every
+    project like grove-master, so it renders org-level (project="") regardless of
+    which registry hosts it. Mirrors context_pack._is_infra_node / org.ts. A
+    project's `lead` is never org-level (it is the per-project lead under
+    grove-master), even if mis-grouped under services."""
+    if node.get("name") == LEAD_NODE_NAME:
+        return False
+    group = str(node.get("group") or "")
+    return group in _ORG_LEVEL_GROUPS or node.get("name") == "advisor"
+
+
+def _org_graph_master_plane_records(config: WebAppConfig) -> list[OrgGraphRecord]:
+    """grove-master's org-level siblings (chat-master/task-master/advisor/web/slack)
+    collected once across visible registries — rendered project="" under
+    grove-master so they appear in EVERY project view, never scoped to the host
+    session (the dev10-as-project leak root)."""
+    seen: dict[str, NodeRecord] = {}
+    for project_name in _visible_project_names_for_config(config):
+        project_config = replace(config, registry_session=project_name)
+        try:
+            project_nodes = _registry_node_records(project_config)
+        except HTTPException:
+            continue
+        for node in project_nodes:
+            name = str(node["name"])
+            if name == GROVE_MASTER_NODE_NAME or name in seen:
+                continue
+            if _is_org_level_node(node):
+                seen[name] = node
+    return [
+        _org_graph_record(
+            node,
+            name=name,
+            parent=GROVE_MASTER_NODE_NAME,
+            project="",
+            registry_name=name,
+            click_action=None,
+        )
+        for name, node in seen.items()
+    ]
+
+
 def _org_graph_records(config: WebAppConfig) -> list[OrgGraphRecord]:
     project_names = _visible_project_names_for_config(config)
     if config.registry_session not in project_names:
         project_names.append(config.registry_session)
     records: list[OrgGraphRecord] = [_org_graph_master_record(config)]
+    records.extend(_org_graph_master_plane_records(config))
+    # grove-master + its org-level siblings are emitted above; skip them in the
+    # per-project pass so they are never re-rendered as a project's own nodes.
+    org_level_names = {str(record["name"]) for record in records}
     for project_name in sorted(set(project_names)):
         project_config = replace(config, registry_session=project_name)
         try:
@@ -8156,7 +8206,7 @@ def _org_graph_records(config: WebAppConfig) -> list[OrgGraphRecord]:
             continue
         raw_names = {node["name"] for node in project_nodes}
         for node in project_nodes:
-            if node["name"] == GROVE_MASTER_NODE_NAME:
+            if str(node["name"]) in org_level_names:
                 continue
             if project_name != config.registry_session and node["name"] != LEAD_NODE_NAME:
                 continue

@@ -6877,6 +6877,65 @@ def test_org_payload_includes_master_and_human_routing_support(
     }
 
 
+def test_org_payload_renders_master_plane_org_level_from_another_project_view(
+    tmp_path: Path,
+) -> None:
+    # The host (dev10) registry carries the control plane (master/services + advisor).
+    write_registry(
+        tmp_path,
+        "dev10",
+        {
+            "lead": {
+                "name": "lead",
+                "agent": "claude",
+                "role": "orchestrator",
+                "tmux_pane": "dev10:1.0",
+            },
+            "chat-master": {
+                "name": "chat-master",
+                "agent": "claude",
+                "group": "master",
+                "parent": "grove-master",
+                "tmux_pane": "dev10:0.1",
+            },
+            "task-master": {
+                "name": "task-master",
+                "agent": "claude",
+                "group": "master",
+                "parent": "grove-master",
+                "tmux_pane": "dev10:0.2",
+            },
+            "advisor": {
+                "name": "advisor",
+                "agent": "claude",
+                "parent": "grove-master",
+                "tmux_pane": "dev10:0.3",
+            },
+        },
+        workspace="/repo/dev10",
+    )
+    write_registry(
+        tmp_path,
+        "base-math",
+        {"lead": {"name": "lead", "agent": "claude", "role": "orchestrator"}},
+        workspace="/repo/base-math",
+    )
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+
+    # Viewing base-math, the control plane must still appear org-level (project="",
+    # under grove-master) — not dropped as "dev10 non-lead" nodes.
+    response = client.get(
+        "/api/org", headers=auth_headers(client) | {"X-Grove-Project": "base-math"}
+    )
+
+    assert response.status_code == 200
+    nodes = {node["name"]: node for node in response.json()["nodes"]}
+    for name in ("chat-master", "task-master", "advisor"):
+        assert name in nodes, f"{name} missing from base-math org view"
+        assert nodes[name]["project"] == "", f"{name} should be org-level (project='')"
+        assert nodes[name]["parent"] == "grove-master"
+
+
 def test_web_app_does_not_synthesize_legacy_project_master_node() -> None:
     source = Path(web_app.__file__).read_text(encoding="utf-8")
 
