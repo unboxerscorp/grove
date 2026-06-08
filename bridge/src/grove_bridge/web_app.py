@@ -9039,7 +9039,6 @@ def _build_task_wakeup_watcher(app: FastAPI) -> TaskWakeupWatcher:
     config = cast(WebAppConfig, app.state.config)
     store = cast(SQLiteBoardStore, app.state.store)
     project = config.registry_session
-    board = project
     target = os.environ.get("GROVE_TASKMASTER_NODE", "task-master")
     grove_bin = _grove_binary()
 
@@ -9055,11 +9054,14 @@ def _build_task_wakeup_watcher(app: FastAPI) -> TaskWakeupWatcher:
         )
 
     return TaskWakeupWatcher(
-        list_events_after=lambda cursor: store.list_events_after(cursor=cursor, board=board),
-        latest_cursor=lambda: store.latest_event_cursor(board=board),
+        # board=None -> watch EVERY project board (cross-project), not just the host.
+        list_events_after=lambda cursor: store.list_events_after(cursor=cursor),
+        latest_cursor=store.latest_event_cursor,
         send=send,
         now=time.monotonic,
         sleep=asyncio.sleep,
+        board_label=store.board_slug_for_id,
+        sweep_interval_seconds=_env_float("GROVE_TASKMASTER_SWEEP_SECONDS", 300.0),
         coalescer=WakeupCoalescer(
             debounce_seconds=_env_float("GROVE_TASKMASTER_DEBOUNCE_SECONDS", 5.0),
             min_interval_seconds=_env_float("GROVE_TASKMASTER_MIN_INTERVAL_SECONDS", 30.0),

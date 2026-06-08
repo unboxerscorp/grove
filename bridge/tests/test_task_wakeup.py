@@ -12,12 +12,17 @@ from grove_bridge.task_wakeup import (
 
 
 def _event(
-    kind: str, payload: dict[str, object], *, cursor: int = 1, task_id: str = "t1"
+    kind: str,
+    payload: dict[str, object],
+    *,
+    cursor: int = 1,
+    task_id: str = "t1",
+    board_id: str = "b",
 ) -> BoardEvent:
     return BoardEvent(
         cursor=cursor,
         id=f"e{cursor}",
-        board_id="b",
+        board_id=board_id,
         task_id=task_id,
         run_id=None,
         kind=kind,
@@ -169,5 +174,135 @@ def test_watcher_run_once_notes_meaningful_events_and_sends_when_due() -> None:
         assert sent == [message]
         assert "ready->running" in message
         assert watcher.cursor == 8  # cursor advanced past every scanned event
+
+    asyncio.run(scenario())
+
+
+def test_summarize_event_tags_project_when_provided() -> None:
+    assert (
+        summarize_event(_event("task.created", {"status": "ready"}), project="base-web-admin")
+        == "base-web-admin/t1 created"
+    )
+    assert (
+        summarize_event(
+            _event("task.updated", {"status": "running", "previous_status": "ready"}),
+            project="dev10",
+        )
+        == "dev10/t1 ready->running"
+    )
+    # no project -> unchanged
+    assert summarize_event(_event("task.created", {"status": "ready"})) == "t1 created"
+
+
+def test_watcher_run_once_tags_and_nudges_cross_project() -> None:
+    async def scenario() -> None:
+        sent: list[str] = []
+        clock = {"t": 0.0}
+
+        async def fake_send(message: str) -> None:
+            sent.append(message)
+
+        store = _FakeStore(
+            [
+                [
+                    _event(
+                        "task.updated",
+                        {"status": "ready", "previous_status": "staged"},
+                        cursor=5,
+                        task_id="t1",
+                        board_id="bid-dev10",
+                    ),
+                    _event(
+                        "task.created",
+                        {"status": "ready"},
+                        cursor=6,
+                        task_id="t9",
+                        board_id="bid-base",
+                    ),
+                ]
+            ]
+        )
+        labels = {"bid-dev10": "dev10", "bid-base": "base-web-admin"}
+        watcher = TaskWakeupWatcher(
+            list_events_after=lambda cursor: store.list_events_after(cursor=cursor),
+            latest_cursor=lambda: 0,
+            send=fake_send,
+            now=lambda: clock["t"],
+            board_label=lambda board_id: labels.get(board_id, board_id),
+            coalescer=WakeupCoalescer(debounce_seconds=5.0, min_interval_seconds=30.0),
+        )
+
+        clock["t"] = 0.0
+        assert await watcher.run_once() is None  # debounce window
+        clock["t"] = 6.0
+        message = await watcher.run_once()
+        assert message is not None
+        assert "dev10/t1" in message  # host project tagged
+        assert "base-web-admin/t9" in message  # NON-host project also surfaced
+
+    asyncio.run(scenario())
+
+
+def test_watcher_sends_periodic_backstop_when_idle() -> None:
+    async def scenario() -> None:
+        sent: list[str] = []
+        clock = {"t": 0.0}
+
+        async def fake_send(message: str) -> None:
+            sent.append(message)
+
+        store = _FakeStore([])  # never any events
+        watcher = TaskWakeupWatcher(
+            list_events_after=lambda cursor: store.list_events_after(cursor=cursor),
+            latest_cursor=lambda: 0,
+            send=fake_send,
+            now=lambda: clock["t"],
+            sweep_interval_seconds=300.0,
+            coalescer=WakeupCoalescer(debounce_seconds=5.0, min_interval_seconds=30.0),
+        )
+
+        clock["t"] = 0.0
+        assert await watcher.run_once() is None  # baseline set, no events
+        clock["t"] = 100.0
+        assert await watcher.run_once() is None  # < interval -> no backstop
+        clock["t"] = 301.0
+        message = await watcher.run_once()  # idle past interval -> periodic sweep
+        assert message is not None
+        assert "sweep" in message.lower()
+        assert sent == [message]
+
+    asyncio.run(scenario())
+
+
+def test_event_nudge_resets_backstop_timer() -> None:
+    async def scenario() -> None:
+        sent: list[str] = []
+        clock = {"t": 0.0}
+
+        async def fake_send(message: str) -> None:
+            sent.append(message)
+
+        store = _FakeStore(
+            [[_event("task.updated", {"status": "ready", "previous_status": "staged"}, cursor=2)]]
+        )
+        watcher = TaskWakeupWatcher(
+            list_events_after=lambda cursor: store.list_events_after(cursor=cursor),
+            latest_cursor=lambda: 0,
+            send=fake_send,
+            now=lambda: clock["t"],
+            sweep_interval_seconds=300.0,
+            coalescer=WakeupCoalescer(debounce_seconds=5.0, min_interval_seconds=30.0),
+        )
+
+        clock["t"] = 0.0
+        await watcher.run_once()  # note event
+        clock["t"] = 6.0
+        assert await watcher.run_once() is not None  # event nudge -> timer reset at t=6
+        clock["t"] = 200.0
+        assert await watcher.run_once() is None  # 200-6 < 300 -> no backstop yet
+        clock["t"] = 307.0
+        backstop = await watcher.run_once()  # 307-6 >= 300 -> backstop fires
+        assert backstop is not None
+        assert "sweep" in backstop.lower()
 
     asyncio.run(scenario())

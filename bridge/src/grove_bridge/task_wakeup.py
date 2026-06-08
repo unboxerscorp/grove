@@ -38,19 +38,21 @@ def is_meaningful_event(event: BoardEvent) -> bool:
     return False
 
 
-def summarize_event(event: BoardEvent) -> str:
+def summarize_event(event: BoardEvent, *, project: str | None = None) -> str:
+    # Prefix with the project so a cross-project nudge says WHICH board changed.
+    prefix = f"{project}/" if project else ""
     task = event.task_id or "?"
     payload = event.payload
     if event.kind == "task.created":
-        return f"{task} created"
+        return f"{prefix}{task} created"
     if "status" in payload:
         previous = payload.get("previous_status") or "?"
-        return f"{task} {previous}->{payload.get('status')}"
+        return f"{prefix}{task} {previous}->{payload.get('status')}"
     if "assignee" in payload:
         previous = payload.get("previous_assignee") or "none"
         current = payload.get("assignee") or "none"
-        return f"{task} assignee {previous}->{current}"
-    return f"{task} updated"
+        return f"{prefix}{task} assignee {previous}->{current}"
+    return f"{prefix}{task} updated"
 
 
 class WakeupCoalescer:
@@ -132,10 +134,17 @@ LatestCursor = Callable[[], int]
 SendFn = Callable[[str], Awaitable[None]]
 NowFn = Callable[[], float]
 SleepFn = Callable[[float], Awaitable[None]]
+BoardLabel = Callable[[str], str]
 
 
 class TaskWakeupWatcher:
-    """Tails the board event log and nudges task-master when changes are due."""
+    """Tails the board event log and nudges task-master when changes are due.
+
+    The event source should be cross-project (all boards); each nudge is tagged
+    with its project via ``board_label``. A periodic ``sweep_interval_seconds``
+    backstop nudges task-master to sweep even when no events arrive (so missed
+    events / quiet periods still surface ready items); any real nudge resets the
+    backstop timer so the two paths never double-fire."""
 
     def __init__(
         self,
@@ -146,6 +155,8 @@ class TaskWakeupWatcher:
         now: NowFn,
         sleep: SleepFn | None = None,
         coalescer: WakeupCoalescer | None = None,
+        board_label: BoardLabel | None = None,
+        sweep_interval_seconds: float | None = None,
         tick_seconds: float = 2.0,
     ) -> None:
         self._list_events_after = list_events_after
@@ -154,18 +165,42 @@ class TaskWakeupWatcher:
         self._now = now
         self._sleep = sleep
         self._coalescer = coalescer or WakeupCoalescer()
+        self._board_label = board_label
+        self._sweep_interval = sweep_interval_seconds
         self._tick_seconds = tick_seconds
         self.cursor = 0
+        self._last_nudge_at: float | None = None
         self._stopped = False
 
+    def _project_for(self, event: BoardEvent) -> str | None:
+        if self._board_label is None:
+            return None
+        try:
+            return self._board_label(event.board_id)
+        except Exception:  # noqa: BLE001 - a missing board label must not crash the loop
+            return None
+
     async def run_once(self) -> str | None:
+        now = self._now()
+        if self._last_nudge_at is None:
+            self._last_nudge_at = now  # baseline the backstop from the first tick
         for event in self._list_events_after(self.cursor):
             self.cursor = event.cursor
             if is_meaningful_event(event):
-                self._coalescer.note(summarize_event(event), now=self._now())
-        message = self._coalescer.due(now=self._now())
+                self._coalescer.note(
+                    summarize_event(event, project=self._project_for(event)), now=now
+                )
+        message = self._coalescer.due(now=now)
+        if message is None and self._sweep_interval is not None:
+            if now - self._last_nudge_at >= self._sweep_interval:
+                message = (
+                    "periodic cross-project sweep: run "
+                    "grove task list --all-projects --json and surface/nudge any "
+                    "ready or stale items."
+                )
         if message is not None:
             await self._send(message)
+            self._last_nudge_at = now
         return message
 
     async def run(self) -> None:
