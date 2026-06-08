@@ -165,6 +165,7 @@ class SlackChatQueueItem:
     node: str
     text: str
     response_text: str | None
+    placeholder_ts: str | None
     status: str
     attempts: int
     next_attempt_at: int
@@ -2079,9 +2080,9 @@ class SQLiteBoardStore:
                 """
                 INSERT OR IGNORE INTO slack_chat_queue (
                     id, board_id, team_id, channel_id, thread_ts, message_ts,
-                    user_id, node, text, response_text, status, attempts, next_attempt_at,
-                    last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', 0, ?, NULL, ?, ?)
+                    user_id, node, text, response_text, placeholder_ts, status, attempts,
+                    next_attempt_at, last_error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'pending', 0, ?, NULL, ?, ?)
                 """,
                 (
                     _new_id("slack_chat"),
@@ -2205,6 +2206,29 @@ class SQLiteBoardStore:
                   AND status IN ('pending', 'running')
                 """,
                 (response_text, now, item_id),
+            )
+            row = conn.execute("SELECT * FROM slack_chat_queue WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise RuntimeError("slack chat queue item disappeared")
+        return _slack_chat_queue_item_from_row(row)
+
+    def store_slack_chat_message_placeholder_ts(
+        self,
+        item_id: str,
+        *,
+        placeholder_ts: str,
+        now: int,
+    ) -> SlackChatQueueItem:
+        with self._connect(immediate=True) as conn:
+            conn.execute(
+                """
+                UPDATE slack_chat_queue
+                SET placeholder_ts = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND status IN ('pending', 'running')
+                """,
+                (placeholder_ts, now, item_id),
             )
             row = conn.execute("SELECT * FROM slack_chat_queue WHERE id = ?", (item_id,)).fetchone()
         if row is None:
@@ -3925,6 +3949,7 @@ class SQLiteBoardStore:
                 node TEXT NOT NULL,
                 text TEXT NOT NULL,
                 response_text TEXT,
+                placeholder_ts TEXT,
                 status TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 next_attempt_at INTEGER NOT NULL,
@@ -4021,6 +4046,7 @@ class SQLiteBoardStore:
         )
         self._ensure_task_reviewer_column(conn)
         self._ensure_slack_chat_queue_response_text_column(conn)
+        self._ensure_slack_chat_queue_placeholder_ts_column(conn)
         self._normalize_legacy_task_statuses(conn)
 
     def _ensure_task_reviewer_column(self, conn: sqlite3.Connection) -> None:
@@ -4040,6 +4066,15 @@ class SQLiteBoardStore:
         }
         if "response_text" not in columns:
             conn.execute("ALTER TABLE slack_chat_queue ADD COLUMN response_text TEXT")
+
+    def _ensure_slack_chat_queue_placeholder_ts_column(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(slack_chat_queue)").fetchall()
+            if row["name"] is not None
+        }
+        if "placeholder_ts" not in columns:
+            conn.execute("ALTER TABLE slack_chat_queue ADD COLUMN placeholder_ts TEXT")
 
     def _normalize_legacy_task_statuses(self, conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -4884,6 +4919,7 @@ def _slack_chat_queue_item_from_row(row: sqlite3.Row) -> SlackChatQueueItem:
         node=_row_str(row, "node"),
         text=_row_str(row, "text"),
         response_text=_row_optional_str(row, "response_text"),
+        placeholder_ts=_row_optional_str(row, "placeholder_ts"),
         status=_row_str(row, "status"),
         attempts=_row_int(row, "attempts"),
         next_attempt_at=_row_int(row, "next_attempt_at"),
