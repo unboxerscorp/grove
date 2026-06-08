@@ -10,16 +10,11 @@ from grove_bridge.chat_actions import (
     ChatConfirmAction,
     apply_chat_confirm_action,
 )
-from grove_bridge.project_directory import ProjectDirectory
 from grove_bridge.store import SQLiteBoardStore
 
 
 def _actor(role: str = "operator") -> dict[str, str]:
     return {"member_id": "lead", "name": "lead", "role": role}
-
-
-def _pd(grove_home: Path) -> ProjectDirectory:
-    return ProjectDirectory(grove_home, default_session="dev10")
 
 
 # --- Task 1: frozen value object ------------------------------------------- #
@@ -160,75 +155,6 @@ def test_target_action_denied_across_boards(tmp_path: Path) -> None:
 
 
 # --- V2: role-gated write tools (LLM-first agent, via the dispatcher) -------- #
-def test_write_tools_execute_via_dispatcher_and_return_denial_as_result(tmp_path: Path) -> None:
-    from grove_bridge.chat_runtime import build_chat_write_tools
-
-    store = SQLiteBoardStore(tmp_path / "b.db")
-    tools = build_chat_write_tools(store, board="dev10", actor=_actor(), directory=_pd(tmp_path))
-    names = {t.name for t in tools}
-    assert {"create_task", "add_task_comment", "set_task_status", "dispatch_task"} <= names
-
-    create = next(t for t in tools if t.name == "create_task")
-    result = create.handler({"title": "ship export", "body": "do it"})
-    assert result["ok"] is True
-    task = store.get_task(board="dev10", task_id=str(result["task_id"]))
-    assert task.title == "ship export"
-
-    # Non-operator -> denial returned as a tool RESULT (not raised; LLM tells user).
-    viewer_tools = build_chat_write_tools(
-        store, board="dev10", actor=_actor(role="viewer"), directory=_pd(tmp_path)
-    )
-    vcreate = next(t for t in viewer_tools if t.name == "create_task")
-    denied = vcreate.handler({"title": "x"})
-    assert denied["ok"] is False and "error" in denied
-
-
-def test_create_task_tool_defaults_to_staged_unless_explicit(tmp_path: Path) -> None:
-    # Decision ①: chat-created tasks land in 'staged' (stack-then-gate) by default;
-    # an explicit status from the operator is honored.
-    from grove_bridge.chat_runtime import build_chat_write_tools
-
-    store = SQLiteBoardStore(tmp_path / "b.db")
-    tools = build_chat_write_tools(store, board="dev10", actor=_actor(), directory=_pd(tmp_path))
-    create = next(t for t in tools if t.name == "create_task")
-    r1 = create.handler({"title": "ship export"})  # no status -> staged
-    assert store.get_task(board="dev10", task_id=str(r1["task_id"])).status == "staged"
-    r2 = create.handler({"title": "urgent", "status": "ready"})  # explicit honored
-    assert store.get_task(board="dev10", task_id=str(r2["task_id"])).status == "ready"
 
 
 # --- V2 (b): cross-project write tools + list_projects (display-named, scoped) -- #
-def _project_dir(tmp_path: Path) -> ProjectDirectory:
-    import json
-
-    (tmp_path / "alpha").mkdir()
-    (tmp_path / "alpha" / "registry.json").write_text(
-        json.dumps({"display_name": "Alpha"}), encoding="utf-8"
-    )
-    return ProjectDirectory(tmp_path, default_session="dev10")
-
-
-def test_write_tool_targets_resolved_project_and_rejects_unknown(tmp_path: Path) -> None:
-    from grove_bridge.chat_runtime import build_chat_write_tools
-
-    store = SQLiteBoardStore(tmp_path / "b.db")
-    directory = _project_dir(tmp_path)
-    tools = build_chat_write_tools(store, board="dev10", actor=_actor(), directory=directory)
-    create = next(t for t in tools if t.name == "create_task")
-    # cross-project: a display ref resolves to board 'alpha'; result reports the project.
-    ok = create.handler({"title": "x", "project": "Alpha"})
-    assert ok["ok"] is True and ok["project"] == "Alpha"
-    task = store.get_task(board="alpha", task_id=str(ok["task_id"]))
-    assert task.title == "x" and task.status == "staged"
-    # scope guard: an unknown/invisible project is denied — no write.
-    bad = create.handler({"title": "y", "project": "Nope"})
-    assert bad["ok"] is False
-
-
-def test_list_projects_tool_returns_display_names_only(tmp_path: Path) -> None:
-    from grove_bridge.chat_runtime import build_list_projects_tool
-
-    directory = _project_dir(tmp_path)
-    result = build_list_projects_tool(directory).handler({})
-    projects = result["projects"]
-    assert isinstance(projects, list) and "Alpha" in projects

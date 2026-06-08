@@ -30,27 +30,6 @@ from grove_bridge.assistant import (
     classify_for_task,
 )
 from grove_bridge.auth_status import redact_secret_text
-from grove_bridge.chat_actions import (
-    ChatActionDenied,
-    ChatConfirmAction,
-    apply_chat_confirm_action,
-)
-from grove_bridge.chat_runtime import (
-    ChatProviderAdapter,
-    ChatTool,
-    ChatWorkerPool,
-    GeminiChatProviderAdapter,
-    ProviderRequest,
-    RedactingProviderAdapter,
-    build_chat_write_tools,
-    build_get_project_tasks_tool,
-    build_list_projects_tool,
-    chat_bridge_runtime_enabled,
-    guard_answer_channel,
-    load_chat_bridge_persona,
-    load_gemini_provider_config,
-    parse_structured_turn,
-)
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
 from grove_bridge.master import MasterChatResponse, MasterChatResponseType
@@ -371,19 +350,6 @@ class SlackPendingCommand:
 
 
 @dataclass(frozen=True)
-class SlackPendingAction:
-    """A one-shot, owner-gated pending typed confirm-action (parallel to
-    :class:`SlackPendingCommand`). On confirm it is applied via the pure
-    ``apply_chat_confirm_action`` dispatcher — never re-interpreted."""
-
-    confirmation_id: str
-    action: ChatConfirmAction
-    event: SlackEvent
-    actor: SlackCommandMember
-    expires_at: float
-
-
-@dataclass(frozen=True)
 class SlackEvent:
     team: str
     channel: str
@@ -626,7 +592,6 @@ class SlackConfirmationStore:
         self.clock = clock
         self.token_factory = token_factory or (lambda: secrets.token_urlsafe(8))
         self._pending: dict[str, SlackPendingCommand] = {}
-        self._actions: dict[str, SlackPendingAction] = {}
         self._lock = threading.Lock()
 
     def create(
@@ -688,54 +653,6 @@ class SlackConfirmationStore:
             self._cleanup(now=now)
             return pending, None
 
-    def register_action(
-        self,
-        *,
-        action: ChatConfirmAction,
-        event: SlackEvent,
-        actor: SlackCommandMember,
-    ) -> SlackPendingAction:
-        """Bind a typed confirm-action to a fresh one-shot confirmation id (parallel
-        to ``create`` for commands). Applied only on the owner's confirm."""
-        now = self.clock()
-        with self._lock:
-            confirmation_id = self.token_factory()
-            while confirmation_id in self._pending or confirmation_id in self._actions:
-                confirmation_id = self.token_factory()
-            pending = SlackPendingAction(
-                confirmation_id=confirmation_id,
-                action=action,
-                event=event,
-                actor=actor,
-                expires_at=now + max(1, self.ttl_seconds),
-            )
-            self._actions[confirmation_id] = pending
-            self._cleanup(now=now)
-            return pending
-
-    def consume_action_for_owner(
-        self,
-        confirmation_id: str,
-        *,
-        member_id: str,
-    ) -> tuple[SlackPendingAction | None, str | None]:
-        now = self.clock()
-        with self._lock:
-            pending = self._actions.get(confirmation_id)
-            if pending is None:
-                self._cleanup(now=now)
-                return None, "confirmation_unknown_or_used"
-            if pending.expires_at <= now:
-                self._actions.pop(confirmation_id, None)
-                self._cleanup(now=now)
-                return None, "confirmation_expired"
-            if pending.actor.member_id != member_id:
-                self._cleanup(now=now)
-                return None, "confirmation_owner_mismatch"
-            self._actions.pop(confirmation_id, None)
-            self._cleanup(now=now)
-            return pending, None
-
     def _cleanup(self, *, now: float) -> None:
         expired = [
             confirmation_id
@@ -744,13 +661,6 @@ class SlackConfirmationStore:
         ]
         for confirmation_id in expired:
             self._pending.pop(confirmation_id, None)
-        expired_actions = [
-            confirmation_id
-            for confirmation_id, action in self._actions.items()
-            if action.expires_at <= now
-        ]
-        for confirmation_id in expired_actions:
-            self._actions.pop(confirmation_id, None)
 
 
 class SlackConnector:
@@ -794,40 +704,6 @@ class SlackConnector:
         self._node_chat_queue_lock = threading.Lock()
         self._seen_event_keys: set[str] = set()
         self._seen_event_order: deque[str] = deque()
-        # Bridge-native chat runtime (Stage0): constructed only when the operator
-        # has enabled the flag (default OFF). The feature/provider state is also
-        # refreshed at queue-drain time so Setup changes take effect without a
-        # Slack restart.
-        _chat_bridge_on = chat_bridge_runtime_enabled(self.store, board=self.human_gate.board)
-        self._chat_bridge_provider_path = (
-            Path("~/.grove").expanduser() / self.human_gate.board / "chat-provider.json"
-        )
-        # Persona/policy system-prompt source (chat-master-owned, runtime file).
-        # Absent → loader returns the placeholder, so behavior is unchanged until
-        # chat-master fills it (no code change, no commit; re-read per turn).
-        self._chat_bridge_persona_path = (
-            Path("~/.grove").expanduser() / self.human_gate.board / "chat-persona.md"
-        )
-        _chat_bridge_provider = load_gemini_provider_config(self._chat_bridge_provider_path)
-        self._chat_bridge_runtime: ChatWorkerPool | None = (
-            ChatWorkerPool() if _chat_bridge_on else None
-        )
-        self._chat_bridge_provider_signature: tuple[str, str] | None = None
-        self._chat_bridge_adapter: ChatProviderAdapter | None = (
-            RedactingProviderAdapter(
-                inner=GeminiChatProviderAdapter(
-                    api_key=_chat_bridge_provider["api_key"],
-                    model=_chat_bridge_provider["model"],
-                )
-            )
-            if _chat_bridge_on and _chat_bridge_provider["api_key"]
-            else None
-        )
-        if self._chat_bridge_adapter is not None:
-            self._chat_bridge_provider_signature = (
-                _chat_bridge_provider["api_key"],
-                _chat_bridge_provider["model"],
-            )
 
     def poll_human_gates(self) -> int:
         channel = self.human_gate.channel
@@ -1162,35 +1038,6 @@ class SlackConnector:
                 thread_ts=thread_ts,
             )
             return True
-        if action_id == INTAKE_CONFIRM_ACTION_ID:
-            pending_action, action_error = self.confirmations.consume_action_for_owner(
-                confirmation_id,
-                member_id=actor.member_id,
-            )
-            if pending_action is not None:
-                self._apply_chat_confirm_action(
-                    pending_action, event=event, actor=actor, thread_ts=thread_ts
-                )
-                return True
-            if action_error is not None and action_error != "confirmation_unknown_or_used":
-                # A registered typed action that expired / owner-mismatch -> deny;
-                # do NOT fall through to the command path.
-                self._audit_slack_command(
-                    command="confirm",
-                    event=event,
-                    actor=_slack_member_actor(event.user, actor),
-                    status="denied",
-                    summary=action_error,
-                )
-                self._post_assistant_notice(
-                    event,
-                    thread_ts=thread_ts,
-                    decision="deny",
-                    reason=action_error,
-                    response_type="denied",
-                )
-                return True
-            # else: not a registered action -> fall through to the existing command path.
         pending, error = self.confirmations.consume_for_owner(
             confirmation_id,
             member_id=actor.member_id,
@@ -1935,10 +1782,7 @@ class SlackConnector:
         if config is None:
             return "deny: slack control commands disabled"
         proposal = _decode_intake_proposal(pending.args)
-        runtime_task = (
-            proposal is not None and proposal.slack.get("runtime") == "chat_bridge_runtime"
-        )
-        if not runtime_task and not self._intake_enabled(config):
+        if not self._intake_enabled(config):
             return "deny: slack intake disabled"
         if pending.actor.role not in {"admin", "operator"}:
             self._audit_slack_command(
@@ -1970,12 +1814,7 @@ class SlackConnector:
                 target_node=assignee,
             ),
             assignee=assignee,
-            # chat-origin create -> 'staged' only when the dark flag is ON (else 'ready').
-            status=(
-                "staged"
-                if runtime_task and self._chat_create_staged_enabled(config.board)
-                else "ready"
-            ),
+            status="ready",
             priority=proposal.priority,
             created_by=pending.actor.member_id,
             metadata={
@@ -1986,12 +1825,6 @@ class SlackConnector:
                     "confidence": proposal.confidence,
                     "reason": proposal.reason,
                 },
-                "chat_runtime": {
-                    "source": "slack",
-                    "confirmation_id": pending.confirmation_id,
-                }
-                if runtime_task
-                else None,
                 "slack": dict(proposal.slack),
             },
         )
@@ -1999,7 +1832,7 @@ class SlackConnector:
             board=config.board,
             kind="audit.task.create",
             actor=actor,
-            action="chat_runtime_task_create" if runtime_task else "slack_intake_create",
+            action="slack_intake_create",
             target={"type": "task", "id": task.id},
             task_id=task.id,
             status="ok",
@@ -2008,7 +1841,6 @@ class SlackConnector:
                 "intent": proposal.intent,
                 "labels": list(proposal.labels),
                 "assignee": assignee,
-                "runtime": "chat_bridge_runtime" if runtime_task else None,
             },
         )
         self._audit_slack_command(
@@ -2021,7 +1853,6 @@ class SlackConnector:
             task_id=task.id,
             payload={
                 "intent": proposal.intent,
-                "runtime": "chat_bridge_runtime" if runtime_task else None,
             },
         )
         return (
@@ -2576,21 +2407,9 @@ class SlackConnector:
         return self.store.slack_chat_queue_summary(board=self.human_gate.board, now=now)
 
     def _process_node_chat_queue_item(self, item: SlackChatQueueItem, *, now: int) -> None:
-        if chat_bridge_runtime_enabled(self.store, board=self.human_gate.board):
-            # Runtime ON means the bridge-native provider owns this turn. Do not
-            # fall back to the persistent CLI node; retry/defer keeps the item
-            # durable until the provider/flag state is fixed or the operator
-            # explicitly turns the runtime OFF.
-            if self._chat_bridge_runtime_ready():
-                if self._process_chat_bridge_runtime_item(item, now=now):
-                    return
-            self.store.defer_slack_chat_message(
-                item.id,
-                error="chat bridge runtime unavailable",
-                next_attempt_at=now + self.node_chat_retry_delay_seconds,
-                now=now,
-            )
-            return
+        # P0: the abandoned chat_bridge_runtime (Gemini) preemption branch was removed.
+        # node-direct (the persistent chat-master node) is the only path now, regardless
+        # of the (dead) flag. The bridge methods remain dark/unreferenced (deletion = P3).
         item = self.store.mark_slack_chat_message_running(item.id, now=now)
         session_id = _slack_chat_queue_conversation_id(item)
         response_text = item.response_text
@@ -2747,54 +2566,6 @@ class SlackConnector:
         update_message(channel=channel, ts=ts, text=text)
         return True
 
-    def _chat_bridge_runtime_ready(self) -> bool:
-        if not chat_bridge_runtime_enabled(self.store, board=self.human_gate.board):
-            self._chat_bridge_runtime = None
-            self._chat_bridge_adapter = None
-            self._chat_bridge_provider_signature = None
-            return False
-        if self._chat_bridge_runtime is None:
-            self._chat_bridge_runtime = ChatWorkerPool()
-        # Tests may inject a deterministic adapter without a provider config.
-        if self._chat_bridge_adapter is not None and self._chat_bridge_provider_signature is None:
-            return True
-        provider = load_gemini_provider_config(self._chat_bridge_provider_path)
-        api_key = provider["api_key"]
-        if not api_key:
-            self._chat_bridge_adapter = None
-            self._chat_bridge_provider_signature = None
-            return False
-        signature = (api_key, provider["model"])
-        if signature != self._chat_bridge_provider_signature:
-            self._chat_bridge_adapter = RedactingProviderAdapter(
-                inner=GeminiChatProviderAdapter(api_key=api_key, model=provider["model"])
-            )
-            self._chat_bridge_provider_signature = signature
-        return self._chat_bridge_adapter is not None
-
-    def _chat_write_tools_enabled(self, board: str) -> bool:
-        """Dark flag (default OFF, fail-closed): gates the V2 role-gated WRITE tools.
-        OFF -> the agent has only read tools (live behavior unchanged)."""
-        try:
-            state = self.store.gui_feature_flags(board=board, features=("chat_write_tools",))[
-                "chat_write_tools"
-            ]
-        except Exception:
-            return False
-        return state.get("enabled") is True
-
-    def write_tools_unavailable_reason(self) -> str | None:
-        """Surface the silent misconfig where ``chat_write_tools`` is ON but NO member
-        can use the write tools (no operator/admin mapped) — so they are absent for
-        everyone. ``"no_operator_members"`` when that holds, else ``None``. Drives a
-        startup warning + the runtime-status ``write_tools_unavailable`` field."""
-        if not self._chat_write_tools_enabled(self.human_gate.board):
-            return None
-        members = self.command_config.members.values() if self.command_config is not None else ()
-        if any(member.role in {"operator", "admin"} for member in members):
-            return None
-        return "no_operator_members"
-
     def _project_directory(self) -> ProjectDirectory:
         """Project display/identity directory (single source: ~/.grove registries).
         Resolves display names <-> internal boards so the chat layer never exposes
@@ -2802,428 +2573,6 @@ class SlackConnector:
         return ProjectDirectory(
             Path("~/.grove").expanduser(), default_session=self.human_gate.board
         )
-
-    def _chat_bridge_tools(self, item: SlackChatQueueItem) -> list[ChatTool]:
-        """Tools the bridge-native agent exposes to the provider's function-calling.
-        Always: the read-only board query. When the V2 write flag is ON AND the Slack
-        user is operator/admin: role-gated WRITE tools (the dispatcher re-checks role +
-        the six guards). Flag OFF -> read-only (live behavior unchanged)."""
-        board = self.human_gate.board
-        directory = self._project_directory()
-        tools = [
-            build_get_project_tasks_tool(self.store, default_board=board, directory=directory),
-            build_list_projects_tool(directory),
-        ]
-        if self._chat_write_tools_enabled(board):
-            actor = self._assistant_member(item.user_id)
-            if actor is not None and actor.role in {"admin", "operator"}:
-                tools.extend(
-                    build_chat_write_tools(
-                        self.store,
-                        board=board,
-                        actor={
-                            "member_id": actor.member_id,
-                            "name": actor.name,
-                            "role": actor.role,
-                        },
-                        directory=directory,
-                    )
-                )
-        return tools
-
-    def _process_chat_bridge_runtime_item(self, item: SlackChatQueueItem, *, now: int) -> bool:
-        """Bridge-native Slack runtime entry — flag-gated; reached only
-        when the runtime flag is ON (``self._chat_bridge_runtime`` constructed).
-        With the flag OFF this is never called → the existing path is byte-identical.
-        With the flag ON this method must either post a provider-generated answer
-        or defer the durable item; it must not fall back to the CLI node path.
-        """
-        runtime = self._chat_bridge_runtime
-        adapter = self._chat_bridge_adapter
-        if runtime is None or adapter is None:  # defensive; caller already guards
-            return False
-        conversation_id = _slack_chat_queue_conversation_id(item)
-        if not runtime.try_acquire_session(conversation_id):
-            LOGGER.info(
-                "chat bridge runtime skipped conv=%s reason=session_busy",
-                conversation_id,
-            )
-            self.store.defer_slack_chat_message(
-                item.id,
-                error="chat bridge runtime session busy",
-                next_attempt_at=now + self.node_chat_retry_delay_seconds,
-                now=now,
-            )
-            return True
-        try:
-            response_text = item.response_text
-            try:
-                if response_text is None:
-                    generated = adapter.generate(
-                        ProviderRequest(
-                            system_prompt=load_chat_bridge_persona(self._chat_bridge_persona_path),
-                            user_text=self._chat_bridge_slack_user_text(
-                                item,
-                                conversation_id=conversation_id,
-                            ),
-                        ),
-                        tools=self._chat_bridge_tools(item),
-                    )
-                    turn = parse_structured_turn(generated)
-                    if turn.kind == "task_proposal":
-                        preview = None
-                        if turn.proposal is not None:
-                            preview = self._chat_bridge_runtime_task_preview(
-                                item,
-                                card_text=turn.card_text or "",
-                                title=turn.proposal.title,
-                                body=turn.proposal.body,
-                                worktree=turn.proposal.worktree,
-                            )
-                        if preview is not None:
-                            response_text = preview.text
-                            self.slack_client.post_message(
-                                channel=item.channel_id,
-                                text=preview.text,
-                                thread_ts=item.thread_ts,
-                                blocks=preview.blocks,
-                            )
-                            if item.response_text is None:
-                                item = self.store.store_slack_chat_message_response(
-                                    item.id,
-                                    response_text=response_text,
-                                    now=now,
-                                )
-                            self._persist_chat_bridge_slack_turn(
-                                item,
-                                conversation_id=conversation_id,
-                                response_text=response_text,
-                            )
-                            self.store.complete_slack_chat_message(item.id, now=now)
-                            return True
-                        # SAFE DEGRADE: a task_proposal that cannot be turned into a
-                        # confirmable preview MUST NOT raise/defer here — that produced an
-                        # infinite-retry stuck queue (pending forever, chatbot dead). Fall
-                        # back to the LLM-authored text as a plain answer and complete via
-                        # the shared tail below. No task is created (confirm-before-create
-                        # preserved); the queue item is consumed, not repeatedly deferred.
-                        fallback = ""
-                        if turn.proposal is not None:
-                            fallback = turn.card_text or turn.proposal.title or ""
-                        response_text = fallback.strip() or generated
-                        LOGGER.info(
-                            "chat bridge proposal degraded to plain answer "
-                            "(unconfirmable, no task created) conv=%s",
-                            conversation_id,
-                        )
-                    else:
-                        response_text = guard_answer_channel(
-                            turn.answer_text or "",
-                            forbidden=frozenset(
-                                {ASSISTANT_TRANSPORT_FALLBACK_TEXT, "master chat is unavailable"}
-                            ),
-                        )
-            except Exception as exc:
-                LOGGER.warning(
-                    "chat bridge runtime generation failed; deferred without CLI fallback: %s",
-                    _safe_log_error(exc),
-                )
-                self.store.defer_slack_chat_message(
-                    item.id,
-                    error=_safe_log_error(exc),
-                    next_attempt_at=now + self.node_chat_retry_delay_seconds,
-                    now=now,
-                )
-                return True
-            if response_text is None:
-                self.store.defer_slack_chat_message(
-                    item.id,
-                    error="chat bridge runtime returned no answer",
-                    next_attempt_at=now + self.node_chat_retry_delay_seconds,
-                    now=now,
-                )
-                return True
-            if item.response_text is None:
-                item = self.store.store_slack_chat_message_response(
-                    item.id,
-                    response_text=response_text,
-                    now=now,
-                )
-            try:
-                for response_chunk in _slack_assistant_response_chunks(response_text):
-                    self.slack_client.post_message(
-                        channel=item.channel_id,
-                        text=response_chunk,
-                        thread_ts=item.thread_ts,
-                    )
-            except Exception as exc:
-                LOGGER.warning(
-                    "chat bridge runtime response delivery deferred: %s",
-                    _safe_log_error(exc),
-                )
-                self.store.defer_slack_chat_message(
-                    item.id,
-                    error=_safe_log_error(exc),
-                    next_attempt_at=now + self.node_chat_retry_delay_seconds,
-                    now=now,
-                )
-                return True
-            self._persist_chat_bridge_slack_turn(
-                item,
-                conversation_id=conversation_id,
-                response_text=response_text,
-            )
-            self.store.complete_slack_chat_message(item.id, now=now)
-            return True
-        finally:
-            runtime.release_session(conversation_id)
-
-    def _apply_chat_confirm_action(
-        self,
-        pending: SlackPendingAction,
-        *,
-        event: SlackEvent,
-        actor: SlackCommandMember,
-        thread_ts: str,
-    ) -> None:
-        """Apply a confirmed typed action via the pure dispatcher (stored fields
-        verbatim; role/scope/[R] enforced there). Denial -> ops-log + a denied
-        notice; never a fabricated success."""
-        chat_actor = {
-            "member_id": actor.member_id,
-            "name": actor.name,
-            "role": actor.role,
-        }
-        try:
-            apply_chat_confirm_action(self.store, pending.action, actor=chat_actor)
-        except ChatActionDenied as exc:
-            self._audit_slack_command(
-                command="confirm",
-                event=event,
-                actor=_slack_member_actor(event.user, actor),
-                status="denied",
-                summary=f"chat action denied: {_safe_log_error(exc)}",
-            )
-            self._post_assistant_notice(
-                event,
-                thread_ts=thread_ts,
-                decision="deny",
-                reason="action not applied",
-                response_type="denied",
-            )
-            return
-        self._audit_slack_command(
-            command="confirm",
-            event=event,
-            actor=_slack_member_actor(event.user, actor),
-            status="ok",
-            summary=f"chat confirm action applied: {pending.action.kind}",
-        )
-
-    def _chat_create_staged_enabled(self, board: str) -> bool:
-        """Dark flag (default OFF, fail-closed): when ON, chat-confirmed task creates
-        land in 'staged' (stack-then-gate). OFF -> 'ready' (live behavior unchanged)."""
-        try:
-            state = self.store.gui_feature_flags(board=board, features=("chat_create_staged",))[
-                "chat_create_staged"
-            ]
-        except Exception:
-            return False
-        return state.get("enabled") is True
-
-    def _chat_bridge_runtime_task_preview(
-        self,
-        item: SlackChatQueueItem,
-        *,
-        card_text: str,
-        title: str,
-        body: str,
-        worktree: str | None,
-    ) -> SlackBlockMessage | None:
-        if self.command_config is None or self.confirmations is None:
-            return None
-        actor = self._assistant_member(item.user_id)
-        if actor is None or actor.role not in {"admin", "operator"}:
-            return None
-        clean_card = _safe_slack_message_text(card_text).strip()
-        if not clean_card:
-            return None
-        event = _slack_event_from_chat_queue_item(item)
-        proposal = SlackIntakeProposal(
-            intent="task_request",
-            title=_safe_intake_title(title),
-            body=_safe_slack_message_text(body or item.text),
-            labels=("chat-runtime", "chat-master", "task-request"),
-            priority=0,
-            assignee=None,
-            confidence=1.0,
-            reason="chat_runtime:structured_turn",
-            slack={
-                "team": _safe_slack_text(event.team),
-                "channel": _safe_slack_text(event.channel),
-                "thread_ts": _safe_slack_text(event.thread_ts or event.ts),
-                "message_ts": _safe_slack_text(event.ts),
-                "user": _safe_slack_text(event.user),
-                "runtime": "chat_bridge_runtime",
-                "worktree": _safe_slack_text(worktree or ""),
-            },
-        )
-        pending = self.confirmations.create(
-            command="task_create",
-            args=(json.dumps(proposal.to_json(), sort_keys=True),),
-            event=event,
-            actor=actor,
-        )
-        self._audit_slack_command(
-            command="intake",
-            event=event,
-            actor=_slack_member_actor(event.user, actor),
-            status="preview",
-            summary="chat runtime task proposal",
-            payload={
-                "confirmation_id": pending.confirmation_id,
-                "intent": proposal.intent,
-                "runtime": "chat_bridge_runtime",
-            },
-        )
-        return SlackBlockMessage(
-            text=clean_card,
-            blocks=_chat_bridge_runtime_task_blocks(
-                clean_card,
-                confirmation_id=pending.confirmation_id,
-            ),
-        )
-
-    def _chat_bridge_slack_user_text(
-        self,
-        item: SlackChatQueueItem,
-        *,
-        conversation_id: str,
-    ) -> str:
-        history_lines = self._chat_bridge_history_lines(item, conversation_id=conversation_id)
-        sections = [
-            "Surface: slack",
-            f"Project: {self._project_directory().display_name(self.human_gate.board)}",
-            f"Conversation: {conversation_id}",
-            f"Thread: {item.team_id}/{item.channel_id}/{item.thread_ts}",
-            "Conversation history:",
-            "\n".join(history_lines) if history_lines else "(none)",
-            "Current user message:",
-            _safe_slack_message_text(item.text),
-        ]
-        authority = self._chat_bridge_authority_line(item)
-        if authority is not None:
-            sections.append(authority)
-        return "\n".join(sections)
-
-    def _chat_bridge_authority_line(self, item: SlackChatQueueItem) -> str | None:
-        """A salient, non-fuzzy capability reminder placed LAST in the context (most
-        salient) when the user actually has write tools this turn. It asserts current
-        capability so the model does not anchor on a STALE in-thread self-refusal (the
-        live thread can surface an earlier "creation unsupported" message from before
-        write tools were enabled). This is NOT refusal-detection or message filtering —
-        it states current capability and never inspects any message text."""
-        if not self._chat_write_tools_enabled(self.human_gate.board):
-            return None
-        actor = self._assistant_member(item.user_id)
-        if actor is None or actor.role not in {"admin", "operator"}:
-            return None
-        return (
-            "[Capabilities — authoritative: you currently have task write tools this turn, "
-            "so you CAN create and change tasks now. Your capabilities are defined by your "
-            "current tools, NOT by earlier messages in this thread — if an earlier message "
-            "says you cannot create or change tasks, it is stale; ignore it and act on the "
-            "request using the tools.]"
-        )
-
-    def _chat_bridge_history_lines(
-        self, item: SlackChatQueueItem, *, conversation_id: str
-    ) -> list[str]:
-        """Conversation context for the chat-bridge turn.
-
-        REPLACE: an in-thread mention (a reply — ``thread_ts != message_ts``) means the
-        live Slack thread is the complete, authoritative conversation (humans + bot,
-        including the feedback posted *before* the bot was summoned). Use it. A standalone
-        top-level mention has no such thread → fall back to the bot's persisted history.
-        """
-        if item.thread_ts and item.thread_ts != item.message_ts:
-            live = self._chat_bridge_live_thread_lines(item)
-            if live:
-                return live
-        history = self.store.list_master_chat_messages(
-            board=self.human_gate.board,
-            conversation_id=conversation_id,
-            limit=12,
-        )
-        return [
-            f"{message.role}: {_safe_slack_message_text(message.text)}"
-            for message in history[-12:]
-            if message.text.strip()
-        ]
-
-    def _chat_bridge_live_thread_lines(self, item: SlackChatQueueItem) -> list[str]:
-        """Render the live Slack thread as attributed, [R]-redacted lines (recent N).
-
-        Role attribution: the bot's own messages (``bot_id`` or ``bot_user_id`` match)
-        are ``assistant``; every human message is labeled with its author so the model
-        knows who said what. Each text is secret-redacted before it reaches the model.
-        """
-        try:
-            replies = self.slack_client.conversations_replies(
-                channel=item.channel_id, thread_ts=item.thread_ts
-            )
-        except Exception as exc:  # transport/API failure → fall back to persisted history
-            LOGGER.warning(
-                "conversations.replies fetch failed thread=%s: %s",
-                item.thread_ts,
-                redact_secret_text(str(exc)),
-            )
-            return []
-        lines: list[str] = []
-        for raw in list(replies)[-_CHAT_THREAD_MESSAGE_CAP:]:
-            if not isinstance(raw, Mapping):
-                continue
-            text = _safe_slack_message_text(redact_secret_text(str(raw.get("text") or "")))
-            if not text.strip():
-                continue
-            user = str(raw.get("user") or "")
-            is_bot = bool(raw.get("bot_id")) or (
-                self.bot_user_id is not None and user == self.bot_user_id
-            )
-            if is_bot:
-                lines.append(f"assistant: {text}")
-            else:
-                member = self._assistant_member(user)
-                author = member.name if member is not None else (user or "user")
-                lines.append(f"{author}: {text}")
-        return lines
-
-    def _persist_chat_bridge_slack_turn(
-        self,
-        item: SlackChatQueueItem,
-        *,
-        conversation_id: str,
-        response_text: str,
-    ) -> None:
-        try:
-            self.store.append_master_chat_message(
-                board=self.human_gate.board,
-                conversation_id=conversation_id,
-                role="user",
-                text=_safe_slack_message_text(item.text),
-                request_id=item.id,
-                origin_surface="slack",
-            )
-            self.store.append_master_chat_message(
-                board=self.human_gate.board,
-                conversation_id=conversation_id,
-                role="assistant",
-                text=_safe_slack_message_text(response_text),
-                request_id=item.id,
-                origin_surface="slack",
-            )
-        except Exception as exc:
-            LOGGER.warning("chat bridge runtime history persist failed: %s", _safe_log_error(exc))
 
     def _process_node_chat_task_intake(self, item: SlackChatQueueItem, *, now: int) -> bool:
         if self.command_config is None or self.confirmations is None:
@@ -3338,9 +2687,6 @@ def _fresh_slack_runtime_status(path: Path | None) -> dict[str, object]:
     last_error = loaded.get("last_error")
     if isinstance(last_error, str) and last_error:
         runtime["last_error"] = redact_secret_text(last_error)
-    write_tools_unavailable = loaded.get("write_tools_unavailable")
-    if isinstance(write_tools_unavailable, str) and write_tools_unavailable:
-        runtime["write_tools_unavailable"] = write_tools_unavailable
     return runtime
 
 
@@ -3351,7 +2697,6 @@ def _write_slack_runtime_status(
     last_event_at: int | None = None,
     last_error: str | None = None,
     node_chat_queue: Mapping[str, int | None] | None = None,
-    write_tools_unavailable: str | None = None,
 ) -> None:
     payload: dict[str, object] = {
         "socket_connected": socket_connected,
@@ -3364,8 +2709,6 @@ def _write_slack_runtime_status(
         payload["last_error"] = redact_secret_text(last_error)
     if node_chat_queue is not None:
         payload["node_chat_queue"] = dict(node_chat_queue)
-    if write_tools_unavailable:
-        payload["write_tools_unavailable"] = write_tools_unavailable
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     temp_path.write_text(f"{json.dumps(payload, sort_keys=True)}\n", encoding="utf-8")
@@ -3575,14 +2918,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         bot_user_id=_bot_user_id_from_client(slack_client),
         route_chat_to_node=args.route_chat_to_node,
     )
-    write_tools_reason = connector.write_tools_unavailable_reason()
-    if write_tools_reason is not None:
-        LOGGER.warning(
-            "chat_write_tools is ON but %s — write tools are unavailable to all users; "
-            "map at least one operator/admin command member (--command-members-path / "
-            "--command-member)",
-            write_tools_reason,
-        )
     socket_client = _build_socket_client(config=config, connector=connector)
     runtime_status_path = args.runtime_status_path or slack_runtime_status_path(
         args.grove_home,
@@ -3638,7 +2973,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 socket_connected=socket_connected,
                 last_error=last_error,
                 node_chat_queue=connector.node_chat_queue_summary(now=int(time.time())),
-                write_tools_unavailable=connector.write_tools_unavailable_reason(),
             )
             connector.poll_human_gates()
             connector.poll_completion_notices()
@@ -3655,7 +2989,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime_status_path,
             socket_connected=False,
             node_chat_queue=connector.node_chat_queue_summary(now=int(time.time())),
-            write_tools_unavailable=connector.write_tools_unavailable_reason(),
         )
         socket_client.close()
 
@@ -4164,40 +3497,6 @@ def _build_intake_task_proposal(
             "thread_ts": _safe_slack_text(event.thread_ts or event.ts),
             "message_ts": _safe_slack_text(event.ts),
             "user": _safe_slack_text(event.user),
-        },
-    )
-
-
-def _chat_bridge_runtime_task_blocks(
-    card_text: str,
-    *,
-    confirmation_id: str,
-) -> tuple[Mapping[str, object], ...]:
-    return (
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": _safe_slack_message_text(card_text)[:3000],
-            },
-        },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "태스크 생성"},
-                    "style": "primary",
-                    "action_id": INTAKE_CONFIRM_ACTION_ID,
-                    "value": confirmation_id,
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "답변만"},
-                    "action_id": INTAKE_ANSWER_ONLY_ACTION_ID,
-                    "value": confirmation_id,
-                },
-            ],
         },
     )
 

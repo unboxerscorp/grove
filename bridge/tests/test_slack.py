@@ -4499,24 +4499,33 @@ def test_load_command_members_file_valid_failclosed_and_bad_role(tmp_path: Path)
     assert load_command_members_file(weird) == {}
 
 
-def test_write_tools_unavailable_reason_surfaces_no_operator(tmp_path: Path) -> None:
-    import dataclasses
-
-    store = SQLiteBoardStore(tmp_path / "b.db")
+def test_node_direct_queue_routes_chat_to_node_unconditionally(tmp_path: Path) -> None:
+    # P0: the abandoned chat_bridge_runtime branch is gone — a queued chat message is
+    # always handled by the node-direct path (routed to the chat-master node), even if
+    # the (dead) flag is somehow set.
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
     slack = FakeSlackClient()
-    conn = command_connector(store, slack)
-
-    # chat_write_tools OFF -> no surfacing (writes disabled anyway).
-    assert conn.write_tools_unavailable_reason() is None
-
-    store.set_gui_feature_enabled(board="main", feature="chat_write_tools", enabled=True)
-    # ON + an operator/admin is mapped (command_connector maps UOP/UAD) -> None.
-    assert conn.write_tools_unavailable_reason() is None
-
-    # ON + NO operator/admin member -> the silent misconfig is surfaced.
-    assert conn.command_config is not None
-    conn.command_config = dataclasses.replace(
-        conn.command_config,
-        members={"UV": SlackCommandMember("member-view", "vivi", "viewer")},
+    chat = FakeChatFacade()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="dev10", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-master"),
+        route_chat_to_node=True,
+        bot_user_id="BOT",
     )
-    assert conn.write_tools_unavailable_reason() == "no_operator_members"
+    store.enqueue_slack_chat_message(
+        board="dev10",
+        team_id="T",
+        channel_id="C123",
+        thread_ts="th",
+        message_ts="1.1",
+        user_id="U",
+        node="chat-master",
+        text="hi",
+    )
+    processed = connector.poll_node_chat_queue()
+    assert processed == 1
+    assert chat.calls and chat.calls[0][1] == "chat-master"

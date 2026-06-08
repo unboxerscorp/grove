@@ -20,9 +20,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-import threading
 import time
-from _thread import LockType
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -60,21 +58,6 @@ from grove_bridge.assistant import (
 )
 from grove_bridge.auth import Account, DashboardRole
 from grove_bridge.auth_status import collect_auth_status, redact_secret_text
-from grove_bridge.chat_runtime import (
-    CHAT_BRIDGE_RUNTIME_FLAG,
-    CHAT_PROVIDER_DEFAULT_MODEL,
-    CHAT_PROVIDER_DEFAULT_PROVIDER,
-    GeminiChatProviderAdapter,
-    ProviderRequest,
-    RedactingProviderAdapter,
-    TurnParseError,
-    build_get_project_tasks_tool,
-    chat_bridge_runtime_enabled,
-    guard_answer_channel,
-    load_chat_bridge_persona,
-    load_gemini_provider_config,
-    parse_structured_turn,
-)
 from grove_bridge.config import default_board_db_path
 from grove_bridge.context_pack import ContextPackNode, prepend_grove_context_pack
 from grove_bridge.project_directory import ProjectDirectory
@@ -641,30 +624,6 @@ class GuiFeatureTogglePayload(BaseModel):
     enabled: bool
 
 
-class ChatProviderPayload(BaseModel):
-    provider: str = Field(default=CHAT_PROVIDER_DEFAULT_PROVIDER, max_length=50)
-    api_key: str = Field(min_length=1, max_length=5000)
-    model: str = Field(default=CHAT_PROVIDER_DEFAULT_MODEL, max_length=200)
-
-    @field_validator("provider")
-    @classmethod
-    def _validate_provider(cls, value: str) -> str:
-        clean = value.strip().lower()
-        if clean != CHAT_PROVIDER_DEFAULT_PROVIDER:
-            raise ValueError("provider must be gemini")
-        return clean
-
-    @field_validator("model")
-    @classmethod
-    def _validate_model(cls, value: str) -> str:
-        clean = value.strip()
-        if not clean:
-            return CHAT_PROVIDER_DEFAULT_MODEL
-        if re.fullmatch(r"[A-Za-z0-9_.:/-]+", clean) is None:
-            raise ValueError("invalid model")
-        return clean
-
-
 class ProjectCreatePayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     template: str | None = Field(default=None, max_length=200)
@@ -1047,15 +1006,6 @@ def create_app(
                 status_code=409,
                 detail="intake enable is gated until chat task confirmation is ready",
             )
-        if (
-            feature_name == CHAT_BRIDGE_RUNTIME_FLAG
-            and payload.enabled
-            and not _chat_provider_config(project.config)["api_key"]
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="chat provider must be configured before enabling chat runtime",
-            )
         feature_board = _gui_feature_board(project, feature_name)
         _store(request).set_gui_feature_enabled(
             board=feature_board,
@@ -1414,34 +1364,6 @@ def create_app(
     def auth_status_endpoint(request: Request) -> list[dict[str, object]]:
         _require_auth(request)
         return [tool_status.to_payload() for tool_status in collect_auth_status()]
-
-    @app.get("/api/chat/provider")
-    def chat_provider_status_endpoint(request: Request) -> dict[str, object]:
-        _require_auth(request)
-        project = resolve_project(request)
-        return _chat_provider_status(project.config)
-
-    @app.post("/api/chat/provider")
-    def chat_provider_config_endpoint(
-        request: Request,
-        payload: ChatProviderPayload,
-    ) -> dict[str, object]:
-        auth = _require_operator_state_change(
-            request,
-            detail="chat provider config requires operator role",
-        )
-        project = resolve_project(request)
-        _write_chat_provider_config(project.config, payload)
-        _store(request).add_audit_event(
-            board=project.board,
-            kind="audit.chat.provider",
-            actor=_actor_payload(auth),
-            action="chat-provider-config",
-            target={"type": "chat_provider", "id": payload.provider},
-            payload={"provider": payload.provider, "model": payload.model},
-            summary=payload.model,
-        )
-        return _chat_provider_status(project.config)
 
     @app.get("/api/decisions")
     def decision_ledger_endpoint(
@@ -2603,7 +2525,6 @@ def create_app(
                 project.config.registry_session,
             ),
         )
-        payload["chat_runtime"] = _chat_runtime_status(store, project=project)
         return payload
 
     @app.post("/api/slack/config")
@@ -2818,68 +2739,6 @@ def _dashboard_token_path(grove_home: Path, session: str) -> Path:
 
 def _web_companion_path(grove_home: Path, session: str) -> Path:
     return grove_home / session / "web.json"
-
-
-def _chat_provider_config_path(config: WebAppConfig) -> Path:
-    return config.grove_home / DEFAULT_SESSION / CHAT_PROVIDER_CONFIG_FILENAME
-
-
-def _chat_persona_path(config: WebAppConfig) -> Path:
-    # chat-master's persona/policy source — a runtime file (sibling to the chat
-    # provider config). Absent → loader returns the placeholder. Mirrors Slack.
-    return config.grove_home / DEFAULT_SESSION / "chat-persona.md"
-
-
-def _chat_provider_config(config: WebAppConfig) -> dict[str, str]:
-    return load_gemini_provider_config(_chat_provider_config_path(config))
-
-
-def _chat_provider_status(config: WebAppConfig) -> dict[str, object]:
-    loaded = _chat_provider_config(config)
-    api_key = loaded["api_key"]
-    tail = api_key[-4:] if len(api_key) >= 4 else ""
-    return {
-        "provider": loaded["provider"],
-        "model": loaded["model"],
-        "configured": bool(api_key),
-        "source": loaded["source"],
-        "key_hint": f"…{tail}" if tail else None,
-    }
-
-
-def _chat_runtime_status(store: SQLiteBoardStore, *, project: ProjectContext) -> dict[str, object]:
-    enabled = _gui_feature_enabled(store, project=project, feature=CHAT_BRIDGE_RUNTIME_FLAG)
-    provider = _chat_provider_status(project.config)
-    provider_configured = bool(provider["configured"])
-    if enabled and provider_configured:
-        route = "bridge_native"
-    elif enabled:
-        route = "hold_until_provider_configured"
-    else:
-        route = "node_queue"
-    return {
-        "enabled": enabled,
-        "ready": enabled and provider_configured,
-        "route": route,
-        "provider": provider["provider"],
-        "model": provider["model"],
-        "provider_configured": provider_configured,
-        "provider_source": provider["source"],
-    }
-
-
-def _write_chat_provider_config(config: WebAppConfig, payload: ChatProviderPayload) -> None:
-    api_key = payload.api_key.strip()
-    if not api_key:
-        raise HTTPException(status_code=400, detail="api key is required")
-    _write_secret_json_atomic(
-        _chat_provider_config_path(config),
-        {
-            "provider": payload.provider,
-            "model": payload.model.strip() or CHAT_PROVIDER_DEFAULT_MODEL,
-            "api_key": api_key,
-        },
-    )
 
 
 def _write_web_companion(config: WebAppConfig, *, started_at: int) -> None:
@@ -6192,8 +6051,6 @@ def _gui_feature_enabled(
 
 
 def _gui_feature_board(project: ProjectContext, feature: str) -> str:
-    if feature == CHAT_BRIDGE_RUNTIME_FLAG:
-        return DEFAULT_SESSION
     return project.board
 
 
@@ -6283,92 +6140,6 @@ def _actor_payload(auth: AuthContext) -> dict[str, object]:
     return {"kind": "local", "id": "lead", "login": "lead", "role": "none"}
 
 
-def _chat_runtime_pending_tasks(
-    request: Request,
-) -> tuple[dict[str, ChatRuntimePendingTask], LockType]:
-    pending = getattr(request.app.state, "chat_runtime_pending_tasks", None)
-    lock = getattr(request.app.state, "chat_runtime_pending_tasks_lock", None)
-    if not isinstance(pending, dict) or not isinstance(lock, LockType):
-        pending = {}
-        lock = threading.Lock()
-        request.app.state.chat_runtime_pending_tasks = pending
-        request.app.state.chat_runtime_pending_tasks_lock = lock
-    return cast(dict[str, ChatRuntimePendingTask], pending), lock
-
-
-def _chat_runtime_task_title(value: str) -> str:
-    clean = _public_chat_text(value).strip()
-    return clean[:500] if clean else "chat task"
-
-
-def _chat_runtime_task_body(value: str) -> str:
-    return _public_chat_text(value).strip()[:20_000]
-
-
-def _chat_runtime_task_preview_payload(
-    *,
-    conversation_id: str,
-    request_id: str,
-    confirmation_id: str,
-    title: str,
-    body: str,
-    worktree: str | None,
-    card_text: str,
-    auth: AuthContext,
-    project: ProjectContext,
-    provider: Mapping[str, str],
-) -> dict[str, object]:
-    actor = _actor_payload(auth)
-    return {
-        "conversation_id": conversation_id,
-        "request_id": request_id,
-        "response_type": "preview",
-        "classification": {
-            "kind": "action",
-            "intent": "bridge_native.task_proposal",
-            "confidence": 1.0,
-            "signals": ["chat_runtime_structured_turn"],
-        },
-        "answer": {
-            "text": _public_chat_text(card_text),
-            "citations": [],
-            "metadata": {
-                "runtime": "chat_bridge_runtime",
-                "provider": provider["provider"],
-                "model": provider["model"],
-            },
-        },
-        "proposal": {
-            "proposal_id": confirmation_id,
-            "intent": "task_create",
-            "summary": title,
-            "target_project": project.name,
-            "requires_confirmation": True,
-            "requires_operator": True,
-            "payload": {
-                "confirmation_id": confirmation_id,
-                "title": title,
-                "body": body,
-                "project": project.name,
-                "worktree": worktree,
-                "confirm": {
-                    "endpoint": "/api/master/chat/confirm",
-                    "command": f"confirm {confirmation_id}",
-                },
-            },
-        },
-        "feedback_route": None,
-        "operator_gate": {
-            "allowed": True,
-            "reason": "explicit_confirmation_required",
-            "actor_id": _actor_id(actor),
-            "target_project": project.name,
-            "audit_metadata": {"runtime": "chat_bridge_runtime"},
-        },
-        "requires_confirmation": True,
-    }
-
-
 def _handle_master_chat_request(
     request: Request,
     payload: MasterChatPayload,
@@ -6376,16 +6147,9 @@ def _handle_master_chat_request(
     auth: AuthContext,
     project: ProjectContext,
 ) -> dict[str, object] | Response:
-    if chat_bridge_runtime_enabled(
-        _store(request),
-        board=_gui_feature_board(project, CHAT_BRIDGE_RUNTIME_FLAG),
-    ):
-        return _handle_chat_bridge_runtime_web_request(
-            request,
-            payload,
-            auth=auth,
-            project=project,
-        )
+    # P0: the abandoned chat_bridge_runtime (Gemini) branch was removed — master chat
+    # is node-routed (chat-master node) only, regardless of the (dead) flag. The
+    # bridge web handler remains dark/unreferenced (deletion = P3).
     assistant_client = _assistant_client(request)
     if not _node_routed_target_available(project.config, assistant_client):
         raise HTTPException(status_code=503, detail="master chat is unavailable")
@@ -6421,289 +6185,6 @@ def _handle_master_chat_request(
     if not isinstance(rendered, dict):
         raise HTTPException(status_code=503, detail="master chat returned invalid response")
     _persist_master_chat_turn(_store(request), payload, rendered, project=project)
-    return rendered
-
-
-def _handle_chat_bridge_runtime_web_request(
-    request: Request,
-    payload: MasterChatPayload,
-    *,
-    auth: AuthContext,
-    project: ProjectContext,
-) -> dict[str, object]:
-    provider = _chat_provider_config(project.config)
-    if not provider["api_key"]:
-        raise HTTPException(status_code=503, detail="chat provider is not configured")
-    conversation_id = _master_request_id(payload.conversation_id, prefix="conv")
-    request_id = _master_request_id(payload.request_id, prefix="req")
-    adapter = RedactingProviderAdapter(
-        inner=GeminiChatProviderAdapter(
-            api_key=provider["api_key"],
-            model=provider["model"],
-        )
-    )
-    try:
-        generated = adapter.generate(
-            ProviderRequest(
-                system_prompt=load_chat_bridge_persona(_chat_persona_path(project.config)),
-                user_text=_chat_bridge_web_user_text(
-                    _store(request),
-                    payload,
-                    conversation_id=conversation_id,
-                    project=project,
-                ),
-            ),
-            tools=[
-                build_get_project_tasks_tool(
-                    _store(request),
-                    default_board=project.board,
-                    directory=_project_directory(project.config),
-                )
-            ],
-        )
-        turn = parse_structured_turn(generated)
-        if turn.kind == "task_proposal":
-            if turn.proposal is None:
-                raise TurnParseError("task proposal is missing payload")
-            card_text = _public_chat_text(turn.card_text or "").strip()
-            if not card_text:
-                raise TurnParseError("task proposal is missing card_text")
-            confirmation_id = f"chat_task_{secrets.token_urlsafe(8)}"
-            title = _chat_runtime_task_title(turn.proposal.title)
-            body = _chat_runtime_task_body(turn.proposal.body)
-            pending = ChatRuntimePendingTask(
-                confirmation_id=confirmation_id,
-                board=project.board,
-                project=project.name,
-                conversation_id=conversation_id,
-                request_id=request_id,
-                actor=_actor_payload(auth),
-                title=title,
-                body=body,
-                worktree=turn.proposal.worktree,
-                source_message=_public_chat_text(payload.message),
-            )
-            pending_tasks, pending_lock = _chat_runtime_pending_tasks(request)
-            with pending_lock:
-                pending_tasks[confirmation_id] = pending
-            rendered = _chat_runtime_task_preview_payload(
-                conversation_id=conversation_id,
-                request_id=request_id,
-                confirmation_id=confirmation_id,
-                title=title,
-                body=body,
-                worktree=turn.proposal.worktree,
-                card_text=card_text,
-                auth=auth,
-                project=project,
-                provider=provider,
-            )
-            _store(request).add_audit_event(
-                board=project.board,
-                kind="audit.master.turn.received",
-                actor=_actor_payload(auth),
-                action="master.turn.received",
-                target={"type": "master", "id": request_id},
-                payload={
-                    "conversation_id": conversation_id,
-                    "response_type": "preview",
-                    "runtime": "chat_bridge_runtime",
-                    "provider": provider["provider"],
-                    "proposal_id": confirmation_id,
-                },
-                summary=_safe_public_text(payload.message),
-            )
-            _persist_master_chat_turn(_store(request), payload, rendered, project=project)
-            return rendered
-        answer_text = guard_answer_channel(
-            turn.answer_text or "",
-            forbidden=CHAT_RUNTIME_FORBIDDEN_ANSWERS,
-        )
-    except AssistantTransportError as exc:
-        LOGGER.warning("event=chat_bridge_web_transport_error error=%s", _safe_log_text(exc))
-        raise HTTPException(status_code=503, detail="chat provider is unavailable") from exc
-    except TurnParseError as exc:
-        LOGGER.warning("event=chat_bridge_web_structured_turn_error error=%s", _safe_log_text(exc))
-        raise HTTPException(
-            status_code=503, detail="chat provider returned invalid task proposal"
-        ) from exc
-    except Exception as exc:
-        LOGGER.warning("event=chat_bridge_web_error error=%s", _safe_log_text(exc))
-        raise HTTPException(status_code=500, detail="chat provider failed") from exc
-    answer_rendered: dict[str, object] = {
-        "conversation_id": conversation_id,
-        "request_id": request_id,
-        "response_type": "answer",
-        "classification": {
-            "kind": "chat",
-            "intent": "bridge_native.answer",
-            "confidence": 1.0,
-            "signals": [],
-        },
-        "answer": {
-            "text": _public_chat_text(answer_text),
-            "citations": [],
-            "metadata": {
-                "runtime": "chat_bridge_runtime",
-                "provider": provider["provider"],
-                "model": provider["model"],
-            },
-        },
-        "proposal": None,
-        "feedback_route": None,
-        "operator_gate": None,
-        "requires_confirmation": False,
-    }
-    _store(request).add_audit_event(
-        board=project.board,
-        kind="audit.master.turn.received",
-        actor=_actor_payload(auth),
-        action="master.turn.received",
-        target={"type": "master", "id": request_id},
-        payload={
-            "conversation_id": conversation_id,
-            "response_type": "answer",
-            "runtime": "chat_bridge_runtime",
-            "provider": provider["provider"],
-        },
-        summary=_safe_public_text(payload.message),
-    )
-    _persist_master_chat_turn(_store(request), payload, answer_rendered, project=project)
-    return answer_rendered
-
-
-def _chat_bridge_web_user_text(
-    store: SQLiteBoardStore,
-    payload: MasterChatPayload,
-    *,
-    conversation_id: str,
-    project: ProjectContext,
-) -> str:
-    history = store.list_master_chat_messages(board=project.board, conversation_id=conversation_id)
-    recent = history[-12:]
-    history_lines = [
-        f"{message.role}: {_public_chat_text(message.text)}"
-        for message in recent
-        if message.text.strip()
-    ]
-    facts = _master_chat_facts(store, project=project)
-    # User-facing project = display_name; the internal board/session is never
-    # surfaced to the LLM (avoids the "dev10 프로젝트" leak).
-    selected_display = _project_directory(project.config).display_name(
-        project.config.registry_session
-    )
-    return "\n".join(
-        [
-            f"Selected project: {selected_display}",
-            "Runtime facts JSON:",
-            json.dumps(facts, ensure_ascii=False, sort_keys=True),
-            "Conversation history:",
-            "\n".join(history_lines) if history_lines else "(none)",
-            "Current user message:",
-            _public_chat_text(payload.message),
-        ]
-    )
-
-
-def _confirm_chat_runtime_pending_task(
-    request: Request,
-    payload: MasterChatConfirmPayload,
-    *,
-    auth: AuthContext,
-    project: ProjectContext,
-) -> dict[str, object] | None:
-    pending_tasks, pending_lock = _chat_runtime_pending_tasks(request)
-    with pending_lock:
-        pending = pending_tasks.get(payload.confirmation_id)
-        if pending is None:
-            return None
-        if pending.board != project.board:
-            raise HTTPException(status_code=404, detail="chat task confirmation not found")
-        existing_task_id = pending.created_task_by_key.get(payload.idempotency_key)
-        if existing_task_id is None and pending.created_task_by_key:
-            raise HTTPException(status_code=409, detail="chat task confirmation already used")
-        if existing_task_id is None:
-            actor = _actor_payload(auth)
-            task_body = _task_body_with_grove_context(
-                pending.body or pending.source_message,
-                actor=actor,
-                assignee=None,
-                project=project,
-            )
-            task = _store(request).create_task(
-                board=project.board,
-                title=pending.title,
-                body=task_body,
-                assignee=None,
-                status="ready",
-                priority=0,
-                created_by=_actor_id(actor),
-                metadata={
-                    "labels": ["chat-runtime", "chat-master"],
-                    "chat_runtime": {
-                        "source": "web",
-                        "confirmation_id": pending.confirmation_id,
-                        "conversation_id": pending.conversation_id,
-                        "request_id": pending.request_id,
-                    },
-                    "worktree": pending.worktree,
-                },
-            )
-            pending.created_task_by_key[payload.idempotency_key] = task.id
-        else:
-            task = _store(request).get_task(board=project.board, task_id=existing_task_id)
-    request_id = _master_request_id(payload.request_id, prefix="req")
-    answer_text = f"태스크를 생성했습니다: {task.title} (`{task.id}`)"
-    rendered: dict[str, object] = {
-        "conversation_id": pending.conversation_id,
-        "request_id": request_id,
-        "response_type": "answer",
-        "classification": {
-            "kind": "action",
-            "intent": "bridge_native.task_confirm",
-            "confidence": 1.0,
-            "signals": ["chat_runtime_confirm"],
-        },
-        "answer": {
-            "text": answer_text,
-            "citations": [],
-            "metadata": {
-                "runtime": "chat_bridge_runtime",
-                "task_id": task.id,
-                "idempotency_key": payload.idempotency_key,
-            },
-        },
-        "proposal": None,
-        "feedback_route": None,
-        "operator_gate": None,
-        "requires_confirmation": False,
-    }
-    _store(request).add_audit_event(
-        board=project.board,
-        kind="audit.task.create",
-        actor=_actor_payload(auth),
-        action="chat_runtime_task_create",
-        target={"type": "task", "id": task.id},
-        task_id=task.id,
-        status="ok",
-        summary=task.title,
-        payload={
-            "confirmation_id": pending.confirmation_id,
-            "conversation_id": pending.conversation_id,
-            "source": "web",
-        },
-    )
-    try:
-        _store(request).append_master_chat_message(
-            board=project.board,
-            conversation_id=pending.conversation_id,
-            role="assistant",
-            text=answer_text,
-            request_id=request_id,
-            origin_surface=payload.origin_surface,
-        )
-    except Exception as exc:
-        LOGGER.warning("chat runtime confirm history persist failed: %s", _safe_log_text(exc))
     return rendered
 
 
@@ -6764,14 +6245,6 @@ def _handle_master_chat_confirm_request(
     auth: AuthContext,
     project: ProjectContext,
 ) -> dict[str, object] | Response:
-    runtime_confirmed = _confirm_chat_runtime_pending_task(
-        request,
-        payload,
-        auth=auth,
-        project=project,
-    )
-    if runtime_confirmed is not None:
-        return runtime_confirmed
     assistant_client = _assistant_client(request)
     if not _node_routed_target_available(project.config, assistant_client):
         raise HTTPException(status_code=503, detail="master chat is unavailable")
