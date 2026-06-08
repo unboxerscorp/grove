@@ -7785,7 +7785,10 @@ def _task_body_with_grove_context(
         body,
         caller_node=_actor_id(actor),
         nodes=nodes,
-        project=project.name,
+        # Project identity = display_name (e.g. grove-dev); single source = registry.
+        project=_project_display_name(
+            project.config.registry_session, _load_registry(project.config)
+        ),
         project_lead=LEAD_NODE_NAME,
         target_node=assignee,
         target_role=_context_pack_target_role_for_assignee(

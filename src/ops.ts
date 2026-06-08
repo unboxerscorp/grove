@@ -7,6 +7,7 @@ import { eventLogSize, readTurnEventsSince } from "./events.js";
 import { type NodeRuntime, saveRegistry, updateRegistryNode } from "./registry.js";
 import {
   capturePane,
+  currentPaneTarget,
   hasSession,
   hasWindow,
   listWindows,
@@ -210,6 +211,19 @@ export function clearPending(ctx: Context, nc: NodeCtx): void {
   }
 }
 
+/** Resolve the calling node's name from the current tmux pane ($TMUX_PANE →
+ *  registry tmux_pane match), so live `grove send`/`ask` surface the sender as
+ *  `node@project` in the context pack. Returns null outside tmux / when no node
+ *  owns the pane (the caller then renders as the raw CLI sentinel). */
+export async function resolveSelfNodeName(ctx: Context): Promise<string | null> {
+  const pane = await currentPaneTarget();
+  if (!pane) return null;
+  for (const [name, runtime] of Object.entries(ctx.registry.nodes)) {
+    if (runtime.tmux_pane && runtime.tmux_pane === pane) return runtime.name || name;
+  }
+  return null;
+}
+
 /**
  * Type a message into a node's pane and submit it. Uses bracketed paste so
  * multi-line content stays intact and does not submit on every newline.
@@ -380,6 +394,7 @@ export async function ask(
   message: string,
   timeoutMs: number,
   opts: {
+    callerNode?: string;
     contextMode?: ContextMode;
     eventLogDir?: string;
     submissionContext?: Context;
@@ -398,7 +413,7 @@ export async function ask(
     });
   }
   await submitMessage(nc, message, {
-    callerNode: "grove ask CLI",
+    callerNode: opts.callerNode ?? "grove ask CLI",
     context: opts.submissionContext ?? ctx,
     contextMode: opts.contextMode,
     project: opts.submissionProject,

@@ -5,6 +5,7 @@ import {
   type PendingBinding,
   recordPending,
   recordProvisionalPending,
+  resolveSelfNodeName,
   resolveTranscript,
   submitMessage,
 } from "../ops.js";
@@ -30,6 +31,9 @@ export async function cmdSend(
   // Live node-to-node send defaults to the compact pack; --context / env override.
   const contextMode = resolveContextMode(opts.context, "compact");
   const callerCtx = loadContext(opts.config);
+  // Identify the sending node (its tmux pane) so the pack reads "From: <self>@…";
+  // outside tmux / non-node callers fall back to the CLI sentinel.
+  const callerNode = (await resolveSelfNodeName(callerCtx)) ?? "grove send CLI";
   // --session is the canonical registry/session selector; --project is a kept
   // deprecated alias. node@project (canonical) or legacy project:node trigger
   // cross-project resolution too.
@@ -66,12 +70,12 @@ export async function cmdSend(
   }
   await (target
     ? submitMessage(nc, message, {
-        callerNode: "grove send CLI",
+        callerNode,
         context: target.callerCtx,
         contextMode,
         project: target.callerCtx.config.session,
       })
-    : submitMessage(nc, message, { callerNode: "grove send CLI", contextMode, context: ctx }));
+    : submitMessage(nc, message, { callerNode, contextMode, context: ctx }));
 
   const submitted = await poll(
     () => {

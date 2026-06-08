@@ -1450,7 +1450,7 @@ def test_rest_creates_task_on_board(tmp_path: Path) -> None:
     task = created.json()
     assert task["title"] == "New task"
     assert "GROVE CONTEXT PACK" in task["body"]
-    assert "From: lead@dev10 → worker@dev10" in task["body"]
+    assert "From: lead@grove-dev → worker@grove-dev" in task["body"]
     assert "Project lead: lead" in task["body"]
     assert "Target role: Implementation maker" in task["body"]
     assert "Original message:\nTask details" in task["body"]

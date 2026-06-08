@@ -55,6 +55,11 @@ export interface Registry {
   session: string;
   /** tmux session that hosts this project's panes; defaults to `session`. */
   tmuxSession?: string;
+  /** Human project identity (e.g. "grove-dev"); the context-pack renders it as
+   *  the @project suffix. Single source of truth, mirrored by the Python
+   *  _project_display_name. Falls back to `session` when unset. Round-trips:
+   *  updateRegistryNode re-reads + spreads the registry, preserving this key. */
+  display_name?: string;
   cwd: string;
   nodes: Record<string, NodeRuntime>;
   updatedAt: string;

@@ -32,6 +32,7 @@ vi.mock("../context.js", () => ({
 vi.mock("../ops.js", () => ({
   recordPending: vi.fn(),
   recordProvisionalPending: vi.fn(),
+  resolveSelfNodeName: vi.fn(async () => null),
   resolveTranscript: vi.fn(),
   submitMessage: vi.fn(),
 }));

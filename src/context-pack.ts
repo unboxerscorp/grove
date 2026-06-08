@@ -316,7 +316,10 @@ export function buildNodeContextPack(
     project?: string;
   } = {},
 ): string {
-  const project = opts.project ?? opts.context?.config.session ?? "unknown";
+  const session = opts.project ?? opts.context?.config.session ?? "unknown";
+  // Project identity = the registry's display_name (e.g. "grove-dev"), single
+  // source of truth; fall back to the session/registry name when unset.
+  const project = opts.context?.registry.display_name?.trim() || session;
   const input: GroveContextPackInput = {
     callerNode: opts.callerNode,
     maxBytes: opts.maxBytes,

@@ -13,6 +13,7 @@ vi.mock("../context.js", () => ({
 
 vi.mock("../ops.js", () => ({
   ask: vi.fn(),
+  resolveSelfNodeName: vi.fn(async () => null),
 }));
 
 vi.mock("../project-address.js", () => ({
@@ -57,7 +58,10 @@ describe("cmdAsk", () => {
     await cmdAsk("maker", "hello", { config: "grove.yaml", timeout: "2s" });
 
     expect(loadContext).toHaveBeenCalledWith("grove.yaml");
-    expect(ask).toHaveBeenCalledWith(ctx, nc, "hello", 2000, { contextMode: "compact" });
+    expect(ask).toHaveBeenCalledWith(ctx, nc, "hello", 2000, {
+      callerNode: "grove ask CLI",
+      contextMode: "compact",
+    });
     expect(writes).toEqual(["answer\n"]);
     expect(process.exitCode).toBeUndefined();
   });
@@ -101,6 +105,7 @@ describe("cmdAsk", () => {
       expect.objectContaining({ project: "dev11" }),
     );
     expect(ask).toHaveBeenCalledWith(targetCtx, targetNc, "hello", 2000, {
+      callerNode: "grove ask CLI",
       contextMode: "compact",
       submissionContext: ctx,
       submissionProject: "dev10",
