@@ -2735,7 +2735,9 @@ def create_app(
         if _is_static_asset_path(path):
             asset = _safe_dist_path(config_value.dist_dir, path)
             if asset is not None and asset.is_file():
-                return FileResponse(asset)
+                return FileResponse(
+                    asset, headers={"Cache-Control": _asset_cache_control(asset.name)}
+                )
         return _index_response(config_value)
 
     return app
@@ -7873,7 +7875,29 @@ def _index_response(config: WebAppConfig) -> HTMLResponse:
         html = html.replace("<head>", f"<head>{injected}", 1)
     else:
         html = f"{injected}{html}"
-    return HTMLResponse(html)
+    # index.html must always revalidate so a content-hashed build's new asset
+    # names are picked up immediately (a cached index would reference old hashes).
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+def _asset_cache_control(name: str) -> str:
+    """Long-lived immutable cache for content-hashed assets (e.g. app-JMSCLGS6.js
+    from esbuild [name]-[hash]); revalidate-always for stable names (app.js).
+
+    esbuild's base32 hash is 8 uppercase/digit chars, so the hash tail always has
+    an uppercase letter or a digit — that distinguishes it from a plain lowercase
+    word segment (e.g. my-component.js) which must stay revalidate-always."""
+    stem = name.rsplit(".", 1)[0]
+    if "-" in stem:
+        tail = stem.rsplit("-", 1)[1]
+        looks_hashed = (
+            len(tail) >= 8
+            and tail.isalnum()
+            and (any(c.isdigit() for c in tail) or any(c.isupper() for c in tail))
+        )
+        if looks_hashed:
+            return "public, max-age=31536000, immutable"
+    return "no-cache"
 
 
 def _bootstrap_script(config: WebAppConfig) -> str:

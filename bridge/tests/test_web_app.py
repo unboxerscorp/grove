@@ -151,6 +151,38 @@ def test_index_injects_session_token_and_serves_dist_assets(tmp_path: Path) -> N
     assert 'window.__GROVE_SESSION_TOKEN__ = "test-token"' in fallback.text
 
 
+def test_index_no_cache_and_hashed_assets_immutable(tmp_path: Path) -> None:
+    client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
+    (tmp_path / "dist" / "app-1a2b3c4d.js").write_text("export const x = 1;", encoding="utf-8")
+
+    index = client.get("/")
+    fixed = client.get("/app.js")  # stable alias -> must revalidate
+    hashed = client.get("/app-1a2b3c4d.js")  # content-hashed -> long-lived
+    spa = client.get("/nested/route")  # SPA fallback is HTML too
+
+    assert index.headers["cache-control"] == "no-cache"
+    assert spa.headers["cache-control"] == "no-cache"
+    assert fixed.status_code == 200
+    assert fixed.headers["cache-control"] == "no-cache"
+    assert hashed.status_code == 200
+    assert hashed.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+def test_asset_cache_control_classifies_hashed_vs_stable() -> None:
+    immutable = "public, max-age=31536000, immutable"
+    # esbuild [name]-[hash] base32: uppercase + digits 2-7 (real outputs)
+    assert web_app._asset_cache_control("app-JMSCLGS6.js") == immutable
+    assert web_app._asset_cache_control("app-MMI6652K.css") == immutable
+    # uppercase-only hash (no digit) still recognized
+    assert web_app._asset_cache_control("app-ABCDEFGH.js") == immutable
+    # lowercase-with-digits (other bundlers) recognized too
+    assert web_app._asset_cache_control("app-1a2b3c4d.js") == immutable
+    assert web_app._asset_cache_control("app.js") == "no-cache"
+    assert web_app._asset_cache_control("app.css") == "no-cache"
+    # a plain lowercase word segment must NOT be treated as immutable
+    assert web_app._asset_cache_control("my-component.js") == "no-cache"
+
+
 def test_api_path_miss_does_not_fall_back_to_spa_html(tmp_path: Path) -> None:
     client = make_client(tmp_path, SQLiteBoardStore(tmp_path / "board.db"))
 
