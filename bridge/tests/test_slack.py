@@ -83,6 +83,16 @@ class FakeSlackClient:
             raise RuntimeError("accepted but client failed")
         return ts
 
+    def update_message(
+        self,
+        *,
+        channel: str,
+        ts: str,
+        text: str,
+        blocks: Sequence[Mapping[str, object]] | None = None,
+    ) -> None:
+        self.updates.append((channel, ts, text, list(blocks) if blocks is not None else None))
+
     def find_message_by_metadata(
         self,
         *,
@@ -937,6 +947,17 @@ def test_human_gate_malformed_history_pagination_keeps_pending_without_repost(
                     _ = (channel, text, thread_ts, metadata, blocks)
                     return {"ts": "unused"}
 
+                def chat_update(
+                    self,
+                    *,
+                    channel: str,
+                    ts: str,
+                    text: str,
+                    blocks: Sequence[Mapping[str, object]] | None = None,
+                ) -> object:
+                    _ = (channel, ts, text, blocks)
+                    return {"ok": True}
+
                 def conversations_history(
                     self,
                     *,
@@ -1177,6 +1198,17 @@ def test_slack_sdk_history_lookup_scans_all_pages() -> None:
             _ = (channel, text, thread_ts, metadata, blocks)
             return {"ts": "unused"}
 
+        def chat_update(
+            self,
+            *,
+            channel: str,
+            ts: str,
+            text: str,
+            blocks: Sequence[Mapping[str, object]] | None = None,
+        ) -> object:
+            _ = (channel, ts, text, blocks)
+            return {"ok": True}
+
         def conversations_history(
             self,
             *,
@@ -1242,6 +1274,17 @@ def test_slack_sdk_client_rejects_missing_post_ts_and_bad_history() -> None:
             blocks: Sequence[Mapping[str, object]] | None = None,
         ) -> Mapping[str, object]:
             _ = (channel, text, thread_ts, metadata, blocks)
+            return {"ok": True}
+
+        def chat_update(
+            self,
+            *,
+            channel: str,
+            ts: str,
+            text: str,
+            blocks: Sequence[Mapping[str, object]] | None = None,
+        ) -> object:
+            _ = (channel, ts, text, blocks)
             return {"ok": True}
 
         def conversations_history(
@@ -1353,13 +1396,14 @@ def test_chat_routing_can_forward_addressed_turn_to_node(tmp_path: Path) -> None
     assert handled is True
     assert assistant.calls == []
     assert chat.calls == []
-    assert slack.posts == []
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     assert connector.poll_node_chat_queue() == 1
     assert chat.calls == [("slack:T1:C123:111.222", "channel-node", "summarize status")]
-    assert slack.posts[-1] == ("C123", "grove reply", "111.222")
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.updates == [("C123", "ts-1", "grove reply", None)]
 
 
-def test_chat_routing_task_like_message_posts_intake_confirm_before_node_route(
+def test_chat_routing_task_like_message_goes_directly_to_node(
     tmp_path: Path,
 ) -> None:
     store = SQLiteBoardStore(tmp_path / "board.db")
@@ -1394,15 +1438,11 @@ def test_chat_routing_task_like_message_posts_intake_confirm_before_node_route(
     )
 
     assert handled is True
-    assert slack.posts == []
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
 
     assert connector.poll_node_chat_queue() == 1
-    assert chat.calls == []
-    assert len(slack.posts) == 1
-    preview = slack.posts[-1][1]
-    assert preview.startswith("preview: create task_request item title=board export")
-    confirm = _extract_confirm_from_reason(preview)
-    assert confirm is not None
+    assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "task add board export")]
+    assert slack.updates == [("C123", "ts-1", "grove reply", None)]
     assert store.list_tasks(board="main") == []
     assert (
         store.list_due_slack_chat_messages(
@@ -1414,18 +1454,69 @@ def test_chat_routing_task_like_message_posts_intake_confirm_before_node_route(
         == []
     )
 
-    assert connector.handle_event(addressed_slack_event("UOP", f"confirm {confirm}", ts="111.333"))
 
-    tasks = store.list_tasks(board="main")
-    assert len(tasks) == 1
-    task = tasks[0]
-    assert task.title == "board export"
-    assert task.status == "ready"
-    assert task.assignee is None
-    intake = cast(Mapping[str, object], task.metadata["intake"])
-    assert intake["source"] == "slack"
-    assert intake["intent"] == "task_request"
-    assert chat.calls == []
+def test_chat_routing_updates_waiting_message_while_node_generates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(slack_module, "SLACK_NODE_CHAT_WAIT_UPDATE_SECONDS", 0.01)
+
+    class ObservingSlackClient(FakeSlackClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.wait_update_seen = threading.Event()
+
+        def update_message(
+            self,
+            *,
+            channel: str,
+            ts: str,
+            text: str,
+            blocks: Sequence[Mapping[str, object]] | None = None,
+        ) -> None:
+            super().update_message(channel=channel, ts=ts, text=text, blocks=blocks)
+            if "답변 생성 중" in text:
+                self.wait_update_seen.set()
+
+    class WaitingChatFacade:
+        def __init__(self, slack_client: ObservingSlackClient) -> None:
+            self.slack = slack_client
+            self.calls: list[tuple[str, str, str]] = []
+
+        def send(self, *, session_id: str, node: str, text: str) -> str:
+            self.calls.append((session_id, node, text))
+            assert self.slack.wait_update_seen.wait(timeout=1.0)
+            return "final grove reply"
+
+    slack = ObservingSlackClient()
+    chat = WaitingChatFacade(slack)
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="main", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="grove-master"),
+        assistant_broker=FakeAssistantBroker("assistant should not run"),
+        route_chat_to_node=True,
+    )
+
+    handled = connector.handle_event(
+        SlackEvent(
+            team="T1",
+            channel="C123",
+            user="U2",
+            text="<@BOT> summarize status",
+            ts="111.222",
+            thread_ts=None,
+            event_type="app_mention",
+        )
+    )
+
+    assert handled is True
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert connector.poll_node_chat_queue() == 1
+    assert any("답변 생성 중" in update[2] for update in slack.updates)
+    assert slack.updates[-1] == ("C123", "ts-1", "final grove reply", None)
 
 
 def test_chat_routing_defers_busy_prompt_guard_and_retries(tmp_path: Path) -> None:
@@ -1460,7 +1551,7 @@ def test_chat_routing_defers_busy_prompt_guard_and_retries(tmp_path: Path) -> No
 
     assert handled is True
     assert chat.calls == []
-    assert slack.posts == []
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     queued = store.list_due_slack_chat_messages(
         board="main",
         now=9999999999,
@@ -1472,6 +1563,7 @@ def test_chat_routing_defers_busy_prompt_guard_and_retries(tmp_path: Path) -> No
     assert queued[0].attempts == 0
 
     assert connector.poll_node_chat_queue() == 1
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     queued = store.list_due_slack_chat_messages(
         board="main",
         now=9999999999,
@@ -1487,7 +1579,8 @@ def test_chat_routing_defers_busy_prompt_guard_and_retries(tmp_path: Path) -> No
         ("slack:T1:C123:111.222", "grove-master", "summarize status"),
         ("slack:T1:C123:111.222", "grove-master", "summarize status"),
     ]
-    assert slack.posts[-1] == ("C123", "grove reply after retry", "111.222")
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.updates == [("C123", "ts-1", "grove reply after retry", None)]
     assert (
         store.list_due_slack_chat_messages(
             board="main",
@@ -1538,7 +1631,7 @@ def test_chat_routing_posts_waiting_notice_for_long_busy_prompt(tmp_path: Path) 
     assert chat.calls == [
         ("slack:T1:C123:111.222", "grove-master", "summarize status") for _ in range(6)
     ]
-    assert slack.posts == []
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     queued = store.list_due_slack_chat_messages(
         board="main",
         now=9999999999,
@@ -1582,6 +1675,7 @@ def test_chat_routing_defers_timeout_and_retries(tmp_path: Path) -> None:
 
     assert handled is True
     assert connector.poll_node_chat_queue() == 1
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     queued = store.list_due_slack_chat_messages(
         board="main",
         now=9999999999,
@@ -1591,14 +1685,14 @@ def test_chat_routing_defers_timeout_and_retries(tmp_path: Path) -> None:
     assert len(queued) == 1
     assert queued[0].status == "pending"
     assert queued[0].attempts == 1
-    assert slack.posts == []
 
     assert connector.poll_node_chat_queue() == 1
     assert chat.calls == [
         ("slack:T1:C123:111.222", "grove-master", "summarize status"),
         ("slack:T1:C123:111.222", "grove-master", "summarize status"),
     ]
-    assert slack.posts[-1] == ("C123", "grove reply after timeout", "111.222")
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.updates == [("C123", "ts-1", "grove reply after timeout", None)]
     assert (
         store.list_due_slack_chat_messages(
             board="main",
@@ -1640,30 +1734,28 @@ def test_chat_routing_retries_failed_response_delivery_without_duplicate_ask(
     )
     assert handled is True
 
-    original_post_message = slack.post_message
+    original_update_message = slack.update_message
     failed_once = False
 
-    def fail_response_once(
+    def fail_update_once(
         *,
         channel: str,
+        ts: str,
         text: str,
-        thread_ts: str | None = None,
-        metadata: Mapping[str, object] | None = None,
         blocks: Sequence[Mapping[str, object]] | None = None,
-    ) -> str:
+    ) -> None:
         nonlocal failed_once
         if text == "grove reply" and not failed_once:
             failed_once = True
             raise RuntimeError("slack api temporarily unavailable")
-        return original_post_message(
+        original_update_message(
             channel=channel,
+            ts=ts,
             text=text,
-            thread_ts=thread_ts,
-            metadata=metadata,
             blocks=blocks,
         )
 
-    slack.post_message = fail_response_once  # type: ignore[method-assign]
+    slack.update_message = fail_update_once  # type: ignore[method-assign]
 
     assert connector.poll_node_chat_queue() == 1
     queued = store.list_due_slack_chat_messages(
@@ -1678,7 +1770,8 @@ def test_chat_routing_retries_failed_response_delivery_without_duplicate_ask(
 
     assert connector.poll_node_chat_queue() == 1
     assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "summarize status")]
-    assert slack.posts[-1] == ("C123", "grove reply", "111.222")
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.updates == [("C123", "ts-1", "grove reply", None)]
     assert (
         store.list_due_slack_chat_messages(
             board="main",
@@ -1752,7 +1845,8 @@ def test_chat_routing_reclaims_stale_running_item_after_worker_restart(
 
     assert connector.poll_node_chat_queue() == 1
     assert chat.calls == []
-    assert slack.posts[-1] == ("C123", "cached grove reply", "111.222")
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.updates == [("C123", "ts-1", "cached grove reply", None)]
     assert (
         store.list_due_slack_chat_messages(
             board="main",
@@ -1793,10 +1887,11 @@ def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
 
     assert handled is True
     assert chat.calls == []
-    assert slack.posts == []
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     assert connector.poll_node_chat_queue() == 1
     assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "summarize status")]
-    assert slack.posts[-1] == ("C123", "grove reply", "111.222")
+    assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
+    assert slack.updates == [("C123", "ts-1", "grove reply", None)]
 
 
 def test_chat_routing_splits_long_assistant_response_in_thread(tmp_path: Path) -> None:
@@ -4298,6 +4393,17 @@ def test_slack_sdk_client_post_message_slackresponse() -> None:
             blocks: Sequence[Mapping[str, object]] | None = None,
         ) -> object:
             return FakeSlackResponse()
+
+        def chat_update(
+            self,
+            *,
+            channel: str,
+            ts: str,
+            text: str,
+            blocks: Sequence[Mapping[str, object]] | None = None,
+        ) -> object:
+            _ = (channel, ts, text, blocks)
+            return {"ok": True}
 
         def conversations_history(
             self,

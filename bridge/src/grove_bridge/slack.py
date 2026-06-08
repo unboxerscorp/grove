@@ -77,6 +77,8 @@ SLACK_EVENT_DEDUPE_MAX = 1000
 SLACK_ASSISTANT_RESPONSE_CHUNK_CHARS = 3000
 SLACK_NODE_CHAT_INPUT_BUSY_MARKER = "target pane has unsent prompt input"
 SLACK_NODE_CHAT_INPUT_BUSY_RETRY_SECONDS = 10
+SLACK_NODE_CHAT_WAIT_TEXT = "잠시만 기다리세요!"
+SLACK_NODE_CHAT_WAIT_UPDATE_SECONDS = 3.0
 SLACK_NODE_CHAT_RUNNING_STALE_SECONDS = 300
 SLACK_NODE_CHAT_QUEUE_LIMIT = 5
 SLACK_SOCKET_DISCONNECTED_RESTART_SECONDS = 60.0
@@ -108,6 +110,11 @@ def _slack_assistant_response_chunks(text: str) -> tuple[str, ...]:
         text[index : index + SLACK_ASSISTANT_RESPONSE_CHUNK_CHARS]
         for index in range(0, len(text), SLACK_ASSISTANT_RESPONSE_CHUNK_CHARS)
     )
+
+
+def _node_chat_wait_text(elapsed_seconds: int) -> str:
+    minutes, seconds = divmod(max(0, elapsed_seconds), 60)
+    return f"{SLACK_NODE_CHAT_WAIT_TEXT}\n답변 생성 중... {minutes}분 {seconds:02d}초 경과"
 
 
 class SlackClientProtocol(Protocol):
@@ -147,6 +154,15 @@ class SlackWebClientProtocol(Protocol):
         text: str,
         thread_ts: str | None = None,
         metadata: Mapping[str, object] | None = None,
+        blocks: Sequence[Mapping[str, object]] | None = None,
+    ) -> object: ...
+
+    def chat_update(
+        self,
+        *,
+        channel: str,
+        ts: str,
+        text: str,
         blocks: Sequence[Mapping[str, object]] | None = None,
     ) -> object: ...
 
@@ -493,6 +509,16 @@ class SlackSdkClient:
         if not isinstance(ts, str):
             raise RuntimeError("Slack response did not include ts")
         return ts
+
+    def update_message(
+        self,
+        *,
+        channel: str,
+        ts: str,
+        text: str,
+        blocks: Sequence[Mapping[str, object]] | None = None,
+    ) -> None:
+        self._client.chat_update(channel=channel, ts=ts, text=text, blocks=blocks)
 
     def bot_user_id(self) -> str | None:
         auth_test = getattr(self._client, "auth_test", None)
@@ -2483,7 +2509,7 @@ class SlackConnector:
             return self._handle_assistant_turn(event, thread_ts=thread_ts)
         text = _normalize_slack_text(event.text)
         node = _select_chat_node(event, self.chat_route)
-        self.store.enqueue_slack_chat_message(
+        item = self.store.enqueue_slack_chat_message(
             board=self.human_gate.board,
             team_id=event.team,
             channel_id=event.channel,
@@ -2493,6 +2519,7 @@ class SlackConnector:
             node=node,
             text=text,
         )
+        self._post_initial_node_chat_placeholder(item)
         self.store.upsert_slack_thread(
             board=self.human_gate.board,
             task_id=None,
@@ -2503,6 +2530,26 @@ class SlackConnector:
             node=node,
         )
         return True
+
+    def _post_initial_node_chat_placeholder(self, item: SlackChatQueueItem) -> None:
+        if item.placeholder_ts:
+            return
+        try:
+            ts = self.slack_client.post_message(
+                channel=item.channel_id,
+                text=SLACK_NODE_CHAT_WAIT_TEXT,
+                thread_ts=item.thread_ts,
+            )
+            self.store.store_slack_chat_message_placeholder_ts(
+                item.id,
+                placeholder_ts=ts,
+                now=int(time.time()),
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "Slack node chat initial placeholder skipped: %s",
+                _safe_log_error(exc),
+            )
 
     def poll_node_chat_queue(self) -> int:
         if not self.route_chat_to_node:
@@ -2545,11 +2592,24 @@ class SlackConnector:
             )
             return
         item = self.store.mark_slack_chat_message_running(item.id, now=now)
-        if self._process_node_chat_task_intake(item, now=now):
-            return
         session_id = _slack_chat_queue_conversation_id(item)
         response_text = item.response_text
         if response_text is None:
+            try:
+                item = self._ensure_node_chat_placeholder(item, now=now)
+            except Exception as exc:
+                LOGGER.warning(
+                    "Slack node chat placeholder delivery deferred: %s",
+                    _safe_log_error(exc),
+                )
+                self.store.defer_slack_chat_message(
+                    item.id,
+                    error=_safe_log_error(exc),
+                    next_attempt_at=now + self.node_chat_retry_delay_seconds,
+                    now=now,
+                )
+                return
+            wait_updates = self._start_node_chat_wait_updates(item)
             try:
                 response_text = self.chat_facade.send(
                     session_id=session_id,
@@ -2557,6 +2617,7 @@ class SlackConnector:
                     text=item.text,
                 )
             except Exception as exc:
+                self._stop_node_chat_wait_updates(wait_updates)
                 if _slack_node_chat_input_busy(exc):
                     LOGGER.info("Slack node chat deferred by input guard: %s", _safe_log_error(exc))
                     self.store.defer_slack_chat_message(
@@ -2579,6 +2640,7 @@ class SlackConnector:
                 self.store.fail_slack_chat_message(item.id, error=_safe_log_error(exc), now=now)
                 return
             else:
+                self._stop_node_chat_wait_updates(wait_updates)
                 item = self.store.store_slack_chat_message_response(
                     item.id,
                     response_text=response_text,
@@ -2586,12 +2648,7 @@ class SlackConnector:
                 )
                 response_text = item.response_text or ""
         try:
-            for response_chunk in _slack_assistant_response_chunks(response_text):
-                self.slack_client.post_message(
-                    channel=item.channel_id,
-                    text=response_chunk,
-                    thread_ts=item.thread_ts,
-                )
+            self._deliver_node_chat_response(item, response_text=response_text)
         except Exception as exc:
             LOGGER.warning(
                 "Slack node chat response delivery deferred: %s",
@@ -2605,6 +2662,90 @@ class SlackConnector:
             )
             return
         self.store.complete_slack_chat_message(item.id, now=now)
+
+    def _ensure_node_chat_placeholder(
+        self, item: SlackChatQueueItem, *, now: int
+    ) -> SlackChatQueueItem:
+        if item.placeholder_ts:
+            return item
+        ts = self.slack_client.post_message(
+            channel=item.channel_id,
+            text=SLACK_NODE_CHAT_WAIT_TEXT,
+            thread_ts=item.thread_ts,
+        )
+        return self.store.store_slack_chat_message_placeholder_ts(
+            item.id,
+            placeholder_ts=ts,
+            now=now,
+        )
+
+    def _start_node_chat_wait_updates(
+        self, item: SlackChatQueueItem
+    ) -> tuple[threading.Event, threading.Thread] | None:
+        update_message = getattr(self.slack_client, "update_message", None)
+        if not item.placeholder_ts or not callable(update_message):
+            return None
+        stop = threading.Event()
+        started = time.monotonic()
+
+        def update_loop() -> None:
+            while not stop.wait(SLACK_NODE_CHAT_WAIT_UPDATE_SECONDS):
+                elapsed = int(time.monotonic() - started)
+                try:
+                    self._update_slack_message(
+                        channel=item.channel_id,
+                        ts=item.placeholder_ts or "",
+                        text=_node_chat_wait_text(elapsed),
+                    )
+                except Exception as exc:
+                    LOGGER.info("Slack node chat wait update skipped: %s", _safe_log_error(exc))
+
+        thread = threading.Thread(target=update_loop, daemon=True)
+        thread.start()
+        return stop, thread
+
+    def _stop_node_chat_wait_updates(
+        self, wait_updates: tuple[threading.Event, threading.Thread] | None
+    ) -> None:
+        if wait_updates is None:
+            return
+        stop, thread = wait_updates
+        stop.set()
+        thread.join(timeout=1.0)
+
+    def _deliver_node_chat_response(self, item: SlackChatQueueItem, *, response_text: str) -> None:
+        chunks = _slack_assistant_response_chunks(response_text)
+        if item.placeholder_ts and self._update_slack_message(
+            channel=item.channel_id,
+            ts=item.placeholder_ts,
+            text=chunks[0],
+        ):
+            for response_chunk in chunks[1:]:
+                self.slack_client.post_message(
+                    channel=item.channel_id,
+                    text=response_chunk,
+                    thread_ts=item.thread_ts,
+                )
+            return
+        for response_chunk in chunks:
+            self.slack_client.post_message(
+                channel=item.channel_id,
+                text=response_chunk,
+                thread_ts=item.thread_ts,
+            )
+
+    def _update_slack_message(
+        self,
+        *,
+        channel: str,
+        ts: str,
+        text: str,
+    ) -> bool:
+        update_message = getattr(self.slack_client, "update_message", None)
+        if not callable(update_message):
+            return False
+        update_message(channel=channel, ts=ts, text=text)
+        return True
 
     def _chat_bridge_runtime_ready(self) -> bool:
         if not chat_bridge_runtime_enabled(self.store, board=self.human_gate.board):
