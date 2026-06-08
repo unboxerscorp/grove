@@ -195,6 +195,14 @@ export function TerminalGrid({
   const total = totalCells(rows);
   const canAddRow = rows.length < MAX_ROWS && total < MAX_CELLS;
   const canAddCol = (row: GridRow) => row.cells.length < MAX_COLS && total < MAX_CELLS;
+  // Move-aware drop-zone validity: a reorder (dnd.moving) is net-zero, so it may
+  // also target the origin's own (possibly full) row, and a solo cell may move to
+  // a new row even at the row cap.
+  const moving = dnd.moving;
+  const moveOriginSolo = moving ? rows.find((r) => r.id === moving.rowId)?.cells.length === 1 : false;
+  const colSlotOk = (row: GridRow) =>
+    moving ? row.id === moving.rowId || row.cells.length < MAX_COLS : canAddCol(row);
+  const rowSlotOk = moving ? moveOriginSolo || rows.length < MAX_ROWS : canAddRow;
 
   const addCell = (node: string) => {
     if (!picking) return;
@@ -265,6 +273,43 @@ export function TerminalGrid({
         return rs;
       return [...rs.slice(0, index), makeRow(node), ...rs.slice(index)];
     });
+  // Reorder an existing cell (cellbar drag): relocate the SAME cell object so its
+  // terminal pane is not torn down. Net-zero cell count, so the caps hold; no-dup
+  // is intentionally bypassed (we're moving the node, not adding a duplicate).
+  const moveCell = (dropKey: string, move: { rowId: string; cellId: string }) =>
+    setActiveRows((rs) => {
+      const origRowIdx = rs.findIndex((r) => r.id === move.rowId);
+      if (origRowIdx < 0) return rs;
+      const origRow = rs[origRowIdx]!;
+      const origIdx = origRow.cells.findIndex((c) => c.id === move.cellId);
+      if (origIdx < 0) return rs;
+      const cell = origRow.cells[origIdx]!;
+      const [kind, a, b] = dropKey.split(":");
+      // No-op: dropped onto the cell's own current slot (idx or idx+1 in its row).
+      if (kind === "col" && a === move.rowId && (Number(b) === origIdx || Number(b) === origIdx + 1)) {
+        return rs;
+      }
+      const origSolo = origRow.cells.length === 1;
+      // 1. remove the origin occurrence; drop the row if it empties.
+      const removed = rs
+        .map((r) => (r.id === move.rowId ? { ...r, cells: r.cells.filter((c) => c.id !== move.cellId) } : r))
+        .filter((r) => r.cells.length > 0);
+      // 2. re-insert the same cell at the target, adjusting for the removal shift.
+      if (kind === "row" && a !== undefined) {
+        let i = Number(a);
+        if (origSolo && origRowIdx < i) i -= 1; // origin row vanished above the target
+        i = Math.max(0, Math.min(i, removed.length));
+        return [...removed.slice(0, i), { id: nextRowId(), cells: [cell] }, ...removed.slice(i)];
+      }
+      if (kind === "col" && a !== undefined && b !== undefined) {
+        let idx = Number(b);
+        if (a === move.rowId && idx > origIdx) idx -= 1; // same-row shift after removal
+        return removed.map((r) =>
+          r.id === a ? { ...r, cells: [...r.cells.slice(0, idx), cell, ...r.cells.slice(idx)] } : r,
+        );
+      }
+      return rs;
+    });
   const dragging = dnd.draggingNode !== null;
   // Each drop zone is a thin strip tagged with a data-dropkey. The pointer drag
   // controller (termViewsStore) hit-tests these, toggles `.is-over` imperatively
@@ -276,8 +321,11 @@ export function TerminalGrid({
   // Commit handler: parse a data-dropkey ("empty" | "row:i" | "col:rowId:i") and
   // insert. Held in a ref so the controller registration stays stable while the
   // closures still see current state.
-  const commitRef = useRef<(dropKey: string, node: string) => void>(() => {});
-  commitRef.current = (dropKey, node) => {
+  const commitRef = useRef<
+    (dropKey: string, node: string, move: { rowId: string; cellId: string } | null) => void
+  >(() => {});
+  commitRef.current = (dropKey, node, move) => {
+    if (move) return moveCell(dropKey, move); // cellbar reorder
     if (dropKey === "empty") return insertRowAt(0, node);
     const parts = dropKey.split(":");
     if (parts[0] === "row" && parts[1] !== undefined) insertRowAt(Number(parts[1]), node);
@@ -285,14 +333,23 @@ export function TerminalGrid({
       insertCellAt(parts[1], Number(parts[2]), node);
   };
   useEffect(() => {
-    termDnd.registerCommit((k, n) => commitRef.current(k, n));
+    termDnd.registerCommit((k, n, m) => commitRef.current(k, n, m));
     return () => termDnd.registerCommit(null);
   }, []);
   const renderCell = (row: GridRow, cell: GridCell) => {
     const node = nodes.find((n) => n.name === cell.node) ?? null;
     return (
-      <div className="dr-termgrid__cell" key={cell.id}>
-        <div className="dr-termgrid__cellbar">
+      <div className={cx("dr-termgrid__cell", dnd.moving?.cellId === cell.id && "is-moving")} key={cell.id}>
+        <div
+          className="dr-termgrid__cellbar"
+          onPointerDown={(e) => {
+            if ((e.target as HTMLElement).closest("button")) return; // let ⤢/× taps through
+            termDnd.startPointerDrag(cell.node, e.clientX, e.clientY, e.pointerId, {
+              rowId: row.id,
+              cellId: cell.id,
+            });
+          }}
+        >
           <span className="dr-termgrid__cellname" title={cell.node}>
             {cell.node}
           </span>
@@ -377,15 +434,15 @@ export function TerminalGrid({
         </div>
       ) : (
         <div className="dr-termgrid__rows">
-          {dragging && canAddRow && dropSlot("row:0", "row")}
+          {dragging && rowSlotOk && dropSlot("row:0", "row")}
           {rows.map((row, ri) => (
             <Fragment key={row.id}>
               <div className="dr-termgrid__row">
-                {dragging && canAddCol(row) && dropSlot(`col:${row.id}:0`, "col")}
+                {dragging && colSlotOk(row) && dropSlot(`col:${row.id}:0`, "col")}
                 {row.cells.map((cell, ci) => (
                   <Fragment key={cell.id}>
                     {renderCell(row, cell)}
-                    {dragging && canAddCol(row) && dropSlot(`col:${row.id}:${ci + 1}`, "col")}
+                    {dragging && colSlotOk(row) && dropSlot(`col:${row.id}:${ci + 1}`, "col")}
                   </Fragment>
                 ))}
                 <button
@@ -399,7 +456,7 @@ export function TerminalGrid({
                   +
                 </button>
               </div>
-              {dragging && canAddRow && dropSlot(`row:${ri + 1}`, "row")}
+              {dragging && rowSlotOk && dropSlot(`row:${ri + 1}`, "row")}
             </Fragment>
           ))}
           <button

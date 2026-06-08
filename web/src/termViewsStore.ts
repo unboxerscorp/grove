@@ -24,9 +24,16 @@ interface TermDndState {
   gridMounted: boolean;
   activeNodes: string[];
   draggingNode: string | null;
+  // When the active drag is a CELL reorder (cellbar drag), the cell being moved;
+  // null for a node-list "add" drag. Lets the grid gate drop zones + dim the cell.
+  moving: MoveRef | null;
+}
+interface MoveRef {
+  rowId: string;
+  cellId: string;
 }
 
-let state: TermDndState = { gridMounted: false, activeNodes: [], draggingNode: null };
+let state: TermDndState = { gridMounted: false, activeNodes: [], draggingNode: null, moving: null };
 const listeners = new Set<() => void>();
 
 function sameNames(a: string[], b: string[]): boolean {
@@ -40,6 +47,7 @@ function set(patch: Partial<TermDndState>): void {
   if (
     next.gridMounted === state.gridMounted &&
     next.draggingNode === state.draggingNode &&
+    next.moving === state.moving &&
     sameNames(next.activeNodes, state.activeNodes)
   ) {
     return; // no real change -> keep snapshot ref stable (no re-render)
@@ -56,7 +64,7 @@ function subscribe(listener: () => void): () => void {
 }
 
 // --- pointer drag controller -------------------------------------------------
-type CommitFn = (dropKey: string, node: string) => void;
+type CommitFn = (dropKey: string, node: string, move: MoveRef | null) => void;
 let commitFn: CommitFn | null = null;
 
 interface DragSession {
@@ -68,6 +76,7 @@ interface DragSession {
   ghost: HTMLDivElement | null;
   overEl: HTMLElement | null;
   overKey: string | null;
+  move: MoveRef | null;
 }
 let drag: DragSession | null = null;
 const DRAG_THRESHOLD = 6; // px before a press becomes a drag (vs a tap/select)
@@ -123,7 +132,7 @@ function onMove(e: PointerEvent): void {
   if (!drag.started) {
     if (Math.hypot(x - drag.startX, y - drag.startY) < DRAG_THRESHOLD) return;
     drag.started = true;
-    set({ draggingNode: drag.node }); // -> grid renders drop zones
+    set({ draggingNode: drag.node, moving: drag.move }); // -> grid renders drop zones
     const g = document.createElement("div");
     g.className = "dr-drag-ghost";
     g.textContent = drag.node;
@@ -147,10 +156,10 @@ function finish(commit: boolean): void {
   const d = drag;
   drag = null;
   if (!d) return;
-  if (commit && d.started && d.overKey && commitFn) commitFn(d.overKey, d.node);
+  if (commit && d.started && d.overKey && commitFn) commitFn(d.overKey, d.node, d.move);
   if (d.overEl) d.overEl.classList.remove("is-over");
   d.ghost?.remove();
-  if (d.started) set({ draggingNode: null });
+  if (d.started) set({ draggingNode: null, moving: null });
 }
 
 function onUp(e: PointerEvent): void {
@@ -165,7 +174,7 @@ function onKey(e: KeyboardEvent): void {
 
 export const termDnd = {
   setGridMounted(v: boolean): void {
-    set(v ? { gridMounted: true } : { gridMounted: false, activeNodes: [], draggingNode: null });
+    set(v ? { gridMounted: true } : { gridMounted: false, activeNodes: [], draggingNode: null, moving: null });
     if (!v) finish(false); // grid unmounted mid-drag -> cancel cleanly
   },
   setActiveNodes(names: string[]): void {
@@ -176,7 +185,13 @@ export const termDnd = {
   },
   // Begin a drag from a node (mouse/touch/pen). Arms first; the real drag only
   // starts once the pointer passes DRAG_THRESHOLD, so a plain tap stays a tap.
-  startPointerDrag(node: string, clientX: number, clientY: number, pointerId: number): void {
+  startPointerDrag(
+    node: string,
+    clientX: number,
+    clientY: number,
+    pointerId: number,
+    move: MoveRef | null = null,
+  ): void {
     if (drag) finish(false);
     drag = {
       node,
@@ -187,6 +202,7 @@ export const termDnd = {
       ghost: null,
       overEl: null,
       overKey: null,
+      move,
     };
     window.addEventListener("pointermove", onMove, { passive: false });
     window.addEventListener("pointerup", onUp);

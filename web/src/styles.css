@@ -5909,7 +5909,11 @@ button {
 .dr-termgrid__rows { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; gap: 6px; }
 .dr-termgrid__row { display: flex; flex: 1 1 0; min-height: 0; min-width: 0; gap: 6px; }
 .dr-termgrid__cell { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-.dr-termgrid__cellbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 3px 6px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
+/* the cellbar is a drag handle: grab it to reorder the cell (⤢/× excluded in JS).
+   touch-action:none lets a touch-drag start without the page treating it as a scroll. */
+.dr-termgrid__cellbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; padding: 3px 6px; background: var(--panel-2); border-bottom: 1px solid var(--line); cursor: grab; touch-action: none; }
+.dr-termgrid__cellbar:active { cursor: grabbing; }
+.dr-termgrid__cell.is-moving { opacity: 0.4; }
 .dr-termgrid__cellname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; color: var(--text); }
 .dr-termgrid__icon { flex: 0 0 auto; font-family: var(--mono); color: var(--dim); background: transparent; border: 0; border-radius: 6px; padding: 1px 6px; cursor: pointer; }
 .dr-termgrid__icon:hover { color: var(--text); }
