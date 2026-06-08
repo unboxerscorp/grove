@@ -132,6 +132,7 @@ interface OrgNodeMock {
   description?: string;
   parent?: string | null;
   group?: string;
+  kind?: string;
   tmux_pane: string;
   session_id: string;
   status: string;
@@ -156,6 +157,18 @@ const LEAD_NODE: OrgNodeMock = {
   session_id: "",
   status: "external",
 };
+
+// Master/control plane emitted at org-level (project="", under grove-master) so it
+// renders in EVERY project view — mirrors web_app.py _org_graph_master_plane_records.
+// web/slack are kind="service" (flat services section); chat/task/advisor nest.
+const MASTER_PLANE_NODES: OrgNodeMock[] = [
+  { name: "grove-master", agent: "codex", role: "GROVE MASTER", description: "GROVE MASTER root.", parent: "", group: "master", kind: "meta", tmux_pane: "", session_id: "", status: "active" },
+  { name: "chat-master", agent: "claude", role: "CHAT MASTER", parent: "grove-master", group: "master", tmux_pane: "dev10:0.2", session_id: "sess-cm", status: "running" },
+  { name: "task-master", agent: "claude", role: "TASK MASTER", parent: "grove-master", group: "master", tmux_pane: "dev10:0.1", session_id: "sess-tm", status: "running" },
+  { name: "advisor", agent: "claude", role: "advisor", parent: "grove-master", group: "master", tmux_pane: "dev10:0.3", session_id: "sess-adv", status: "running" },
+  { name: "web", agent: "codex", role: "web service", parent: "grove-master", group: "services", kind: "service", tmux_pane: "dev10:1.0", session_id: "sess-web", status: "active" },
+  { name: "slack", agent: "codex", role: "slack service", parent: "grove-master", group: "services", kind: "service", tmux_pane: "dev10:1.1", session_id: "sess-slack", status: "active" },
+];
 
 // v2 access flags — mirror web_app.py NodeRecord + _pane_allowed: any valid pane
 // is terminal/connect visible and input-capable; auth/origin/node-input/rate
@@ -216,7 +229,7 @@ function basicNode(n: OrgNodeMock) {
 
 function childMap(): Record<string, string[]> {
   const c: Record<string, string[]> = {};
-  for (const n of ORG_NODES) if (n.parent) (c[n.parent] ??= []).push(n.name);
+  for (const n of [...MASTER_PLANE_NODES, ...ORG_NODES]) if (n.parent) (c[n.parent] ??= []).push(n.name);
   return c;
 }
 
@@ -280,15 +293,15 @@ function buildMasterOrg(selected: string) {
 }
 
 function buildOrg(proj = "dev10") {
-  const orgNodes = [...ORG_NODES, LEAD_NODE];
+  const orgNodes = [...MASTER_PLANE_NODES, ...ORG_NODES, LEAD_NODE];
   const children = childMap();
   const groups: Record<string, string[]> = {};
-  for (const n of ORG_NODES) if (n.group) (groups[n.group] ??= []).push(n.name);
+  for (const n of orgNodes) if (n.group) (groups[n.group] ??= []).push(n.name);
   return {
     nodes: orgNodes.map((n) => ({
       ...n,
       children: children[n.name] ?? [],
-      kind: n.agent === "human" ? "human" : "registry",
+      kind: n.kind ?? (n.agent === "human" ? "human" : "registry"),
       ...nodeAccessFlags(n.tmux_pane),
       ...(n.agent === "human" ? { terminal_allowed: false, input_allowed: false, unavailable_reason: "human node has no pane" } : {}),
     })),

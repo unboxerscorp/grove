@@ -5,7 +5,7 @@ import { AGENTS, agentGlyph, cx, statusColor } from "../constants";
 import { statusLabel, useI18n } from "../i18n";
 import { buildOrgTree, isBgServiceNode } from "../orgTree";
 import type { TFn } from "../i18n";
-import type { MasterMeta, NodeHealth, OrgNode, ProjectLead } from "../types";
+import type { NodeHealth, OrgNode, ProjectLead } from "../types";
 import { useFocusTrap } from "../useFocusTrap";
 import { ROLE_PRESETS, rolePresetBody } from "../rolePresets";
 import { GroveMark } from "./GroveMark";
@@ -518,7 +518,6 @@ export function OrgChart(props: {
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   // v1.29 cross-project org.
-  const [master, setMaster] = useState<MasterMeta | null>(null);
   const [projectLeads, setProjectLeads] = useState<ProjectLead[]>([]);
   const [nodeHealth, setNodeHealth] = useState<Record<string, NodeHealth>>({}); // PR1 watchdog
   // Operator gate for the drawer edit form. Optimistic (server still enforces
@@ -558,7 +557,6 @@ export function OrgChart(props: {
         setNodes(o.nodes ?? []);
         setRootList(o.roots ?? []);
         setChildrenMap(o.children ?? {});
-        setMaster(o.master ?? null);
         setProjectLeads(o.project_leads ?? []);
         setError(null);
         setLoading(false);
@@ -843,15 +841,10 @@ export function OrgChart(props: {
     <section className="org">
       {/* v1.29 cross-project bar: CHAT MASTER entrypoint + project
           leads. Current lead expands the tree below; others switch project. */}
-      {(master || projectLeads.length > 0) && (
+      {/* grove-master is the canonical tree root (org-level, with its master plane
+          nested) — this bar is now the project-lead switcher only. */}
+      {projectLeads.length > 0 && (
         <div className="org-master-bar" role="navigation" aria-label={t("org.crossProject")}>
-          {master && (
-            <span className="org-master" data-master="1">
-              <span className="org-master__glyph" aria-hidden="true">◆</span>
-              {master.label || master.name}
-            </span>
-          )}
-          <span className="org-master-bar__arrow" aria-hidden="true">→</span>
           <div className="org-pleads">
             {projectLeads.map((pl) => (
               <button
