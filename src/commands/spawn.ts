@@ -12,6 +12,7 @@ import {
   type CreateDetachedPaneRequest,
   preserveActiveWindow,
 } from "../tmux.js";
+import { ensureCodexTrustedProject } from "../util/codex-config.js";
 import { validateGroveName } from "../util/names.js";
 import { expandHome } from "../util/paths.js";
 
@@ -74,6 +75,7 @@ export interface SpawnResult {
 
 export interface SpawnDeps {
   createPane(req: CreateDetachedPaneRequest): Promise<string>;
+  ensureCodexTrustedProject(cwd: string): void;
   getAdapter(agent: AgentType): AgentAdapter;
   launchNode(ctx: Context, nc: NodeCtx): Promise<void>;
   preserveActiveWindow<T>(session: string, fn: () => Promise<T>): Promise<T>;
@@ -82,6 +84,7 @@ export interface SpawnDeps {
 
 const defaultDeps: SpawnDeps = {
   createPane: createDetachedPane,
+  ensureCodexTrustedProject,
   getAdapter,
   launchNode,
   preserveActiveWindow,
@@ -259,6 +262,7 @@ export async function spawnNode(
   const ctx = sessionContext(baseCtx, session);
   const parsed = parseSpawnRequest(ctx, { ...input, session });
   ensureSpawnable(ctx, parsed);
+  if (parsed.agent === "codex") deps.ensureCodexTrustedProject(parsed.cwd);
 
   return deps.preserveActiveWindow(parsed.tmuxSession, async () => {
     const pane = await deps.createPane({

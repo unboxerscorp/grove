@@ -113,17 +113,22 @@ function context(reg = registry(), agent = adapter({ "/repo/ok.jsonl": 10 })): C
 function deps(agent = adapter({ "/repo/ok.jsonl": 10 })): {
   deps: RepairDeps;
   guardSessions: string[];
+  hasSessions: string[];
   paneTargets: string[];
   saves: number;
 } {
   const guardSessions: string[] = [];
+  const hasSessions: string[] = [];
   const paneTargets: string[] = [];
   let saves = 0;
   return {
     deps: {
       exists: (file) => file !== "/repo/missing.jsonl",
       getAdapter: () => agent,
-      hasSession: async () => true,
+      hasSession: async (session) => {
+        hasSessions.push(session);
+        return true;
+      },
       loadContext: () => context(registry(), agent),
       paneTarget: async (addr) => {
         paneTargets.push(addr);
@@ -144,6 +149,7 @@ function deps(agent = adapter({ "/repo/ok.jsonl": 10 })): {
       return saves;
     },
     guardSessions,
+    hasSessions,
     paneTargets,
   };
 }
@@ -168,6 +174,21 @@ describe("repairNodes", () => {
       }),
     ]);
     expect(state.saves).toBe(1);
+  });
+
+  test("uses registry tmuxSession when project registry is hosted in a shared tmux session", async () => {
+    const reg = registry();
+    reg.session = "base-math";
+    reg.tmuxSession = "dev10";
+    const state = deps();
+    const ctx = context(reg);
+    ctx.config.session = "base-math";
+
+    await repairNodes(ctx, { node: "dead" }, state.deps);
+
+    expect(state.hasSessions).toEqual(["dev10"]);
+    expect(state.guardSessions).toEqual(["dev10"]);
+    expect(state.paneTargets).toEqual(["dev10:old.%5", "dev10:1.2"]);
   });
 
   test("classifies an empty bound transcript as stale when no replacement is resolved", async () => {

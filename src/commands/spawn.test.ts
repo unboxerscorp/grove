@@ -95,10 +95,12 @@ function deps(opts: { bindTranscript?: boolean } = {}): {
   launched: NodeCtx[];
   paneRequests: Parameters<SpawnDeps["createPane"]>[0][];
   saves: number;
+  trustedCwds: string[];
 } {
   const guardSessions: string[] = [];
   const launched: NodeCtx[] = [];
   const paneRequests: Parameters<SpawnDeps["createPane"]>[0][] = [];
+  const trustedCwds: string[] = [];
   let saves = 0;
   return {
     deps: {
@@ -107,6 +109,9 @@ function deps(opts: { bindTranscript?: boolean } = {}): {
         return "dev10:2.0";
       },
       getAdapter: (agent) => adapter(agent),
+      ensureCodexTrustedProject: (cwd) => {
+        trustedCwds.push(cwd);
+      },
       launchNode: async (ctx, nc) => {
         launched.push(nc);
         ctx.registry.nodes[nc.node.name] = {
@@ -136,6 +141,7 @@ function deps(opts: { bindTranscript?: boolean } = {}): {
     guardSessions,
     launched,
     paneRequests,
+    trustedCwds,
   };
 }
 
@@ -245,6 +251,25 @@ describe("spawnNode", () => {
     expect(state.launched[0]?.node.cwd).toBe("/project/workspace");
     expect(ctx.registry.nodes["workspace-maker"]?.cwd).toBe("/project/workspace");
     expect(result.cwd).toBe("/project/workspace");
+    expect(state.trustedCwds).toEqual(["/project/workspace"]);
+  });
+
+  test("does not write Codex trust config for non-Codex agents", async () => {
+    const ctx = makeContext(registry());
+    const state = deps({ bindTranscript: true });
+
+    await spawnNode(
+      ctx,
+      {
+        agent: "claude",
+        name: "docs",
+        operatorManaged: true,
+        role: "Docs",
+      },
+      state.deps,
+    );
+
+    expect(state.trustedCwds).toEqual([]);
   });
 
   test("uses shared registry tmux session and project window when omitted", async () => {

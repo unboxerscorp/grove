@@ -91,6 +91,10 @@ function configuredNode(ctx: Context, name: string): ResolvedNode | undefined {
   return ctx.byName.get(name)?.node;
 }
 
+function tmuxSession(ctx: Context): string {
+  return ctx.registry.tmuxSession ?? ctx.registry.session;
+}
+
 function runtimeNode(ctx: Context, runtime: NodeRuntime): ResolvedNode {
   const configured = configuredNode(ctx, runtime.name);
   return {
@@ -116,7 +120,7 @@ function nodeCtx(ctx: Context, runtime: NodeRuntime, deps: RepairDeps): NodeCtx 
   }
   const node = runtimeNode(ctx, runtime);
   return {
-    addr: runtime.tmux_pane ?? target(ctx.registry.session, runtime.name),
+    addr: runtime.tmux_pane ?? target(tmuxSession(ctx), runtime.name),
     adapter: deps.getAdapter(node.agent),
     node,
   };
@@ -145,7 +149,7 @@ async function repairPane(
   deps: RepairDeps,
 ): Promise<RepairItem | null> {
   const current = runtime.tmux_pane;
-  const explicit = nc.node.tmux ? target(ctx.registry.session, nc.node.tmux) : undefined;
+  const explicit = nc.node.tmux ? target(tmuxSession(ctx), nc.node.tmux) : undefined;
   if (!current && !explicit) return null;
 
   try {
@@ -291,7 +295,8 @@ export async function repairNodes(
     stale: [],
     unrecoverable: [],
   };
-  const hadSession = await deps.hasSession(ctx.registry.session);
+  const paneSession = tmuxSession(ctx);
+  const hadSession = await deps.hasSession(paneSession);
   let changed = false;
 
   const repairPanes = async (): Promise<void> => {
@@ -311,7 +316,7 @@ export async function repairNodes(
       }
     }
   };
-  if (hadSession) await deps.preserveActiveWindow(ctx.registry.session, repairPanes);
+  if (hadSession) await deps.preserveActiveWindow(paneSession, repairPanes);
   else await repairPanes();
 
   const staleTranscripts = new Map<string, RepairItem>();
