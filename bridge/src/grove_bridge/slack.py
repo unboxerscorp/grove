@@ -41,6 +41,8 @@ SLACK_CONFIG_PATH = Path("~/.grove/slack.json").expanduser()
 SLACK_RUNTIME_STATUS_FILENAME = "slack-runtime.json"
 SLACK_RUNTIME_STATUS_TTL_SECONDS = 30
 SLACK_COMMAND_MEMBERS_FILENAME = "slack-command-members.json"
+# Cap on prior-turn lines folded into the node-direct per-thread context-pack.
+_NODE_CHAT_HISTORY_LIMIT = 12
 GROVE_CHAT_TIMEOUT_SECONDS = 120.0
 HUMAN_GATE_PENDING_TTL_SECONDS = 60
 HUMAN_GATE_MODE = "human_gate"
@@ -2406,10 +2408,66 @@ class SlackConnector:
     def node_chat_queue_summary(self, *, now: int) -> dict[str, int | None]:
         return self.store.slack_chat_queue_summary(board=self.human_gate.board, now=now)
 
+    def _node_chat_context_pack(self, item: SlackChatQueueItem, *, conversation_id: str) -> str:
+        """Per-thread context-pack injected into the node-direct chat-master turn — matches
+        the persona's ``[GROVE CHAT — THREAD CONTEXT]`` format. Prior turns of THIS thread
+        (``role: text``, oldest→newest, capped, [R]-redacted) + the current message + a
+        ``From`` line carrying the Slack user id (authoritative identity for auth/trust).
+        The node treats this injected thread as the source of truth, not its own memory."""
+        board = self.human_gate.board
+        history = self.store.list_master_chat_messages(
+            board=board, conversation_id=conversation_id, limit=_NODE_CHAT_HISTORY_LIMIT
+        )
+        lines = [
+            f"{message.role}: {redact_secret_text(message.text)}"
+            for message in history[-_NODE_CHAT_HISTORY_LIMIT:]
+            if message.text.strip()
+        ]
+        member = self._assistant_member(item.user_id)
+        display = member.name if member is not None else (item.user_id or "user")
+        role_suffix = f", {member.role}" if member is not None else ""
+        return "\n".join(
+            [
+                "[GROVE CHAT — THREAD CONTEXT]",
+                f"Thread: {conversation_id}",
+                f"Project: {self._project_directory().display_name(board)}",
+                f"From: {display} ({item.user_id}{role_suffix})",
+                "Conversation so far (THIS thread only, oldest→newest):",
+                "\n".join(lines) if lines else "(none)",
+                "Current message:",
+                redact_secret_text(item.text),
+            ]
+        )
+
+    def _persist_node_chat_turn(
+        self, item: SlackChatQueueItem, *, conversation_id: str, response_text: str
+    ) -> None:
+        """Persist the user message + chat-master response to the per-thread durable
+        history (idempotent on board/conversation/request_id/role — a retried turn never
+        duplicates). Non-fatal: a history-write failure must not block delivery."""
+        board = self.human_gate.board
+        try:
+            self.store.append_master_chat_message(
+                board=board,
+                conversation_id=conversation_id,
+                role="user",
+                text=redact_secret_text(item.text),
+                request_id=item.message_ts,
+                origin_surface="slack",
+            )
+            self.store.append_master_chat_message(
+                board=board,
+                conversation_id=conversation_id,
+                role="assistant",
+                text=redact_secret_text(response_text),
+                request_id=f"{item.message_ts}:response",
+                origin_surface="slack",
+            )
+        except Exception as exc:  # non-fatal: delivery proceeds even if history write fails
+            LOGGER.warning("Slack node chat history persist failed: %s", _safe_log_error(exc))
+
     def _process_node_chat_queue_item(self, item: SlackChatQueueItem, *, now: int) -> None:
-        # P0: the abandoned chat_bridge_runtime (Gemini) preemption branch was removed.
-        # node-direct (the persistent chat-master node) is the only path now, regardless
-        # of the (dead) flag. The bridge methods remain dark/unreferenced (deletion = P3).
+        # node-direct (the persistent chat-master node) is the only chat path.
         item = self.store.mark_slack_chat_message_running(item.id, now=now)
         session_id = _slack_chat_queue_conversation_id(item)
         response_text = item.response_text
@@ -2433,7 +2491,7 @@ class SlackConnector:
                 response_text = self.chat_facade.send(
                     session_id=session_id,
                     node=item.node,
-                    text=item.text,
+                    text=self._node_chat_context_pack(item, conversation_id=session_id),
                 )
             except Exception as exc:
                 self._stop_node_chat_wait_updates(wait_updates)
@@ -2460,6 +2518,9 @@ class SlackConnector:
                 return
             else:
                 self._stop_node_chat_wait_updates(wait_updates)
+                self._persist_node_chat_turn(
+                    item, conversation_id=session_id, response_text=response_text
+                )
                 item = self.store.store_slack_chat_message_response(
                     item.id,
                     response_text=response_text,

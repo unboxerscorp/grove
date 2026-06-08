@@ -1398,7 +1398,8 @@ def test_chat_routing_can_forward_addressed_turn_to_node(tmp_path: Path) -> None
     assert chat.calls == []
     assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     assert connector.poll_node_chat_queue() == 1
-    assert chat.calls == [("slack:T1:C123:111.222", "channel-node", "summarize status")]
+    assert len(chat.calls) == 1 and chat.calls[0][:2] == ("slack:T1:C123:111.222", "channel-node")
+    assert "summarize status" in chat.calls[0][2]  # P1: in context-pack
     assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     assert slack.updates == [("C123", "ts-1", "grove reply", None)]
 
@@ -1441,7 +1442,8 @@ def test_chat_routing_task_like_message_goes_directly_to_node(
     assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
 
     assert connector.poll_node_chat_queue() == 1
-    assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "task add board export")]
+    assert len(chat.calls) == 1 and chat.calls[0][:2] == ("slack:T1:C123:111.222", "grove-master")
+    assert "task add board export" in chat.calls[0][2]  # P1: in context-pack
     assert slack.updates == [("C123", "ts-1", "grove reply", None)]
     assert store.list_tasks(board="main") == []
     assert (
@@ -1575,10 +1577,9 @@ def test_chat_routing_defers_busy_prompt_guard_and_retries(tmp_path: Path) -> No
     assert queued[0].attempts == 1
 
     assert connector.poll_node_chat_queue() == 1
-    assert chat.calls == [
-        ("slack:T1:C123:111.222", "grove-master", "summarize status"),
-        ("slack:T1:C123:111.222", "grove-master", "summarize status"),
-    ]
+    assert len(chat.calls) == 2
+    assert all(c[:2] == ("slack:T1:C123:111.222", "grove-master") for c in chat.calls)
+    assert all("summarize status" in c[2] for c in chat.calls)  # P1: msg inside context-pack
     assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     assert slack.updates == [("C123", "ts-1", "grove reply after retry", None)]
     assert (
@@ -1628,9 +1629,9 @@ def test_chat_routing_posts_waiting_notice_for_long_busy_prompt(tmp_path: Path) 
     for _ in range(6):
         assert connector.poll_node_chat_queue() == 1
 
-    assert chat.calls == [
-        ("slack:T1:C123:111.222", "grove-master", "summarize status") for _ in range(6)
-    ]
+    assert len(chat.calls) == 6
+    assert all(c[:2] == ("slack:T1:C123:111.222", "grove-master") for c in chat.calls)
+    assert all("summarize status" in c[2] for c in chat.calls)  # P1: msg inside context-pack
     assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     queued = store.list_due_slack_chat_messages(
         board="main",
@@ -1687,10 +1688,9 @@ def test_chat_routing_defers_timeout_and_retries(tmp_path: Path) -> None:
     assert queued[0].attempts == 1
 
     assert connector.poll_node_chat_queue() == 1
-    assert chat.calls == [
-        ("slack:T1:C123:111.222", "grove-master", "summarize status"),
-        ("slack:T1:C123:111.222", "grove-master", "summarize status"),
-    ]
+    assert len(chat.calls) == 2
+    assert all(c[:2] == ("slack:T1:C123:111.222", "grove-master") for c in chat.calls)
+    assert all("summarize status" in c[2] for c in chat.calls)  # P1: msg inside context-pack
     assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     assert slack.updates == [("C123", "ts-1", "grove reply after timeout", None)]
     assert (
@@ -1769,7 +1769,8 @@ def test_chat_routing_retries_failed_response_delivery_without_duplicate_ask(
     assert queued[0].last_error == "slack api temporarily unavailable"
 
     assert connector.poll_node_chat_queue() == 1
-    assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "summarize status")]
+    assert len(chat.calls) == 1 and chat.calls[0][:2] == ("slack:T1:C123:111.222", "grove-master")
+    assert "summarize status" in chat.calls[0][2]  # P1: in context-pack
     assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     assert slack.updates == [("C123", "ts-1", "grove reply", None)]
     assert (
@@ -1889,7 +1890,8 @@ def test_chat_routing_ignores_slack_user_mentions_when_selecting_node(
     assert chat.calls == []
     assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     assert connector.poll_node_chat_queue() == 1
-    assert chat.calls == [("slack:T1:C123:111.222", "grove-master", "summarize status")]
+    assert len(chat.calls) == 1 and chat.calls[0][:2] == ("slack:T1:C123:111.222", "grove-master")
+    assert "summarize status" in chat.calls[0][2]  # P1: in context-pack
     assert slack.posts == [("C123", "잠시만 기다리세요!", "111.222")]
     assert slack.updates == [("C123", "ts-1", "grove reply", None)]
 
@@ -4500,11 +4502,8 @@ def test_load_command_members_file_valid_failclosed_and_bad_role(tmp_path: Path)
 
 
 def test_node_direct_queue_routes_chat_to_node_unconditionally(tmp_path: Path) -> None:
-    # P0: the abandoned chat_bridge_runtime branch is gone — a queued chat message is
-    # always handled by the node-direct path (routed to the chat-master node), even if
-    # the (dead) flag is somehow set.
+    # node-direct: a queued chat message is routed to the chat-master node.
     store = SQLiteBoardStore(tmp_path / "board.db")
-    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
     slack = FakeSlackClient()
     chat = FakeChatFacade()
     connector = SlackConnector(
@@ -4529,3 +4528,53 @@ def test_node_direct_queue_routes_chat_to_node_unconditionally(tmp_path: Path) -
     processed = connector.poll_node_chat_queue()
     assert processed == 1
     assert chat.calls and chat.calls[0][1] == "chat-master"
+
+
+def test_node_chat_injects_thread_context_pack_and_persists(tmp_path: Path) -> None:
+    # P1: the node-direct turn injects the per-thread [GROVE CHAT — THREAD CONTEXT]
+    # context-pack (prior turns of THIS thread + current message + From with user-id,
+    # [R]-redacted) into facade.send, and persists the turn for future context.
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    slack = FakeSlackClient()
+    chat = FakeChatFacade()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="dev10", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-master"),
+        command_config=SlackCommandConfig(
+            board="dev10", members={"U": SlackCommandMember("operator", "권성민", "operator")}
+        ),
+        route_chat_to_node=True,
+        bot_user_id="BOT",
+    )
+    conv = "slack:T:C123:th"
+    secret = "xoxb-" + ("m" * 44)
+    store.enqueue_slack_chat_message(
+        board="dev10",
+        team_id="T",
+        channel_id="C123",
+        thread_ts="th",
+        message_ts="2.0",
+        user_id="U",
+        node="chat-master",
+        text=f"새 질문 {secret}",
+    )
+    store.append_master_chat_message(
+        board="dev10", conversation_id=conv, role="user", text="이전 질문", request_id="r0"
+    )
+    store.append_master_chat_message(
+        board="dev10", conversation_id=conv, role="assistant", text="이전 답변", request_id="r0a"
+    )
+    assert connector.poll_node_chat_queue() == 1
+
+    sent = chat.calls[-1][2]
+    assert "[GROVE CHAT — THREAD CONTEXT]" in sent
+    assert "이전 질문" in sent and "이전 답변" in sent
+    assert "Current message:" in sent and "새 질문" in sent
+    assert "From: 권성민 (U, operator)" in sent
+    assert secret not in sent  # [R] redaction
+    history = store.list_master_chat_messages(board="dev10", conversation_id=conv)
+    assert any(m.role == "user" and "새 질문" in m.text for m in history)
+    assert any(m.role == "assistant" for m in history)

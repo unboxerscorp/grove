@@ -42,7 +42,6 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from grove_bridge.assistant import (
-    ASSISTANT_TRANSPORT_FALLBACK_TEXT,
     AssistantActor,
     AssistantBroker,
     AssistantContentBlocked,
@@ -237,18 +236,9 @@ GUI_FEATURES = (
     "handoff",
     "usage-trend",
     "retro-analytics",
-    "chat_bridge_runtime",
 )
 GUI_FEATURE_SET = frozenset(GUI_FEATURES)
 MASTER_BOARD_STATUSES = ("ready", "running", "blocked", "done", "archived")
-CHAT_PROVIDER_CONFIG_FILENAME = "chat-provider.json"
-CHAT_RUNTIME_FORBIDDEN_ANSWERS = frozenset(
-    {
-        ASSISTANT_TRANSPORT_FALLBACK_TEXT,
-        "master chat runtime initializing",
-        "master chat is unavailable",
-    }
-)
 
 
 class AuthMode(StrEnum):
@@ -6147,9 +6137,7 @@ def _handle_master_chat_request(
     auth: AuthContext,
     project: ProjectContext,
 ) -> dict[str, object] | Response:
-    # P0: the abandoned chat_bridge_runtime (Gemini) branch was removed — master chat
-    # is node-routed (chat-master node) only, regardless of the (dead) flag. The
-    # bridge web handler remains dark/unreferenced (deletion = P3).
+    # Master chat is node-routed (the chat-master node) only.
     assistant_client = _assistant_client(request)
     if not _node_routed_target_available(project.config, assistant_client):
         raise HTTPException(status_code=503, detail="master chat is unavailable")

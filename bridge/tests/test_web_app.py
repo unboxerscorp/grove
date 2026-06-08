@@ -944,7 +944,6 @@ def test_gui_feature_toggles_default_off_persist_and_audit(tmp_path: Path) -> No
         "handoff",
         "usage-trend",
         "retro-analytics",
-        "chat_bridge_runtime",
     }
 
     initial = client.get("/api/gui-features", headers=headers)
@@ -9797,23 +9796,3 @@ def read_registry(tmp_path: Path, session: str) -> dict[str, object]:
     path = tmp_path / ".grove" / session / "registry.json"
     loaded = json.loads(path.read_text(encoding="utf-8"))
     return cast(dict[str, object], loaded)
-
-
-def test_master_chat_flag_on_still_node_routed_after_p0_branch_removal(tmp_path: Path) -> None:
-    # P0: the chat_bridge_runtime (Gemini) branch is removed — even with the (dead)
-    # flag ON, master chat is node-routed (200 answer), identical to flag OFF.
-    store = SQLiteBoardStore(tmp_path / "board.db")
-    store.set_gui_feature_enabled(board="dev10", feature="chat_bridge_runtime", enabled=True)
-    client = make_client(tmp_path, store)
-    response = client.post(
-        "/api/master/chat",
-        headers=auth_headers(client),
-        json={
-            "message": "MASTER로 뭐 가능?",
-            "conversation_id": "conv-on",
-            "request_id": "req-on",
-            "origin_page": "/boards/dev10",
-        },
-    )
-    assert response.status_code == 200
-    assert response.json()["response_type"] == "answer"
