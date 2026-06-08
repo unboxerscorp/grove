@@ -84,6 +84,17 @@ def apply_chat_confirm_action(
     scope-exact, audited. Raises :class:`ChatActionDenied` on auth/validation/CAS
     failure (never a partial/fabricated apply)."""
     _require_role(actor)
+    # Board-ownership guard (scope-exact): a target action MUST operate on a task
+    # that belongs to action.board. This closes an IDOR — add_comment_to_task takes
+    # only task_id (no board), so without this a comment could land on another
+    # board's task — and is defense-in-depth for every target action.
+    if action.target_task_id is not None:
+        try:
+            store.get_task(board=action.board, task_id=action.target_task_id)
+        except KeyError as exc:
+            raise ChatActionDenied(
+                f"target task {action.target_task_id!r} not on board {action.board!r}"
+            ) from exc
     if action.kind == "create":
         result = _apply_create(store, action, actor)
     elif action.kind == "transition":

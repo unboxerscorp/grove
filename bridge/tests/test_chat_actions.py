@@ -136,3 +136,19 @@ def test_classify_rejects_non_allowlisted_target(tmp_path: Path) -> None:
     )
     with pytest.raises(ChatActionDenied):
         apply_chat_confirm_action(store, action, actor=_actor())
+
+
+# --- Security: board-ownership guard (scope-exact; closes comment IDOR) ----- #
+def test_target_action_denied_across_boards(tmp_path: Path) -> None:
+    store = SQLiteBoardStore(tmp_path / "b.db")
+    # A task that actually lives on a DIFFERENT board.
+    t = store.create_task(board="other", title="x", body=None, assignee=None, status="staged")
+    # An action declaring board 'dev10' but targeting the 'other'-board task.
+    # (comment is the IDOR-prone case: add_comment_to_task has no board param.)
+    action = ChatConfirmAction(
+        kind="comment", board="dev10", target_task_id=t.id, fields={"comment": "leak"}
+    )
+    with pytest.raises(ChatActionDenied):
+        apply_chat_confirm_action(store, action, actor=_actor())
+    # Defense-in-depth: nothing was applied — the cross-board comment never lands.
+    assert store.list_comments_for_task(task_id=t.id) == []
