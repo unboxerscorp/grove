@@ -6824,6 +6824,7 @@ def test_org_payload_renders_master_plane_org_level_from_another_project_view(
     for name in ("grove-master", "chat-master", "task-master", "advisor"):
         assert name in terminal_nodes, f"{name} missing from base-math terminal nodes"
         assert terminal_nodes[name]["terminal_allowed"] is True
+    assert terminal_nodes["lead"]["parent"] == "grove-master"
     assert terminal_nodes["chat-master"]["tmux_pane"] == "sample:0.1"
     assert ticket_response.status_code == 200
     assert ticket_response.json()["kind"] == "terminal"

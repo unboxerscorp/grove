@@ -7732,11 +7732,19 @@ def _node_payload_base(node: NodeRecord) -> dict[str, object]:
 
 def _terminal_node_records(config: WebAppConfig) -> list[NodeRecord]:
     nodes_by_name: dict[str, NodeRecord] = {
-        str(node["name"]): node for node in _org_node_records(config)
+        str(node["name"]): _terminal_project_node_record(node) for node in _org_node_records(config)
     }
     for node in _org_level_terminal_records(config):
         nodes_by_name.setdefault(str(node["name"]), node)
     return sorted(nodes_by_name.values(), key=_terminal_node_sort_key)
+
+
+def _terminal_project_node_record(node: NodeRecord) -> NodeRecord:
+    if node["name"] != LEAD_NODE_NAME or node["parent"]:
+        return node
+    normalized = dict(node)
+    normalized["parent"] = GROVE_MASTER_NODE_NAME
+    return cast(NodeRecord, normalized)
 
 
 def _org_level_terminal_records(config: WebAppConfig) -> list[NodeRecord]:
