@@ -58,8 +58,15 @@ function NodeSendBox({ node, t }: { node: GroveNode; t: TFn }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<"disabled" | "forbidden" | "rate" | "failed" | null>(null);
   const [sent, setSent] = useState(false);
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+  // Auto-grow the composer as lines are added (via Shift+Enter), capped.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 132)}px`;
+  }, [text]);
+  const send = () => {
     const v = text.trim();
     if (!v || busy) return;
     setBusy(true);
@@ -78,17 +85,30 @@ function NodeSendBox({ node, t }: { node: GroveNode; t: TFn }) {
         setErr(/\b404\b/.test(m) ? "disabled" : /\b403\b/.test(m) ? "forbidden" : /\b429\b/.test(m) ? "rate" : "failed");
       });
   };
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    send();
+  };
+  // Enter submits; Shift+Enter inserts a newline (default textarea behaviour).
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  };
   return (
-    <form className="dr-term__send" onSubmit={submit}>
-      <input
+    <form className="dr-term__send" onSubmit={onSubmit}>
+      <textarea
+        ref={taRef}
         className="dr-input dr-term__send-input"
         name="nodeInput"
-        type="text"
+        rows={1}
         placeholder={t("term.send.placeholder")}
         value={text}
         spellCheck={false}
         autoComplete="off"
         onChange={(e) => setText(e.target.value)}
+        onKeyDown={onKeyDown}
       />
       <button type="submit" className="dr-btn dr-btn--primary dr-term__send-btn" disabled={!text.trim() || busy}>
         {busy ? t("term.send.sending") : t("term.send.btn")}
