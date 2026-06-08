@@ -39,6 +39,7 @@ from grove_bridge.slack import (
     SlackConnector,
     SlackDigestConfig,
     SlackEvent,
+    SlackFileAttachment,
     SlackSdkClient,
     mask_token,
 )
@@ -82,6 +83,11 @@ class FakeSlackClient:
         if self.raise_after_post:
             raise RuntimeError("accepted but client failed")
         return ts
+
+    def download_file(self, *, url: str, destination: Path) -> None:
+        _ = url
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"fake image")
 
     def update_message(
         self,
@@ -4578,3 +4584,54 @@ def test_node_chat_injects_thread_context_pack_and_persists(tmp_path: Path) -> N
     history = store.list_master_chat_messages(board="dev10", conversation_id=conv)
     assert any(m.role == "user" and "새 질문" in m.text for m in history)
     assert any(m.role == "assistant" for m in history)
+
+
+def test_node_chat_includes_image_attachment_local_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    store = SQLiteBoardStore(tmp_path / "board.db")
+    slack = FakeSlackClient()
+    chat = FakeChatFacade()
+    connector = SlackConnector(
+        store=store,
+        slack_client=slack,
+        chat_facade=chat,
+        human_gate=HumanGateConfig(board="dev10", channel="C123"),
+        chat_route=ChatRouteConfig(default_node="chat-master"),
+        route_chat_to_node=True,
+        bot_user_id="BOT",
+    )
+    event = SlackEvent(
+        team="T",
+        channel="C123",
+        user="U",
+        text="<@BOT> 이 스크린샷 봐줘",
+        ts="3.0",
+        thread_ts=None,
+        event_type="app_mention",
+        files=(
+            SlackFileAttachment(
+                file_id="F123",
+                title="layout feedback",
+                name="screen shot.png",
+                mimetype="image/png",
+                filetype="png",
+                pretty_type="PNG",
+                size=1234,
+                url_private="https://files.slack.test/F123",
+                url_private_download="https://files.slack.test/F123/download",
+            ),
+        ),
+    )
+
+    assert connector._handle_chat(event, thread_ts="3.0") is True
+    assert connector.poll_node_chat_queue() == 1
+
+    sent = chat.calls[-1][2]
+    assert "Attached Slack files:" in sent
+    assert "layout feedback" in sent
+    assert "image/png" in sent
+    assert "local_path=" in sent
+    local_path = sent.split("local_path=", 1)[1].splitlines()[0]
+    assert Path(local_path).read_bytes() == b"fake image"

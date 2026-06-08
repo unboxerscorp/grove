@@ -12,6 +12,7 @@ import secrets
 import subprocess
 import threading
 import time
+import urllib.request
 from collections import deque
 from collections.abc import Callable, Mapping, MutableSequence, Sequence
 from dataclasses import dataclass, field, replace
@@ -62,6 +63,8 @@ SLACK_NODE_CHAT_WAIT_TEXT = "잠시만 기다리세요!"
 SLACK_NODE_CHAT_WAIT_UPDATE_SECONDS = 3.0
 SLACK_NODE_CHAT_RUNNING_STALE_SECONDS = 300
 SLACK_NODE_CHAT_QUEUE_LIMIT = 5
+SLACK_NODE_CHAT_FILE_CONTEXT_LIMIT = 5
+SLACK_NODE_CHAT_FILE_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024
 SLACK_SOCKET_DISCONNECTED_RESTART_SECONDS = 60.0
 SLACK_SCOPES = (
     "app_mentions:read",
@@ -342,6 +345,19 @@ class SlackBlockMessage:
 
 
 @dataclass(frozen=True)
+class SlackFileAttachment:
+    file_id: str
+    title: str
+    name: str
+    mimetype: str
+    filetype: str
+    pretty_type: str
+    size: int | None
+    url_private: str | None
+    url_private_download: str | None
+
+
+@dataclass(frozen=True)
 class SlackPendingCommand:
     confirmation_id: str
     command: SlackCommandName
@@ -365,6 +381,7 @@ class SlackEvent:
     bot_id: str | None = None
     app_id: str | None = None
     subtype: str | None = None
+    files: tuple[SlackFileAttachment, ...] = field(default_factory=tuple)
 
 
 class SlackConfigStore:
@@ -452,6 +469,7 @@ class FakeStatusProbe:
 
 class SlackSdkClient:
     def __init__(self, *, bot_token: str) -> None:
+        self._bot_token = bot_token
         web_module = importlib.import_module("slack_sdk.web")
         web_client = cast(SlackWebClientFactory, web_module.WebClient)
         self._client = web_client(token=bot_token)
@@ -487,6 +505,23 @@ class SlackSdkClient:
         blocks: Sequence[Mapping[str, object]] | None = None,
     ) -> None:
         self._client.chat_update(channel=channel, ts=ts, text=text, blocks=blocks)
+
+    def download_file(self, *, url: str, destination: Path) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        request = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {self._bot_token}"},
+        )
+        downloaded = 0
+        with urllib.request.urlopen(request, timeout=20) as response, destination.open("wb") as out:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                downloaded += len(chunk)
+                if downloaded > SLACK_NODE_CHAT_FILE_DOWNLOAD_MAX_BYTES:
+                    raise RuntimeError("Slack file exceeds download limit")
+                out.write(chunk)
 
     def bot_user_id(self) -> str | None:
         auth_test = getattr(self._client, "auth_test", None)
@@ -2340,7 +2375,7 @@ class SlackConnector:
     def _handle_chat(self, event: SlackEvent, *, thread_ts: str) -> bool:
         if not self.route_chat_to_node:
             return self._handle_assistant_turn(event, thread_ts=thread_ts)
-        text = _normalize_slack_text(event.text)
+        text = self._node_chat_event_text(event, thread_ts=thread_ts)
         node = _select_chat_node(event, self.chat_route)
         item = self.store.enqueue_slack_chat_message(
             board=self.human_gate.board,
@@ -2363,6 +2398,79 @@ class SlackConnector:
             node=node,
         )
         return True
+
+    def _node_chat_event_text(self, event: SlackEvent, *, thread_ts: str) -> str:
+        text = _normalize_slack_text(event.text)
+        file_context = self._node_chat_file_context(event, thread_ts=thread_ts)
+        parts = [part for part in (text, file_context) if part.strip()]
+        return "\n\n".join(parts) if parts else "(Slack message with attachment)"
+
+    def _node_chat_file_context(self, event: SlackEvent, *, thread_ts: str) -> str:
+        if not event.files:
+            return ""
+        lines = ["Attached Slack files:"]
+        for attachment in event.files[:SLACK_NODE_CHAT_FILE_CONTEXT_LIMIT]:
+            label = attachment.title or attachment.name or attachment.file_id or "file"
+            details = []
+            if attachment.mimetype:
+                details.append(attachment.mimetype)
+            elif attachment.filetype:
+                details.append(attachment.filetype)
+            if attachment.pretty_type:
+                details.append(attachment.pretty_type)
+            if attachment.size is not None:
+                details.append(f"{attachment.size} bytes")
+            local_path = self._cache_slack_file_attachment(
+                attachment,
+                team_id=event.team,
+                channel_id=event.channel,
+                thread_ts=thread_ts,
+            )
+            suffix = f" ({', '.join(details)})" if details else ""
+            if local_path is not None:
+                lines.append(f"- {label}{suffix}; local_path={local_path}")
+            elif _slack_file_is_image(attachment):
+                lines.append(f"- {label}{suffix}; image attachment present, local copy unavailable")
+            else:
+                lines.append(f"- {label}{suffix}")
+        if len(event.files) > SLACK_NODE_CHAT_FILE_CONTEXT_LIMIT:
+            remaining = len(event.files) - SLACK_NODE_CHAT_FILE_CONTEXT_LIMIT
+            lines.append(f"- ... {remaining} more file(s)")
+        return "\n".join(lines)
+
+    def _cache_slack_file_attachment(
+        self,
+        attachment: SlackFileAttachment,
+        *,
+        team_id: str,
+        channel_id: str,
+        thread_ts: str,
+    ) -> Path | None:
+        if not _slack_file_is_image(attachment):
+            return None
+        download_url = attachment.url_private_download or attachment.url_private
+        if not download_url:
+            return None
+        download_file = getattr(self.slack_client, "download_file", None)
+        if not callable(download_file):
+            return None
+        file_id = attachment.file_id or "file"
+        filename = _safe_slack_file_name(attachment.name or attachment.title or file_id)
+        path = (
+            Path("~/.grove").expanduser()
+            / self.human_gate.board
+            / "slack-files"
+            / _safe_slack_file_name(team_id)
+            / _safe_slack_file_name(channel_id)
+            / _safe_slack_file_name(thread_ts)
+            / f"{_safe_slack_file_name(file_id)}-{filename}"
+        )
+        try:
+            download_file(url=download_url, destination=path)
+        except Exception as exc:
+            LOGGER.warning("Slack file attachment download skipped: %s", _safe_log_error(exc))
+            return None
+        return path
 
     def _post_initial_node_chat_placeholder(self, item: SlackChatQueueItem) -> None:
         if item.placeholder_ts:
@@ -3146,6 +3254,9 @@ def _event_from_socket_payload(
     channel = event.get("channel")
     user = event.get("user")
     text = event.get("text")
+    files = _slack_file_attachments(event.get("files"))
+    if not isinstance(text, str) and files:
+        text = ""
     ts = event.get("ts")
     if not isinstance(ts, str):
         ts = event.get("event_ts")
@@ -3170,6 +3281,7 @@ def _event_from_socket_payload(
         bot_id=bot_id,
         app_id=app_id,
         subtype=subtype,
+        files=files,
     )
 
 
@@ -3220,6 +3332,68 @@ def _nested_str(mapping: Mapping[str, object], key: str, nested_key: str) -> str
 def _mapping_str(mapping: Mapping[str, object], key: str) -> str | None:
     value = mapping.get(key)
     return value if isinstance(value, str) and value else None
+
+
+def _mapping_int(mapping: Mapping[str, object], key: str) -> int | None:
+    value = mapping.get(key)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _slack_file_attachments(value: object) -> tuple[SlackFileAttachment, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return ()
+    attachments: list[SlackFileAttachment] = []
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            continue
+        attachment = _slack_file_attachment(raw)
+        if attachment is not None:
+            attachments.append(attachment)
+    return tuple(attachments)
+
+
+def _slack_file_attachment(raw: Mapping[str, object]) -> SlackFileAttachment | None:
+    file_id = _mapping_str(raw, "id") or _mapping_str(raw, "file_id") or ""
+    title = _mapping_str(raw, "title") or ""
+    name = _mapping_str(raw, "name") or title
+    mimetype = _mapping_str(raw, "mimetype") or ""
+    filetype = _mapping_str(raw, "filetype") or ""
+    pretty_type = _mapping_str(raw, "pretty_type") or ""
+    url_private = _mapping_str(raw, "url_private")
+    url_private_download = _mapping_str(raw, "url_private_download")
+    if not any((file_id, title, name, mimetype, filetype, url_private, url_private_download)):
+        return None
+    return SlackFileAttachment(
+        file_id=file_id,
+        title=title,
+        name=name,
+        mimetype=mimetype,
+        filetype=filetype,
+        pretty_type=pretty_type,
+        size=_mapping_int(raw, "size"),
+        url_private=url_private,
+        url_private_download=url_private_download,
+    )
+
+
+def _slack_file_is_image(attachment: SlackFileAttachment) -> bool:
+    if attachment.mimetype.lower().startswith("image/"):
+        return True
+    image_types = {"jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "svg"}
+    if attachment.filetype.lower() in image_types:
+        return True
+    suffix = Path(attachment.name or attachment.title).suffix.lower().lstrip(".")
+    return suffix in image_types
+
+
+def _safe_slack_file_name(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
+    cleaned = cleaned.strip("._")
+    return cleaned[:120] or "file"
 
 
 def _needs_human(task: Task) -> bool:
